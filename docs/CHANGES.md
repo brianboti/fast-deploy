@@ -1,3 +1,13 @@
+# 0.9.5: clean plans
+
+## Fixed
+
+1. **Every plan wanted to update the dashboard.** The Monitoring API stores dashboards with an explicit axis on each data set and without zero positions or empty group lists, so Terraform saw a difference on every run. The dashboard is now written in that stored form; a read-only plan against the fully applied staging project reports no changes.
+
+## Upgrade steps
+
+None: the next plan is simply clean.
+
 # 0.9.4: fix from the live apply, part three
 
 ## Fixed

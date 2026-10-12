@@ -136,10 +136,13 @@ Findings that changed the code, each fixed with a regression test:
 5. The uptime check used the Monitoring service agent's OIDC token against a plain URL; Google offers that only for checks that name a Cloud Run service as a `cloud_run_revision` resource (0.9.3).
 6. The saturation alert used a greater-or-equal comparison; the Monitoring API only offers greater-than and less-than (0.9.3).
 7. The uptime check asked for certificate validation, which the API only offers for plain-URL checks (0.9.4). The third apply created the saturation alert and refreshed the dashboard; the final check shape was confirmed by creating and deleting a throwaway check through the API before the fourth run.
+8. Every plan wanted to update the dashboard, because the API stores it with an explicit axis and without zero positions or empty group lists (0.9.5).
+
+The operator's fourth apply (0.9.4) completed: uptime check `lab-demo-health` created with the health alert, dashboard refreshed; Terraform reported 2 added, 1 changed, 0 destroyed. The staging project now carries the six alert policies, the uptime check, the dashboard, the spending-cap workflow and trigger, the observer identity and every grant. A read-only plan after 0.9.5 reports no changes. The uptime check's first probe, signed with the Monitoring service agent's identity token against the IAM-protected `/health` path, passed from the usa-iowa checker about five minutes after creation.
 
 The controller was restarted on 0.9.2 after the second apply; `get_service_health` then reported the service ready with full agreement.
 
-Not performed: a notification delivery (no webhook secret), a scheduled controller-watch run, an alert firing, the spending cap end to end, and the always-on machine (deferred by the operator). Pending the operator's fourth Terraform apply: the uptime check and the health alert.
+Not performed: a notification delivery (no webhook secret), a scheduled controller-watch run, an alert firing, the spending cap end to end, and the always-on machine (deferred by the operator). Nothing of the Terraform change remains pending.
 
 Platform tests: 195 passed; ruff and zizmor clean.
 

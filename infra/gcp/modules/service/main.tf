@@ -444,31 +444,32 @@ resource "google_monitoring_dashboard" "service" {
           { title = "Memory utilization p95", metric = "run.googleapis.com/container/memory/utilizations", aligner = "ALIGN_PERCENTILE_95", reducer = "REDUCE_MAX", groups = [] },
           { title = "CPU utilization p95", metric = "run.googleapis.com/container/cpu/utilizations", aligner = "ALIGN_PERCENTILE_95", reducer = "REDUCE_MAX", groups = [] },
           { title = "Billable instance time (s/min)", metric = "run.googleapis.com/container/billable_instance_time", aligner = "ALIGN_RATE", reducer = "REDUCE_SUM", groups = [] },
-          ] : {
-          xPos   = (index % 2) * 6
-          yPos   = floor(index / 2) * 4
-          width  = 6
-          height = 4
-          widget = {
-            title = tile.title
-            xyChart = {
-              dataSets = [{
-                plotType = "LINE"
-                timeSeriesQuery = {
-                  timeSeriesFilter = {
-                    filter = "metric.type=\"${tile.metric}\" AND ${local.service_filter}"
-                    aggregation = {
-                      alignmentPeriod    = "60s"
-                      perSeriesAligner   = tile.aligner
-                      crossSeriesReducer = tile.reducer
-                      groupByFields      = tile.groups
+          # Written in the form the API stores (no zero positions, no empty group list, explicit axis) so plans stay clean.
+          ] : merge(
+          index % 2 == 0 ? {} : { xPos = (index % 2) * 6 },
+          index < 2 ? {} : { yPos = floor(index / 2) * 4 },
+          {
+            width  = 6
+            height = 4
+            widget = {
+              title = tile.title
+              xyChart = {
+                dataSets = [{
+                  plotType   = "LINE"
+                  targetAxis = "Y1"
+                  timeSeriesQuery = {
+                    timeSeriesFilter = {
+                      filter = "metric.type=\"${tile.metric}\" AND ${local.service_filter}"
+                      aggregation = merge(
+                        { alignmentPeriod = "60s", perSeriesAligner = tile.aligner, crossSeriesReducer = tile.reducer },
+                        length(tile.groups) == 0 ? {} : { groupByFields = tile.groups }
+                      )
                     }
                   }
-                }
-              }]
+                }]
+              }
             }
-          }
-        }
+        })
       ]
     }
   })
