@@ -111,4 +111,12 @@ def test_failed_deploy_records_the_command_error(tmp_path):
     with pytest.raises(RuntimeError, match="traffic_restored"):
         rollout(cloud, IMAGE, AppSpec(name="demo", reviewed=True), PLAN_ID, tmp_path / "receipt.json")
     saved = json.loads((tmp_path / "receipt.json").read_text())
-    assert "startup probe" in saved["error"] and saved["service_ready"] is False and "previous revision" in saved["note"]
+    assert saved["error"].startswith("ERROR: (gcloud.run.deploy)") and "startup probe" in saved["error"]
+    assert saved["service_ready"] is False and "previous revision" in saved["note"]
+
+
+def test_describe_error_prefers_the_error_line_over_trailing_hints():
+    from labdeploy.release import describe_error
+    stderr = "Deploying...\nERROR: (gcloud.run.deploy) The container failed the startup probe.\nLogs URL: https://example\nFor more troubleshooting guidance, see https://example"
+    assert describe_error(subprocess.CalledProcessError(1, ["gcloud"], stderr=stderr)) == "ERROR: (gcloud.run.deploy) The container failed the startup probe."
+    assert describe_error(ValueError("bad")) == "ValueError: bad"

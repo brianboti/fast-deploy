@@ -17,9 +17,10 @@ def run(args):
 
 
 def describe_error(error):
-    """Short, log-safe description of a failure: the last line of a command's stderr when there is one."""
-    lines = (getattr(error, "stderr", "") or "").strip().splitlines()
-    return (lines[-1] if lines else f"{type(error).__name__}: {error}")[:300]
+    """Short, log-safe description of a failure: a command's ERROR line when there is one, else its last stderr line."""
+    lines = [line.strip() for line in (getattr(error, "stderr", "") or "").splitlines() if line.strip()]
+    chosen = next((line for line in lines if line.startswith("ERROR")), lines[-1] if lines else f"{type(error).__name__}: {error}")
+    return chosen[:300]
 
 
 class CloudRun:
