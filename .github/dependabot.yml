@@ -13,3 +13,7 @@ updates:
       - /infra/gcp/apps/*
     schedule:
       interval: weekly
+    # A new provider major is an upgrade with a validated plan, not a bump; minor and patch updates still arrive.
+    ignore:
+      - dependency-name: hashicorp/google
+        update-types: ["version-update:semver-major"]
