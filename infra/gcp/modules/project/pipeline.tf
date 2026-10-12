@@ -32,7 +32,7 @@ resource "google_iam_workload_identity_pool_provider" "apply" {
   count                              = local.pipeline_enabled ? 1 : 0
   workload_identity_pool_id          = google_iam_workload_identity_pool.platform[0].workload_identity_pool_id
   workload_identity_pool_provider_id = "github-apply"
-  display_name                       = "Apply from main in the protected environment"
+  display_name                       = "Apply from main in infra" # at most 32 characters
   attribute_mapping = {
     "google.subject"                = "assertion.sub"
     "attribute.repository_id"       = "assertion.repository_id"
