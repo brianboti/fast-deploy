@@ -271,7 +271,7 @@ resource "google_monitoring_uptime_check_config" "health" {
   # Service-agent (OIDC) authentication is only offered for Cloud Run targets, not arbitrary URLs: the check must name
   # the service as a cloud_run_revision resource. Google's own example passes project_id, location and service_name.
   monitored_resource {
-    type   = "cloud_run_revision"
+    type = "cloud_run_revision"
     # The API stores revision_name and configuration_name as empty labels; naming them keeps every later plan clean.
     labels = { project_id = var.project_id, location = var.region, service_name = google_cloud_run_v2_service.app.name, revision_name = "", configuration_name = "" }
   }
