@@ -69,6 +69,8 @@ resource "google_project_iam_member" "infra_apply_roles" {
     "roles/editor", "roles/run.admin", "roles/artifactregistry.admin", "roles/storage.admin", "roles/monitoring.admin",
     "roles/iam.serviceAccountAdmin", "roles/iam.serviceAccountUser", "roles/iam.workloadIdentityPoolAdmin",
     "roles/resourcemanager.projectIamAdmin",
+    # Needs (1.1.0): editor cannot set Pub/Sub IAM policies or create Firestore databases.
+    "roles/pubsub.admin", "roles/datastore.owner",
   ]) : toset([])
   project = var.project_id
   role    = each.value

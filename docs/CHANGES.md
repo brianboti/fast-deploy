@@ -1,3 +1,13 @@
+# 1.1.1: fix from the live run
+
+## Fixed
+
+1. **The pipeline's apply identity could not finish the first `needs` apply**: the editor role sets no Pub/Sub IAM policies and creates no Firestore databases (two 403s after the bucket, topic and subscription were created). The foundation now grants it `roles/pubsub.admin` and `roles/datastore.owner`.
+
+## Upgrade steps
+
+1. Re-apply the foundation, then re-run the apply for the affected application root (`workflow_dispatch` on the apply workflow).
+
 # 1.1.0: what an app needs, part one (Phase 6, items 6.1 and 6.2)
 
 ## Added
