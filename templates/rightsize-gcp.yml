@@ -89,13 +89,13 @@ jobs:
           from labdeploy.cost import issue_body
           print(issue_body(json.load(open("cost-report.json")), os.environ["RUN_URL"]))
           PY
+          # The job never checks out this repository, so every gh call names it explicitly.
           TITLE="Lab Deploy cost report: $SERVICE"
-          NUMBER=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)
+          NUMBER=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$TITLE\" in:title" --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)
           if [ -n "$NUMBER" ]; then
-            gh issue edit "$NUMBER" --body-file issue-body.md > /dev/null && echo "updated issue #$NUMBER"
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --body-file issue-body.md > /dev/null && echo "updated issue #$NUMBER"
           else
-            gh issue create --title "$TITLE" --body-file issue-body.md --label "" 2>/dev/null || gh issue create --title "$TITLE" --body-file issue-body.md > /dev/null
-            echo "created the cost report issue"
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file issue-body.md > /dev/null && echo "created the cost report issue"
           fi
   notify:
     needs: [rightsize]

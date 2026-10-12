@@ -1,3 +1,9 @@
+# 0.7.1: fix from the live run
+
+## Fixed
+
+1. **The cost-report issue step failed** because the right-sizing job never checks out the application repository and the GitHub CLI looked for one; every call now names the repository explicitly.
+
 # 0.7.0: real cost control
 
 ## Added
