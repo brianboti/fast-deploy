@@ -66,9 +66,9 @@ class CloudRun:
             if any(entry.get("tag") == "candidate" for entry in entries):
                 raise RuntimeError(f"Candidate tag removal failed: {describe_error(error)}") from None
 
-    def delete_revision(self, name):
-        """Remove a candidate revision that carries no traffic; a failed newest revision otherwise keeps the service not Ready."""
-        self.run(self.command("revisions", "delete", name))
+    def ready(self):
+        conditions = self.describe().get("status", {}).get("conditions", [])
+        return any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
 
     def deploy(self, image, spec, suffix):
         # Cloud Run gates traffic on this HTTP startup probe (up to 60 s of grace) before the platform's own probes run.
@@ -155,23 +155,29 @@ def recover(adapter, journal, target):
     adapter.traffic(verified)
     saved["state"] = "recovered"
     journal.write(saved)
-    retire_candidate(adapter, candidate, saved)
+    retire_candidate(adapter, saved)
     journal.write(saved)
     return saved
 
 
-def retire_candidate(adapter, revision, record):
-    """Best effort after traffic is safely off the candidate: delete the revision, then drop the tag. Outcomes are recorded."""
-    try:
-        adapter.delete_revision(revision)
-        record["candidate_removed"] = True
-    except Exception as error:
-        record["candidate_removed"] = False
-        record["candidate_warning"] = describe_error(error)
+def retire_candidate(adapter, record):
+    """After traffic is safely off the candidate, drop its tag and record whether the service reports Ready.
+
+    Cloud Run never allows deleting a service's newest revision, so a failed candidate stays in place with no
+    traffic; the service reports not Ready until the next successful release while the previous revision serves.
+    """
     try:
         adapter.remove_candidate()
+        record.pop("cleanup_warning", None)
     except Exception as error:
         record["cleanup_warning"] = f"Candidate tag cleanup failed: {describe_error(error)}"
+    try:
+        record["service_ready"] = adapter.ready()
+    except Exception:
+        record["service_ready"] = None
+    if record.get("service_ready") is False:
+        record["note"] = ("The failed candidate remains the newest revision with no traffic, so Cloud Run reports the service as "
+                          "not ready until the next successful release; requests are served by the previous revision.")
 
 
 def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=None):
@@ -222,7 +228,7 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
             receipt["restore_error"] = describe_error(restore_error)
             print(f"Traffic restoration failed: {receipt['restore_error']}", file=sys.stderr)
         if receipt["state"] == "traffic_restored":
-            retire_candidate(adapter, revision, receipt)
+            retire_candidate(adapter, receipt)
         try:
             save()
         except Exception:
@@ -230,11 +236,8 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
         if isinstance(error, (KeyboardInterrupt, SystemExit)):
             raise
         raise RuntimeError(f"Release failed: {receipt['state']}; inspect the receipt and Cloud Run") from None
-    try:
-        adapter.remove_candidate()
-    except Exception as error:
-        receipt["cleanup_warning"] = f"Candidate tag cleanup failed: {describe_error(error)}; remove it manually"
-        save()
+    retire_candidate(adapter, receipt)
+    save()
     return receipt
 
 

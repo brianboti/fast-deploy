@@ -39,8 +39,8 @@ class Cloud:
     def remove_candidate(self):
         self.cleaned = True
 
-    def delete_revision(self, name):
-        self.deleted = getattr(self, "deleted", []) + [name]
+    def ready(self):
+        return not getattr(self, "broken", False)
 
 
 def test_success(tmp_path):
@@ -59,8 +59,8 @@ def test_health_failure_restores_exact_previous_split(tmp_path, checks):
         rollout(cloud, IMAGE, AppSpec(name="demo", reviewed=True), PLAN_ID, receipt)
     assert cloud.moves[-1] == {"demo-old-a": 60, "demo-old-b": 40}
     saved = json.loads(receipt.read_text())
-    assert saved["state"] == "traffic_restored" and "health check failed" in saved["error"] and saved["candidate_removed"] is True
-    assert cloud.cleaned and cloud.deleted == ["demo-r" + PLAN_ID[:16]]
+    assert saved["state"] == "traffic_restored" and "health check failed" in saved["error"] and saved["service_ready"] is True
+    assert cloud.cleaned
 
 
 def test_rollback_failure_reported_truthfully(tmp_path):
@@ -103,10 +103,12 @@ def test_candidate_tag_removal_is_judged_by_tag_presence():
 
 def test_failed_deploy_records_the_command_error(tmp_path):
     class Rejected(Cloud):
+        broken = True  # the failed candidate is now the newest revision, so the service reports not Ready
+
         def deploy(self, image, spec, suffix):
             raise subprocess.CalledProcessError(1, ["gcloud"], stderr="ERROR: (gcloud.run.deploy) The user-provided container failed the configured startup probe checks.")
     cloud = Rejected([])
     with pytest.raises(RuntimeError, match="traffic_restored"):
         rollout(cloud, IMAGE, AppSpec(name="demo", reviewed=True), PLAN_ID, tmp_path / "receipt.json")
     saved = json.loads((tmp_path / "receipt.json").read_text())
-    assert "startup probe" in saved["error"] and saved["candidate_removed"] is True
+    assert "startup probe" in saved["error"] and saved["service_ready"] is False and "previous revision" in saved["note"]

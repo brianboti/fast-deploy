@@ -118,7 +118,7 @@ def test_disappeared_runner_recovers_from_durable_checkpoint(tmp_path):
     assert journal.value["state"] == "promoting"
     assert cloud.current == {"demo-r" + PLAN_ID[:16]: 100}
     recovered = recover(cloud, journal, TARGET)
-    assert recovered["state"] == "recovered" and recovered["candidate_removed"] is True and cloud.deleted == ["demo-r" + PLAN_ID[:16]]
+    assert recovered["state"] == "recovered" and recovered["service_ready"] is True and cloud.cleaned
     assert cloud.current == {"demo-old-a": 60, "demo-old-b": 40}
     assert recover(cloud, journal, TARGET)["state"] == "no_recovery_needed"
 
