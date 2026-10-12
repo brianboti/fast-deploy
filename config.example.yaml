@@ -4,6 +4,12 @@ allowed_hosts:
   - "127.0.0.1:*"
   - "localhost:*"
 # Add the exact remote HTTPS host before using Claude Chat.
+# Browser sign-in for Claude's hosted connector: Claude opens https://HOST/login, you paste an operator token once, and it
+# receives short-lived tokens. public_url is the controller's https origin; list the same host in allowed_hosts.
+# oauth:
+#   public_url: https://deploy.example.edu
+#   access_token_seconds: 3600   # default; 300 to 86400
+#   refresh_token_days: 30       # default; 1 to 365
 # rate_limit_per_minute: 120      # requests per operator identity (default)
 # auth_failures_per_minute: 20    # failed logins per client address (default)
 applications:

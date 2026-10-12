@@ -11,11 +11,13 @@ from fastapi import FastAPI
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
+from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 from .config import load_config
 from .controller import Controller, Store
 from .github import GitHub
+from .oauth import PUBLIC_PATHS, Provider, mount
 
 identity = contextvars.ContextVar("identity")
 
@@ -60,14 +62,30 @@ class RateLimiter:
             return True, 0
 
 
-class Authenticate:
-    def __init__(self, app, config):
-        self.app, self.config = app, config
+class Limits:
+    """One set of budgets shared by the request gate and the OAuth sign-in page."""
+
+    def __init__(self, config):
         self.identities = RateLimiter(config.rate_limit_per_minute)
         self.failures = RateLimiter(config.auth_failures_per_minute)
+        self.public = RateLimiter(config.rate_limit_per_minute)  # OAuth endpoints reached before any token exists
+
+
+class Authenticate:
+    def __init__(self, app, config, limits=None, oauth=None):
+        self.app, self.config, self.oauth = app, config, oauth
+        self.limits = limits or Limits(config)
+        # RFC 9728: the challenge tells Claude where to find the authorization server when sign-in is enabled.
+        self.challenge = "Bearer" if oauth is None else f'Bearer resource_metadata="{oauth.metadata_url}"'
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope["path"] == "/healthz":
+            return await self.app(scope, receive, send)
+        client = (scope.get("client") or ("unknown", 0))[0]
+        if self.oauth is not None and (scope["path"] in PUBLIC_PATHS or scope["path"].startswith("/.well-known/")):
+            allowed, retry_after = self.limits.public.allow(client)
+            if not allowed:
+                return await JSONResponse({"error": "Too many requests"}, status_code=429, headers={"Retry-After": str(retry_after)})(scope, receive, send)
             return await self.app(scope, receive, send)
         headers = dict(scope["headers"])
         authorization = headers.get(b"authorization", b"").decode("latin1")
@@ -76,15 +94,16 @@ class Authenticate:
         token = token.strip() if scheme.lower() == "bearer" else ""
         digest = hashlib.sha256(token.encode()).hexdigest()
         principal = next((p for p in self.config.principals if token and hmac.compare_digest(digest, p.token_sha256)), None)
+        if principal is None and token and self.oauth is not None:
+            principal = await run_in_threadpool(self.oauth.authenticate, token)
         if principal is None:
             # Failed logins are budgeted per client address to slow token guessing; the proxy should limit as well.
-            client = (scope.get("client") or ("unknown", 0))[0]
-            allowed, retry_after = self.failures.allow(client)
+            allowed, retry_after = self.limits.failures.allow(client)
             if not allowed:
                 return await JSONResponse({"error": "Too many failed authentication attempts"}, status_code=429,
                                           headers={"Retry-After": str(retry_after)})(scope, receive, send)
-            return await JSONResponse({"error": "Authentication required"}, status_code=401, headers={"WWW-Authenticate": "Bearer"})(scope, receive, send)
-        allowed, retry_after = self.identities.allow(principal.name)
+            return await JSONResponse({"error": "Authentication required"}, status_code=401, headers={"WWW-Authenticate": self.challenge})(scope, receive, send)
+        allowed, retry_after = self.limits.identities.allow(principal.name)
         if not allowed:
             return await JSONResponse({"error": "Rate limit exceeded for this identity; retry later"}, status_code=429,
                                       headers={"Retry-After": str(retry_after)})(scope, receive, send)
@@ -96,7 +115,8 @@ class Authenticate:
 
 
 def build_app(config, github=None):
-    controller = Controller(config, github or GitHub(), Store(config.database))
+    store = Store(config.database)
+    controller = Controller(config, github or GitHub(), store)
     mcp = FastMCP("Lab Deploy", instructions=INSTRUCTIONS, stateless_http=True, json_response=True,
                   transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=config.allowed_hosts, allowed_origins=[]))
 
@@ -151,7 +171,9 @@ def build_app(config, github=None):
             yield
 
     app = FastAPI(title="Lab Deploy", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
-    app.add_middleware(Authenticate, config=config)
+    limits = Limits(config)
+    oauth = Provider(config, store) if config.oauth else None
+    app.add_middleware(Authenticate, config=config, limits=limits, oauth=oauth)
 
     @app.get("/healthz")
     def health():
@@ -189,6 +211,8 @@ def build_app(config, github=None):
     def status(plan_id: str):
         return controller.status(identity.get(), plan_id)
 
+    if oauth is not None:
+        mount(app, oauth, limits.failures)  # must precede the catch-all MCP mount
     app.mount("/", mcp.streamable_http_app())
     return app
 

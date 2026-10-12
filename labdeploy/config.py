@@ -1,5 +1,6 @@
 import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 import yaml
 from pydantic import Field, model_validator
@@ -37,9 +38,37 @@ class Principal(StrictModel):
     can_deploy: bool = False
 
 
+# Where Claude's hosted apps and Claude Code return after the browser sign-in. Loopback callbacks match on any port.
+CLAUDE_CALLBACK = "https://claude.ai/api/mcp/auth_callback"
+LOOPBACK_CALLBACKS = ("http://localhost/callback", "http://127.0.0.1/callback")
+
+
+class OAuth(StrictModel):
+    """Browser sign-in for Claude's hosted connector: the controller is its own OAuth 2.1 authorization server."""
+    public_url: str  # the controller's external origin, e.g. https://deploy.example.edu; the MCP resource is public_url + /mcp
+    redirect_uris: list[str] = Field(default_factory=lambda: [CLAUDE_CALLBACK, *LOOPBACK_CALLBACKS])
+    access_token_seconds: int = Field(default=3600, ge=300, le=86_400)
+    refresh_token_days: int = Field(default=30, ge=1, le=365)
+
+    @model_validator(mode="after")
+    def origin_only(self):
+        url = urlparse(self.public_url)
+        if url.scheme != "https" and url.hostname not in ("localhost", "127.0.0.1"):
+            raise ValueError("oauth.public_url must use https (http is accepted only for localhost)")
+        if not url.hostname or url.path not in ("", "/") or url.params or url.query or url.fragment:
+            raise ValueError("oauth.public_url must be the controller's origin only, such as https://deploy.example.edu")
+        self.public_url = self.public_url.rstrip("/")
+        for uri in self.redirect_uris:
+            parsed = urlparse(uri)
+            if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1")):
+                raise ValueError("oauth.redirect_uris must be https URLs or loopback http URLs")
+        return self
+
+
 class Config(StrictModel):
     applications: dict[str, Application]
     principals: list[Principal]
+    oauth: OAuth | None = None
     live_dispatch: bool = False
     database: str = "deployments.db"
     allowed_hosts: list[str] = Field(default_factory=lambda: ["127.0.0.1:*", "localhost:*", "testserver"])
@@ -60,6 +89,10 @@ class Config(StrictModel):
             # The MCP transport matches Host exactly or as "host:*"; a wildcard entry would silently match nothing.
             if not re.fullmatch(r"(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:(\d{1,5}|\*))?", host):
                 raise ValueError("allowed_hosts entries must be exact hostnames with an optional port or ':*'; wildcards are not supported")
+        if self.oauth is not None:
+            url = urlparse(self.oauth.public_url)
+            if url.netloc not in self.allowed_hosts and f"{url.hostname}:*" not in self.allowed_hosts:
+                raise ValueError(f"allowed_hosts must list the oauth public host ({url.netloc} or {url.hostname}:*) so the MCP transport accepts it")
         return self
 
 

@@ -141,7 +141,16 @@ Start locally first as described in README. For Claude Chat, host the controller
 - Give each operator a separate generated token and config principal. Do not use one shared team credential if you need individual attribution.
 - The controller budgets requests per identity (`rate_limit_per_minute`, default 120) and failed logins per client address (`auth_failures_per_minute`, default 20). Behind a proxy the client address is the proxy's, so keep a proxy-level limit as well.
 
-In Claude's custom remote connector settings, enter `https://YOUR_HOST/mcp`. Use the documented request-header credential option and configure `Authorization: Bearer <your-operator-token>` in the connector's credential settings, not in chat. This MVP implements fixed bearer authentication, not OAuth sign-in or dynamic client registration. If your organization's Claude policy requires OAuth, keep remote writes disabled until its identity provider is integrated.
+Enable the browser sign-in by adding the controller's public origin to the configuration and restarting:
+
+```yaml
+oauth:
+  public_url: https://YOUR_HOST
+```
+
+Then, in Claude (Customize > Connectors > Add custom connector), enter `https://YOUR_HOST/mcp`, choose **Sign in now** and **Register automatically**, and click **Connect**. The browser opens `https://YOUR_HOST/login`; paste your operator token there, never in chat. Claude keeps a one-hour access token and a thirty-day refresh token, both stored hashed in the controller's database. The sign-in page shows which client is asking and where it returns; only `https://claude.ai/api/mcp/auth_callback` and loopback callbacks (Claude Code) can register. Claude's fixed **Request headers** option (beta, limited organizations) also works when your organization has it: choose **No sign-in** and add `authorization` with the value `Bearer <your-operator-token>`.
+
+To end sessions, replace the operator's `token_sha256` and restart (every session signed in with that token ends), or call `POST /revoke` with the refresh token. Lower `oauth.access_token_seconds` or `oauth.refresh_token_days` to shorten lifetimes. Sign-in with the university identity provider is not implemented; the sign-in page is where it would plug in.
 
 Anthropic's connector permission prompts are additional user-interface controls. The server's identity/app allowlists and GitHub/GCP permissions enforce the actual access boundary.
 

@@ -21,6 +21,7 @@ A working first implementation of the lab deployment platform: Claude calls auth
 - Measured right-sizing: a weekly read-only workflow prices actual Cloud Monitoring usage, proposes memory, CPU, concurrency and warm-instance changes with estimated savings, and includes Google's own Cloud Run cost recommender. Claude reads the report with `get_cost_report`.
 - Infrastructure savings: Artifact Registry cleanup policies, checkpoint-bucket lifecycle rules, and an optional billing budget alert in Terraform.
 - Request budgets per operator identity and per client address for failed logins, as the MCP specification requires.
+- Browser sign-in for Claude chat: the controller is its own OAuth 2.1 authorization server (PKCE, dynamic client registration limited to Claude's callbacks, single-use codes, one-hour access tokens, rotating refresh tokens with reuse detection). The operator token is the only credential and is entered on the controller's own page, never in Claude.
 - Every tool declares a safety hint (read-only, creates a record, or changes cloud resources) and a structured output schema, so Claude's client can ask before risky calls.
 - Cloud Run gates traffic on an HTTP startup probe at the reviewed health path before the platform's own probes run.
 - Signed SLSA build provenance for every pushed image digest, verified before release, plus an Artifact Analysis vulnerability summary with optional release blocking.
@@ -83,9 +84,28 @@ export LAB_CONFIG=config.local.yaml
 uvicorn labdeploy.server:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
-`GET /healthz` is public. Every other request requires `Authorization: Bearer <operator-token>` and is rate limited per identity. The MCP endpoint is `/mcp`; REST endpoints are `GET /applications`, `GET /applications/{id}/cost`, `GET /applications/{id}/cost-report`, `POST /applications/{id}/plans`, `GET /plans`, `POST /plans/{id}/deploy`, and `GET /plans/{id}`.
+`GET /healthz` is public. Every other request requires `Authorization: Bearer <operator-token>` (or an access token from the browser sign-in below) and is rate limited per identity. The MCP endpoint is `/mcp`; REST endpoints are `GET /applications`, `GET /applications/{id}/cost`, `GET /applications/{id}/cost-report`, `POST /applications/{id}/plans`, `GET /plans`, `POST /plans/{id}/deploy`, and `GET /plans/{id}`.
 
 GitHub access is real even with dispatch disabled. No fake GitHub data is substituted by the running service. Automated tests use explicit fakes and HTTP mocks.
+
+## Connect Claude chat (browser sign-in)
+
+claude.ai adds remote MCP servers as custom connectors. Fixed request headers are a limited beta there, so the controller offers OAuth sign-in instead. Nothing leaves the controller: it is its own authorization server, and the sign-in page accepts only a configured operator token.
+
+1. Host the controller on a public HTTPS origin (see [docs/SETUP.md](docs/SETUP.md) section 5) and set, in `config.local.yaml`:
+
+```yaml
+oauth:
+  public_url: https://YOUR_HOST
+allowed_hosts:
+  - YOUR_HOST
+```
+
+2. Restart the controller. It now serves `/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-authorization-server`, `/register`, `/authorize`, `/token`, `/revoke` and the sign-in page `/login`.
+3. In Claude, add a custom connector with the URL `https://YOUR_HOST/mcp`, authentication **Sign in now**, OAuth client **Register automatically**. Click **Connect**: a browser tab opens the controller's sign-in page, you paste your operator token once, and Claude receives a one-hour access token plus a thirty-day refresh token.
+4. Rotate the operator token's hash in the configuration to end every session created with it; `POST /revoke` ends one session.
+
+Claude Code can use the same sign-in (`claude mcp add --transport http lab-deploy https://YOUR_HOST/mcp`, then `/mcp` to authenticate) or keep the bearer header shown below.
 
 ## Local demo (no GitHub, no cloud)
 
@@ -129,7 +149,7 @@ python -m labdeploy.cli cost examples/demo-app/platform.yaml --requests 100000 -
 
 Follow [docs/SETUP.md](docs/SETUP.md) for GitHub, GCP bootstrap, Claude remote connection, and the first release. Follow [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for ownership, trust boundaries, and known limitations. Official references read before implementation are in [docs/SOURCES.md](docs/SOURCES.md).
 
-Version 0.3.0 adds the 2026-practice hardening (rate limits, tool safety hints, startup probes, build provenance, image scanning, CI gates); 0.2.0 added the cost optimizer; 0.1.2 added the local demo mode, plan listing with audit events, and small hardening changes; 0.1.1 fixed the review findings. See [docs/CHANGES.md](docs/CHANGES.md) for details and upgrade steps. Existing configurations must add a cloud target, and both app workflow files must use the new pinned platform commit.
+Version 0.4.0 adds the browser sign-in for Claude chat; 0.3.0 added the 2026-practice hardening (rate limits, tool safety hints, startup probes, build provenance, image scanning, CI gates); 0.2.0 added the cost optimizer; 0.1.2 added the local demo mode, plan listing with audit events, and small hardening changes; 0.1.1 fixed the review findings. See [docs/CHANGES.md](docs/CHANGES.md) for details and upgrade steps. Existing configurations must add a cloud target, and both app workflow files must use the new pinned platform commit.
 
 You will need the target GitHub app repository, a repository for this platform code, a GCP staging project, billing enabled for that project, and authority to establish its initial IAM/WIF resources. Platform setup is performed once by an administrator; routine app releases use the restricted workflow identity.
 

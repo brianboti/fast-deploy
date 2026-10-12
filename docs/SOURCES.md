@@ -4,7 +4,9 @@ Read on 2026-10-12 UTC before implementation; check again when upgrading depende
 
 | Official source | What it informed |
 |---|---|
-| [Claude remote connectors](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp) | Hosted remote MCP, request-header credentials and individual access |
+| [Claude remote connectors](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp) | Hosted remote MCP, request-header credentials (beta) and individual access |
+| [Add a custom connector](https://claude.com/docs/connectors/custom/add-unlisted) | Connector dialog: sign-in options, request headers beta, callback URL |
+| [Authentication for connectors](https://claude.com/docs/connectors/building/authentication) | Claude's OAuth client requirements: 401 with resource metadata, DCR or CIMD, PKCE S256, callback URLs, refresh rules |
 | [Official MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) and [v1 docs](https://py.sdk.modelcontextprotocol.io/v1/) | FastMCP, Streamable HTTP, explicit v1 compatibility pin |
 | [MCP authorization specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization) | Distinguishing a full OAuth resource server from this pilot's fixed-header authentication |
 | [GitHub workflow dispatch API](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event) | Branch reference, typed inputs, Actions write permission and returned run identifiers |

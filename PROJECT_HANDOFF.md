@@ -265,7 +265,7 @@ The remote MCP endpoint is `/mcp`, using Streamable HTTP. REST routes are:
 - `GET /applications/{application}/cost` and `/cost-report`: cost bounds and the measured report.
 - `GET /plans/{plan_id}`: retrieve current status with audit events.
 
-Caller identity is established from the bearer token, not a tool argument. OAuth sign-in and automatic client registration are not implemented. The MCP SDK is deliberately pinned to `mcp==1.30.0`; do not upgrade across major versions without checking API compatibility and protocol tests.
+Caller identity is established from the bearer token, not a tool argument. With `oauth.public_url` set, the controller is also an OAuth 2.1 authorization server (`labdeploy/oauth.py`): Claude registers itself, the operator signs in at `/login` with an operator token, and the resulting access token is accepted by the same gate. The MCP SDK is deliberately pinned to `mcp==1.30.0`; do not upgrade across major versions without checking API compatibility and protocol tests.
 
 ## 9. Deployment lifecycle
 
@@ -355,7 +355,7 @@ The user named cost the most important part. After reading Google's Cloud Run pr
 
 ### Hardening against 2026 practice: 0.3.0
 
-A review against the MCP specification, OWASP's agentic and MCP lists, GitHub and OpenSSF hardening guidance, Google's Cloud Run guidance and the published release practices of Amazon, Google, Microsoft and Netflix found the design sound and five gaps. The release closed them: rate limiting per identity and per client address, tool safety hints with structured output, a Cloud Run startup probe, signed build provenance verified before release plus an image vulnerability summary with optional blocking, and repository hygiene (ruff, zizmor, pip-audit and Terraform validation in CI, Dependabot, CODEOWNERS, SECURITY.md, pre-commit, pin-consistency tests). The production milestone remains: metric-based canary with bake time, OAuth 2.1, Binary Authorization enforcement, streaming SQLite backup, telemetry and service objectives.
+A review against the MCP specification, OWASP's agentic and MCP lists, GitHub and OpenSSF hardening guidance, Google's Cloud Run guidance and the published release practices of Amazon, Google, Microsoft and Netflix found the design sound and five gaps. The release closed them: rate limiting per identity and per client address, tool safety hints with structured output, a Cloud Run startup probe, signed build provenance verified before release plus an image vulnerability summary with optional blocking, and repository hygiene (ruff, zizmor, pip-audit and Terraform validation in CI, Dependabot, CODEOWNERS, SECURITY.md, pre-commit, pin-consistency tests). The production milestone remains: metric-based canary with bake time, identity-provider sign-in, Binary Authorization enforcement, streaming SQLite backup, telemetry and service objectives.
 
 ### Live staging trial: 0.3.1
 
@@ -440,7 +440,7 @@ The practical next milestone is a verified GCP staging release and recovery exer
 ## 15. Features still planned
 
 - Hard spending caps (Google's budget spend caps are Preview) and automatic application of accepted right-sizing proposals.
-- Production release safety: metric-based canary with bake time, OAuth 2.1 for the tool endpoint, Binary Authorization enforcement, streaming SQLite backup, OpenTelemetry and service objectives.
+- Production release safety: metric-based canary with bake time, identity-provider sign-in for the tool endpoint, Binary Authorization enforcement, streaming SQLite backup, OpenTelemetry and service objectives.
 - AWS deployment adapter.
 - Production deployment policies and approval integration.
 - Managed database provisioning and migration strategy.
