@@ -1,6 +1,6 @@
 # Lab Deploy — Project Context and LLM Handoff
 
-**Project version:** 0.9.2 (0.1.1 reviewed and extended through 0.3.1, the Claude chat sign-in in 0.4.0, and the six roadmap phases 0.4.1 to 0.9.2, all on October 11 and 12, 2026 America/Chicago)  
+**Project version:** 1.0.0 (0.1.1 reviewed and extended through 0.3.1, the Claude chat sign-in in 0.4.0, the roadmap phases 0.4.1 to 0.9.5, and the infrastructure pipeline of Phase 6 in 1.0.0, all on October 11 and 12, 2026 America/Chicago)  
 **Handoff date:** October 12, 2026 (America/Chicago), the evening the roadmap shipped  
 **Source:** github.com/brianboti/lab-deploy (public); demo app github.com/brianboti/lab-demo-app; staging project `lab-deploy-staging-f29a`  
 **Status:** Live-tested on Google Cloud staging and operated from Claude chat by one operator. On 2026-10-12 it released, rolled back, cancelled, redeployed, auto-deployed and right-sized a demo app in a disposable staging project, and read the service's live health and logs (docs/VALIDATION.md).
@@ -177,6 +177,8 @@ Paths below are relative to the extracted `lab-deploy/` project root.
 | `labdeploy/rightsize.py` | Applies accepted right-sizing values to `platform.yaml` in place |
 | `labdeploy/cloud.py` | Read-only observer: token (metadata server or gcloud impersonation), Cloud Run service view, metrics, logs |
 | `labdeploy/scheduler.py` | In-process background jobs: auto-deploy tick, daily watchdog, nightly backup |
+| `labdeploy/infra.py` | Renders an application's Terraform root, checks a plan against the platform's policies, summarises it, publishes outputs |
+| `.github/workflows/infra-plan.yml`, `infra-apply.yml` | The infrastructure pipeline: plan on pull request with a read-only identity, apply on merge from the `infra` environment |
 | `.github/workflows/controller-watch.yml` | Half-hourly ping of the controller's public health address when `CONTROLLER_HEALTH_URL` is set |
 | `docs/ROADMAP.md` | The six-phase plan (0.4.1 to 0.9.0) with its operator decisions; every phase shipped except the always-on machine |
 | `tests/conftest.py` | Shared fixtures and the explicit GitHub fake |
@@ -185,7 +187,7 @@ Paths below are relative to the extracted `lab-deploy/` project root.
 | `templates/recover-gcp.yml` | Independent recovery workflow template |
 | `templates/rightsize-gcp.yml` | Weekly read-only right-sizing workflow template |
 | `.github/workflows/ci.yml` | Tests for the platform itself |
-| `infra/gcp/` | Terraform root with `modules/project` (shared: identities, spending cap, budget, billing dataset, roles) and `modules/service` (per app: service, registry, trust, alerts, dashboard, grants); `moved.tf` migrated the pre-0.7.0 flat layout |
+| `infra/gcp/` | `project/` is the foundation root (operator-applied); `apps/<service>/` are generated application roots (pipeline-applied); `modules/project` and `modules/service` hold the resources |
 | `config.example.yaml` | Example operator registration and exact cloud target |
 | `schema/platform.schema.json` | Generated application configuration schema |
 | `examples/demo-app/` | Small FastAPI app, Dockerfile, configuration and test |
@@ -254,6 +256,7 @@ These are illustrative identifiers, not configured resources. Replace every valu
 | `analyze_repository(application)` | Inspect known files at the branch's current commit; return evidence and a draft configuration |
 | `propose_configuration(application)` | Draft onboarding pull request when configuration is absent; never merges |
 | `update_app_workflows(application, platform_commit)` | Regenerate the app's three workflow files against a platform commit and open a pull request |
+| `propose_infrastructure(application)` | Render the app's Terraform root and open a pull request on the platform repository; the pipeline applies it on merge |
 | `create_deployment_plan(application, cloud, environment, commit_sha)` | Validate committed configuration and pin an expiring plan to the tip of main or an older commit on main |
 | `deploy_staging(plan_id)` | Dispatch the approved workflow when permissions, pin, pause, policy and ceiling checks pass |
 | `deploy_latest(application)` | Plan the tip of main and dispatch it in one call |
@@ -389,7 +392,7 @@ Three read-only reviews (general gaps; versioning and redeploys; monitoring and 
 
 ## 12. Validation evidence and limitations
 
-The last local run reported **195 platform tests passed**, with ruff and zizmor clean; the platform CI on GitHub (tests, ruff, zizmor, pip-audit, Terraform validation in the official container) passes for every commit on main.
+The last local run reported **213 platform tests passed**, with ruff and zizmor clean; the platform CI on GitHub (tests, ruff, zizmor, pip-audit, Terraform validation in the official container) passes for every commit on main.
 
 Live evidence, all on 2026-10-12 against the real GitHub and Google Cloud APIs and recorded in `docs/VALIDATION.md`: the staging trial (release, unhealthy candidate with traffic restoration, manual and automatic recovery, graceful and hard cancellation, right-sizing report); the 0.5.0 to 0.6.2 exercise (healthy release with phases, tags and labels, traffic rollback in 70 s, deploy of an older commit, image reuse, cancel, a commit that fails its tests, a candidate that crashes only in Cloud Run); 0.7.1 and 0.8.0 (the living cost-report issue, environment values and timeout on the revision); and the 0.9.0 exercise (unattended auto-deploy, in-process watchdog and backup, the controller watch, live health and logs through the observer identity).
 
@@ -426,7 +429,7 @@ The detailed setup, workflow-render commands and migration instructions are in `
 
 ## 14. Immediate next steps
 
-1. Re-run `~/.local/share/lab-deploy/apply-staging-alerts.sh` (operator only): it creates the spending-cap workflow and trigger, the alert policies, uptime check, dashboard and the remaining grants. Then restart the controller so it runs 0.9.2.
+1. Run `~/.local/share/lab-deploy/migrate-state.sh` once (splits the staging state into the foundation and per-app states), then `apply-staging-alerts.sh` (now the foundation root: adds the pipeline identities). Set the three `INFRA_*` variables and the `infra` environment on the platform repository; merge the rendered `infra/gcp/apps/lab-demo` root so the pipeline applies it. Restart the controller for 1.0.0 and regenerate the demo app's workflows (runner code changed).
 2. Enable Cloud Billing export to the `billing_export` dataset in the console and set the `BILLING_EXPORT_TABLE` variable on the app repository, so the weekly report shows actual spend.
 3. Optionally add a `NOTIFY_WEBHOOK_URL` secret to the app repository and `notify_webhook_url` to the controller configuration, and verify one delivery.
 4. Onboard the first real lab application: its repository needs a root Dockerfile, requirements files, tests and a health endpoint; `propose_configuration` and `update_app_workflows` open the pull requests; one Terraform apply adds its service; one `applications` entry and a controller restart finish it.

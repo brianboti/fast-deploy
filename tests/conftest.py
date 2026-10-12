@@ -29,6 +29,15 @@ class FakeGitHub:
     def head(self, app):
         return self.sha
 
+    def repository_ids(self, repository):
+        return {"repository_id": "123", "owner_id": "45"}
+
+    platform_prs = []
+
+    def open_platform_pull_request(self, repository, base_branch, branch, files, title, body, message):
+        self.platform_prs.append({"repository": repository, "base": base_branch, "branch": branch, "files": dict(files), "title": title})
+        return {"number": 7, "url": f"https://github.com/{repository}/pull/7", "branch": branch, "changed": sorted(files)}
+
     def commit(self, app, ref=None):
         sha = ref if ref and len(ref) == 40 else self.sha
         return {"sha": sha, "message": "Fix the login bug", "author": "Alice", "date": "2026-10-12T10:00:00Z", "url": "https://github.com/lab/demo/commit/" + sha}

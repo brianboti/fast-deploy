@@ -101,7 +101,8 @@ class CloudRun:
             for key, value in labels.items():
                 if not re.fullmatch(r"[a-z][a-z0-9_-]{0,62}", key) or not re.fullmatch(r"[a-z0-9_-]{0,63}", value):
                     raise ValueError("Revision labels must be lowercase letters, digits, dashes or underscores")
-            extra.append("--labels=" + ",".join(f"{key}={value}" for key, value in sorted(labels.items())))
+            # --update-labels merges, so the service keeps the labels Terraform set (lab-deploy-managed, lab-deploy-app)
+            extra.append("--update-labels=" + ",".join(f"{key}={value}" for key, value in sorted(labels.items())))
         # The reviewed spec is the whole truth for configuration: values not in it are removed from the revision.
         if spec.env:
             env_file = Path("revision-env.yaml")

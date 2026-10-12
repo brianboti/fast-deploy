@@ -1,3 +1,24 @@
+# 1.0.0: infrastructure as pull requests (Phase 6, item 6.3)
+
+## Added
+
+1. **One Terraform root per application.** `infra/gcp/project` is the foundation root (APIs, observer and pipeline identities, cost controls, alert channels, spending cap), applied by the operator and rarely changed. Each application gets `infra/gcp/apps/<service>`, three generated files with every input written out, its own state (`apps/<service>/<environment>`), and the project-wide values read from the foundation's state. `lab-deploy infra render APP` writes a root from the controller configuration, the app's reviewed `platform.yaml` and GitHub's immutable ids; the new tool `propose_infrastructure` renders it and opens the pull request on the platform repository.
+2. **The pipeline.** `infra-plan.yml` plans every root a pull request touches with a read-only identity, checks the plan against the platform's policies and posts one comment per application, updated in place. `infra-apply.yml` applies on merge with a write identity from the protected `infra` environment, checks the policy again right before applying, and publishes the outputs to the application's GitHub environment when the `APP_REPOS_TOKEN` secret exists (otherwise it prints them to copy). Both stay dormant until the three `INFRA_*` repository variables are set from the foundation root's `pipeline` output. `workflow_dispatch` applies named roots by hand.
+3. **Policies** (`labdeploy/infra.py`, tested, standard library only): no service account keys, no owner or editor grants, no destruction of resources that hold data, nothing outside the allowed region, no public database addresses, every managed resource labelled `lab-deploy-app`, and no touching of the platform's own identities from an application root.
+4. **Managed labels.** Services, registries and recovery buckets carry `lab-deploy-managed` and `lab-deploy-app`; releases merge their revision labels in with `--update-labels` instead of replacing them. The spending-cap workflow now discovers the services to close by label, so adding an application no longer needs a foundation re-apply.
+5. **Pipeline identities** in the foundation root: a Workload Identity pool for the platform repository, a plan identity (viewer, security reviewer, state reader) and an apply identity whose roles are listed in `pipeline.tf`; the apply identity is only reachable from the `infra` GitHub environment.
+
+## Changed
+
+- The single root (`infra/gcp/main.tf`, `variables.tf`, `outputs.tf`, `moved.tf`) is gone; `services` is no longer a variable. `~/.local/share/lab-deploy/migrate-state.sh` splits an existing state into the two new ones once, without touching the cloud, and the operator's apply script now applies the foundation root.
+- `lab-deploy decommission` tells the operator to run `terraform destroy` in the app's root; the pipeline never destroys.
+
+## Upgrade steps
+
+1. Run the state migration once, then apply the foundation root (it adds the pipeline identities and the cap's list permission).
+2. Set `INFRA_WIF_PROVIDER`, `INFRA_PLAN_SERVICE_ACCOUNT` and `INFRA_APPLY_SERVICE_ACCOUNT` on the platform repository and create the `infra` environment restricted to `main`; optionally add `APP_REPOS_TOKEN`.
+3. Merge the rendered root of each existing application; the pipeline applies the label changes. Runner code changed (`--update-labels`), so regenerate the app workflows and raise `platform.minimum_commit`.
+
 # 0.9.5: clean plans
 
 ## Fixed

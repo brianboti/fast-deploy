@@ -1,6 +1,9 @@
 # One application: its identities, registry, Cloud Run service, GitHub trust, recovery bucket and runtime alerts.
 locals {
   service_filter = "resource.type=\"cloud_run_revision\" AND resource.label.service_name=\"${var.service}\""
+  # Marks what the platform manages: the spending cap closes services with lab-deploy-managed, and the billing export
+  # groups cost by lab-deploy-app.
+  labels = { lab-deploy-managed = "true", lab-deploy-app = var.service }
 }
 
 resource "google_service_account" "runtime" {
@@ -17,6 +20,7 @@ resource "google_artifact_registry_repository" "images" {
   location      = var.region
   repository_id = var.service
   format        = "DOCKER"
+  labels        = local.labels
   # Cost control: old images are pure storage cost because releases pin digests and never redeploy old tags.
   # KEEP wins over DELETE, so the newest versions always survive as rollback targets. Dry run logs instead of deleting.
   cleanup_policy_dry_run = var.registry_cleanup_dry_run
@@ -142,6 +146,7 @@ resource "google_cloud_run_v2_service" "app" {
   location            = var.region
   deletion_protection = true
   ingress             = "INGRESS_TRAFFIC_ALL"
+  labels              = local.labels # releases merge their own labels in (--update-labels), so these survive
   template {
     service_account = google_service_account.runtime.email
     scaling {
@@ -208,6 +213,7 @@ resource "google_service_account_iam_member" "federation" {
 resource "google_storage_bucket" "recovery" {
   name                        = "${var.project_id}-${var.service}-recovery"
   location                    = var.region
+  labels                      = local.labels
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"
   force_destroy               = false

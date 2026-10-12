@@ -63,41 +63,51 @@ Obtain numeric GitHub owner and repository IDs from GitHub's repository API. Nam
 
 Provide an approved, working bootstrap HTTP image, pinned as `...@sha256:...`. It must listen on 8080 and be pullable by the Cloud Run service agent. For example, build the included demo app and push it to a reviewed registry using an administrator's normal bootstrap procedure. The bootstrap service establishes a rollback target before the first automated release. The platform intentionally does not auto-pick an arbitrary public bootstrap image.
 
-Create `infra/gcp/terraform.tfvars` locally:
+Terraform is split into a **foundation root** (`infra/gcp/project`: APIs, identities, cost controls, alert channels, the spending cap) that the operator applies, and **one root per application** (`infra/gcp/apps/<service>`) that `lab-deploy infra render` generates and the pipeline applies (section 7f). Create `infra/gcp/project/terraform.tfvars` locally:
 
 ```hcl
-project_id           = "YOUR_STAGING_PROJECT"
-region               = "us-central1"
-service              = "lab-demo"
-github_repository    = "YOUR_ORG/YOUR_APP"
-github_repository_id = "NUMERIC_REPOSITORY_ID"
-github_owner_id      = "NUMERIC_OWNER_ID"
-bootstrap_image      = "APPROVED_IMAGE@sha256:REAL_DIGEST"
+project_id = "YOUR_STAGING_PROJECT"
+region     = "us-central1"
 
-# Optional cost controls; see section 7.
-# monthly_budget_usd       = 50
-# billing_account          = "XXXXXX-XXXXXX-XXXXXX"
-# budget_alert_email       = "lab-admin@example.edu"
-# registry_cleanup_dry_run = false
+# Optional cost controls and alerts; see section 7.
+# monthly_budget_usd     = 50
+# billing_account        = "XXXXXX-XXXXXX-XXXXXX"
+# budget_alert_email     = "lab-admin@example.edu"
+# alert_email            = "lab-admin@example.edu"
+# billing_export_dataset = "billing_export"
+# observer_impersonators = ["user:you@example.edu"]
+
+# The infrastructure pipeline (section 7f); omit until the platform repository exists on GitHub.
+# pipeline = { platform_repository = "YOUR_ORG/lab-deploy", platform_repository_id = "NUMERIC_ID", platform_owner_id = "NUMERIC_OWNER_ID" }
 ```
 
 Then, using your administrator login:
 
 ```bash
 gcloud auth application-default login
-cd infra/gcp
-terraform init -backend-config="bucket=YOUR_STATE_BUCKET" -backend-config="prefix=lab-demo/staging"
-terraform plan -out=bootstrap.tfplan
-terraform show bootstrap.tfplan
-terraform apply bootstrap.tfplan
+cd infra/gcp/project
+terraform init -backend-config="bucket=YOUR_STATE_BUCKET" -backend-config="prefix=project/staging"
+terraform plan -out=foundation.tfplan
+terraform show foundation.tfplan
+terraform apply foundation.tfplan
+terraform output pipeline
+```
+
+The first application's root comes from the controller configuration (its `applications` entry with the `target` block) and GitHub's numeric ids, which the renderer fetches:
+
+```bash
+python -m labdeploy.cli infra render YOUR_APP --write --bootstrap-image "APPROVED_IMAGE@sha256:REAL_DIGEST"
+cd infra/gcp/apps/YOUR_SERVICE
+terraform init
+terraform plan -out=app.tfplan && terraform apply app.tfplan
 terraform output -json github_environment_variables
 ```
 
-Inspect the concrete plan before applying. It creates billable resources; no apply was run while developing this archive. Keep `.terraform.lock.hcl` in Git. Never grant the MCP server GCP administrator access.
+Commit the generated root. From then on the pipeline plans and applies it on every pull request that touches it; the operator only needs `terraform` locally for the foundation. Inspect every plan before applying. It creates billable resources. Keep `.terraform.lock.hcl` in Git. Never grant the MCP server GCP administrator access.
 
 Terraform owns the foundation and IAM. The workflow owns the Cloud Run revision template and traffic after bootstrap. `ignore_changes` makes that ownership explicit; change workload settings through reviewed app config. Database schemas and data are outside this release's rollback contract.
 
-Copy the Terraform output values into **GitHub Settings → Environments → staging → Environment variables**:
+The pipeline publishes the application root's outputs to **GitHub Settings → Environments → staging → Environment variables** when the `APP_REPOS_TOKEN` secret exists (section 7f); otherwise copy them by hand:
 
 | Variable | Purpose |
 |---|---|
@@ -210,21 +220,12 @@ printf '%s' 'the new value' | gcloud secrets versions add lab-demo-API_KEY --dat
 
 ## 7c. Terraform layout for several applications
 
-`infra/gcp` is a root module with one `project` module and one `service` module per application. `terraform.tfvars` lists the applications in the `services` map, keyed by Cloud Run service name:
+Two kinds of root, each with its own state in the same bucket:
 
-```hcl
-services = {
-  "lab-demo" = {
-    github_repository    = "YOUR_ORG/YOUR_APP"
-    github_repository_id = "NUMERIC_REPOSITORY_ID"
-    github_owner_id      = "NUMERIC_OWNER_ID"
-    bootstrap_image      = "us-docker.pkg.dev/cloudrun/container/hello@sha256:..."
-    health_path          = "/health"
-  }
-}
-```
+- `infra/gcp/project` (state prefix `project/<environment>`): everything applications share, through `modules/project`. Applied by the operator with `~/.local/share/lab-deploy/apply-staging-alerts.sh` or the commands in section 3. Its outputs (project number, alert channels, the tag-manager role, the cap and observer identities, the billing dataset) are read by every application root through `terraform_remote_state`.
+- `infra/gcp/apps/<service>` (state prefix `apps/<service>/<environment>`): one application, through `modules/service`. Generated by `python -m labdeploy.cli infra render APP --write` or the `propose_infrastructure` tool, with every input written out as a literal so a reviewer sees exactly what will exist. Applied by the pipeline (section 7f). Google's guidance is one directory per application and a few dozen resources per state; a failing resource for one application then never blocks another.
 
-Project-wide settings (budget, spending cap, alert channels, scanning, billing export) are plain variables. A state written by versions before 0.7.0 migrates in place through `moved.tf`; the file names the pilot's `lab-demo` service, so add equivalent blocks for other names before upgrading such a state, and delete the file after the first apply.
+A state written by versions up to 0.9.x holds both kinds in one object. Run `~/.local/share/lab-deploy/migrate-state.sh` once: it pulls the old state, splits it locally, pushes the two new states and leaves the old object as a backup. Nothing in the cloud changes; the next plans show only what 1.0.0 adds (the pipeline identities and the managed labels).
 
 ## 7. Cost controls and right-sizing
 
@@ -239,7 +240,22 @@ Project-wide settings (budget, spending cap, alert channels, scanning, billing e
 
 ## 7d. Retire an application
 
-`python -m labdeploy.cli decommission APP` prints the ordered checklist with the app's own names: pause it, warn its owners, delete the service, empty and delete the recovery bucket, delete the images and secrets, remove the entry from the Terraform `services` map and apply, remove it from the controller configuration, and disable its workflows and credential access. Plans stay in the database as history.
+`python -m labdeploy.cli decommission APP` prints the ordered checklist with the app's own names: pause it, warn its owners, delete the service, empty and delete the recovery bucket, delete the images and secrets, run `terraform destroy` in the app's root as the operator and delete the root directory in a pull request (the pipeline never destroys), remove it from the controller configuration, and disable its workflows and credential access. Plans stay in the database as history.
+
+## 7f. Infrastructure as pull requests
+
+Every change to an application's infrastructure is a pull request on the platform repository: the controller or the operator renders the root, the **Infrastructure plan** workflow posts what an apply would do, a human merges, and the **Infrastructure apply** workflow applies exactly that. Nobody runs `terraform apply` for applications by hand once this is set up.
+
+Set it up once:
+
+1. Add the `pipeline` block to the foundation's `terraform.tfvars` (the platform repository's name and numeric ids, from `gh api repos/OWNER/lab-deploy`) and apply the foundation. `terraform output pipeline` prints the Workload Identity provider and the two identities: `lab-deploy-infra-plan` (viewer, security reviewer, state reader) and `lab-deploy-infra-apply` (the roles listed in `infra/gcp/modules/project/pipeline.tf`; it can change the project's IAM, which is why it is only reachable from the protected environment).
+2. On the platform repository, set the repository variables `INFRA_WIF_PROVIDER`, `INFRA_PLAN_SERVICE_ACCOUNT` and `INFRA_APPLY_SERVICE_ACCOUNT` from that output. Both workflows stay dormant until they exist.
+3. Create the GitHub environment `infra` and restrict its deployment branches to `main`; add required reviewers only if merging alone should not be enough to apply.
+4. Optionally add the secret `APP_REPOS_TOKEN`: a fine-grained token with **Variables: read and write** on the application repositories. With it, the apply job writes the eight outputs into each application's `staging` environment; without it, the job prints them for the operator to copy.
+
+How a change flows: `python -m labdeploy.cli infra render APP --pull-request` (or Claude's `propose_infrastructure`) opens the pull request; the plan job runs with the read-only identity and `-lock=false`, checks the plan with `python -m labdeploy.infra check` and posts one comment per application that it updates on every push; merging runs the apply job from the `infra` environment, which plans again with the lock, refuses any plan the policy rejects, applies, and publishes the outputs. Policies: no service account keys, no owner or editor grants, no destruction of resources that hold data (buckets, databases, datasets, secrets, registries), nothing outside `us-central1`, no public database addresses, the `lab-deploy-app` label on every managed resource, and no changes to the platform's own identities from an application root. A change to `modules/service` plans and applies every root. `workflow_dispatch` on the apply workflow applies named roots by hand, for example after the foundation first exists.
+
+Retiring an application is the one case the pipeline does not handle: the operator runs `terraform destroy` in the root (section 7d) and removes the directory in a pull request.
 
 ## 8. Provenance, scanning and dependency updates
 

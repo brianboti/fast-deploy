@@ -1,5 +1,6 @@
-# Spending cap: runs on every budget notification; closes ingress on the platform's services once the budget line is
-# crossed, and optionally detaches billing at a higher line. Reopen with: gcloud run services update SERVICE --ingress=all
+# Spending cap: runs on every budget notification. Once the budget line is crossed it closes ingress on every Cloud Run
+# service in the region that carries the label lab-deploy-managed=true (set by the service module), and optionally
+# detaches billing at a higher line. Reopen with: gcloud run services update SERVICE --ingress=all
 main:
   params: [event]
   steps:
@@ -9,29 +10,43 @@ main:
           - exceeded: ${default(map.get(message, "alertThresholdExceeded"), 0)}
           - cost: ${default(map.get(message, "costAmount"), 0)}
           - budget: ${default(map.get(message, "budgetAmount"), 0)}
-          - services: ${text.split("__SERVICES__", ",")}
+          - closed: []
     - below_cap:
         switch:
           - condition: ${exceeded < __THRESHOLD__}
             next: report_below
+    - list_services:
+        call: http.get
+        args:
+          url: '${"https://run.googleapis.com/v2/projects/__PROJECT__/locations/__REGION__/services"}'
+          auth:
+            type: OAuth2
+        result: listing
     - close_ingress:
         for:
           value: service
-          in: ${services}
+          in: ${default(map.get(listing.body, "services"), [])}
           steps:
+            - managed_only:
+                switch:
+                  - condition: ${default(map.get(default(map.get(service, "labels"), {}), "lab-deploy-managed"), "") != "true"}
+                    next: continue
             - patch:
                 call: http.patch
                 args:
-                  url: '${"https://run.googleapis.com/v2/projects/__PROJECT__/locations/__REGION__/services/" + service + "?updateMask=ingress"}'
+                  url: '${"https://run.googleapis.com/v2/" + service.name + "?updateMask=ingress"}'
                   auth:
                     type: OAuth2
                   body:
                     ingress: INGRESS_TRAFFIC_INTERNAL_ONLY
+            - remember:
+                assign:
+                  - closed: ${list.concat(closed, service.name)}
     - log_closed:
         call: sys.log
         args:
           severity: WARNING
-          text: '${"Lab Deploy spending cap: budget line crossed (" + string(cost) + " of " + string(budget) + ", threshold " + string(exceeded) + "); ingress closed on __SERVICES__. Reopen with gcloud run services update SERVICE --ingress=all"}'
+          text: '${"Lab Deploy spending cap: budget line crossed (" + string(cost) + " of " + string(budget) + ", threshold " + string(exceeded) + "); ingress closed on " + string(len(closed)) + " managed services " + json.encode_to_string(closed) + ". Reopen with gcloud run services update SERVICE --ingress=all"}'
     - maybe_detach:
         switch:
           - condition: ${"__DETACH__" == "true" and exceeded >= __DETACH_THRESHOLD__}
@@ -50,6 +65,6 @@ main:
                     severity: CRITICAL
                     text: '${"Lab Deploy spending cap: billing detached from the project at " + string(exceeded) + " of the budget"}'
     - done:
-        return: '${"cap enforced at threshold " + string(exceeded)}'
+        return: '${"cap enforced at threshold " + string(exceeded) + " on " + string(len(closed)) + " services"}'
     - report_below:
         return: '${"below cap: threshold " + string(exceeded) + " of budget " + string(budget)}'

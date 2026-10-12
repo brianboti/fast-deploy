@@ -115,7 +115,6 @@ def test_cap_workflow_renders_to_valid_yaml_with_complete_expressions():
     # inside an unquoted ${...} reads as a nested YAML key. Render the file the way Terraform does and parse it.
     source = Path("infra/gcp/modules/project/cap-workflow.yaml").read_text()
     placeholders = {
-        "__SERVICES__": "lab-demo,other",
         "__THRESHOLD__": "1.0",
         "__PROJECT__": "proj",
         "__REGION__": "us-central1",
@@ -144,5 +143,6 @@ def test_cap_workflow_renders_to_valid_yaml_with_complete_expressions():
     for text in expressions:
         assert text.startswith("${") and text.endswith("}") and text.count("{") == text.count("}"), text
     steps = [next(iter(step)) for step in document["main"]["steps"]]
-    assert steps == ["decode", "below_cap", "close_ingress", "log_closed", "maybe_detach", "done", "report_below"]
-    assert "ingress closed on lab-demo,other" in document["main"]["steps"][3]["log_closed"]["args"]["text"]
+    assert steps == ["decode", "below_cap", "list_services", "close_ingress", "log_closed", "maybe_detach", "done", "report_below"]
+    # Services are discovered by label at run time rather than baked in, so adding an app needs no re-apply.
+    assert "lab-deploy-managed" in rendered and "__" not in document["main"]["steps"][2]["list_services"]["args"]["url"]

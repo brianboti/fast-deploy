@@ -134,7 +134,7 @@ Cost effect: machine within the free tier; a reserved external address is about 
 
 ## Phase 6: everything an app needs (about eleven days) → versions 1.0 to 1.3
 
-Status: researched on 2026-10-12 after the operator restated the goal: "the whole process of build and deploy fully automatic; any service the app needs, the platform should provide". Nothing in this phase is implemented. Today an application is exactly one Cloud Run service; anything else is refused on purpose.
+Status: researched on 2026-10-12 after the operator restated the goal: "the whole process of build and deploy fully automatic; any service the app needs, the platform should provide". Item 6.3, the pipeline, shipped the same night as version 1.0.0 (one root per application, plan on pull request, apply on merge, policies, published outputs); the staging state migration and the first pipeline apply await the operator. Items 6.1, 6.2 and 6.4 to 6.8 are not started; today an application is still exactly one Cloud Run service.
 
 ### What the research says
 

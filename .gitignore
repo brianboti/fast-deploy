@@ -13,3 +13,7 @@ terraform.tfvars
 config.local.yaml
 
 .ruff_cache/
+
+# Pipeline artefacts inside application roots
+infra/gcp/**/plan.json
+infra/gcp/**/outputs.json

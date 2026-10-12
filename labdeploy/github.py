@@ -5,6 +5,7 @@ import io
 import json
 import os
 import time
+import types
 import zipfile
 from pathlib import Path
 from urllib.parse import quote
@@ -220,6 +221,15 @@ class GitHub:
         if data.get("size", 0) > 65_536:
             raise ValueError("Repository input exceeds 64 KiB")
         return {"sha": data.get("sha"), "text": base64.b64decode(data["content"], validate=False).decode("utf-8")}
+
+    def repository_ids(self, repository):
+        """The immutable numeric ids GitHub's OIDC tokens carry; Workload Identity Federation trusts these, not names."""
+        data = self.request("GET", f"/repos/{repository}").json()
+        return {"repository_id": str(data["id"]), "owner_id": str(data["owner"]["id"])}
+
+    def open_platform_pull_request(self, repository, base_branch, branch, files, title, body, message):
+        """A pull request on the platform repository itself (infrastructure roots), with the same no-merge rules."""
+        return self.open_pull_request(types.SimpleNamespace(repository=repository, branch=base_branch), branch, files, title, body, message)
 
     def branch_head(self, repository, branch="main"):
         return self.request("GET", f"/repos/{repository}/commits/{quote(branch, safe='')}").json()["sha"]

@@ -104,7 +104,7 @@ def test_decommission_checklist_names_the_apps_resources():
     steps = decommission_steps("demo", config.applications["demo"])
     text = "\n".join(steps)
     assert steps[0].startswith("Pause it") and "gcloud run services delete demo" in text and "gs://test-project-demo-recovery" in text
-    assert "terraform.tfvars" in text and "lab/demo" in text and len(steps) == 9
+    assert "terraform destroy" in text and "lab/demo" in text and len(steps) == 9
 
 
 def test_deploy_workflow_reads_the_test_policy_and_prefers_lock_files():

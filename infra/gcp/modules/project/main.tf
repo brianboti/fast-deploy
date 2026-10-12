@@ -1,10 +1,10 @@
 # Project-wide pieces shared by every application: APIs, scanning, the budget and its spending cap, notification
 # channels, the registry tag role, and the billing export dataset. One instance per project.
 locals {
-  cap_enabled   = var.spending_cap.enabled && var.monthly_budget_usd > 0 && length(var.services) > 0
+  cap_enabled   = var.spending_cap.enabled && var.monthly_budget_usd > 0
   budget_topics = local.cap_enabled ? [google_pubsub_topic.budget[0].id] : []
-  cap_workflow = replace(replace(replace(replace(replace(replace(file("${path.module}/cap-workflow.yaml"),
-    "__SERVICES__", join(",", var.services)),
+  # The workflow discovers the services to close by their lab-deploy-managed label, so adding an app needs no re-apply here.
+  cap_workflow = replace(replace(replace(replace(replace(file("${path.module}/cap-workflow.yaml"),
     "__THRESHOLD__", tostring(var.spending_cap.threshold)),
     "__PROJECT__", var.project_id),
     "__REGION__", var.region),
@@ -125,7 +125,7 @@ resource "google_service_account" "cap" {
   depends_on   = [google_project_service.apis]
 }
 resource "google_project_iam_member" "cap_roles" {
-  for_each = local.cap_enabled ? toset(concat(["roles/workflows.invoker", "roles/eventarc.eventReceiver", "roles/logging.logWriter"], var.spending_cap.detach_billing ? ["roles/billing.projectManager"] : [])) : toset([])
+  for_each = local.cap_enabled ? toset(concat(["roles/workflows.invoker", "roles/eventarc.eventReceiver", "roles/logging.logWriter", "roles/run.viewer"], var.spending_cap.detach_billing ? ["roles/billing.projectManager"] : [])) : toset([])
   project  = var.project_id
   role     = each.value
   member   = "serviceAccount:${google_service_account.cap[0].email}"

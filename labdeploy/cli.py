@@ -50,6 +50,21 @@ def build_parser():
     u.add_argument("--all", action="store_true", help="every registered application")
     u.add_argument("--app", action="append", default=[], help="one application id (repeatable)")
     u.add_argument("--platform-commit", default=None, help="full platform commit SHA (default: platform.commit, else the platform branch tip)")
+    i = commands.add_parser("infra", help="infrastructure as pull requests: render an app's Terraform root, check or summarise a plan")
+    infra = i.add_subparsers(dest="infra_command", required=True)
+    r = infra.add_parser("render", help="render infra/gcp/apps/SERVICE for one registered application from the configuration, its reviewed spec and GitHub's ids")
+    r.add_argument("app")
+    r.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
+    r.add_argument("--write", action="store_true", help="write the files under --root instead of printing them")
+    r.add_argument("--root", type=Path, default=Path("infra/gcp/apps"), help="directory that holds one subdirectory per application root")
+    r.add_argument("--pull-request", action="store_true", help="open the pull request on the platform repository instead")
+    r.add_argument("--state-bucket", default=None, help="GCS bucket of the Terraform states (default: PROJECT-tfstate)")
+    r.add_argument("--bootstrap-image", default=None, help="image the service starts with before its first release (default: Google's sample, pinned)")
+    k = infra.add_parser("check", help="check a `terraform show -json` plan against the platform's policies; exit status 2 on violations")
+    k.add_argument("plan", type=Path)
+    m = infra.add_parser("summary", help="the pull request comment for a `terraform show -json` plan")
+    m.add_argument("plan", type=Path)
+    m.add_argument("--app", default="app")
     return parser
 
 
@@ -63,7 +78,8 @@ def decommission_steps(app_id, app):
         f"Empty and delete the recovery bucket: gcloud storage rm -r gs://{t.recovery_bucket}/** && gcloud storage buckets delete gs://{t.recovery_bucket}",
         f"Delete the images: gcloud artifacts repositories delete {t.registry} --location {t.region} --project {t.project_id}",
         f"Delete its secrets, if any: gcloud secrets list --filter='name:{t.service}-' --project {t.project_id}",
-        f"Remove the \"{t.service}\" entry from the services map in infra/gcp/terraform.tfvars and apply; Terraform drops the identities, trust and alerts it still owns.",
+        f"As the operator, run `terraform destroy` in infra/gcp/apps/{t.service} (the pipeline never destroys), then delete that directory in a pull request; "
+        "Terraform drops the identities, trust and alerts it still owns.",
         f"Remove applications.{app_id} from the controller configuration; its plans stay in the database as history.",
         f"In {app.repository}: disable or delete the three workflows and the staging environment, and revoke the platform credential's access to the repository.",
     ]
@@ -178,6 +194,38 @@ def run(parser, args):
             parser.error(f"Unknown application: {args.app}")
         for number, step in enumerate(decommission_steps(args.app, config.applications[args.app]), 1):
             print(f"{number}. {step}")
+    elif args.command == "infra":
+        from .infra import main as infra_main
+        if args.infra_command == "check":
+            sys.exit(infra_main(["check", str(args.plan)]))
+        if args.infra_command == "summary":
+            sys.exit(infra_main(["summary", str(args.plan), args.app]))
+        import os
+
+        from .config import Principal, load_config
+        from .controller import Controller, Store
+        from .github import GitHub
+        config = load_config(args.config or os.environ.get("LAB_CONFIG", "config.local.yaml"))
+        if args.app not in config.applications:
+            parser.error(f"Unknown application: {args.app}")
+        operator = Principal(name="operator-cli", token_sha256="0" * 64, applications=sorted(config.applications), can_deploy=True)
+        controller = Controller(config, GitHub(), Store(config.database))
+        options = {"state_bucket": args.state_bucket, "bootstrap_image": args.bootstrap_image}
+        if args.pull_request:
+            print(json.dumps(controller.propose_infrastructure(operator, args.app, allow_writes=True, **options), indent=2))
+        else:
+            rendered = controller.render_infrastructure(operator, args.app, **options)
+            if rendered["note"]:
+                print(f"Note: {rendered['note']}", file=sys.stderr)
+            if args.write:
+                directory = args.root / rendered["service"]
+                directory.mkdir(parents=True, exist_ok=True)
+                for name, text in rendered["files"].items():
+                    (directory / name).write_text(text)  # generated files are replaced on purpose; the sources are elsewhere
+                    print(directory / name)
+            else:
+                for name, text in rendered["files"].items():
+                    print(f"# ---- {rendered['directory']}/{name}\n{text}")
     elif args.command == "update-workflows":
         import os
 

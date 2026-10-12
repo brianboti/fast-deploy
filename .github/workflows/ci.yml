@@ -35,9 +35,11 @@ jobs:
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: 1.13.5
-      - name: Validate infrastructure
+      - name: Validate every infrastructure root (the foundation and one per application)
         working-directory: infra/gcp
         run: |
-          terraform fmt -check -diff
-          terraform init -backend=false -input=false
-          terraform validate
+          terraform fmt -check -diff -recursive
+          for root in project apps/*/; do
+            echo "== $root"
+            (cd "$root" && terraform init -backend=false -input=false && terraform validate)
+          done

@@ -10,6 +10,7 @@ from .analyzer import FILES, analyze
 from .config import Principal
 from .cost import estimate, findings
 from .github import explain
+from .infra import BOOTSTRAP_IMAGE, app_root
 from .models import enforce, parse_spec, spec_hash
 from .rightsize import SETTINGS, apply_settings
 from .status import TERMINAL, advice, release_phases, summarize
@@ -493,6 +494,38 @@ class Controller:
                 raise ValueError(f"templates/{name} does not exist at platform commit {sha[:12]}")
             files[f".github/workflows/{name}"] = render(template["text"], platform.repository, sha)
         return {"application": app_id, "platform_commit": sha, "current_pin": current, "pull_request": self.github.update_workflows(app, sha, files)}
+
+    def render_infrastructure(self, principal, app_id, state_bucket=None, bootstrap_image=None, settings=None):
+        """The app's Terraform root as the pipeline will plan it: literal inputs from the configuration, the reviewed spec and GitHub's ids."""
+        app = self.app(principal, app_id, write=True)
+        target = app.target
+        ids = self.github.repository_ids(app.repository)
+        note = None
+        try:
+            health_path = self.spec_at(app, self.github.head(app)).health_path
+        except ValueError as exc:
+            health_path, note = "/health", f"Defaults used until the app has a reviewed platform.yaml: {exc}"
+        files = app_root(target.service, project_id=target.project_id, region=target.region, state_bucket=state_bucket or f"{target.project_id}-tfstate",
+                         github_repository=app.repository, github_repository_id=ids["repository_id"], github_owner_id=ids["owner_id"],
+                         bootstrap_image=bootstrap_image or BOOTSTRAP_IMAGE, health_path=health_path, settings=settings)
+        return {"application": app_id, "service": target.service, "directory": f"infra/gcp/apps/{target.service}", "files": files, "note": note}
+
+    def propose_infrastructure(self, principal, app_id, allow_writes=False, **render):
+        """Open the pull request that adds or updates the app's root on the platform repository; the pipeline does the rest."""
+        platform = self.config.platform
+        if platform is None:
+            raise ValueError("Set platform.repository in the controller configuration before proposing infrastructure")
+        if not allow_writes and not self.config.live_dispatch:
+            raise ValueError("Writes are disabled (live_dispatch: false); enable them, or run `lab-deploy infra render` on the controller host")
+        rendered = self.render_infrastructure(principal, app_id, **render)
+        paths = {f"{rendered['directory']}/{name}": text for name, text in rendered["files"].items()}
+        body = (f"Terraform root for `{rendered['service']}` rendered by the controller from the configuration, the app's reviewed "
+                "platform.yaml and GitHub's immutable ids.\n\nThe infrastructure plan workflow posts what an apply would do; "
+                "merging applies exactly that with the pipeline identity and publishes the outputs to the app's GitHub environment. "
+                "Nothing is applied by this pull request itself.")
+        pull_request = self.github.open_platform_pull_request(platform.repository, platform.branch, f"lab-deploy/infra-{rendered['service']}", paths,
+                                                              f"Infrastructure for {rendered['service']}", body, f"Render the infrastructure root for {rendered['service']}")
+        return {"application": app_id, "service": rendered["service"], "files": sorted(paths), "pull_request": pull_request, "note": rendered["note"]}
 
     def applications(self, principal):
         """Registered apps this identity may see, each with the live release this controller recorded and what main holds beyond it."""

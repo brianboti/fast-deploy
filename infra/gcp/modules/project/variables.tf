@@ -1,9 +1,19 @@
 variable "project_id" { type = string }
 variable "project_number" { type = string }
 variable "region" { type = string }
-variable "services" {
-  type        = list(string)
-  description = "Service names the spending cap closes when the budget line is crossed."
+variable "state_bucket" {
+  type        = string
+  description = "GCS bucket that holds this project's Terraform states; the pipeline identities get read or write access to it."
+}
+variable "pipeline" {
+  type = object({
+    platform_repository    = string
+    platform_repository_id = string
+    platform_owner_id      = string
+    environment            = optional(string, "infra")
+  })
+  default     = null
+  description = "The platform repository allowed to plan and apply application roots through Workload Identity Federation; null creates no pipeline identities."
 }
 variable "image_vulnerability_scanning" { type = bool }
 variable "billing_account" { type = string }

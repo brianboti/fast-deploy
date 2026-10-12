@@ -235,6 +235,12 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
         """Regenerate the app's three workflow files against the platform's current (or given) commit and open a pull request. Never merges."""
         return controller.update_workflows(identity.get(), application, platform_commit)
 
+    @mcp.tool(title="Propose infrastructure (pull request)", annotations=CREATES_RECORD, structured_output=True)
+    @plain_errors
+    def propose_infrastructure(application: str) -> dict[str, Any]:
+        """Render the app's Terraform root (service, registry, identities, trust, alerts) and open a pull request on the platform repository; the pipeline applies it on merge. Never merges."""
+        return controller.propose_infrastructure(identity.get(), application)
+
     @mcp.tool(title="Deploy to staging", annotations=CHANGES_CLOUD, structured_output=True)
     @plain_errors
     def deploy_staging(plan_id: str) -> dict[str, Any]:

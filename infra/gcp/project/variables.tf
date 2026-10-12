@@ -9,26 +9,10 @@ variable "region" {
     error_message = "MVP policy allows us-central1 only."
   }
 }
-variable "services" {
-  description = "One entry per application, keyed by its Cloud Run service name (3 to 21 lowercase characters)."
-  type = map(object({
-    github_repository        = string
-    github_repository_id     = string
-    github_owner_id          = string
-    bootstrap_image          = string
-    health_path              = optional(string, "/health")
-    image_versions_to_keep   = optional(number, 10)
-    image_retention_days     = optional(number, 180)
-    registry_cleanup_dry_run = optional(bool, true)
-    runtime_alerts           = optional(bool, true)
-    error_alert_count        = optional(number, 5)
-    latency_alert_ms         = optional(number, 2000)
-    instance_alert_count     = optional(number, 3)
-  }))
-  validation {
-    condition     = alltrue([for name in keys(var.services) : can(regex("^[a-z][a-z0-9-]{2,20}$", name))])
-    error_message = "Service names must be lowercase, 3 to 21 characters, letters, digits and dashes."
-  }
+variable "state_bucket" {
+  type        = string
+  default     = ""
+  description = "GCS bucket holding every Terraform state of this project; empty means <project_id>-tfstate, the bootstrap convention."
 }
 
 # Project-wide cost controls
@@ -53,7 +37,7 @@ variable "budget_alert_email" {
   description = "Optional email address for budget threshold notifications in addition to billing administrators."
 }
 variable "spending_cap" {
-  description = "At `threshold` of the budget the cap workflow closes ingress on every service here; with detach_billing it also detaches billing at detach_threshold. Reopen a service with: gcloud run services update SERVICE --ingress=all"
+  description = "At `threshold` of the budget the cap workflow closes ingress on every managed service; with detach_billing it also detaches billing at detach_threshold. Reopen a service with: gcloud run services update SERVICE --ingress=all"
   type = object({
     enabled          = optional(bool, true)
     threshold        = optional(number, 1.0)
@@ -85,4 +69,17 @@ variable "alert_webhook_url" {
   default     = ""
   sensitive   = true
   description = "Optional Slack or Discord incoming webhook URL for runtime alerts; empty disables the webhook channel."
+}
+
+# The infrastructure pipeline: GitHub Actions in the platform repository plans every application root on a pull request
+# with a read-only identity and applies it on merge with a write identity (docs/SETUP.md 7f). null disables it.
+variable "pipeline" {
+  type = object({
+    platform_repository    = string
+    platform_repository_id = string
+    platform_owner_id      = string
+    environment            = optional(string, "infra")
+  })
+  default     = null
+  description = "The platform repository (owner/name with its numeric repository and owner ids) whose Actions may plan and apply application roots, and the GitHub environment that applies."
 }

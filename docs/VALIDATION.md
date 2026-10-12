@@ -146,6 +146,10 @@ Not performed: a notification delivery (no webhook secret), a scheduled controll
 
 Platform tests: 195 passed; ruff and zizmor clean.
 
+## Rehearsal of the 1.0.0 state migration (2026-10-12, read-only)
+
+Version 1.0.0 splits the staging state into a foundation state and one state per application. Before asking the operator to run the migration, it was rehearsed on a pulled copy: the 54-resource state was split locally into 35 foundation resources and 35 for the demo application, and each new root was planned against its split state through a local backend override, with the demo root reading a hand-written copy of the foundation's outputs. Foundation: 20 to add (the pipeline's pool, provider, two identities and their grants; the cap's list permission), 1 to change (the cap workflow now discovers services by label), 0 to destroy. Demo application: 0 to add, 3 to change (the managed labels on the service, registry and recovery bucket), 0 to destroy. The rehearsal found that moving a module inside one state file with an explicit output path makes Terraform write the source last and lose the move; the migration script was corrected before anyone ran it. Platform tests: 213 passed; ruff and zizmor clean; both roots validate.
+
 ## Live staging trial (2026-10-12)
 
 Environment: a new Google Cloud project `lab-deploy-staging-f29a` linked to billing with a USD 20 monthly budget alert; the platform repository `brianboti/lab-deploy` and the application repository `brianboti/lab-demo-app`, both public; Terraform 1.13.5 in the official container with the pinned Google provider 7.46.1 and a versioned GCS state bucket; a GitHub `staging` environment restricted to `main` holding the eight Terraform outputs; and the controller on a workstation with a fine-grained token (Contents read, Actions write) and `live_dispatch: true`. Every step below ran against the real GitHub and Google Cloud APIs. Google's public Cloud Run sample image, pinned by digest, served as the bootstrap image.
