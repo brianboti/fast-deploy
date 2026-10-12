@@ -86,7 +86,7 @@ def test_tools_declare_safety_hints_and_structured_output(tmp_path):
 def test_deploy_template_attests_verifies_and_scans_before_release():
     workflow = yaml.safe_load(Path("templates/deploy-gcp.yml").read_text())
     deploy = workflow["jobs"]["deploy"]
-    assert deploy["permissions"] == {"contents": "read", "id-token": "write", "attestations": "write", "deployments": "write"}
+    assert deploy["permissions"] == {"contents": "read", "id-token": "write", "attestations": "write"}
     names = [step.get("name") for step in deploy["steps"]]
     wanted = ["Push image and resolve immutable digest", "Attest build provenance", "Verify build provenance",
               "Summarize image vulnerabilities", "Deploy, probe, promote; restore traffic on failure"]

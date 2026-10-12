@@ -169,10 +169,21 @@ The release creates a candidate revision, probes its tagged URL with an audience
 
 - **Status in Claude** shows every workflow step with timing, the release phases from the receipt, the candidate's last log lines when it fails, the recovery run that followed, and a next action. Ask for `get_deployment_status` with `wait_seconds: 45` to wait for a change instead of asking repeatedly.
 - **Notifications**: add a repository secret `NOTIFY_WEBHOOK_URL` holding a Slack or Discord incoming webhook. The deploy, recovery and right-sizing workflows post their outcome; without the secret they stay silent. Turn on GitHub's own failed-workflow emails as well.
-- **GitHub Deployments**: every release appears on its commit and under the repository's Environments as in progress, then success or failure with the service URL.
+- **GitHub Deployments**: every release appears on its commit and under the repository's Environments, with the service URL, from the record GitHub keeps for the deploy job's environment.
 - **Runtime alerts** (Terraform, `runtime_alerts = true` by default): an uptime check that signs in to the service, alerts for the health check, 5xx responses, p95 latency, instances at maximum, memory above 80% and error lines in the log, and a dashboard (`dashboard_url` output). Set `alert_email`, optionally `alert_webhook_url`, and `health_path` if it differs from `/health`. The uptime check runs as the Monitoring service agent `service-PROJECT_NUMBER@gcp-sa-monitoring-notification.iam.gserviceaccount.com`; in a project where it does not exist yet, run `gcloud beta services identity create --service=monitoring.googleapis.com` once before `terraform apply`.
 - **Audit trail**: `list_events` (or `GET /events`) lists every tool and REST call, sign-in, throttled burst, client registration, token reuse and revocation with identity, client address, outcome and duration. `log_file` in the configuration adds a rotating controller log.
 - **Serving images are protected**: the release job tags each serving revision's image `serving-<revision>` and the registry cleanup keeps those tags, so a rollback target never loses its image. The weekly right-sizing job reconciles the tags.
+
+## 7b. Steer after a release
+
+- **Roll back**: ask Claude for `rollback_staging`. Traffic returns to the split that served before the live release through the recovery workflow, in seconds, with no build. The runner refuses if traffic has moved since or the checkpoint belongs to another release; deploy the wanted commit instead in that case.
+- **Cancel**: `cancel_deployment` with the plan id. The recovery workflow restores traffic if the release had started changing it.
+- **Deploy an older commit**: `create_deployment_plan` with `commit_sha`. Only commits already on `main` are accepted, checked by the controller and again by the workflow. A commit released before is redeployed from its attested image without a rebuild.
+- **What is waiting on main**: `compare_with_live` lists the commits and files since the live release, the kinds of change, and the cost bounds before and after when `platform.yaml` changed. `deploy_latest` plans and dispatches in one call.
+- **Pause**: set `paused: true` on the configuration (everything) or on one application; the controller re-reads the file within the next request, refuses new plans and dispatches, and keeps answering reads. Remove the line to resume. `get_controller_status` reports a configuration file it could not load.
+- **Sessions**: `python -m labdeploy.cli sessions` lists Claude's sign-in sessions; `--revoke-all` or `--revoke ID` ends them.
+- **Platform pins**: `list_applications` shows which platform commit each app's workflows pin. Set `platform.minimum_commit` to refuse dispatch for apps on older pins until `update_app_workflows` regenerates them.
+- **Drift**: the weekly cost report compares the live Cloud Run settings with the reviewed `platform.yaml` and names any difference.
 
 ## 7. Cost controls and right-sizing
 

@@ -19,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 from . import __version__
-from .config import load_config
+from .config import LiveConfig, load_config
 from .controller import Controller, Store
 from .cost import PRICING
 from .github import GitHub, explain
@@ -142,6 +142,9 @@ class Authenticate:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope["path"] == "/healthz":
             return await self.app(scope, receive, send)
+        refresh = getattr(self.config, "refresh", None)
+        if callable(refresh):
+            refresh()  # a changed configuration file applies to this request; an invalid one is ignored and reported
         client = (scope.get("client") or ("unknown", 0))[0]
         address = client_address.set(client)
         try:
@@ -184,7 +187,8 @@ class Authenticate:
             identity.reset(ctx)
 
 
-def build_app(config, github=None):
+def build_app(config, github=None, config_path=None):
+    config = config if isinstance(config, LiveConfig) else LiveConfig(config, config_path)
     store = Store(config.database)
     adapter = github or GitHub()
     controller = Controller(config, adapter, store)
@@ -212,9 +216,9 @@ def build_app(config, github=None):
 
     @mcp.tool(title="Create deployment plan", annotations=CREATES_RECORD, structured_output=True)
     @plain_errors
-    def create_deployment_plan(application: str, cloud: str = "gcp", environment: str = "staging") -> dict[str, Any]:
-        """Validate committed platform.yaml and pin an expiring plan to a Git commit."""
-        return controller.plan(identity.get(), application, cloud, environment)
+    def create_deployment_plan(application: str, cloud: str = "gcp", environment: str = "staging", commit_sha: str | None = None) -> dict[str, Any]:
+        """Validate committed platform.yaml and pin an expiring plan to a Git commit: the tip of main, or any older commit already on main (commit_sha)."""
+        return controller.plan(identity.get(), application, cloud, environment, commit_sha)
 
     @mcp.tool(title="Propose configuration (draft PR)", annotations=CREATES_RECORD, structured_output=True)
     @plain_errors
@@ -233,6 +237,30 @@ def build_app(config, github=None):
     def deploy_staging(plan_id: str) -> dict[str, Any]:
         """Dispatch the approved workflow for an existing plan. Changes cloud resources when enabled."""
         return controller.deploy(identity.get(), plan_id)
+
+    @mcp.tool(title="Deploy the latest commit", annotations=CHANGES_CLOUD, structured_output=True)
+    @plain_errors
+    def deploy_latest(application: str) -> dict[str, Any]:
+        """Plan the tip of main and dispatch it in one call when every policy passes. Changes cloud resources when enabled."""
+        return controller.deploy_latest(identity.get(), application)
+
+    @mcp.tool(title="Roll back to the previous revision", annotations=CHANGES_CLOUD, structured_output=True)
+    @plain_errors
+    def rollback_staging(application: str) -> dict[str, Any]:
+        """Move traffic back to the split that served before the live release, in seconds and without a build. Changes cloud resources."""
+        return controller.rollback(identity.get(), application)
+
+    @mcp.tool(title="Cancel a running deployment", annotations=CHANGES_CLOUD, structured_output=True)
+    @plain_errors
+    def cancel_deployment(plan_id: str) -> dict[str, Any]:
+        """Cancel the GitHub run of a dispatched plan. The recovery workflow restores traffic if the release had started changing it."""
+        return controller.cancel(identity.get(), plan_id)
+
+    @mcp.tool(title="Compare main with the live release", annotations=READ_ONLY, structured_output=True)
+    @plain_errors
+    def compare_with_live(application: str) -> dict[str, Any]:
+        """Commits and files on main since the live release, what kinds of change they are, and the cost bounds before and after."""
+        return controller.compare_with_live(identity.get(), application)
 
     @mcp.tool(title="Get deployment status", annotations=READ_ONLY, structured_output=True)
     @plain_errors
@@ -271,7 +299,9 @@ def build_app(config, github=None):
         """Controller version, dispatch and sign-in switches, registered apps, GitHub credential expiry, and pricing freshness."""
         status = getattr(adapter, "credential_status", None)
         credential = status() if callable(status) else {"kind": "unknown", "expires_at": None, "days_left": None, "warning": None}
-        return {"version": __version__, "live_dispatch": config.live_dispatch, "oauth_sign_in": config.oauth is not None,
+        return {"version": __version__, "live_dispatch": config.live_dispatch, "oauth_sign_in": config.oauth is not None, "paused": config.paused,
+                "paused_applications": sorted(k for k, a in config.applications.items() if a.paused),
+                "configuration": {"path": getattr(config, "path", None), "reloaded_at": getattr(config, "reloaded_at", None), "error": getattr(config, "error", None)},
                 "applications": sorted(config.applications), "github_credential": credential,
                 "pricing_verified": PRICING["verified"], "started_at": datetime.datetime.fromtimestamp(started, datetime.UTC).isoformat(timespec="seconds"),
                 "uptime_seconds": int(time.time() - started)}
@@ -346,10 +376,11 @@ def build_app(config, github=None):
 
 
 def create_app():
-    config = load_config(os.environ.get("LAB_CONFIG", "config.local.yaml"))
+    path = os.environ.get("LAB_CONFIG", "config.local.yaml")
+    config = load_config(path)
     if config.log_file:
         attach_log_file(config.log_file)
-    app = build_app(config)
+    app = build_app(config, config_path=path)
     try:
         credential = GitHub().credential_status()
     except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as exc:

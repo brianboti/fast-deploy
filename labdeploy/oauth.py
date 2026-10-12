@@ -140,6 +140,18 @@ class OAuthStore:
         with self.connect() as db:
             db.execute("UPDATE oauth_tokens SET revoked=1 WHERE family=?", (family,))
 
+    def sessions(self):
+        """One row per sign-in session (token family): who, which client, when issued, when the refresh token expires, revoked or live."""
+        with self.connect() as db:
+            rows = db.execute("SELECT family, client_id, MIN(expires), MAX(expires), MAX(revoked), payload FROM oauth_tokens GROUP BY family ORDER BY MIN(rowid) DESC").fetchall()
+            names = {row[0]: json.loads(row[1]).get("client_name") for row in db.execute("SELECT id, payload FROM oauth_clients").fetchall()}
+        result = []
+        for family, client_id, _, refresh_expires, revoked, payload in rows:
+            subject = json.loads(payload).get("subject")
+            result.append({"session": family, "identity": subject, "client": names.get(client_id) or client_id, "refresh_expires": refresh_expires,
+                           "state": "revoked" if revoked else ("expired" if refresh_expires < time.time() else "live")})
+        return result
+
     def prune(self, now):
         with self.connect() as db:
             db.execute("DELETE FROM oauth_logins WHERE expires < ?", (now,))

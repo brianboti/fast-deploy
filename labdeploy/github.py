@@ -107,12 +107,26 @@ class GitHub:
         return {"sha": data["sha"], "message": message[0][:200] if message else "", "author": (details.get("author") or {}).get("name"),
                 "date": (details.get("author") or {}).get("date"), "url": data.get("html_url")}
 
-    def compare(self, app, base_sha):
-        """Commits on the branch since base_sha: how far main has moved past the live release."""
-        data = self.request("GET", f"/repos/{app.repository}/compare/{base_sha}...{quote(app.branch, safe='')}").json()
+    def compare(self, app, base_sha, head=None):
+        """Commits and files between base_sha and the branch (or another ref): how far main has moved past the live release."""
+        return self.compare_repository(app.repository, base_sha, head or app.branch)
+
+    def compare_repository(self, repository, base, head):
+        data = self.request("GET", f"/repos/{repository}/compare/{base}...{quote(head, safe='')}").json()
         commits = [{"sha": c.get("sha"), "message": ((c.get("commit") or {}).get("message") or "").strip().splitlines()[0][:200] if c.get("commit") else ""}
                    for c in data.get("commits", [])]
-        return {"status": data.get("status"), "ahead_by": data.get("ahead_by", 0), "behind_by": data.get("behind_by", 0), "commits": commits[-10:]}
+        files = [{"path": f.get("filename"), "status": f.get("status"), "additions": f.get("additions"), "deletions": f.get("deletions")}
+                 for f in data.get("files", [])][:50]
+        return {"status": data.get("status"), "ahead_by": data.get("ahead_by", 0), "behind_by": data.get("behind_by", 0), "commits": commits[-10:], "files": files}
+
+    def cancel_run(self, app, run_id):
+        """Ask GitHub to cancel a run; the recovery workflow handles whatever the runner had started."""
+        self.request("POST", f"/repos/{app.repository}/actions/runs/{int(run_id)}/cancel")
+        return {"cancel_requested": True, "workflow_run_id": int(run_id)}
+
+    def dispatch_workflow(self, app, workflow, inputs):
+        response = self.request("POST", f"/repos/{app.repository}/actions/workflows/{workflow}/dispatches", json={"ref": app.branch, "inputs": inputs})
+        return response.json() if response.content else {}
 
     def artifact_json(self, app, run_id, name, filenames, limit=1_048_576):
         """Parsed JSON files from one named artifact of a run, or None when the run has no such artifact."""
@@ -236,11 +250,10 @@ class GitHub:
         return {"number": response.json()["number"], "url": response.json()["html_url"], "branch": branch, "changed": changed}
 
     def dispatch(self, app, plan):
-        response = self.request("POST", f"/repos/{app.repository}/actions/workflows/{app.workflow}/dispatches", json={
-            "ref": app.branch,
-            "inputs": {"commit_sha": plan["sha"], "spec_hash": plan["spec_hash"], "plan_id": plan["id"],
-                       "target_json": json.dumps(plan["target"], sort_keys=True)},
-        })
+        inputs = {"commit_sha": plan["sha"], "spec_hash": plan["spec_hash"], "plan_id": plan["id"], "target_json": json.dumps(plan["target"], sort_keys=True)}
+        if plan.get("reuse_image"):
+            inputs["image_digest"] = plan["reuse_image"]
+        response = self.request("POST", f"/repos/{app.repository}/actions/workflows/{app.workflow}/dispatches", json={"ref": app.branch, "inputs": inputs})
         # Current API returns 200 with run ID; older deployments may still return 204.
         return response.json() if response.content else {}
 
@@ -267,14 +280,18 @@ class GitHub:
     def status(self, app, plan):
         result = plan.get("dispatch_result", {})
         run_id = result.get("workflow_run_id")
+        rollback = plan.get("kind") == "rollback"
+        title = f"rollback-{plan['from_plan']}" if rollback else f"deploy-{plan['id']}"
+        workflow = "recover-gcp.yml" if rollback else app.workflow
         if run_id:
             run = self.request("GET", f"/repos/{app.repository}/actions/runs/{int(run_id)}").json()
         else:
-            runs = self.request("GET", f"/repos/{app.repository}/actions/workflows/{app.workflow}/runs", params={"event": "workflow_dispatch", "per_page": 100}).json()["workflow_runs"]
-            run = next((r for r in runs if r.get("display_title") == f"deploy-{plan['id']}"), None)
+            runs = self.request("GET", f"/repos/{app.repository}/actions/workflows/{workflow}/runs", params={"event": "workflow_dispatch", "per_page": 100}).json()["workflow_runs"]
+            run = next((r for r in runs if r.get("display_title") == title), None)
         if run is None:
             return {"status": "not_visible_yet", "note": "Do not redispatch; inspect GitHub Actions if this persists."}
-        if run.get("head_sha") != plan["sha"] or run.get("display_title") != f"deploy-{plan['id']}":
+        # A rollback runs the recovery workflow on the branch tip, so only its title identifies it.
+        if (not rollback and run.get("head_sha") != plan["sha"]) or run.get("display_title") != title:
             # Observed live: for a second or two after dispatch the run exists but its title and commit are not
             # populated yet. Only a run that has started or finished must prove its identity.
             if run_id and run.get("status") in {None, "", "requested", "queued", "pending", "waiting"}:

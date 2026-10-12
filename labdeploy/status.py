@@ -49,11 +49,17 @@ def failed_step(items):
     return next(({"job": item["job"], "step": item["step"]} for item in items if item["conclusion"] in {"failure", "timed_out"}), None)
 
 
-def summarize(workflow, prior):
+def summarize(workflow, prior, kind=None):
     state = workflow.get("status")
     if state == "not_visible_yet":
         return {"state": "awaiting_workflow", "checks": prior, "timeline": [], "failed_step": None}
     terminal = state == "completed"
+    if kind == "rollback":
+        conclusion = workflow.get("conclusion")
+        items = timeline(workflow)
+        result = ({"success": "succeeded", "failure": "failed", "cancelled": "cancelled", "timed_out": "timed_out"}.get(conclusion, "completed_unverified")
+                  if terminal else ("running" if state == "in_progress" else "queued"))
+        return {"state": result, "checks": {}, "timeline": items, "failed_step": failed_step(items), "recovery": "not_requested"}
     checks = dict(prior)
     for name, (job_name, step_name) in CHECKS.items():
         job = next((j for j in workflow.get("jobs", []) if j.get("name") == job_name), None)
@@ -94,6 +100,15 @@ def advice(plan):
     """One plain sentence on what to do next, derived from the state, the failed step, the receipt and any recovery run."""
     state = plan.get("state")
     receipt = plan.get("receipt") or {}
+    if plan.get("kind") == "rollback":
+        if state == "succeeded" and receipt.get("state") == "rolled_back":
+            return f"Traffic is back on {receipt.get('restored_traffic')}; revision {receipt.get('rolled_back_from')} no longer serves. Deploy a fixed commit when ready."
+        if state == "succeeded":
+            return f"The rollback run finished but reports '{receipt.get('state', 'no receipt')}'; confirm the traffic split in Cloud Run."
+        if state in {"failed", "cancelled", "timed_out"}:
+            return "The rollback run did not complete; traffic was not changed. Open the run log, then retry or deploy the wanted commit."
+        if state in {"dispatched", "queued", "running", "awaiting_workflow"}:
+            return "The rollback is running; traffic moves back within about a minute. Ask again shortly."
     recovery = plan.get("recovery_run") or {}
     recovered = f" The recovery run that followed concluded '{recovery.get('conclusion')}'" + (f": {recovery['receipt'].get('state')}." if recovery.get("receipt") else ".") if recovery else ""
     if state == "planned":

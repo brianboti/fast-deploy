@@ -35,6 +35,10 @@ def build_parser():
     s = commands.add_parser("sync-pins", help="copy the action commit pins from the platform CI workflow into the templates")
     s.add_argument("--ci", type=Path, default=Path(".github/workflows/ci.yml"))
     s.add_argument("--templates", type=Path, default=Path("templates"))
+    se = commands.add_parser("sessions", help="list or end Claude sign-in sessions (OAuth token families) in the controller database")
+    se.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
+    se.add_argument("--revoke", action="append", default=[], metavar="SESSION", help="end one session by its id (repeatable)")
+    se.add_argument("--revoke-all", action="store_true", help="end every session; Claude must sign in again")
     u = commands.add_parser("update-workflows", help="open pull requests that pin registered apps' workflows to a platform commit")
     u.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
     u.add_argument("--all", action="store_true", help="every registered application")
@@ -114,6 +118,26 @@ def run(parser, args):
     elif args.command == "sync-pins":
         changed = sync_pins(args.ci, args.templates)
         print("\n".join(changed) if changed else "Templates already match the CI pins")
+    elif args.command == "sessions":
+        import datetime
+        import os
+
+        from .config import load_config
+        from .controller import Store
+        from .oauth import OAuthStore
+        config = load_config(args.config or os.environ.get("LAB_CONFIG", "config.local.yaml"))
+        store = OAuthStore(Store(config.database))
+        sessions = store.sessions()
+        targets = [s["session"] for s in sessions if s["state"] == "live"] if args.revoke_all else args.revoke
+        for family in targets:
+            store.revoke_family(family)
+        for session in store.sessions():
+            when = datetime.datetime.fromtimestamp(session["refresh_expires"], datetime.UTC).strftime("%Y-%m-%d")
+            print(f"{session['session']}  {session['state']:8}  {session['identity'] or '-':12}  {session['client'] or '-':24}  refresh until {when}")
+        if targets:
+            print(f"Ended {len(targets)} session(s).")
+        elif not sessions:
+            print("No sign-in sessions recorded.")
     elif args.command == "update-workflows":
         import os
 

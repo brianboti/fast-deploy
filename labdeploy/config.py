@@ -1,4 +1,5 @@
 import re
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -17,6 +18,7 @@ class Application(StrictModel):
     target: Target
     # Refuse plans whose worst-case monthly compute (every allowed instance busy all month) exceeds this many USD.
     cost_ceiling_usd: float | int | None = None
+    paused: bool = False  # refuse new plans and dispatches for this app without touching anything else
 
     @model_validator(mode="after")
     def workflow_fixed(self):
@@ -70,6 +72,8 @@ class Platform(StrictModel):
     repository: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
     commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")  # default: the tip of the platform repository's main branch
     branch: str = Field(default="main", pattern=r"^[A-Za-z0-9_/-]+$")
+    # Apps pinned to an older platform commit than this are refused at dispatch until their workflows are regenerated.
+    minimum_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")
 
 
 class Config(StrictModel):
@@ -77,6 +81,7 @@ class Config(StrictModel):
     principals: list[Principal]
     platform: Platform | None = None
     oauth: OAuth | None = None
+    paused: bool = False  # the kill switch: no new plans or dispatches for any app; reads keep working
     log_file: str | None = None  # rotating controller log (requests, warnings); the audit trail itself lives in the database
     live_dispatch: bool = False
     database: str = "deployments.db"
@@ -107,4 +112,45 @@ class Config(StrictModel):
 
 def load_config(path: str) -> Config:
     return Config.model_validate(yaml.load(Path(path).read_text(), Loader=UniqueLoader))  # noqa: S506 - SafeLoader subclass
+
+
+class LiveConfig:
+    """The configuration, re-read when its file changes, so pauses, principals and registry edits apply without a restart.
+
+    Attribute reads pass through to the current Config. An invalid new file is reported and ignored; the previous
+    configuration stays in force. The database path and the OAuth block are read once at start and need a restart.
+    """
+
+    def __init__(self, config, path=None):
+        self.current, self.path, self.error, self.reloaded_at = config, path, None, None
+        self.mtime = self._mtime()
+
+    def _mtime(self):
+        try:
+            return Path(self.path).stat().st_mtime_ns if self.path else None
+        except OSError:
+            return None
+
+    def refresh(self):
+        if not self.path:
+            return False
+        mtime = self._mtime()
+        if mtime is None or mtime == self.mtime:
+            return False
+        self.mtime = mtime
+        try:
+            candidate = load_config(self.path)
+        except Exception as exc:  # noqa: BLE001 - any parse or validation failure keeps the old configuration
+            self.error = f"{type(exc).__name__}: {str(exc)[:300]}"
+            return False
+        notes = []
+        if candidate.database != self.current.database:
+            notes.append("database path changes need a restart")
+        if candidate.oauth != self.current.oauth:
+            notes.append("oauth changes need a restart")
+        self.current, self.error, self.reloaded_at = candidate, "; ".join(notes) or None, time.time()
+        return True
+
+    def __getattr__(self, name):
+        return getattr(self.current, name)
 

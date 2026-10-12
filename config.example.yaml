@@ -4,6 +4,8 @@ database: deployments.db
 # platform:
 #   repository: YOUR_ORG/lab-deploy
 #   commit: null              # default: the tip of main
+#   minimum_commit: null      # refuse apps pinned to older platform commits
+# paused: false               # the kill switch; also available per application
 # log_file: /var/lib/lab-deploy/controller.log   # optional rotating controller log
 allowed_hosts:
   - "127.0.0.1:*"

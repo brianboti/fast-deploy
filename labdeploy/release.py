@@ -141,7 +141,7 @@ class CloudRun:
         return False
 
 
-TERMINAL = {"succeeded", "traffic_restored", "recovered"}
+TERMINAL = {"succeeded", "traffic_restored", "recovered", "rolled_back"}
 IMAGE_DIGEST = re.compile(r"[a-z0-9-]+-docker\.pkg\.dev/[a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+@sha256:[a-f0-9]{64}")
 
 
@@ -220,6 +220,45 @@ def recover(adapter, journal, target):
     journal.write(saved)
     retire_candidate(adapter, saved)
     journal.write(saved)
+    return saved
+
+
+def rollback(adapter, journal, plan_id, image_path=None):
+    """Traffic-only rollback: return to the split recorded before the release identified by plan_id. No build, seconds.
+
+    Refuses when the checkpoint belongs to another release, when the release did not complete, or when traffic has
+    moved since, so an automatic action never overwrites something a person did by hand.
+    """
+    if not re.fullmatch(r"[a-f0-9]{32}", plan_id):
+        raise ValueError("Invalid plan ID")
+    saved = journal.read()
+    if saved is None:
+        raise ValueError("No release checkpoint exists; nothing to roll back")
+    if saved.get("plan_id") != plan_id:
+        raise ValueError(f"The checkpoint belongs to release {str(saved.get('plan_id', ''))[:8]}, not {plan_id[:8]}; deploy the wanted commit instead")
+    if saved.get("state") == "rolled_back":
+        return {**saved, "note": "This release was already rolled back."}
+    if saved.get("state") != "succeeded":
+        raise ValueError(f"The release's checkpoint is '{saved.get('state')}', not a completed release; use recovery instead")
+    previous = traffic_snapshot({"traffic": [{"revisionName": k, "percent": v} for k, v in saved["previous_traffic"].items()]})
+    if any(not r.startswith(adapter.service + "-") for r in previous):
+        raise ValueError("Recorded previous revisions belong to another service")
+    current = traffic_snapshot(adapter.describe()["status"])
+    if current != previous:
+        if set(current) != {saved.get("revision")}:
+            raise ValueError("Traffic is no longer only on this release's revision; refusing an automatic rollback")
+        adapter.traffic(previous)
+    saved.update(state="rolled_back", rolled_back_from=saved.get("revision"), rolled_back_at=now_iso(), restored_traffic=previous)
+    journal.write(saved)
+    try:
+        saved["service_ready"] = adapter.ready()
+    except Exception:
+        saved["service_ready"] = None
+    if image_path:
+        try:
+            saved["serving_tags"] = reconcile_serving_tags(adapter, image_path, adapter.run)
+        except Exception as tag_error:
+            saved["tag_warning"] = f"Serving-tag update failed: {describe_error(tag_error)}"
     return saved
 
 
@@ -330,6 +369,11 @@ def main():
     adapter = CloudRun(target.project_id, target.region, target.service, target.probe_service_account)
     adapter.require_private_service()
     journal = GCSJournal(target.recovery_bucket, target.service, lambda: run(["gcloud", "auth", "print-access-token"]))
+    image_path = f"{target.region}-docker.pkg.dev/{target.project_id}/{target.registry}/{target.service}"
+    rollback_id = os.environ.get("ROLLBACK_PLAN_ID", "")
+    if recovery_only and rollback_id:
+        Path("recovery-receipt.json").write_text(json.dumps(rollback(adapter, journal, rollback_id, image_path), indent=2))
+        return
     recovered = recover(adapter, journal, target.model_dump())
     if recovery_only:
         Path("recovery-receipt.json").write_text(json.dumps(recovered, indent=2))
@@ -344,7 +388,6 @@ def main():
     labels = {"lab-deploy-plan": os.environ["PLAN_ID"]}
     if re.fullmatch(r"[a-f0-9]{40}", os.environ.get("COMMIT_SHA", "")):
         labels["lab-deploy-commit"] = os.environ["COMMIT_SHA"]
-    image_path = f"{target.region}-docker.pkg.dev/{target.project_id}/{target.registry}/{target.service}"
     rollout(adapter, os.environ["IMAGE_DIGEST"], spec, os.environ["PLAN_ID"], "release-receipt.json", journal, target.model_dump(), labels, image_path)
 
 

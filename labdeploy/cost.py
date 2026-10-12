@@ -290,6 +290,8 @@ def summary_lines(report):
     lines = [f"Cost report for {report['service']} ({report['window_days']}-day window)",
              f"Worst-case compute bound ${report['estimate']['compute_ceiling_usd_month']:.2f}/month; "
              f"idle floor ${report['estimate']['idle_floor_usd_month']:.2f}/month"]
+    if isinstance(report.get("drift"), list) and report["drift"]:
+        lines.append("Drift from platform.yaml: " + "; ".join(f"{d['setting']} is {d['live']} live but {d['platform_yaml']} reviewed" for d in report["drift"]))
     if observed:
         lines.append(f"Observed usage priced at list rates: ${observed['usd_month_at_list_price']:.2f}/month ({observed['requests']} requests)")
     else:
@@ -299,6 +301,26 @@ def summary_lines(report):
         money = "" if saving is None else f"; about ${saving:.2f}/month"
         lines.append(f"- {item['setting'] or 'note'}: {item['current']} to {item['recommended']} ({item['reason']}{money})")
     return lines
+
+
+def drift(settings, spec):
+    """Live Cloud Run settings that differ from the reviewed platform.yaml: what someone changed outside the pipeline."""
+    reviewed = {"cpu": spec.resources.cpu, "memory_mib": spec.resources.memory_mib, "concurrency": spec.concurrency,
+                "minimum": spec.scaling.minimum, "maximum": spec.scaling.maximum}
+    return [{"setting": key, "platform_yaml": reviewed[key], "live": settings.get(key)} for key in reviewed if settings.get(key) != reviewed[key]]
+
+
+def reviewed_spec_from_github(repository, ref="main", token=None):
+    """platform.yaml at the branch tip through the GitHub API, read with the workflow's own token."""
+    import base64
+    import urllib.request
+
+    from .models import parse_spec
+    request = urllib.request.Request(f"https://api.github.com/repos/{repository}/contents/platform.yaml?ref={ref}",
+                                     headers={"Accept": "application/vnd.github+json", **({"Authorization": f"Bearer {token}"} if token else {})})
+    with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 - fixed https host
+        data = json.load(response)
+    return parse_spec(base64.b64decode(data["content"]).decode())
 
 
 def report():
@@ -315,6 +337,12 @@ def report():
     monitoring = CloudMonitoring(target.project_id, lambda: run(["gcloud", "auth", "print-access-token"]))
     metrics = monitoring.collect(target.service, window_days)
     result = build_report(target.service, target.project_id, window_days, description, metrics, cost_recommender(target.project_id, target.region))
+    repository = os.environ.get("GITHUB_REPOSITORY")
+    if repository:
+        try:
+            result["drift"] = drift(result["live_settings"], reviewed_spec_from_github(repository, os.environ.get("GITHUB_REF_NAME", "main"), os.environ.get("GH_TOKEN")))
+        except Exception as exc:  # noqa: BLE001 - drift is best effort; the report says why it is missing
+            result["drift"] = {"warning": f"Could not compare with platform.yaml: {str(exc)[:200]}"}
     try:
         from .release import reconcile_serving_tags
         result["serving_tags"] = reconcile_serving_tags(adapter, f"{target.region}-docker.pkg.dev/{target.project_id}/{target.registry}/{target.service}", run)

@@ -1,7 +1,14 @@
 name: Recover GCP staging
+run-name: ${{ inputs.rollback_plan_id && format('rollback-{0}', inputs.rollback_plan_id) || 'Recover GCP staging' }}
 # workflow_run is acceptable here: this workflow never checks out or executes the triggering workflow's code.
 on: # zizmor: ignore[dangerous-triggers]
   workflow_dispatch:
+    inputs:
+      rollback_plan_id:
+        description: Roll traffic back from the completed release with this plan id to the split recorded before it
+        required: false
+        default: ''
+        type: string
   workflow_run:
     workflows: ['Deploy GCP staging']
     types: [completed]
@@ -34,7 +41,13 @@ jobs:
       WIF_PROVIDER: ${{ vars.WIF_PROVIDER }}
       RECOVERY_BUCKET: ${{ vars.RECOVERY_BUCKET }}
       RECOVERY_ONLY: 'true'
+      ROLLBACK_PLAN_ID: ${{ inputs.rollback_plan_id }}
     steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -z "$ROLLBACK_PLAN_ID" || "$ROLLBACK_PLAN_ID" =~ ^[a-f0-9]{32}$ ]]
       # Never check out or execute code from the triggering application workflow.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -77,6 +90,7 @@ jobs:
       contents: read
     env:
       RECOVER_RESULT: ${{ needs.recover.result }}
+      ROLLBACK_PLAN_ID: ${{ inputs.rollback_plan_id }}
       WEBHOOK: ${{ secrets.NOTIFY_WEBHOOK_URL }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       REPOSITORY: ${{ github.repository }}
@@ -105,8 +119,12 @@ jobs:
           if result == "success" and state in (None, "no_recovery_needed"):
               print("routine run, nothing to report")
               raise SystemExit(0)
-          if result == "success":
+          if result == "success" and state == "rolled_back":
+              line = f"ROLLED BACK: traffic is on {receipt.get('restored_traffic')} again, away from {receipt.get('rolled_back_from')}"
+          elif result == "success":
               line = f"RECOVERY {state}: traffic restored to {receipt.get('previous_traffic')} for plan {str(receipt.get('plan_id', ''))[:8]}"
+          elif os.environ.get("ROLLBACK_PLAN_ID"):
+              line = f"ROLLBACK FAILED ({result}); traffic was not changed, inspect the run log"
           else:
               line = f"RECOVERY FAILED ({result}); inspect the checkpoint and Cloud Run now"
           text = f"Lab Deploy, {os.environ['REPOSITORY']}: {line}. {os.environ['RUN_URL']}"

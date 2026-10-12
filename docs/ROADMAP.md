@@ -64,6 +64,8 @@ Cost effect: none; alerts, uptime checks and logs stay within Google's free allo
 
 ## Phase 2: steer after a release (two days) → version 0.6.0
 
+Status: implemented on 2026-10-12 as version 0.6.0; live exercise pending.
+
 | Item | Change | Where |
 |---|---|---|
 | 2.1 | `cancel_deployment(plan_id)`: cancels the GitHub run; recovery handles the rest | `labdeploy/github.py`, `labdeploy/server.py` |

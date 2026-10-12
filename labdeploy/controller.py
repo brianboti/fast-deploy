@@ -35,10 +35,19 @@ class Store:
         finally:
             db.close()
 
-    def add(self, owner, plan):
+    def add(self, owner, plan, state="planned"):
         with self.connect() as db:
-            db.execute("INSERT INTO plans VALUES (?, ?, 'planned', ?)", (plan["id"], owner, json.dumps(plan)))
-            db.execute("INSERT INTO audit VALUES (?, ?, ?, 'planned')", (time.time(), owner, plan["id"]))
+            db.execute("INSERT INTO plans VALUES (?, ?, ?, ?)", (plan["id"], owner, state, json.dumps(plan)))
+            db.execute("INSERT INTO audit VALUES (?, ?, ?, ?)", (time.time(), owner, plan["id"], state))
+
+    def mark(self, plan_id, **fields):
+        """Annotate a stored plan without changing its state, for example when a later rollback supersedes it."""
+        with self.connect() as db:
+            row = db.execute("SELECT payload FROM plans WHERE id=?", (plan_id,)).fetchone()
+            if row is None:
+                return
+            payload = {**json.loads(row[0]), **fields}
+            db.execute("UPDATE plans SET payload=? WHERE id=?", (json.dumps(payload), plan_id))
 
     def get(self, owner, plan_id):
         with self.connect() as db:
@@ -71,11 +80,16 @@ class Store:
                               "revision": receipt.get("revision") if state == "succeeded" else None})
         return summaries
 
-    def latest_success(self, application):
-        """The newest plan whose release succeeded for an application, across every operator; the controller's view of what is live."""
+    def latest_success(self, application, sha=None):
+        """The newest release that succeeded and was not rolled back, for an application (optionally for one commit)."""
+        query = ("SELECT payload FROM plans WHERE state='succeeded' AND json_extract(payload, '$.application')=? "
+                 "AND json_extract(payload, '$.rolled_back') IS NULL AND json_extract(payload, '$.kind') IS NULL")
+        params = [application]
+        if sha:
+            query += " AND json_extract(payload, '$.sha')=?"
+            params.append(sha)
         with self.connect() as db:
-            row = db.execute("SELECT payload FROM plans WHERE state='succeeded' AND json_extract(payload, '$.application')=? ORDER BY rowid DESC LIMIT 1",
-                             (application,)).fetchone()
+            row = db.execute(query + " ORDER BY rowid DESC LIMIT 1", params).fetchone()
         return json.loads(row[0]) if row else None
 
     def events(self, owner, plan_id):
@@ -118,6 +132,36 @@ class Controller:
             raise ValueError("Identity has read-only access")
         return self.config.applications[app_id]
 
+    def require_active(self, app_id):
+        """Plans and dispatches stop while the operator has paused everything or this app; reads keep working."""
+        if self.config.paused:
+            raise ValueError("Deployments are paused by the operator (paused: true in the controller configuration); reads still work")
+        if self.config.applications[app_id].paused:
+            raise ValueError(f"Deployments of {app_id} are paused by the operator (paused: true on the application); reads still work")
+
+    def platform_pin(self, app):
+        """Which platform commit the app's workflows pin, and whether this controller supports it."""
+        platform = self.config.platform
+        if platform is None:
+            return None
+        pin = self.pinned_platform(app, platform.repository)
+        result = {"commit": pin, "supported": None, "note": None}
+        if pin is None:
+            result.update(supported=False, note="The app has no deploy-gcp.yml pinned to this platform; run update_app_workflows.")
+        elif platform.commit and pin == platform.commit:
+            result.update(supported=True)
+        elif platform.minimum_commit:
+            if pin == platform.minimum_commit:
+                result.update(supported=True)
+            else:
+                comparison = self.github.compare_repository(platform.repository, platform.minimum_commit, pin)
+                result.update(supported=comparison.get("status") in {"ahead", "identical"})
+                if not result["supported"]:
+                    result["note"] = f"The app pins platform {pin[:12]}, older than the minimum {platform.minimum_commit[:12]} this controller supports; run update_app_workflows."
+        else:
+            result.update(note="No platform.commit or platform.minimum_commit is configured, so the pin is reported but not enforced.")
+        return result
+
     def inspect(self, principal, app_id):
         import httpx
         app = self.app(principal, app_id)
@@ -148,9 +192,25 @@ class Controller:
         describe = getattr(self.github, "commit", None)
         return describe(app) if callable(describe) else {"sha": self.github.head(app)}
 
-    def plan(self, principal, app_id, cloud="gcp", environment="staging"):
+    def ancestor_of_branch(self, app, sha):
+        """How far the branch tip is beyond a commit; raises when the commit is not part of the branch's history."""
+        comparison = self.github.compare(app, sha)
+        if comparison.get("status") not in {"ahead", "identical"}:
+            raise ValueError(f"Commit {sha[:12]} is not part of {app.branch}'s history; only commits already merged to {app.branch} can be deployed")
+        return comparison.get("ahead_by", 0)
+
+    def plan(self, principal, app_id, cloud="gcp", environment="staging", commit_sha=None):
         app = self.app(principal, app_id)
-        commit = self.describe_head(app)
+        self.require_active(app_id)
+        behind = 0
+        if commit_sha:
+            if not re.fullmatch(r"[a-f0-9]{40}", commit_sha):
+                raise ValueError("Give the full 40-character commit SHA to deploy a specific commit")
+            behind = self.ancestor_of_branch(app, commit_sha)
+            describe = getattr(self.github, "commit", None)
+            commit = describe(app, commit_sha) if callable(describe) else {"sha": commit_sha}
+        else:
+            commit = self.describe_head(app)
         sha = commit["sha"]
         if not re.fullmatch(r"[a-f0-9]{40}", sha):
             raise ValueError("Expected full Git commit SHA")
@@ -167,13 +227,23 @@ class Controller:
             "expires_at": time.time() + 900,
             "cost": cost,
             "checks": {"config_policy": "passed", "tests": "pending_in_ci", "dependency_scan": "pending_in_ci", "health": "pending_after_deployment"},
+            "pinned_commit": bool(commit_sha), "behind_branch_by": behind,
         }
+        prior = self.store.latest_success(app_id, sha)
+        image = ((prior or {}).get("receipt") or {}).get("image")
+        prefix = f"{app.target.region}-docker.pkg.dev/{app.target.project_id}/{app.target.registry}/{app.target.service}@sha256:"
+        if image and image.startswith(prefix):
+            # The same commit was released before: reuse its attested image instead of building and testing again.
+            plan["reuse_image"] = image
+            plan["reused_from_plan"] = prior["id"]
+            plan["checks"].update(tests="passed_in_earlier_release", dependency_scan="passed_in_earlier_release")
         self.store.add(principal.name, plan)
         return {**plan, "state": "planned", "live_dispatch_enabled": self.config.live_dispatch, "next_action": advice({"state": "planned"})}
 
     def propose_config(self, principal, app_id):
         import httpx
         app = self.app(principal, app_id, write=True)
+        self.require_active(app_id)
         report = self.inspect(principal, app_id)
         try:
             self.github.file(app, report["commit_sha"], "platform.yaml")
@@ -224,6 +294,11 @@ class Controller:
         for app_id in principal.applications:
             app = self.config.applications[app_id]
             entry = app.model_dump()
+            entry["paused"] = bool(self.config.paused or app.paused)
+            try:
+                entry["platform_pin"] = self.platform_pin(app)
+            except Exception as exc:  # noqa: BLE001 - the pin is informational here; dispatch enforces it
+                entry["platform_pin"] = {"commit": None, "supported": None, "note": f"Could not read the app's workflow: {str(exc)[:120]}"}
             live = self.store.latest_success(app_id)
             if live is None:
                 entry["live_release"] = None
@@ -272,13 +347,19 @@ class Controller:
         app = self.app(principal, plan["application"], write=True)
         if plan["state"] != "planned":
             return plan
+        self.require_active(plan["application"])
         if not self.config.live_dispatch:
             return {**plan, "dispatch": "disabled", "note": "Operator must configure GitHub/GCP and enable live_dispatch."}
+        pin = self.platform_pin(app)
+        if pin is not None and pin["supported"] is False:
+            raise ValueError(pin["note"])
         if plan["expires_at"] < time.time():
             raise ValueError("Plan expired; create a new plan")
         if plan["repository"] != app.repository or plan["branch"] != app.branch or plan.get("target") != app.target.model_dump():
             raise ValueError("Registry changed; create a new plan")
-        if self.github.head(app) != plan["sha"]:
+        if plan.get("pinned_commit"):
+            self.ancestor_of_branch(app, plan["sha"])
+        elif self.github.head(app) != plan["sha"]:
             raise ValueError("Branch moved; create a new plan")
         spec = self.spec_at(app, plan["sha"])
         enforce(spec, plan["cloud"], plan["environment"])
@@ -296,6 +377,83 @@ class Controller:
         plan["dispatch_result"] = result
         self.store.finish(principal.name, plan, "dispatched")
         return self.store.get(principal.name, plan_id)
+
+    def cancel(self, principal, plan_id):
+        """Cancel the GitHub run of a dispatched plan; the recovery workflow restores traffic if the runner had started changing it."""
+        plan = self.store.get(principal.name, plan_id)
+        app = self.app(principal, plan["application"], write=True)
+        run_id = (plan.get("dispatch_result") or {}).get("workflow_run_id")
+        if plan["state"] not in DISPATCHED or not run_id:
+            raise ValueError(f"Plan is '{plan['state']}' and has no running workflow to cancel")
+        result = self.github.cancel_run(app, run_id)
+        with self.store.connect() as db:
+            db.execute("INSERT INTO audit VALUES (?, ?, ?, 'cancel_requested')", (time.time(), principal.name, plan_id))
+        status = self.refresh(principal, plan_id)
+        status["cancel"] = result
+        status["next_action"] = ("Cancellation requested. GitHub stops the runner within a minute; the recovery workflow then restores traffic "
+                                 "if the release had started changing it. Ask for status again in a minute.")
+        return status
+
+    def deploy_latest(self, principal, app_id):
+        """Plan the tip of main and dispatch it in one step when every policy passes."""
+        plan = self.plan(principal, app_id)
+        return self.deploy(principal, plan["id"])
+
+    def rollback(self, principal, app_id):
+        """Move traffic back to the split that served before the live release, through the recovery workflow. No build."""
+        app = self.app(principal, app_id, write=True)
+        self.require_active(app_id)
+        if not self.config.live_dispatch:
+            raise ValueError("Dispatch is disabled (live_dispatch: false); nothing can be rolled back from here")
+        live = self.store.latest_success(app_id)
+        if live is None:
+            raise ValueError("No release recorded by this controller to roll back from; deploy the wanted commit instead")
+        receipt = live.get("receipt") or {}
+        if not receipt.get("previous_traffic"):
+            raise ValueError("The live release's receipt records no previous traffic split; deploy the wanted commit instead")
+        record = {
+            "id": uuid.uuid4().hex, "kind": "rollback", "application": app_id, "repository": app.repository, "branch": app.branch,
+            "sha": live["sha"], "commit": live.get("commit"), "spec_hash": live.get("spec_hash"), "cloud": "gcp", "environment": "staging",
+            "target": live.get("target"), "expires_at": time.time() + 900, "cost": None, "checks": {},
+            "from_plan": live["id"], "from_revision": receipt.get("revision"), "to_traffic": receipt["previous_traffic"],
+        }
+        try:
+            record["dispatch_result"] = self.github.dispatch_workflow(app, "recover-gcp.yml", {"rollback_plan_id": live["id"]})
+        except Exception:
+            self.store.add(principal.name, record, "dispatch_unknown")
+            raise ValueError("Rollback dispatch outcome unknown. Inspect GitHub before requesting it again.") from None
+        self.store.add(principal.name, record, "dispatched")
+        return {**record, "state": "dispatched",
+                "next_action": f"Rollback dispatched: traffic returns to {record['to_traffic']} within about a minute. Ask for status with this id."}
+
+    def compare_with_live(self, principal, app_id):
+        """What main holds beyond the live release: commits, files, the kinds of change, and the cost bounds before and after."""
+        app = self.app(principal, app_id)
+        live = self.store.latest_success(app_id)
+        head = self.describe_head(app)
+        if live is None:
+            return {"application": app_id, "live_release": None, "head": head, "note": "No release recorded by this controller yet, so there is nothing to compare against."}
+        comparison = self.github.compare(app, live["sha"])
+        paths = [f["path"] for f in comparison.get("files", [])]
+        kinds = {
+            "dockerfile": any(p == "Dockerfile" or p.endswith("/Dockerfile") for p in paths),
+            "dependencies": any(p.endswith(("requirements.txt", "requirements-dev.txt", "requirements.lock", "pyproject.toml")) for p in paths),
+            "platform_config": "platform.yaml" in paths,
+            "workflows": any(p.startswith(".github/workflows/") for p in paths),
+            "application_code": any(p.endswith(".py") and not p.startswith(".github/") for p in paths),
+        }
+        result = {"application": app_id, "live_release": {"plan_id": live["id"], "sha": live["sha"], "commit": live.get("commit")},
+                  "head": head, "ahead_by": comparison.get("ahead_by"), "behind_by": comparison.get("behind_by"), "commits": comparison.get("commits"),
+                  "files": comparison.get("files"), "changes": kinds, "cost": None}
+        if kinds["platform_config"]:
+            before = self.cost_summary(app, self.spec_at(app, live["sha"]))
+            after = self.cost_summary(app, self.spec_at(app, head["sha"]))
+            result["cost"] = {"worst_case_before_usd_month": before["compute_ceiling_usd_month"], "worst_case_after_usd_month": after["compute_ceiling_usd_month"],
+                              "idle_floor_before_usd_month": before["idle_floor_usd_month"], "idle_floor_after_usd_month": after["idle_floor_usd_month"],
+                              "ceiling_policy_after": after["ceiling_policy"]}
+        if comparison.get("ahead_by") == 0:
+            result["note"] = "Main is exactly the live release; nothing is waiting to be deployed."
+        return result
 
     def status(self, principal, plan_id, wait_seconds=0):
         """Current state of a plan; with wait_seconds it polls until the state changes, the run ends, or the wait is over."""
@@ -316,7 +474,7 @@ class Controller:
             workflow = self.github.status(app, plan)
             plan["dispatch_state"] = plan["state"]
             plan["workflow"] = workflow
-            plan.update(summarize(workflow, plan["checks"]))
+            plan.update(summarize(workflow, plan["checks"], plan.get("kind")))
             if plan["state"] in TERMINAL:
                 self.record_outcome(principal, app, plan, workflow)
         elif plan["state"] in {"failed", "cancelled", "timed_out"} and not (plan.get("recovery_run") or {}).get("conclusion"):
@@ -328,10 +486,18 @@ class Controller:
 
     def record_outcome(self, principal, app, plan, workflow):
         """A finished run is stored once with its receipt, so history survives GitHub's artifact retention."""
-        fetch = getattr(self.github, "release_receipt", None)
-        receipts = fetch(app, workflow["id"]) if callable(fetch) and workflow.get("id") else None
-        plan["receipt"] = (receipts or {}).get("release")
-        plan["vulnerabilities"] = (receipts or {}).get("vulnerabilities")
+        if plan.get("kind") == "rollback":
+            fetch = getattr(self.github, "artifact_json", None)
+            files = fetch(app, workflow["id"], "recovery-receipt", ("recovery-receipt.json",)) if callable(fetch) and workflow.get("id") else None
+            plan["receipt"] = (files or {}).get("recovery-receipt.json")
+            if plan["state"] == "succeeded" and (plan["receipt"] or {}).get("state") == "rolled_back":
+                self.store.mark(plan["from_plan"], rolled_back=True, rolled_back_by=plan["id"])
+            plan["vulnerabilities"] = None
+        else:
+            fetch = getattr(self.github, "release_receipt", None)
+            receipts = fetch(app, workflow["id"]) if callable(fetch) and workflow.get("id") else None
+            plan["receipt"] = (receipts or {}).get("release")
+            plan["vulnerabilities"] = (receipts or {}).get("vulnerabilities")
         plan["outcome"] = {"state": plan["state"], "conclusion": workflow.get("conclusion"), "run_url": workflow.get("html_url"),
                            "completed_at": workflow.get("updated_at"), "recorded_at": time.time()}
         plan["workflow"] = {key: workflow.get(key) for key in ("id", "status", "conclusion", "html_url", "head_sha", "run_attempt", "created_at", "updated_at")}

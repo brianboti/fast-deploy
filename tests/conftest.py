@@ -30,7 +30,8 @@ class FakeGitHub:
         return self.sha
 
     def commit(self, app, ref=None):
-        return {"sha": self.sha, "message": "Fix the login bug", "author": "Alice", "date": "2026-10-12T10:00:00Z", "url": "https://github.com/lab/demo/commit/" + self.sha}
+        sha = ref if ref and len(ref) == 40 else self.sha
+        return {"sha": sha, "message": "Fix the login bug", "author": "Alice", "date": "2026-10-12T10:00:00Z", "url": "https://github.com/lab/demo/commit/" + sha}
 
     def compare(self, app, base_sha):
         return {"status": "ahead", "ahead_by": 2, "behind_by": 0, "commits": [{"sha": "b" * 40, "message": "Second change"}, {"sha": "c" * 40, "message": "Third change"}]}

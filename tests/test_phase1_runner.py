@@ -95,9 +95,9 @@ def test_cloud_run_adapter_builds_label_and_log_commands():
 
 def test_workflows_record_deployments_tag_releases_and_notify():
     deploy = yaml.safe_load(Path("templates/deploy-gcp.yml").read_text())
-    names = [step.get("name") for step in deploy["jobs"]["deploy"]["steps"]]
-    assert names.index("Record the deployment in GitHub") < names.index("Push image and resolve immutable digest")
-    assert names[-1] == "Record the deployment result in GitHub" and deploy["jobs"]["deploy"]["steps"][-1]["if"].startswith("always()")
+    assert deploy["jobs"]["deploy"]["environment"] == {"name": "staging", "url": "${{ steps.release.outputs.url }}"}  # GitHub's own deployment record
+    release = next(step for step in deploy["jobs"]["deploy"]["steps"] if step.get("name") == "Deploy, probe, promote; restore traffic on failure")
+    assert release["id"] == "release" and "url=" in release["run"]
     push = next(step for step in deploy["jobs"]["deploy"]["steps"] if step.get("name") == "Push image and resolve immutable digest")
     assert 'docker push "$IMAGE:release-$PLAN_ID"' in push["run"]
     for name in ("deploy-gcp.yml", "recover-gcp.yml", "rightsize-gcp.yml"):

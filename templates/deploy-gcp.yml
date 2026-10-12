@@ -15,6 +15,11 @@ on:
       target_json:
         required: true
         type: string
+      image_digest:
+        description: Reuse an already-attested image for this commit instead of building again (full digest reference)
+        required: false
+        default: ''
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -26,20 +31,29 @@ env:
   SPEC_HASH: ${{ inputs.spec_hash }}
   PLAN_ID: ${{ inputs.plan_id }}
   TARGET_JSON: ${{ inputs.target_json }}
+  IMAGE_DIGEST_INPUT: ${{ inputs.image_digest }}
 jobs:
   build:
+    # Skipped when the plan reuses an image this workflow already built and attested for the same commit.
+    if: inputs.image_digest == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Validate dispatch inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           [[ "$COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$SPEC_HASH" =~ ^[a-f0-9]{64}$ ]]
           [[ "$PLAN_ID" =~ ^[a-f0-9]{32}$ ]]
-          test "$COMMIT_SHA" = "$GITHUB_SHA"
           test "$GITHUB_REF" = "refs/heads/main"
+          # The commit must be the tip of main or already part of its history: never an unmerged branch.
+          if [ "$COMMIT_SHA" != "$GITHUB_SHA" ]; then
+            STATUS=$(gh api "repos/$GITHUB_REPOSITORY/compare/$COMMIT_SHA...$GITHUB_SHA" --jq .status)
+            [ "$STATUS" = "ahead" ] || [ "$STATUS" = "identical" ]
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.commit_sha }}
@@ -99,14 +113,17 @@ jobs:
           if-no-files-found: error
   deploy:
     needs: build
+    if: always() && needs.build.result != 'failure' && needs.build.result != 'cancelled'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    environment: staging
+    # GitHub records a deployment for this environment job; the URL below makes it show the released service.
+    environment:
+      name: staging
+      url: ${{ steps.release.outputs.url }}
     permissions:
       contents: read
       id-token: write
       attestations: write
-      deployments: write
     env:
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       GCP_REGION: ${{ vars.GCP_REGION }}
@@ -129,12 +146,42 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install --require-hashes -r platform/requirements.lock
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: inputs.image_digest == ''
         with:
           name: release-bundle
           path: bundle
+      # Reuse: the reviewed configuration comes from the commit itself; the image was built and attested by an earlier run.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.image_digest != ''
+        with:
+          ref: ${{ inputs.commit_sha }}
+          persist-credentials: false
+          path: app
+      - name: Validate dispatch inputs for reuse
+        if: inputs.image_digest != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$SPEC_HASH" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$PLAN_ID" =~ ^[a-f0-9]{32}$ ]]
+          test "$GITHUB_REF" = "refs/heads/main"
+          if [ "$COMMIT_SHA" != "$GITHUB_SHA" ]; then
+            STATUS=$(gh api "repos/$GITHUB_REPOSITORY/compare/$COMMIT_SHA...$GITHUB_SHA" --jq .status)
+            [ "$STATUS" = "ahead" ] || [ "$STATUS" = "identical" ]
+          fi
+          IMAGE="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT_ID/$REGISTRY_NAME/$SERVICE"
+          [[ "$IMAGE_DIGEST_INPUT" =~ ^"$IMAGE"@sha256:[a-f0-9]{64}$ ]]
+          mkdir -p bundle && cp app/platform.yaml bundle/platform.yaml
+          echo "IMAGE_DIGEST=$IMAGE_DIGEST_INPUT" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=$IMAGE" >> "$GITHUB_ENV"
+          echo "IMAGE_SHA256=${IMAGE_DIGEST_INPUT##*@}" >> "$GITHUB_ENV"
       - name: Validate artifact and deployment configuration
         env:
           PYTHONPATH: ${{ github.workspace }}/platform
+          REUSING_IMAGE: ${{ inputs.image_digest != '' }}
         run: |
           python - <<'PY'
           import hashlib, os, re
@@ -149,22 +196,10 @@ jobs:
           for name in ('GCP_PROJECT_ID', 'GCP_REGION', 'SERVICE', 'REGISTRY_NAME'):
               assert re.fullmatch(r'[a-z][a-z0-9-]+', os.environ[name]), name
           assert re.fullmatch(r'[a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com', os.environ['PROBE_SERVICE_ACCOUNT'])
-          with open('bundle/image.tar', 'rb') as f:
-              assert hashlib.file_digest(f, 'sha256').hexdigest() == Path('bundle/image.sha256').read_text().strip()
+          if os.environ['REUSING_IMAGE'] != 'true':
+              with open('bundle/image.tar', 'rb') as f:
+                  assert hashlib.file_digest(f, 'sha256').hexdigest() == Path('bundle/image.sha256').read_text().strip()
           PY
-      # GitHub's Deployments API shows this release on the commit and in the repository's Environments view.
-      - name: Record the deployment in GitHub
-        id: deployment
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          printf '{"ref":"%s","environment":"staging","auto_merge":false,"required_contexts":[],"description":"Lab Deploy plan %s","transient_environment":false,"production_environment":false}' "$COMMIT_SHA" "$PLAN_ID" > deployment.json
-          ID=$(gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input deployment.json --jq '.id')
-          [[ "$ID" =~ ^[0-9]+$ ]]
-          echo "id=$ID" >> "$GITHUB_OUTPUT"
-          gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$ID/statuses" -f state=in_progress -f log_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" -F auto_inactive=false > /dev/null
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
@@ -176,6 +211,7 @@ jobs:
           RECOVERY_ONLY: 'true'
         run: python -m labdeploy.release
       - name: Push image and resolve immutable digest
+        if: inputs.image_digest == ''
         shell: bash
         run: |
           set -euo pipefail
@@ -194,6 +230,7 @@ jobs:
           echo "IMAGE_SHA256=$DIGEST" >> "$GITHUB_ENV"
       # Signed SLSA provenance links this exact digest to this commit and workflow run; stored by GitHub, never a long-lived key.
       - name: Attest build provenance
+        if: inputs.image_digest == ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE_NAME }}
@@ -211,10 +248,15 @@ jobs:
           BLOCK_ON_CRITICAL_VULNERABILITIES: ${{ vars.BLOCK_ON_CRITICAL_VULNERABILITIES || 'false' }}
         run: python -m labdeploy.scan
       - name: Deploy, probe, promote; restore traffic on failure
+        id: release
         env:
           PYTHONPATH: ${{ github.workspace }}/platform
           SPEC_FILE: bundle/platform.yaml
-        run: python -m labdeploy.release
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m labdeploy.release
+          echo "url=$(python -c 'import json; print(json.load(open("release-receipt.json")).get("url", ""))')" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -224,24 +266,6 @@ jobs:
             vulnerability-summary.json
           if-no-files-found: warn
           retention-days: 30
-      - name: Record the deployment result in GitHub
-        if: always() && steps.deployment.outputs.id != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DEPLOYMENT_ID: ${{ steps.deployment.outputs.id }}
-          JOB_STATUS: ${{ job.status }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          STATE=failure
-          [ "$JOB_STATUS" = "success" ] && STATE=success
-          [ "$JOB_STATUS" = "cancelled" ] && STATE=error
-          URL=$(python3 -c 'import json; r = json.load(open("release-receipt.json")); print(r.get("url", "") if r.get("state") == "succeeded" else "")' 2>/dev/null || true)
-          if [ -n "$URL" ]; then
-            gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID/statuses" -f state="$STATE" -f environment_url="$URL" -f log_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" -F auto_inactive=true > /dev/null
-          else
-            gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID/statuses" -f state="$STATE" -f log_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" -F auto_inactive=true > /dev/null
-          fi
   notify:
     # Posts the outcome to the NOTIFY_WEBHOOK_URL secret (Slack or Discord incoming webhook) when it is set; silent otherwise.
     needs: [build, deploy]
@@ -281,7 +305,7 @@ jobs:
           build, deploy = os.environ["BUILD_RESULT"], os.environ["DEPLOY_RESULT"]
           if deploy == "success" and receipt.get("state") == "succeeded":
               line = f"SUCCEEDED: revision {receipt.get('revision')} serves all traffic at {receipt.get('url')}"
-          elif build != "success":
+          elif build not in ("success", "skipped"):
               line = f"FAILED in the build job ({build}): tests, dependency audit or image build"
           elif receipt.get("state") == "traffic_restored":
               line = f"FAILED: the candidate did not pass ({receipt.get('error')}); traffic was restored to the previous revision"
