@@ -98,6 +98,10 @@ class GitHub:
         if run is None:
             return {"status": "not_visible_yet", "note": "Do not redispatch; inspect GitHub Actions if this persists."}
         if run.get("head_sha") != plan["sha"] or run.get("display_title") != f"deploy-{plan['id']}":
+            # Observed live: for a second or two after dispatch the run exists but its title and commit are not
+            # populated yet. Only a run that has started or finished must prove its identity.
+            if run_id and run.get("status") in {None, "", "requested", "queued", "pending", "waiting"}:
+                return {"status": "not_visible_yet", "note": "GitHub is still creating the run; its identity is checked once it starts."}
             raise ValueError("Workflow identity does not match this deployment plan")
         jobs = []
         page = 1

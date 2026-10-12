@@ -151,6 +151,8 @@ resource "google_iam_workload_identity_pool" "github" {
   workload_identity_pool_id = "${var.service}-gh"
   depends_on                = [google_project_service.apis]
 }
+# The subject claim's format changed in 2026 to embed numeric IDs (repo:OWNER@ID/NAME@ID:environment:ENV), so the
+# condition matches the dedicated environment claim plus immutable IDs, the branch and the exact workflow files.
 resource "google_iam_workload_identity_pool_provider" "github" {
   workload_identity_pool_id          = google_iam_workload_identity_pool.github.workload_identity_pool_id
   workload_identity_pool_provider_id = "github"
@@ -159,7 +161,7 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.repository_id"       = "assertion.repository_id"
     "attribute.repository_owner_id" = "assertion.repository_owner_id"
   }
-  attribute_condition = "assertion.repository_id == '${var.github_repository_id}' && assertion.repository_owner_id == '${var.github_owner_id}' && assertion.ref == 'refs/heads/main' && assertion.sub == 'repo:${var.github_repository}:environment:staging' && assertion.workflow_ref in ['${var.github_repository}/.github/workflows/deploy-gcp.yml@refs/heads/main', '${var.github_repository}/.github/workflows/recover-gcp.yml@refs/heads/main', '${var.github_repository}/.github/workflows/rightsize-gcp.yml@refs/heads/main']"
+  attribute_condition = "assertion.repository_id == '${var.github_repository_id}' && assertion.repository_owner_id == '${var.github_owner_id}' && assertion.ref == 'refs/heads/main' && assertion.environment == 'staging' && assertion.workflow_ref in ['${var.github_repository}/.github/workflows/deploy-gcp.yml@refs/heads/main', '${var.github_repository}/.github/workflows/recover-gcp.yml@refs/heads/main', '${var.github_repository}/.github/workflows/rightsize-gcp.yml@refs/heads/main']"
   oidc { issuer_uri = "https://token.actions.githubusercontent.com" }
 }
 resource "google_service_account_iam_member" "federation" {

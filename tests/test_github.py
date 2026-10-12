@@ -45,3 +45,22 @@ def test_symlink_content_rejected(monkeypatch):
     with pytest.raises(ValueError, match="regular"):
         gh.file(Application(repository="lab/demo", service="demo", target=TARGET), "a" * 40, "platform.yaml")
 
+
+def test_status_tolerates_a_run_that_is_still_being_created(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "test-credential")
+    phase = {"status": "queued", "title": "Deploy GCP staging", "sha": ""}
+
+    def handler(request):
+        if request.url.path.endswith("/runs/42"):
+            return httpx.Response(200, json={"id": 42, "status": phase["status"], "display_title": phase["title"], "head_sha": phase["sha"], "run_attempt": 1})
+        return httpx.Response(200, json={"jobs": []})
+
+    gh = GitHub(httpx.Client(base_url="https://api.github.com", transport=httpx.MockTransport(handler)))
+    app = Application(repository="lab/demo", service="demo", target=TARGET)
+    plan = {"id": "c" * 32, "sha": "a" * 40, "dispatch_result": {"workflow_run_id": 42}}
+    assert gh.status(app, plan)["status"] == "not_visible_yet"
+    phase.update(status="in_progress")
+    with pytest.raises(ValueError, match="identity"):
+        gh.status(app, plan)
+    phase.update(title="deploy-" + "c" * 32, sha="a" * 40)
+    assert gh.status(app, plan)["status"] == "in_progress"
