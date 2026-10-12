@@ -42,6 +42,13 @@ def test_observer_token_comes_from_impersonation_and_is_cached(tmp_path):
         raise OSError("gcloud not found")
     with pytest.raises(ValueError, match="observer identity"):
         Observer(config(tmp_path, observer={"service_account": OBSERVER}), client=down, runner=broken).token()
+
+    import subprocess
+
+    def denied(args):
+        raise subprocess.CalledProcessError(1, args, stderr="WARNING: impersonation in use\nERROR: (gcloud.auth.print-access-token) PERMISSION_DENIED: not found\n")
+    with pytest.raises(ValueError, match="PERMISSION_DENIED: not found"):  # the reason, not gcloud's warning line
+        Observer(config(tmp_path, observer={"service_account": OBSERVER}), client=down, runner=denied).token()
     metadata = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"access_token": "machine", "expires_in": 3600})))
     assert Observer(config(tmp_path, observer={"service_account": OBSERVER}), client=metadata, runner=broken).token() == "machine"  # on a machine: no gcloud needed
 

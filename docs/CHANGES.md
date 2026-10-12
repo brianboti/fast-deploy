@@ -1,3 +1,9 @@
+# 0.9.1: fix from the live run
+
+## Fixed
+
+1. **The observer error quoted gcloud's impersonation warning** instead of the reason the token could not be minted; it now quotes gcloud's error line.
+
 # 0.9.0: always on, on a laptop
 
 ## Added

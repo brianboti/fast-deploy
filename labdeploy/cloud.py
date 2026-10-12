@@ -54,9 +54,10 @@ class Observer:
             try:
                 token = self.runner(["gcloud", "auth", "print-access-token", "--impersonate-service-account", self.account])
             except (subprocess.CalledProcessError, OSError, subprocess.SubprocessError) as exc:
-                detail = getattr(exc, "stderr", "") or str(exc)
+                lines = [line.strip() for line in str(getattr(exc, "stderr", "") or exc).splitlines() if line.strip()]
+                detail = next((line for line in lines if line.startswith("ERROR")), lines[-1] if lines else str(exc))  # gcloud's warning line is not the reason
                 raise ValueError("Could not obtain a token for the observer identity: sign in with gcloud on this machine and make sure the Terraform "
-                                 f"observer identity exists with you as an impersonator ({str(detail).strip()[:160]})") from None
+                                 f"observer identity exists with you as an impersonator ({detail[:200]})") from None
         self.cached, self.until = token, time.time() + lifetime
         return token
 
