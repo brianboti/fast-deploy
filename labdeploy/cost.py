@@ -67,6 +67,8 @@ NEEDS_PRICING = {
     "topic": {"usd_per_tib": 40.0, "free_gib_month": 10, "note": "Message delivery, after the account's free 10 GiB each month"},
     "firestore": {"usd_per_100k_reads": 0.03, "usd_per_100k_writes": 0.09, "usd_per_100k_deletes": 0.01, "storage_usd_per_gib_month": 0.18,
                   "free_per_day": {"reads": 50_000, "writes": 20_000, "deletes": 20_000}, "note": "Standard edition; Google allows one free database per project"},
+    "postgres": {"instance_usd_month": 7.67, "storage_usd_per_gb_month": 0.09, "storage_gb": 10, "backup_usd_per_gb_month": 0.08,
+                 "note": "db-f1-micro (shared core, Enterprise, zonal) in us-central1 with 10 GB of HDD: billed every hour it exists; stopped, only the storage"},
 }
 
 
@@ -79,6 +81,10 @@ def needs_costs(spec, pricing=NEEDS_PRICING):
         items.append({"need": "topic", "name": name, "floor_usd_month": 0.0, "pricing": pricing["topic"]})
     if spec.needs.database == "firestore":
         items.append({"need": "firestore", "name": spec.name, "floor_usd_month": 0.0, "pricing": pricing["firestore"]})
+    if spec.needs.database == "postgres":
+        p = pricing["postgres"]
+        floor = p["instance_usd_month"] + p["storage_gb"] * p["storage_usd_per_gb_month"]
+        items.append({"need": "postgres", "name": spec.name, "floor_usd_month": _usd(floor), "pricing": p})
     return items
 
 
@@ -115,6 +121,7 @@ def estimate(spec, requests_per_month=None, average_request_seconds=None, pricin
         "excludes": list(EXCLUDED),
         "release_overheads": dict(OVERHEADS),
         "needs": needs_costs(spec),
+        "needs_floor_usd_month": _usd(sum(item["floor_usd_month"] for item in needs_costs(spec))),
         "warnings": [],
     }
     verified = datetime.date.fromisoformat(pricing["verified"])
@@ -178,6 +185,11 @@ def findings(spec, pricing=PRICING):
                   "estimated_monthly_usd": ceiling,
                   "message": f"With at most {spec.scaling.maximum} instance(s), compute cannot exceed about ${ceiling:.2f} per month even if every "
                              "instance is busy all month. Lowering scaling.maximum lowers this bound; it is a bound, not a billing cap."})
+    if spec.needs.database == "postgres":
+        floor = next(item["floor_usd_month"] for item in needs_costs(spec, pricing=NEEDS_PRICING) if item["need"] == "postgres")
+        items.append({"id": "database_always_on", "severity": "warning", "setting": "needs.database", "current": "postgres", "estimated_monthly_usd": floor,
+                      "message": f"The Cloud SQL instance bills every hour it exists, about ${floor:.2f} per month before traffic, unlike everything else here. "
+                                 "Use database: firestore when the data model allows it; when SQL is required, keep the smallest tier and let the spending cap stop it."})
     if spec.needs.buckets or spec.needs.topics or spec.needs.database != "none":
         items.append({"id": "needs_by_use", "severity": "info", "setting": "needs", "current": spec.needs.model_dump(),
                       "message": "Buckets, topics and Firestore cost by use and nothing while idle: 2 cents per GiB-month stored after the free 5 GB, "

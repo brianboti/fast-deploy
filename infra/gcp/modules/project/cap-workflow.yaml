@@ -1,6 +1,7 @@
 # Spending cap: runs on every budget notification. Once the budget line is crossed it closes ingress on every Cloud Run
-# service in the region that carries the label lab-deploy-managed=true (set by the service module), and optionally
-# detaches billing at a higher line. Reopen with: gcloud run services update SERVICE --ingress=all
+# service in the region that carries the label lab-deploy-managed=true (set by the service module), stops every Cloud SQL
+# instance with that label, and optionally detaches billing at a higher line.
+# Reopen with: gcloud run services update SERVICE --ingress=all; restart a database with: gcloud sql instances patch NAME --activation-policy=ALWAYS
 # Workflows expressions take no map or list literals ({} or []), so missing fields are tested with `in` instead of default().
 main:
   params: [event]
@@ -12,6 +13,7 @@ main:
           - cost: ${default(map.get(message, "costAmount"), 0)}
           - budget: ${default(map.get(message, "budgetAmount"), 0)}
           - closed: []
+          - stopped: []
     - below_cap:
         switch:
           - condition: ${exceeded < __THRESHOLD__}
@@ -26,7 +28,7 @@ main:
     - nothing_to_close:
         switch:
           - condition: ${not ("services" in listing.body)}
-            next: log_closed
+            next: list_instances
     - close_ingress:
         for:
           value: service
@@ -51,11 +53,41 @@ main:
             - remember:
                 assign:
                   - closed: ${list.concat(closed, service.name)}
+    - list_instances:
+        call: http.get
+        args:
+          url: '${"https://sqladmin.googleapis.com/v1/projects/__PROJECT__/instances"}'
+          query:
+            filter: "settings.userLabels.lab-deploy-managed:true"
+          auth:
+            type: OAuth2
+        result: instances
+    - nothing_to_stop:
+        switch:
+          - condition: ${not ("items" in instances.body)}
+            next: log_closed
+    - stop_instances:
+        for:
+          value: instance
+          in: ${instances.body.items}
+          steps:
+            - stop:
+                call: http.patch
+                args:
+                  url: '${"https://sqladmin.googleapis.com/v1/projects/__PROJECT__/instances/" + instance.name}'
+                  auth:
+                    type: OAuth2
+                  body:
+                    settings:
+                      activationPolicy: NEVER
+            - remember_stop:
+                assign:
+                  - stopped: ${list.concat(stopped, instance.name)}
     - log_closed:
         call: sys.log
         args:
           severity: WARNING
-          text: '${"Lab Deploy spending cap: budget line crossed (" + string(cost) + " of " + string(budget) + ", threshold " + string(exceeded) + "); ingress closed on " + string(len(closed)) + " managed services " + json.encode_to_string(closed) + ". Reopen with gcloud run services update SERVICE --ingress=all"}'
+          text: '${"Lab Deploy spending cap: budget line crossed (" + string(cost) + " of " + string(budget) + ", threshold " + string(exceeded) + "); ingress closed on " + string(len(closed)) + " managed services " + json.encode_to_string(closed) + "; stopped " + string(len(stopped)) + " databases " + json.encode_to_string(stopped) + ". Reopen with gcloud run services update SERVICE --ingress=all and gcloud sql instances patch NAME --activation-policy=ALWAYS"}'
     - maybe_detach:
         switch:
           - condition: ${"__DETACH__" == "true" and exceeded >= __DETACH_THRESHOLD__}
@@ -74,6 +106,6 @@ main:
                     severity: CRITICAL
                     text: '${"Lab Deploy spending cap: billing detached from the project at " + string(exceeded) + " of the budget"}'
     - done:
-        return: '${"cap enforced at threshold " + string(exceeded) + " on " + string(len(closed)) + " services"}'
+        return: '${"cap enforced at threshold " + string(exceeded) + " on " + string(len(closed)) + " services and " + string(len(stopped)) + " databases"}'
     - report_below:
         return: '${"below cap: threshold " + string(exceeded) + " of budget " + string(budget)}'

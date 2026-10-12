@@ -10,7 +10,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from .models import enforce, needs_env, parse_spec, spec_hash
+from .models import PLATFORM_NETWORK, PLATFORM_SUBNET, enforce, needs_env, parse_spec, spec_hash
 
 
 def run(args):
@@ -75,6 +75,40 @@ class CloudRun:
     def secret_name(self, name):
         return f"{self.service}-{name}"
 
+    def configuration(self, spec):
+        """The variable and secret flags a revision or job gets: the reviewed spec is the whole truth, needs add their derived variables."""
+        flags = []
+        values = {**needs_env(spec, self.project, self.region), **spec.env}
+        if values:
+            env_file = Path("revision-env.yaml")
+            env_file.write_text(json.dumps(values))  # JSON is valid YAML, and the values stay single-line strings
+            flags.append(f"--env-vars-file={env_file}")
+        else:
+            flags.append("--clear-env-vars")
+        if spec.secrets:
+            flags.append("--set-secrets=" + ",".join(f"{name}={self.secret_name(name)}:latest" for name in spec.secrets))
+        else:
+            flags.append("--clear-secrets")
+        return flags
+
+    def migrate(self, image, spec):
+        """Run the app's migration command as the `<service>-migrate` job from this release's image, and wait for it."""
+        job = f"{self.service}-migrate"
+        flags = ["--image", image, "--command", spec.needs.migrate[0], "--max-retries=0", "--task-timeout=900", *self.configuration(spec)]
+        if len(spec.needs.migrate) > 1:
+            flags.append("--args=" + ",".join(spec.needs.migrate[1:]))
+        else:
+            flags.append("--clear-args")
+        if spec.needs.database == "postgres":
+            flags += [f"--network={PLATFORM_NETWORK}", f"--subnet={PLATFORM_SUBNET}", "--vpc-egress=private-ranges-only"]
+        self.run(["gcloud", "run", "jobs", "update", job, *flags, "--project", self.project, "--region", self.region, "--quiet"])
+        try:
+            execution = self.run(["gcloud", "run", "jobs", "execute", job, "--wait", "--project", self.project, "--region", self.region, "--quiet", "--format=value(name)"])
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(f"Migration job {job} failed; its log explains: gcloud run jobs executions list --job {job} --region {self.region}. "
+                               f"{(exc.stderr or '').strip()[-300:]}") from None
+        return {"job": job, "execution": (execution or "").strip().rsplit("/", 1)[-1] or None}
+
     def require_needs(self, spec):
         """Every bucket, topic and database the spec declares must exist before anything is deployed (the pipeline creates them)."""
         checks = []
@@ -85,6 +119,11 @@ class CloudRun:
             checks.append((f"subscription {spec.name}-{name}", ["gcloud", "pubsub", "subscriptions", "describe", f"{spec.name}-{name}", "--project", self.project, "--format=value(name)"]))
         if spec.needs.database == "firestore":
             checks.append((f"Firestore database {spec.name}", ["gcloud", "firestore", "databases", "describe", f"--database={spec.name}", "--project", self.project, "--format=value(name)"]))
+        if spec.needs.database == "postgres":
+            checks.append((f"Cloud SQL instance {spec.name}", ["gcloud", "sql", "instances", "describe", spec.name, "--project", self.project, "--format=value(name)"]))
+        if spec.needs.migrate:
+            checks.append((f"migration job {spec.name}-migrate",
+                           ["gcloud", "run", "jobs", "describe", f"{spec.name}-migrate", "--project", self.project, "--region", self.region, "--format=value(name)"]))
         missing = []
         for label, command in checks:
             try:
@@ -122,19 +161,12 @@ class CloudRun:
                     raise ValueError("Revision labels must be lowercase letters, digits, dashes or underscores")
             # --update-labels merges, so the service keeps the labels Terraform set (lab-deploy-managed, lab-deploy-app)
             extra.append("--update-labels=" + ",".join(f"{key}={value}" for key, value in sorted(labels.items())))
-        # The reviewed spec is the whole truth for configuration: values not in it are removed from the revision.
-        # Declared needs add their derived variables (bucket, topic, subscription and database names).
-        values = {**needs_env(spec, self.project), **spec.env}
-        if values:
-            env_file = Path("revision-env.yaml")
-            env_file.write_text(json.dumps(values))  # JSON is valid YAML, and the values stay single-line strings
-            extra.append(f"--env-vars-file={env_file}")
+        extra += self.configuration(spec)
+        # A Cloud SQL instance has a private address only, so the service joins the foundation's network for its egress.
+        if spec.needs.database == "postgres":
+            extra += [f"--network={PLATFORM_NETWORK}", f"--subnet={PLATFORM_SUBNET}", "--vpc-egress=private-ranges-only"]
         else:
-            extra.append("--clear-env-vars")
-        if spec.secrets:
-            extra.append("--set-secrets=" + ",".join(f"{name}={self.secret_name(name)}:latest" for name in spec.secrets))
-        else:
-            extra.append("--clear-secrets")
+            extra.append("--clear-network")
         self.run(self.command("deploy", self.service, "--image", image,
             "--revision-suffix", suffix, "--no-traffic", "--tag=candidate", "--startup-probe", probe,
             "--ingress=all", "--port", str(spec.port),
@@ -368,10 +400,16 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
         if callable(check) and spec.secrets:
             check(spec)
         check = getattr(adapter, "require_needs", None)
-        if callable(check) and (spec.needs.buckets or spec.needs.topics or spec.needs.database != "none"):
+        if callable(check) and (spec.needs.buckets or spec.needs.topics or spec.needs.database != "none" or spec.needs.migrate):
             check(spec)
         # Freeze any LATEST allocation to concrete revisions before creating a new revision.
         adapter.traffic(allocations)
+        if spec.needs.migrate:
+            # Expand first: the migration runs from the new image before any new code serves, and it must keep the previous
+            # revision working, so a traffic rollback stays safe. A failed migration stops the release here.
+            receipt["state"] = "migrating"
+            save()
+            receipt["migration"] = adapter.migrate(image, spec)
         receipt["state"] = "deploying"
         save()
         adapter.deploy(image, spec, suffix, labels)

@@ -27,7 +27,7 @@ def test_cost_tool_and_ceiling_policy(setup):
     assert c.cost(p, "demo")["ceiling_policy"]["status"] == "exceeds_limit"
     c.config.applications["demo"].cost_ceiling_usd = 200
     plan = c.plan(p, "demo")
-    assert plan["cost"]["ceiling_policy"] == {"limit_usd_month": 200, "status": "within_limit"}
+    assert plan["cost"]["ceiling_policy"] == {"limit_usd_month": 200, "compared_usd_month": 132.71, "status": "within_limit"}
     c.config.applications["demo"].cost_ceiling_usd = 100  # tightened after planning: dispatch must stop
     with pytest.raises(ValueError, match="Cost policy"):
         c.deploy(p, plan["id"])

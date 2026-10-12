@@ -87,3 +87,10 @@ References read for 1.1.0, buckets, topics and Firestore (2026-10-12):
 - [Cloud Storage pricing](https://cloud.google.com/storage/pricing): Standard storage in us-central1 and the Always Free 5 GB in US regions, in `labdeploy/cost.py`
 - [Pub/Sub pricing](https://cloud.google.com/pubsub/pricing): the free 10 GiB a month and the per-TiB delivery rate
 - [Firestore pricing](https://cloud.google.com/firestore/pricing): Standard edition per-operation prices, the daily free quota and the one free database per project
+
+References read for 1.4.0, Cloud SQL and migrations (2026-10-12):
+
+- [Cloud SQL pricing](https://cloud.google.com/sql/pricing) and the [db-f1-micro listing](https://www.bytebase.com/dbcost/cloudsql/instance/db-f1-micro/): the shared-core instance, HDD storage and backup rates in `labdeploy/cost.py`
+- [Connect from Cloud Run to Cloud SQL](https://docs.cloud.google.com/sql/docs/postgres/connect-run): connectors, private IP through VPC egress, the Cloud SQL Client role, the 100-connection limit per instance
+- [Cloud Run jobs](https://docs.cloud.google.com/run/docs/create-jobs): the migration job, `--max-retries` and task timeouts
+- [Private Service Access](https://docs.cloud.google.com/vpc/docs/configure-private-services-access) and [Direct VPC egress](https://docs.cloud.google.com/run/docs/configuring/vpc-direct-vpc): the network the foundation creates

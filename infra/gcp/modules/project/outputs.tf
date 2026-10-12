@@ -13,3 +13,5 @@ output "pipeline" {
     environment           = var.pipeline.environment
   } : null
 }
+output "network" { value = google_compute_network.lab.id }
+output "subnet" { value = google_compute_subnetwork.run.id }

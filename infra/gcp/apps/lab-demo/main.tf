@@ -31,11 +31,13 @@ module "service" {
   error_alert_count            = 5
   latency_alert_ms             = 2000
   instance_alert_count         = 4
-  needs                        = { buckets = ["uploads"], topics = ["events"], database = "firestore" }
+  needs                        = { buckets = ["uploads"], topics = ["events"], database = "firestore", migrate = [] }
   project_number               = data.terraform_remote_state.project.outputs.project_number
   image_vulnerability_scanning = data.terraform_remote_state.project.outputs.image_vulnerability_scanning
   tag_manager_role             = data.terraform_remote_state.project.outputs.tag_manager_role
   alert_channels               = data.terraform_remote_state.project.outputs.alert_channels
   cap_service_account          = data.terraform_remote_state.project.outputs.cap_service_account
   billing_dataset              = data.terraform_remote_state.project.outputs.billing_dataset
+  network                      = data.terraform_remote_state.project.outputs.network
+  subnet                       = data.terraform_remote_state.project.outputs.subnet
 }

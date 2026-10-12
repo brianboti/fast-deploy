@@ -20,16 +20,28 @@ class Resources(StrictModel):
 
 
 RESOURCE_NAME = re.compile(r"^[a-z][a-z0-9-]{1,20}$")
+# The foundation's VPC and the subnet Cloud Run uses for private egress; a Cloud SQL instance is reachable only through them.
+PLATFORM_NETWORK = "lab-deploy"
+PLATFORM_SUBNET = "lab-deploy-run"
 
 
 class Needs(StrictModel):
     """What the application needs besides its container. Names are short; the platform derives the real resource names."""
     buckets: list[str] = Field(default_factory=list)
     topics: list[str] = Field(default_factory=list)
-    database: Literal["none", "firestore"] = "none"
+    # firestore: a named Native-mode database, free while small. postgres: the smallest Cloud SQL instance with a private
+    # address and IAM sign-in only; it bills around the clock (about 9 dollars a month), so declare it only when SQL is needed.
+    database: Literal["none", "firestore", "postgres"] = "none"
+    # A command run as a Cloud Run job from the release's image before the candidate gets traffic (schema migrations).
+    migrate: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def valid(self):
+        if len(self.migrate) > 16:
+            raise ValueError("migrate takes at most 16 arguments")
+        for part in self.migrate:
+            if not 1 <= len(part) <= 200 or not part.isprintable() or "," in part:
+                raise ValueError("each migrate argument is printable, at most 200 characters, and contains no comma")
         for kind, names in (("buckets", self.buckets), ("topics", self.topics)):
             if len(names) > 8:
                 raise ValueError(f"At most 8 {kind}")
@@ -45,11 +57,13 @@ def variable_name(need):
     return need.upper().replace("-", "_")
 
 
-def needs_env(spec, project_id):
+def needs_env(spec, project_id, region="us-central1"):
     """The variables the platform sets for declared needs: fixed conventions, so no output has to travel anywhere.
 
     BUCKET_<NAME> = <project>-<service>-<name>; TOPIC_<NAME> = projects/<project>/topics/<service>-<name>;
-    SUBSCRIPTION_<NAME> = projects/<project>/subscriptions/<service>-<name>; FIRESTORE_DATABASE = <service>.
+    SUBSCRIPTION_<NAME> = projects/<project>/subscriptions/<service>-<name>; FIRESTORE_DATABASE = <service>;
+    for postgres: DATABASE_INSTANCE = <project>:<region>:<service> (connection name), DATABASE_NAME = app,
+    DATABASE_USER = <service>-runtime@<project>.iam (IAM sign-in, no password), DATABASE_IP_TYPE = private.
     """
     env = {}
     for name in spec.needs.buckets:
@@ -59,6 +73,9 @@ def needs_env(spec, project_id):
         env[f"SUBSCRIPTION_{variable_name(name)}"] = f"projects/{project_id}/subscriptions/{spec.name}-{name}"
     if spec.needs.database == "firestore":
         env["FIRESTORE_DATABASE"] = spec.name
+    if spec.needs.database == "postgres":
+        env.update({"DATABASE_INSTANCE": f"{project_id}:{region}:{spec.name}", "DATABASE_NAME": "app",
+                    "DATABASE_USER": f"{spec.name}-runtime@{project_id}.iam", "DATABASE_IP_TYPE": "private"})
     return env
 
 

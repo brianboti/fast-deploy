@@ -22,10 +22,18 @@
           "default": "none",
           "enum": [
             "none",
-            "firestore"
+            "firestore",
+            "postgres"
           ],
           "title": "Database",
           "type": "string"
+        },
+        "migrate": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Migrate",
+          "type": "array"
         }
       },
       "title": "Needs",

@@ -1,3 +1,17 @@
+# 1.4.0: Cloud SQL, migrations and a cap that stops databases (Phase 6, items 6.5 and 6.6)
+
+## Added
+
+1. **`database: postgres`** under `needs`: the smallest Cloud SQL for PostgreSQL instance (shared core, zonal, 10 GB of HDD that grows to 20, daily backups kept a week), with a private address only and IAM sign-in only: no password exists anywhere. The runtime identity is the database user; the revision gets `DATABASE_INSTANCE` (the connection name), `DATABASE_NAME`, `DATABASE_USER` and `DATABASE_IP_TYPE`, and the service joins the foundation's private network for its egress. It bills every hour it exists, about 9 dollars a month: every plan and estimate says so, the warning names it, and the operator's cost ceiling now counts it.
+2. **`migrate`** under `needs`: a command run as the `<service>-migrate` Cloud Run job from the release's own image before the candidate exists, so a schema change lands before any new code serves. A failed migration stops the release with traffic untouched; the receipt gains a `migrating` phase and the job's execution name. Keep migrations compatible with the previous revision (expand first, contract later), so a traffic rollback stays safe.
+3. **The foundation's private network**: one VPC with a subnet for Cloud Run egress and Private Service Access for Cloud SQL, free while idle; the Compute, Service Networking and Cloud SQL Admin APIs.
+4. **The spending cap stops databases**: at the budget line the cap workflow also sets every managed Cloud SQL instance's activation policy to never, after closing ingress. Restart one with `gcloud sql instances patch NAME --activation-policy=ALWAYS`.
+5. Policies: a database instance is created with deletion protection; the plan refuses a public address.
+
+## Upgrade steps
+
+1. Re-apply the foundation (network, subnet, peering, three APIs, the cap's Cloud SQL role) and re-render each application root (the `migrate` field and the network inputs). Runner code changed: regenerate the app workflows against this commit and raise `platform.minimum_commit`.
+
 # 1.3.0: spend by application (Phase 6, item 6.6, part one)
 
 ## Added

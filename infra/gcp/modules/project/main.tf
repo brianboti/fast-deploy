@@ -125,7 +125,7 @@ resource "google_service_account" "cap" {
   depends_on   = [google_project_service.apis]
 }
 resource "google_project_iam_member" "cap_roles" {
-  for_each = local.cap_enabled ? toset(concat(["roles/workflows.invoker", "roles/eventarc.eventReceiver", "roles/logging.logWriter", "roles/run.viewer"], var.spending_cap.detach_billing ? ["roles/billing.projectManager"] : [])) : toset([])
+  for_each = local.cap_enabled ? toset(concat(["roles/workflows.invoker", "roles/eventarc.eventReceiver", "roles/logging.logWriter", "roles/run.viewer", "roles/cloudsql.editor"], var.spending_cap.detach_billing ? ["roles/billing.projectManager"] : [])) : toset([])
   project  = var.project_id
   role     = each.value
   member   = "serviceAccount:${google_service_account.cap[0].email}"

@@ -435,7 +435,7 @@ class Controller:
             plan["warnings"].append("platform.yaml declares tests: none, so nothing checks this app's behaviour before a release; only the health probe guards it.")
         if spec.secrets:
             plan["warnings"].append("References secrets " + ", ".join(f"{app.service}-{name}" for name in spec.secrets) + "; each must exist in Secret Manager with an enabled version.")
-        derived = needs_env(spec, app.target.project_id)
+        derived = needs_env(spec, app.target.project_id, app.target.region)
         if derived:
             plan["needs"] = {"buckets": list(spec.needs.buckets), "topics": list(spec.needs.topics), "database": spec.needs.database, "env": derived}
             plan["warnings"].append("Declares needs (" + ", ".join(sorted(derived)) + "); the release stops before deploying unless the pipeline has applied them "
@@ -582,8 +582,10 @@ class Controller:
         summary = estimate(spec, requests_per_month, average_request_seconds)
         summary["findings"] = findings(spec)
         limit = app.cost_ceiling_usd
-        over = limit is not None and summary["compute_ceiling_usd_month"] > limit
-        summary["ceiling_policy"] = {"limit_usd_month": limit, "status": "not_configured" if limit is None else ("exceeds_limit" if over else "within_limit")}
+        compared = round(summary["compute_ceiling_usd_month"] + summary["needs_floor_usd_month"], 2)
+        over = limit is not None and compared > limit
+        summary["ceiling_policy"] = {"limit_usd_month": limit, "compared_usd_month": compared,
+                                     "status": "not_configured" if limit is None else ("exceeds_limit" if over else "within_limit")}
         summary["note"] = ("Bounds from list prices and the reviewed configuration, not a bill forecast. "
                            "Measured right-sizing comes from the rightsizing workflow report (get_cost_report).")
         return summary
@@ -591,8 +593,8 @@ class Controller:
     def cost_policy(self, app, spec):
         summary = self.cost_summary(app, spec)
         if summary["ceiling_policy"]["status"] == "exceeds_limit":
-            raise ValueError(f"Cost policy: worst-case compute of ${summary['compute_ceiling_usd_month']:.2f}/month exceeds the operator ceiling "
-                             f"of ${app.cost_ceiling_usd:.2f}/month; lower scaling.maximum or resources, or raise cost_ceiling_usd in configuration")
+            raise ValueError(f"Cost policy: worst-case compute plus the needs' floor, ${summary['ceiling_policy']['compared_usd_month']:.2f}/month, exceeds the "
+                             f"operator ceiling of ${app.cost_ceiling_usd:.2f}/month; lower scaling.maximum or resources, drop a need, or raise cost_ceiling_usd")
         return summary
 
     def cost(self, principal, app_id, requests_per_month=None, average_request_seconds=None):

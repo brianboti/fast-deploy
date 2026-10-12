@@ -29,7 +29,7 @@ def test_needs_derive_fixed_variable_names_and_reject_clashes():
         AppSpec(name="demo", needs={"buckets": ["uploads"]}, env={"BUCKET_UPLOADS": "mine"})
     with pytest.raises(ValueError, match="set by the platform"):
         AppSpec(name="demo", needs={"database": "firestore"}, secrets=["FIRESTORE_DATABASE"])
-    for bad in ({"buckets": ["Uploads"]}, {"topics": ["a"]}, {"buckets": ["x", "x"]}, {"database": "postgres"}, {"buckets": [f"b{i}" for i in range(9)]}):
+    for bad in ({"buckets": ["Uploads"]}, {"topics": ["a"]}, {"buckets": ["x", "x"]}, {"database": "mysql"}, {"migrate": ["a,b"]}, {"migrate": ["x"] * 17}, {"buckets": [f"b{i}" for i in range(9)]}):
         with pytest.raises(ValueError):
             AppSpec(name="demo", needs=bad)
     text = "api_version: lab/v1\nname: demo\nneeds:\n  buckets: [uploads]\n  database: firestore\n"
@@ -76,12 +76,16 @@ def test_release_sets_the_derived_variables_and_checks_the_needs_exist(tmp_path,
 
 def test_root_carries_the_needs_and_policies_guard_them():
     files = app_root("demo", needs={"buckets": ["uploads"], "topics": ["events"], "database": "firestore"}, **ROOT)
-    assert 'needs                        = { buckets = ["uploads"], topics = ["events"], database = "firestore" }' in files["main.tf"]
-    assert 'needs                        = { buckets = [], topics = [], database = "none" }' in app_root("demo", **ROOT)["main.tf"]
+    assert 'needs                        = { buckets = ["uploads"], topics = ["events"], database = "firestore", migrate = [] }' in files["main.tf"]
+    assert 'needs                        = { buckets = [], topics = [], database = "none", migrate = [] }' in app_root("demo", **ROOT)["main.tf"]
+    sql = app_root("demo", needs={"database": "postgres", "migrate": ["alembic", "upgrade", "head"]}, **ROOT)["main.tf"]
+    assert 'database = "postgres", migrate = ["alembic", "upgrade", "head"] }' in sql and "network                      = data.terraform_remote_state.project.outputs.network" in sql
+    with pytest.raises(ValueError, match="migrate"):
+        app_root("demo", needs={"migrate": ["a,b"]}, **ROOT)
     with pytest.raises(ValueError, match="Bucket name"):
         app_root("a-long-service-name-x", needs={"buckets": ["a-very-long-bucket-nm"]}, **{**ROOT, "project_id": "a-very-long-project-name-x2345"})
     with pytest.raises(ValueError):
-        app_root("demo", needs={"database": "postgres"}, **ROOT)
+        app_root("demo", needs={"database": "mysql"}, **ROOT)
 
     def change(address, kind, actions, after):
         return {"address": address, "type": kind, "change": {"actions": actions, "after": after}}
@@ -92,6 +96,10 @@ def test_root_carries_the_needs_and_policies_guard_them():
         change("module.service.google_pubsub_topic.need[\"events\"]", "google_pubsub_topic", ["create"], {"labels": {}}),
     ]}
     assert sorted(v["rule"] for v in check_plan(plan)) == ["labels_present", "private_bucket", "protected_database"]
+    unprotected = {"resource_changes": [change("module.service.google_sql_database_instance.need[0]", "google_sql_database_instance", ["create"],
+                                               {"region": "us-central1", "deletion_protection": False, "labels": {"lab-deploy-app": "demo"},
+                                                "settings": [{"ip_configuration": [{"ipv4_enabled": False}]}]})]}
+    assert [v["rule"] for v in check_plan(unprotected)] == ["protected_database"]
     good = {"resource_changes": [
         change("module.service.google_storage_bucket.need[\"uploads\"]", "google_storage_bucket", ["create"],
                {"location": "US-CENTRAL1", "labels": {"lab-deploy-app": "demo"}, "uniform_bucket_level_access": True, "public_access_prevention": "enforced"}),
@@ -124,7 +132,7 @@ def test_plan_and_root_render_carry_the_needs(tmp_path):
     assert plan["needs"]["env"]["BUCKET_UPLOADS"] == "test-project-demo-uploads" and plan["needs"]["database"] == "firestore"
     assert any("Declares needs" in w for w in plan["warnings"])
     rendered = c.render_infrastructure(p, "demo")
-    assert 'needs                        = { buckets = ["uploads"], topics = [], database = "firestore" }' in rendered["files"]["main.tf"]
+    assert 'needs                        = { buckets = ["uploads"], topics = [], database = "firestore", migrate = [] }' in rendered["files"]["main.tf"]
     base["applications"]["demo"]["infra"] = {"instance_alert_count": 4}
     with_settings = Config.model_validate(base)
     rendered = Controller(with_settings, gh, Store(with_settings.database)).render_infrastructure(p, "demo")
@@ -182,3 +190,99 @@ def test_decommission_lists_the_needs_with_their_data_warnings():
     assert len(steps) == 12 and "gs://test-project-demo-uploads/**" in text and "pubsub topics delete demo-events" in text
     assert "--no-delete-protection" in text and "terraform state rm" in text
     assert len(decommission_steps("demo", app, None, "could not read")) == 10
+
+
+def test_postgres_adds_connection_variables_private_egress_and_the_migration_phase(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    spec = AppSpec(name="demo", needs={"database": "postgres", "migrate": ["alembic", "upgrade", "head"]})
+    assert needs_env(spec, "test-project", "us-central1") == {"DATABASE_INSTANCE": "test-project:us-central1:demo", "DATABASE_NAME": "app",
+                                                              "DATABASE_USER": "demo-runtime@test-project.iam", "DATABASE_IP_TYPE": "private"}
+    recorder = Recorder()
+    adapter = CloudRun("test-project", "us-central1", "demo", "demo-probe@test-project.iam.gserviceaccount.com", runner=recorder)
+    adapter.deploy("img@sha256:" + "a" * 64, spec, "r1")
+    command = recorder.commands[-1]
+    assert "--network=lab-deploy" in command and "--subnet=lab-deploy-run" in command and "--vpc-egress=private-ranges-only" in command
+    adapter.deploy("img@sha256:" + "a" * 64, AppSpec(name="demo"), "r1")
+    assert "--clear-network" in recorder.commands[-1]
+    result = adapter.migrate("img@sha256:" + "b" * 64, spec)
+    update, execute = recorder.commands[-2], recorder.commands[-1]
+    assert update[:5] == ["gcloud", "run", "jobs", "update", "demo-migrate"] and "--command" in update and "alembic" in update and "--args=upgrade,head" in update
+    assert "--max-retries=0" in update and "--network=lab-deploy" in update and "--env-vars-file=revision-env.yaml" in update
+    assert execute[:6] == ["gcloud", "run", "jobs", "execute", "demo-migrate", "--wait"] and result == {"job": "demo-migrate", "execution": "ok"}
+    adapter.require_needs(spec)
+    described = [c for c in recorder.commands if "describe" in c]
+    assert ["gcloud", "sql", "instances", "describe", "demo", "--project", "test-project", "--format=value(name)"] in described
+    assert any(c[:5] == ["gcloud", "run", "jobs", "describe", "demo-migrate"] for c in described)
+    recorder.missing = {"--format=value(name)"}  # every describe fails: the job and the instance are reported missing
+    with pytest.raises(ValueError, match="migration job demo-migrate"):
+        adapter.require_needs(spec)
+    recorder.missing = {"--wait"}  # the update succeeds, the execution fails
+    with pytest.raises(RuntimeError, match="Migration job demo-migrate failed"):
+        adapter.migrate("img@sha256:" + "b" * 64, spec)
+
+
+def test_rollout_runs_the_migration_before_the_candidate_and_stops_when_it_fails(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from labdeploy.release import rollout
+
+    class Cloud:
+        service = "demo"
+
+        def __init__(self, fail=False):
+            self.calls, self.fail = [], fail
+
+        def describe(self):
+            return {"status": {"url": "https://demo.run.app", "traffic": [{"revisionName": "demo-rold", "percent": 100}, {"revisionName": "demo-r" + "1" * 16, "tag": "candidate", "url": "https://c.run.app"}]}}
+
+        def traffic(self, allocations):
+            self.calls.append(("traffic", dict(allocations)))
+
+        def require_needs(self, spec):
+            self.calls.append(("require_needs",))
+
+        def migrate(self, image, spec):
+            self.calls.append(("migrate", image))
+            if self.fail:
+                raise RuntimeError("Migration job demo-migrate failed; its log explains")
+            return {"job": "demo-migrate", "execution": "e1"}
+
+        def deploy(self, image, spec, suffix, labels=None):
+            self.calls.append(("deploy", suffix))
+
+        def health(self, url, host, path):
+            return True
+
+        def revision_logs(self, revision, limit=50):
+            return []
+
+        def run(self, args):
+            return ""
+    spec = AppSpec(name="demo", reviewed=True, needs={"database": "postgres", "migrate": ["alembic", "upgrade", "head"]})
+    plan = "1" * 32
+    cloud = Cloud()
+    rollout(cloud, "us-central1-docker.pkg.dev/test-project/demo/demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", spec, plan, "receipt.json")
+    names = [c[0] for c in cloud.calls]
+    assert names.index("require_needs") < names.index("migrate") < names.index("deploy")
+    receipt = json.loads(Path("receipt.json").read_text())
+    assert [p["state"] for p in receipt["phases"]] == ["preparing", "migrating", "deploying", "promoting", "succeeded"] and receipt["migration"]["execution"] == "e1"
+    failing = Cloud(fail=True)
+    with pytest.raises(RuntimeError, match="Release failed"):
+        rollout(failing, "us-central1-docker.pkg.dev/test-project/demo/demo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", spec, plan, "receipt.json")
+    receipt = json.loads(Path("receipt.json").read_text())
+    assert "deploy" not in [c[0] for c in failing.calls] and receipt["state"] == "traffic_restored" and "Migration job" in receipt["error"]
+
+
+def test_postgres_costs_show_the_always_on_floor_and_count_toward_the_ceiling(tmp_path):
+    spec = AppSpec(name="demo", needs={"database": "postgres"})
+    result = estimate(spec)
+    assert result["needs"][0]["need"] == "postgres" and result["needs_floor_usd_month"] == 8.57
+    assert any(f["id"] == "database_always_on" and f["severity"] == "warning" for f in findings(spec))
+    base = {"live_dispatch": True, "database": str(tmp_path / "db"),
+            "applications": {"demo": {"repository": "lab/demo", "service": "demo", "target": TARGET, "cost_ceiling_usd": 140}},
+            "principals": [{"name": "m", "token_sha256": "0" * 64, "applications": ["demo"], "can_deploy": True}]}
+    cfg = Config.model_validate(base)
+    gh = FakeGitHub()
+    gh.spec = {"name": "demo", "reviewed": True, "needs": {"database": "postgres"}}
+    c = Controller(cfg, gh, Store(cfg.database))
+    with pytest.raises(ValueError, match="plus the needs' floor"):
+        c.plan(cfg.principals[0], "demo")

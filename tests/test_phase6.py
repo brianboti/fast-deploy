@@ -74,7 +74,7 @@ def test_check_plan_flags_each_policy_and_passes_a_clean_plan():
         change("module.service.google_cloud_run_v2_service.app", "google_cloud_run_v2_service", ["create"], {"location": "us-central1", "labels": {}}),
     ]}
     rules = sorted(v["rule"] for v in check_plan(plan))
-    assert rules == ["labels_present", "no_broad_roles", "no_data_loss", "no_service_account_keys", "platform_identities_untouched", "private_database", "region_policy"]
+    assert rules == ["labels_present", "no_broad_roles", "no_data_loss", "no_service_account_keys", "platform_identities_untouched", "private_database", "protected_database", "region_policy"]
     clean = {"resource_changes": [
         change("module.service.google_cloud_run_v2_service.app", "google_cloud_run_v2_service", ["create"],
                {"location": "us-central1", "labels": {"lab-deploy-app": "demo", "lab-deploy-managed": "true"}}),

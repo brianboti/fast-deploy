@@ -87,9 +87,11 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
         if key in SETTING_RANGES and not SETTING_RANGES[key][0] <= value <= SETTING_RANGES[key][1]:
             raise ValueError(f"Setting {key!r} must be between {SETTING_RANGES[key][0]} and {SETTING_RANGES[key][1]}")
         merged[key] = value
-    needs = {"buckets": [], "topics": [], "database": "none", **(needs or {})}
-    if set(needs) != {"buckets", "topics", "database"} or needs["database"] not in ("none", "firestore"):
-        raise ValueError("needs must hold buckets, topics and database (none or firestore)")
+    needs = {"buckets": [], "topics": [], "database": "none", "migrate": [], **(needs or {})}
+    if set(needs) != {"buckets", "topics", "database", "migrate"} or needs["database"] not in ("none", "firestore", "postgres"):
+        raise ValueError("needs must hold buckets, topics, database (none, firestore or postgres) and migrate")
+    if not isinstance(needs["migrate"], list) or any(not isinstance(p, str) or not p.isprintable() or "," in p or '"' in p or len(p) > 200 for p in needs["migrate"]) or len(needs["migrate"]) > 16:
+        raise ValueError("migrate is a list of at most 16 printable arguments without commas or double quotes")
     for kind in ("buckets", "topics"):
         for item in needs[kind]:
             if not isinstance(item, str) or not RESOURCE_NAME.fullmatch(item):
@@ -123,11 +125,11 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
     inputs.update(merged)
     width = max(len(key) for key in list(inputs) + ["image_vulnerability_scanning"])
     lines = [f"  {key.ljust(width)} = {_hcl(value)}" for key, value in inputs.items()]
-    lines.append(f"  {'needs'.ljust(width)} = {{ buckets = {_hcl(needs['buckets'])}, topics = {_hcl(needs['topics'])}, database = {_hcl(needs['database'])} }}")
+    lines.append(f"  {'needs'.ljust(width)} = {{ buckets = {_hcl(needs['buckets'])}, topics = {_hcl(needs['topics'])}, database = {_hcl(needs['database'])}, migrate = {_hcl(needs['migrate'])} }}")
     shared = {
         "project_number": "project_number", "image_vulnerability_scanning": "image_vulnerability_scanning",
         "tag_manager_role": "tag_manager_role", "alert_channels": "alert_channels", "cap_service_account": "cap_service_account",
-        "billing_dataset": "billing_dataset",
+        "billing_dataset": "billing_dataset", "network": "network", "subnet": "subnet",
     }
     lines += [f"  {key.ljust(width)} = data.terraform_remote_state.project.outputs.{output}" for key, output in shared.items()]
     main = header + f'''provider "google" {{
@@ -221,6 +223,8 @@ def check_plan(plan, allowed_locations=ALLOWED_LOCATIONS):
             add("private_bucket", address, "buckets use uniform bucket-level access and enforced public access prevention")
         if creating and kind == "google_firestore_database" and after.get("delete_protection_state") != "DELETE_PROTECTION_ENABLED":
             add("protected_database", address, "databases are created with delete protection on")
+        if creating and kind == "google_sql_database_instance" and after.get("deletion_protection") is not True:
+            add("protected_database", address, "databases are created with deletion protection on")
         if creating and kind in LABELLED_TYPES:
             labels = after.get("labels") or {}
             if not isinstance(labels, dict) or "lab-deploy-app" not in labels:

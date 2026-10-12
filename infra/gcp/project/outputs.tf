@@ -9,6 +9,8 @@ output "billing_dataset" { value = module.project.billing_dataset }
 output "image_vulnerability_scanning" { value = var.image_vulnerability_scanning }
 output "observer_service_account" { value = module.project.observer_service_account }
 output "pipeline" { value = module.project.pipeline }
+output "network" { value = module.project.network }
+output "subnet" { value = module.project.subnet }
 output "cost_controls" {
   value = {
     image_vulnerability_scanning = var.image_vulnerability_scanning

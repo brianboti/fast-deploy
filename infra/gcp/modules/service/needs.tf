@@ -108,3 +108,98 @@ resource "google_project_iam_member" "need_firestore_deployer" {
     expression  = "resource.name == \"projects/${var.project_id}/databases/${var.service}\""
   }
 }
+
+# The smallest Cloud SQL for PostgreSQL instance: private address only, IAM sign-in only, zonal, HDD, daily backups kept
+# a week, automatic storage growth capped. It bills every hour it exists; the spending cap stops it at the budget line.
+resource "google_sql_database_instance" "need" {
+  count               = var.needs.database == "postgres" ? 1 : 0
+  name                = var.service
+  region              = var.region
+  database_version    = "POSTGRES_17"
+  deletion_protection = true
+  settings {
+    tier                        = "db-f1-micro"
+    edition                     = "ENTERPRISE"
+    availability_type           = "ZONAL"
+    disk_type                   = "PD_HDD"
+    disk_size                   = 10
+    disk_autoresize             = true
+    disk_autoresize_limit       = 20
+    user_labels                 = local.labels
+    deletion_protection_enabled = true
+    ip_configuration {
+      ipv4_enabled    = false
+      private_network = var.network
+      ssl_mode        = "ENCRYPTED_ONLY"
+    }
+    database_flags {
+      name  = "cloudsql.iam_authentication"
+      value = "on"
+    }
+    backup_configuration {
+      enabled                        = true
+      point_in_time_recovery_enabled = false
+      backup_retention_settings {
+        retained_backups = 7
+      }
+    }
+  }
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+resource "google_sql_database" "app" {
+  count    = var.needs.database == "postgres" ? 1 : 0
+  name     = "app"
+  instance = google_sql_database_instance.need[0].name
+}
+# The runtime identity signs in as itself: no password exists anywhere.
+resource "google_sql_user" "runtime" {
+  count    = var.needs.database == "postgres" ? 1 : 0
+  name     = trimsuffix(google_service_account.runtime.email, ".gserviceaccount.com")
+  instance = google_sql_database_instance.need[0].name
+  type     = "CLOUD_IAM_SERVICE_ACCOUNT"
+}
+resource "google_project_iam_member" "need_sql_runtime" {
+  for_each = var.needs.database == "postgres" ? toset(["roles/cloudsql.client", "roles/cloudsql.instanceUser"]) : toset([])
+  project  = var.project_id
+  role     = each.value
+  member   = local.runtime
+}
+resource "google_project_iam_member" "need_sql_deployer" {
+  count   = var.needs.database == "postgres" ? 1 : 0
+  project = var.project_id
+  role    = "roles/cloudsql.viewer"
+  member  = local.deployer
+}
+
+# The migration job: created here with the bootstrap image so the deployer may update and run it; each release points it
+# at the release's own image and runs the app's migrate command before the candidate gets traffic.
+resource "google_cloud_run_v2_job" "migrate" {
+  count               = length(var.needs.migrate) > 0 ? 1 : 0
+  name                = "${var.service}-migrate"
+  location            = var.region
+  deletion_protection = false
+  labels              = local.labels
+  template {
+    template {
+      service_account = google_service_account.runtime.email
+      max_retries     = 0
+      containers {
+        image   = var.bootstrap_image
+        command = [var.needs.migrate[0]]
+        args    = slice(var.needs.migrate, 1, length(var.needs.migrate))
+      }
+    }
+  }
+  lifecycle {
+    ignore_changes = [template, client, client_version]
+  }
+}
+resource "google_cloud_run_v2_job_iam_member" "migrate_deployer" {
+  count    = length(var.needs.migrate) > 0 ? 1 : 0
+  location = var.region
+  name     = google_cloud_run_v2_job.migrate[0].name
+  role     = "roles/run.developer"
+  member   = local.deployer
+}

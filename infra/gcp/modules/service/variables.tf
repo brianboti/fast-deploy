@@ -76,10 +76,21 @@ variable "needs" {
     buckets  = optional(list(string), [])
     topics   = optional(list(string), [])
     database = optional(string, "none")
+    migrate  = optional(list(string), [])
   })
   default = {}
   validation {
-    condition     = contains(["none", "firestore"], var.needs.database) && alltrue([for n in concat(var.needs.buckets, var.needs.topics) : can(regex("^[a-z][a-z0-9-]{1,20}$", n))])
-    error_message = "needs: database must be none or firestore; bucket and topic names are lowercase, 2 to 21 characters."
+    condition     = contains(["none", "firestore", "postgres"], var.needs.database) && alltrue([for n in concat(var.needs.buckets, var.needs.topics) : can(regex("^[a-z][a-z0-9-]{1,20}$", n))])
+    error_message = "needs: database must be none, firestore or postgres; bucket and topic names are lowercase, 2 to 21 characters."
   }
+}
+variable "network" {
+  type        = string
+  default     = ""
+  description = "The foundation's private network id; a Cloud SQL instance gets its address there."
+}
+variable "subnet" {
+  type        = string
+  default     = ""
+  description = "The foundation's subnet id for Cloud Run egress into that network."
 }
