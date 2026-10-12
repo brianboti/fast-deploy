@@ -84,10 +84,14 @@ main:
                 assign:
                   - stopped: ${list.concat(stopped, instance.name)}
     - log_closed:
+        assign:  # expressions are limited to 400 characters, so the message is built in parts
+          - headline: '${"Lab Deploy spending cap: budget line crossed (" + string(cost) + " of " + string(budget) + ", threshold " + string(exceeded) + ")"}'
+          - actions: '${"; ingress closed on " + string(len(closed)) + " managed services " + json.encode_to_string(closed) + "; stopped " + string(len(stopped)) + " databases " + json.encode_to_string(stopped)}'
+    - log_message:
         call: sys.log
         args:
           severity: WARNING
-          text: '${"Lab Deploy spending cap: budget line crossed (" + string(cost) + " of " + string(budget) + ", threshold " + string(exceeded) + "); ingress closed on " + string(len(closed)) + " managed services " + json.encode_to_string(closed) + "; stopped " + string(len(stopped)) + " databases " + json.encode_to_string(stopped) + ". Reopen with gcloud run services update SERVICE --ingress=all and gcloud sql instances patch NAME --activation-policy=ALWAYS"}'
+          text: '${headline + actions + ". Reopen with gcloud run services update SERVICE --ingress=all and gcloud sql instances patch NAME --activation-policy=ALWAYS"}'
     - maybe_detach:
         switch:
           - condition: ${"__DETACH__" == "true" and exceeded >= __DETACH_THRESHOLD__}

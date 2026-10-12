@@ -148,7 +148,8 @@ def test_cap_workflow_renders_to_valid_yaml_with_complete_expressions():
         assert text.startswith("${") and text.endswith("}") and text.count("{") == text.count("}"), text
     steps = [next(iter(step)) for step in document["main"]["steps"]]
     assert steps == ["decode", "below_cap", "list_services", "nothing_to_close", "close_ingress", "list_instances", "nothing_to_stop", "stop_instances",
-                     "log_closed", "maybe_detach", "done", "report_below"]
+                     "log_closed", "log_message", "maybe_detach", "done", "report_below"]
+    assert max(len(text) for text in expressions) <= 400  # Cloud Workflows refuses longer expressions
     assert "activationPolicy: NEVER" in rendered and "settings.userLabels.lab-deploy-managed:true" in rendered
     assert "{}" not in "".join(expressions) and "[]" not in "".join(expressions)  # Workflows expressions take no map or list literals
     # Services are discovered by label at run time rather than baked in, so adding an app needs no re-apply.

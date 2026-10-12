@@ -1,3 +1,9 @@
+# 1.4.1: fix from the live apply
+
+## Fixed
+
+1. **Cloud Workflows limits an expression to 400 characters**; the cap's log line had grown to 445 with the database count. The message is now built in parts, the test checks the limit, and the corrected workflow was deployed and deleted as a throwaway before this release. The foundation re-apply updates the workflow.
+
 # 1.4.0: Cloud SQL, migrations and a cap that stops databases (Phase 6, items 6.5 and 6.6)
 
 ## Added
