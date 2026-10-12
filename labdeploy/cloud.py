@@ -89,6 +89,32 @@ class Observer:
                 "ingress": data.get("ingress"), "latest_ready_revision": (data.get("latestReadyRevision") or "").rsplit("/", 1)[-1] or None,
                 "updated_at": data.get("updateTime"), "traffic": traffic}
 
+    def needs(self, target, needs):
+        """Whether each declared need exists, with the facts that matter; a missing one is reported, not raised."""
+        items = []
+
+        def probe(kind, name, url, wanted, **params):
+            try:
+                data = self.get(url, **params)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    items.append({"need": kind, "name": name, "exists": False})
+                    return
+                raise
+            items.append({"need": kind, "name": name, "exists": True, **{key: data.get(field) for key, field in wanted.items()}})
+
+        project, service = target.project_id, target.service
+        for name in needs.get("buckets") or []:
+            bucket = f"{project}-{service}-{name}"
+            probe("bucket", bucket, f"https://storage.googleapis.com/storage/v1/b/{bucket}", {"location": "location", "updated": "updated"}, fields="name,location,updated")
+        for name in needs.get("topics") or []:
+            probe("topic", f"{service}-{name}", f"https://pubsub.googleapis.com/v1/projects/{project}/topics/{service}-{name}", {})
+            probe("subscription", f"{service}-{name}", f"https://pubsub.googleapis.com/v1/projects/{project}/subscriptions/{service}-{name}", {"ack_deadline_seconds": "ackDeadlineSeconds"})
+        if needs.get("database") == "firestore":
+            probe("firestore", service, f"https://firestore.googleapis.com/v1/projects/{project}/databases/{service}",
+                  {"location": "locationId", "delete_protection": "deleteProtectionState"})
+        return items
+
     def metrics(self, target, minutes=60):
         """The last hour at a glance: requests, server errors, p95 latency, instances, memory. Missing data stays None."""
         monitoring = CloudMonitoring(target.project_id, self.token, self.client)

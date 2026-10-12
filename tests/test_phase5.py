@@ -101,6 +101,9 @@ class FakeObserver:
     def logs(self, target, minutes, severity, limit):
         return [{"at": "t", "severity": severity, "revision": self.serving, "message": "line"}]
 
+    def needs(self, target, needs):
+        return [{"need": "bucket", "name": f"{target.project_id}-{target.service}-{name}", "exists": name != "missing"} for name in needs.get("buckets", [])]
+
 
 def test_service_health_compares_cloud_run_with_the_recorded_release(tmp_path):
     cfg = config(tmp_path)

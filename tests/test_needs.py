@@ -135,3 +135,50 @@ def test_plan_and_root_render_carry_the_needs(tmp_path):
     base["applications"]["demo"]["infra"] = {"unknown": 1}
     with pytest.raises(ValueError, match="not a known setting"):
         Config.model_validate(base)
+
+
+def test_observer_reports_each_need_and_the_health_view_names_missing_ones(tmp_path):
+    import time
+
+    import httpx
+
+    from labdeploy.cloud import Observer
+
+    def handler(request):
+        path = request.url.path
+        if path.endswith("/b/test-project-demo-uploads"):
+            return httpx.Response(200, json={"name": "test-project-demo-uploads", "location": "US-CENTRAL1", "updated": "2026-10-12T19:09:29Z"})
+        if path.endswith("/topics/demo-events"):
+            return httpx.Response(200, json={"name": "projects/test-project/topics/demo-events"})
+        if path.endswith("/subscriptions/demo-events"):
+            return httpx.Response(200, json={"name": "projects/test-project/subscriptions/demo-events", "ackDeadlineSeconds": 20})
+        if path.endswith("/databases/demo"):
+            return httpx.Response(404, json={"error": {"message": "not found"}})
+        raise AssertionError(str(request.url))
+    cfg = Config.model_validate({"live_dispatch": False, "database": str(tmp_path / "db"), "applications": {"demo": {"repository": "lab/demo", "service": "demo", "target": TARGET}},
+                                 "principals": [{"name": "m", "token_sha256": "0" * 64, "applications": ["demo"], "can_deploy": True}],
+                                 "observer": {"service_account": "lab-deploy-observer@test-project.iam.gserviceaccount.com"}})
+    observer = Observer(cfg, client=httpx.Client(transport=httpx.MockTransport(handler)), runner=lambda args: "t")
+    observer.until, observer.cached = time.time() + 999, "t"
+    items = observer.needs(cfg.applications["demo"].target, {"buckets": ["uploads"], "topics": ["events"], "database": "firestore"})
+    assert [(i["need"], i["exists"]) for i in items] == [("bucket", True), ("topic", True), ("subscription", True), ("firestore", False)]
+    assert items[0]["location"] == "US-CENTRAL1" and items[2]["ack_deadline_seconds"] == 20
+
+    from test_phase5 import FakeObserver
+    gh = FakeGitHub()
+    gh.spec = {"name": "demo", "reviewed": True, "needs": {"buckets": ["uploads", "missing"]}}
+    c = Controller(cfg, gh, Store(cfg.database), FakeObserver())
+    health = c.service_health(cfg.principals[0], "demo")
+    assert [n["exists"] for n in health["needs"]] == [True, False]
+    assert any("Declared need bucket test-project-demo-missing does not exist" in note for note in health["notes"])
+
+
+def test_decommission_lists_the_needs_with_their_data_warnings():
+    from labdeploy.cli import decommission_steps
+    app = Config.model_validate({"live_dispatch": False, "database": "x", "applications": {"demo": {"repository": "lab/demo", "service": "demo", "target": TARGET}},
+                                 "principals": []}).applications["demo"]
+    steps = decommission_steps("demo", app, {"buckets": ["uploads"], "topics": ["events"], "database": "firestore"})
+    text = "\n".join(steps)
+    assert len(steps) == 12 and "gs://test-project-demo-uploads/**" in text and "pubsub topics delete demo-events" in text
+    assert "--no-delete-protection" in text and "terraform state rm" in text
+    assert len(decommission_steps("demo", app, None, "could not read")) == 10

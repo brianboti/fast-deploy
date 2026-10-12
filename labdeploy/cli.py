@@ -68,9 +68,22 @@ def build_parser():
     return parser
 
 
-def decommission_steps(app_id, app):
+def decommission_steps(app_id, app, needs=None, note=None):
     """The order that retires an app without leaving a bill or a dangling trust: drain, delete, then let Terraform forget it."""
     t = app.target
+    needs = needs or {}
+    extra = []
+    for name in needs.get("buckets") or []:
+        extra.append(f"Empty and delete the bucket {t.project_id}-{t.service}-{name} (its data is gone for good): gcloud storage rm -r gs://{t.project_id}-{t.service}-{name}/** "
+                     f"&& gcloud storage buckets delete gs://{t.project_id}-{t.service}-{name}")
+    for name in needs.get("topics") or []:
+        extra.append(f"Delete the subscription and topic: gcloud pubsub subscriptions delete {t.service}-{name} --project {t.project_id} && "
+                     f"gcloud pubsub topics delete {t.service}-{name} --project {t.project_id}")
+    if needs.get("database") == "firestore":
+        extra.append(f"Turn delete protection off and delete the database {t.service} (its data is gone for good): gcloud firestore databases update --database={t.service} "
+                     f"--no-delete-protection --project {t.project_id} && gcloud firestore databases delete --database={t.service} --project {t.project_id}")
+    if note:
+        extra.append(note)
     return [
         f"Pause it: add `paused: true` under applications.{app_id} in the controller configuration (applies without a restart).",
         f"Tell its owners; a rollback target no longer exists once the service is gone. Last chance for `gcloud run services describe {t.service} --region {t.region} --project {t.project_id}`.",
@@ -78,8 +91,9 @@ def decommission_steps(app_id, app):
         f"Empty and delete the recovery bucket: gcloud storage rm -r gs://{t.recovery_bucket}/** && gcloud storage buckets delete gs://{t.recovery_bucket}",
         f"Delete the images: gcloud artifacts repositories delete {t.registry} --location {t.region} --project {t.project_id}",
         f"Delete its secrets, if any: gcloud secrets list --filter='name:{t.service}-' --project {t.project_id}",
-        f"As the operator, run `terraform destroy` in infra/gcp/apps/{t.service} (the pipeline never destroys), then delete that directory in a pull request; "
-        "Terraform drops the identities, trust and alerts it still owns.",
+        *extra,
+        f"As the operator, run `terraform state rm` for each need deleted above, then `terraform destroy` in infra/gcp/apps/{t.service} (the pipeline never destroys), "
+        "and delete that directory in a pull request; Terraform drops the identities, trust and alerts it still owns.",
         f"Remove applications.{app_id} from the controller configuration; its plans stay in the database as history.",
         f"In {app.repository}: disable or delete the three workflows and the staging environment, and revoke the platform credential's access to the repository.",
     ]
@@ -192,7 +206,16 @@ def run(parser, args):
         config = load_config(args.config or os.environ.get("LAB_CONFIG", "config.local.yaml"))
         if args.app not in config.applications:
             parser.error(f"Unknown application: {args.app}")
-        for number, step in enumerate(decommission_steps(args.app, config.applications[args.app]), 1):
+        needs, note = None, None
+        try:
+            from .controller import Controller, Store
+            from .github import GitHub
+            app = config.applications[args.app]
+            controller = Controller(config, GitHub(), Store(config.database))
+            needs = controller.spec_at(app, controller.github.head(app)).needs.model_dump()
+        except Exception as exc:  # noqa: BLE001 - the checklist is still useful without the spec; say what could not be read
+            note = f"The app's platform.yaml could not be read ({str(exc)[:100]}); check it for buckets, topics and a database and delete their data deliberately."
+        for number, step in enumerate(decommission_steps(args.app, config.applications[args.app], needs, note), 1):
             print(f"{number}. {step}")
     elif args.command == "infra":
         from .infra import main as infra_main

@@ -167,7 +167,8 @@ resource "google_service_account" "observer" {
   depends_on   = [google_project_service.apis]
 }
 resource "google_project_iam_member" "observer_roles" {
-  for_each = toset(["roles/run.viewer", "roles/monitoring.viewer", "roles/logging.viewer"])
+  # Viewer roles only; the last three let the health view confirm an app's declared needs exist.
+  for_each = toset(["roles/run.viewer", "roles/monitoring.viewer", "roles/logging.viewer", "roles/storage.bucketViewer", "roles/pubsub.viewer", "roles/datastore.viewer"])
   project  = var.project_id
   role     = each.value
   member   = "serviceAccount:${google_service_account.observer.email}"

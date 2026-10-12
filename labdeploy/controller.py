@@ -276,8 +276,20 @@ class Controller:
                          "someone changed traffic outside the pipeline, or a release is in progress")
         if metrics.get("server_errors"):
             notes.append(f"{metrics['server_errors']} server errors in the last {metrics['window_minutes']} minutes")
+        needs = []
+        try:
+            spec = self.spec_at(app, (live or {}).get("sha") or self.github.head(app))
+            declared = spec.needs.model_dump()
+            if declared["buckets"] or declared["topics"] or declared["database"] != "none":
+                needs = observer.needs(app.target, declared)
+        except ValueError as exc:  # no reviewed spec yet, or the observer may not look: say so instead of hiding the view
+            notes.append(f"Needs not checked: {str(exc)[:160]}")
+        for item in needs:
+            if not item["exists"]:
+                notes.append(f"Declared need {item['need']} {item['name']} does not exist; ask for propose_infrastructure and merge the pull request")
         return {"application": app_id, "service": service, "metrics": metrics, "recorded_live_release": live and {"plan_id": live["id"], "sha": live["sha"], "revision": recorded},
-                "agreement": agreement, "notes": notes, "console_url": f"https://console.cloud.google.com/run/detail/{app.target.region}/{app.target.service}/metrics?project={app.target.project_id}"}
+                "agreement": agreement, "needs": needs, "notes": notes,
+                "console_url": f"https://console.cloud.google.com/run/detail/{app.target.region}/{app.target.service}/metrics?project={app.target.project_id}"}
 
     def recent_logs(self, principal, app_id, minutes=30, severity="ERROR", limit=50):
         app = self.app(principal, app_id)

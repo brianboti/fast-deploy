@@ -1,3 +1,14 @@
+# 1.2.0: needs in the health view and the retirement checklist (Phase 6, item 6.7)
+
+## Added
+
+1. **`get_service_health` checks the declared needs**: each bucket, topic, subscription and database with whether it exists and the facts that matter (location, acknowledgement deadline, delete protection), through the observer identity, which gains the bucket, Pub/Sub and Datastore viewer roles in the foundation. A missing need becomes a note that names the fix.
+2. **`lab-deploy decommission` lists the needs** with their data-loss warnings and the exact commands, reads them from the app's `platform.yaml` when a GitHub credential is present, and tells the operator to remove them from the state before `terraform destroy`.
+
+## Upgrade steps
+
+1. Re-apply the foundation (three viewer roles for the observer) and restart the controller.
+
 # 1.1.1: fix from the live run
 
 ## Fixed
