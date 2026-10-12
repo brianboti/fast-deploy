@@ -111,6 +111,28 @@ Findings that changed the code, each fixed with a regression test and re-verifie
 
 Pending the operator's Terraform apply: candidate logs in the receipt (`roles/logging.viewer`), stale serving-tag removal (custom role), the uptime check, the alert policies and the dashboard. Not performed: a notification delivery (no webhook secret yet) and an alert firing.
 
+## Live exercise of 0.9.0 (2026-10-12)
+
+Environment as in the exercise above: the controller on the operator's laptop behind the ngrok tunnel, started with the launcher at 16:59:26 UTC with `auto_deploy: true` on the demo application, `auto_deploy_interval_seconds: 300` and `observer.service_account` set; the app repository pinned to the 0.8.0 platform commit (0.9.x changed no templates). The background jobs first run 60, 120 and 300 seconds after launch and then keep their intervals. Tool calls went through the controller's own tool interface, as Claude makes them.
+
+| Scenario | Run | Observed |
+|---|---|---|
+| Auto-deploy of a pushed commit | 38281323839 | 63 s after launch the auto-deploy job found main at 5e3afed, neither live nor attempted, and dispatched the release as the identity `auto-deploy` (plan 5a53eecf; audit event `auto_deploy` with outcome `dispatched`). Build 50 s, deploy 106 s, notify 5 s: `succeeded` 2 min 51 s after dispatch, with revision `lab-demo-r5a53eecfaa844a28` serving all traffic. The next tick reported the commit already handled by the dispatched plan, the one after that `up to date`. The operator saw the plan through `list_plans` and followed it with `get_deployment_status`. |
+| Watchdog | in-process job | Ran about two minutes after launch: configuration loadable, credential 59 days from expiry, schedules and pin in order, no problems, nothing to notify (no webhook configured). `lab-deploy watchdog` on the command line gave the same result. |
+| Backup | in-process job | Ran five minutes after launch and wrote `deployments-20261012-170431.db` next to the database, keeping 14 days; `lab-deploy backup` had written `deployments-20261012-165923.db` on demand before the launch. Both copies pass SQLite's integrity check. |
+| Controller watch from GitHub | 38282088934 | Dispatched by hand with the `CONTROLLER_HEALTH_URL` variable set: the run fetched `/healthz` through the tunnel, received `{"status":"ok"}` and passed in 8 s. The half-hourly schedule had not fired yet when this was written. |
+| Live health before the observer exists | tool call | `get_service_health` failed with the plain reason that no observer token could be obtained and what to do about it (sign in with gcloud; create the Terraform observer identity with the operator as impersonator). Nothing else was touched. |
+| Controller status | tool call | `get_controller_status` listed the version, the observer identity, the auto-deploy applications, each background job's last run, result and next run, the credential's expiry and the configuration reload. |
+
+Findings that changed the code, each fixed with a regression test:
+
+1. Plans created by the auto-deploy identity were invisible to the human deployers of the application; deployers now see every plan of their applications (0.9.0, found while building).
+2. The observer error quoted gcloud's impersonation warning instead of its error line (0.9.1). The controller exercised here still runs 0.9.0; a restart picks up the fix.
+
+Not performed: reading live health and logs (needs the observer identity, created by the pending Terraform apply), a notification delivery (no webhook secret), a scheduled controller-watch run, and the always-on machine (deferred by the operator). Pending the operator's Terraform apply: everything listed in the previous section plus the observer identity and its impersonation grant.
+
+Platform tests: 193 passed; ruff and zizmor clean.
+
 ## Live staging trial (2026-10-12)
 
 Environment: a new Google Cloud project `lab-deploy-staging-f29a` linked to billing with a USD 20 monthly budget alert; the platform repository `brianboti/lab-deploy` and the application repository `brianboti/lab-demo-app`, both public; Terraform 1.13.5 in the official container with the pinned Google provider 7.46.1 and a versioned GCS state bucket; a GitHub `staging` environment restricted to `main` holding the eight Terraform outputs; and the controller on a workstation with a fine-grained token (Contents read, Actions write) and `live_dispatch: true`. Every step below ran against the real GitHub and Google Cloud APIs. Google's public Cloud Run sample image, pinned by digest, served as the bootstrap image.
