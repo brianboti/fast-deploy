@@ -1,0 +1,55 @@
+# Spending cap: runs on every budget notification; closes ingress on the platform's services once the budget line is
+# crossed, and optionally detaches billing at a higher line. Reopen with: gcloud run services update SERVICE --ingress=all
+main:
+  params: [event]
+  steps:
+    - decode:
+        assign:
+          - message: ${json.decode(text.decode(base64.decode(event.data.message.data)))}
+          - exceeded: ${default(map.get(message, "alertThresholdExceeded"), 0)}
+          - cost: ${default(map.get(message, "costAmount"), 0)}
+          - budget: ${default(map.get(message, "budgetAmount"), 0)}
+          - services: ${text.split("__SERVICES__", ",")}
+    - below_cap:
+        switch:
+          - condition: ${exceeded < __THRESHOLD__}
+            next: report_below
+    - close_ingress:
+        for:
+          value: service
+          in: ${services}
+          steps:
+            - patch:
+                call: http.patch
+                args:
+                  url: ${"https://run.googleapis.com/v2/projects/__PROJECT__/locations/__REGION__/services/" + service + "?updateMask=ingress"}
+                  auth:
+                    type: OAuth2
+                  body:
+                    ingress: INGRESS_TRAFFIC_INTERNAL_ONLY
+    - log_closed:
+        call: sys.log
+        args:
+          severity: WARNING
+          text: ${"Lab Deploy spending cap: budget line crossed (" + string(cost) + " of " + string(budget) + ", threshold " + string(exceeded) + "); ingress closed on __SERVICES__. Reopen with gcloud run services update SERVICE --ingress=all"}
+    - maybe_detach:
+        switch:
+          - condition: ${"__DETACH__" == "true" and exceeded >= __DETACH_THRESHOLD__}
+            steps:
+              - detach:
+                  call: http.put
+                  args:
+                    url: ${"https://cloudbilling.googleapis.com/v1/projects/__PROJECT__/billingInfo"}
+                    auth:
+                      type: OAuth2
+                    body:
+                      billingAccountName: ""
+              - log_detached:
+                  call: sys.log
+                  args:
+                    severity: CRITICAL
+                    text: ${"Lab Deploy spending cap: billing detached from the project at " + string(exceeded) + " of the budget"}
+    - done:
+        return: ${"cap enforced at threshold " + string(exceeded)}
+    - report_below:
+        return: ${"below cap: threshold " + string(exceeded) + " of budget " + string(budget)}

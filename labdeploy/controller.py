@@ -1,4 +1,5 @@
 import contextlib
+import datetime
 import json
 import re
 import sqlite3
@@ -8,6 +9,7 @@ import uuid
 from .analyzer import FILES, analyze
 from .cost import estimate, findings
 from .models import enforce, parse_spec, spec_hash
+from .rightsize import SETTINGS, apply_settings
 from .status import TERMINAL, advice, release_phases, summarize
 from .workflows import TEMPLATES, pinned_commit, render
 
@@ -141,6 +143,35 @@ class Controller:
             raise ValueError("Deployments are paused by the operator (paused: true in the controller configuration); reads still work")
         if self.config.applications[app_id].paused:
             raise ValueError(f"Deployments of {app_id} are paused by the operator (paused: true on the application); reads still work")
+
+    SCHEDULES = {"recover-gcp.yml": 2 * 86_400, "rightsize-gcp.yml": 8 * 86_400}  # staleness: six-hourly and weekly runs, with slack
+
+    def schedule_health(self, app):
+        """The two scheduled workflows per app: paused by GitHub, stale, or fine. GitHub disables schedules after sixty idle days."""
+        check = getattr(self.github, "schedule_health", None)
+        if not callable(check):
+            return None
+        result = {}
+        for workflow, limit in self.SCHEDULES.items():
+            health = check(app, workflow)
+            last = health.get("last_scheduled_run")
+            age = None
+            if last:
+                try:
+                    age = time.time() - datetime.datetime.fromisoformat(last.replace("Z", "+00:00")).timestamp()
+                except ValueError:
+                    age = None
+            problems = []
+            if health.get("state") and health["state"] != "active":
+                problems.append(f"GitHub reports the workflow as {health['state']}; re-enable it in the Actions tab")
+            if age is not None and age > limit:
+                problems.append(f"last scheduled run was {int(age // 3600)} hours ago")
+            if age is None:
+                problems.append("no scheduled run recorded yet")
+            if health.get("last_conclusion") not in (None, "success"):
+                problems.append(f"last scheduled run concluded {health['last_conclusion']}")
+            result[workflow] = {**health, "ok": not problems, "problems": problems}
+        return result
 
     def platform_pin(self, app):
         """Which platform commit the app's workflows pin, and whether this controller supports it."""
@@ -303,6 +334,10 @@ class Controller:
                 entry["platform_pin"] = self.platform_pin(app)
             except Exception as exc:  # noqa: BLE001 - the pin is informational here; dispatch enforces it
                 entry["platform_pin"] = {"commit": None, "supported": None, "note": f"Could not read the app's workflow: {str(exc)[:120]}"}
+            try:
+                entry["schedules"] = self.schedule_health(app)
+            except Exception as exc:  # noqa: BLE001 - a GitHub hiccup must not hide the application list
+                entry["schedules"] = {"warning": f"Could not read the scheduled workflows: {str(exc)[:120]}"}
             live = self.store.latest_success(app_id)
             if live is None:
                 entry["live_release"] = None
@@ -345,6 +380,49 @@ class Controller:
     def cost_report(self, principal, app_id):
         app = self.app(principal, app_id)
         return self.github.cost_report(app)
+
+    def propose_rightsizing(self, principal, app_id):
+        """Turn the latest measured proposals into a pull request against platform.yaml; review and merge stay human."""
+        app = self.app(principal, app_id, write=True)
+        self.require_active(app_id)
+        if not self.config.live_dispatch:
+            raise ValueError("Writes are disabled (live_dispatch: false); enable them before proposing changes")
+        latest = self.github.cost_report(app)
+        report = latest.get("report")
+        if not report:
+            raise ValueError("No cost report yet; the right-sizing workflow runs weekly, or dispatch it in GitHub Actions")
+        proposals = [p for p in (report.get("rightsizing") or {}).get("recommendations") or []
+                     if p.get("setting") in SETTINGS and isinstance(p.get("recommended"), int) and not isinstance(p.get("recommended"), bool)]
+        if not proposals:
+            return {"application": app_id, "pull_request": None, "changes": [], "note": "The latest report proposes no concrete setting change."}
+        head = self.describe_head(app)
+        text = self.github.file(app, head["sha"], "platform.yaml")
+        new_text, applied, regenerated = apply_settings(text, {p["setting"]: p["recommended"] for p in proposals})
+        if new_text == text:
+            return {"application": app_id, "pull_request": None, "changes": [], "note": "platform.yaml already matches the proposals."}
+        spec = parse_spec(new_text)
+        enforce(spec)  # a proposal can never take the app outside the staging policy
+        before, after = self.cost_summary(app, parse_spec(text)), self.cost_summary(app, spec)
+        if after["ceiling_policy"]["status"] == "exceeds_limit":
+            raise ValueError("The proposed settings would exceed the application's cost ceiling; adjust the ceiling or the proposal first")
+        savings = sum(p.get("estimated_monthly_saving_usd") or 0 for p in proposals)
+        def money(value):
+            return "" if value is None else f"${value:.2f}"
+        rows = "\n".join(f"| `{p['setting']}` | {p.get('current')} | {p['recommended']} | {p.get('reason')} | {money(p.get('estimated_monthly_saving_usd'))} |"
+                         for p in proposals)
+        body = (f"Measured right-sizing from the report generated {report.get('generated_at')} ({latest.get('run_url', 'see Actions')}).\n\n"
+                "| Setting | Current | Proposed | Why | Monthly saving |\n|---|---|---|---|---|\n" + rows +
+                f"\n\nEstimated saving about ${savings:.2f} per month at list prices. Worst-case compute bound ${before['compute_ceiling_usd_month']:.2f} "
+                f"-> ${after['compute_ceiling_usd_month']:.2f} per month; idle floor ${before['idle_floor_usd_month']:.2f} -> ${after['idle_floor_usd_month']:.2f}.\n\n"
+                + ("The file was regenerated from the model because a proposed key was missing, so comments were not kept.\n\n" if regenerated else "")
+                + "Review, adjust and merge through the normal process; the next release applies it. Nothing is merged or deployed by this pull request itself.")
+        branch = f"lab-deploy/rightsize-{(report.get('generated_at') or '')[:10].replace('-', '') or uuid.uuid4().hex[:8]}"
+        pull_request = self.github.open_pull_request(app, branch, {"platform.yaml": new_text}, "Right-size platform.yaml from measured usage", body,
+                                                     "Apply measured right-sizing proposals to platform.yaml")
+        return {"application": app_id, "changes": applied, "estimated_monthly_saving_usd": round(savings, 4),
+                "cost": {"worst_case_before_usd_month": before["compute_ceiling_usd_month"], "worst_case_after_usd_month": after["compute_ceiling_usd_month"],
+                         "idle_floor_before_usd_month": before["idle_floor_usd_month"], "idle_floor_after_usd_month": after["idle_floor_usd_month"]},
+                "pull_request": pull_request}
 
     def deploy(self, principal, plan_id):
         plan = self.store.get(principal.name, plan_id)

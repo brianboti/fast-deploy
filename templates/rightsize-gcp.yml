@@ -23,6 +23,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      issues: write
     env:
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       GCP_REGION: ${{ vars.GCP_REGION }}
@@ -63,6 +64,8 @@ jobs:
       - name: Measure usage and compute right-sizing proposals
         env:
           PYTHONPATH: ${{ github.workspace }}/platform
+          GH_TOKEN: ${{ github.token }}
+          BILLING_EXPORT_TABLE: ${{ vars.BILLING_EXPORT_TABLE }}
         run: python -m labdeploy.cost
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
@@ -71,6 +74,29 @@ jobs:
           path: cost-report.json
           if-no-files-found: warn
           retention-days: 90
+      # One living issue per repository carries the latest report, so the lab sees it without asking Claude.
+      - name: Publish the report as an issue
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ github.workspace }}/platform
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' > issue-body.md
+          import json, os
+          from labdeploy.cost import issue_body
+          print(issue_body(json.load(open("cost-report.json")), os.environ["RUN_URL"]))
+          PY
+          TITLE="Lab Deploy cost report: $SERVICE"
+          NUMBER=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)
+          if [ -n "$NUMBER" ]; then
+            gh issue edit "$NUMBER" --body-file issue-body.md > /dev/null && echo "updated issue #$NUMBER"
+          else
+            gh issue create --title "$TITLE" --body-file issue-body.md --label "" 2>/dev/null || gh issue create --title "$TITLE" --body-file issue-body.md > /dev/null
+            echo "created the cost report issue"
+          fi
   notify:
     needs: [rightsize]
     if: always()

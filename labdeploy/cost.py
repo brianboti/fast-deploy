@@ -292,6 +292,10 @@ def summary_lines(report):
              f"idle floor ${report['estimate']['idle_floor_usd_month']:.2f}/month"]
     if isinstance(report.get("drift"), list) and report["drift"]:
         lines.append("Drift from platform.yaml: " + "; ".join(f"{d['setting']} is {d['live']} live but {d['platform_yaml']} reviewed" for d in report["drift"]))
+    actual = report.get("actual_spend") or {}
+    if actual.get("by_service") is not None:
+        top = ", ".join(f"{r['service']} ${r['net_cost_usd']:.2f}" for r in actual["by_service"][:4])
+        lines.append(f"Actual project spend, last {actual['window_days']} days, net of credits: ${actual['total_net_cost_usd']:.2f} ({top or 'nothing billed'})")
     if observed:
         lines.append(f"Observed usage priced at list rates: ${observed['usd_month_at_list_price']:.2f}/month ({observed['requests']} requests)")
     else:
@@ -323,6 +327,60 @@ def reviewed_spec_from_github(repository, ref="main", token=None):
     return parse_spec(base64.b64decode(data["content"]).decode())
 
 
+BILLING_QUERY = """
+SELECT service.description AS service,
+       ROUND(SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)), 4) AS net_cost_usd
+FROM `{table}`
+WHERE project.id = @project AND usage_start_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)
+GROUP BY service
+HAVING net_cost_usd <> 0
+ORDER BY net_cost_usd DESC
+"""
+
+
+def billing_actuals(table, project_id, token, days=30, client=None):
+    """Actual net spend per Google service from the Cloud Billing export in BigQuery: the bill, not a list-price estimate."""
+    import httpx
+    if not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+", table):
+        raise ValueError("BILLING_EXPORT_TABLE must be project.dataset.table")
+    body = {"query": BILLING_QUERY.format(table=table), "useLegacySql": False, "parameterMode": "NAMED", "timeoutMs": 30000, "maxResults": 100,
+            "queryParameters": [{"name": "project", "parameterType": {"type": "STRING"}, "parameterValue": {"value": project_id}},
+                                {"name": "days", "parameterType": {"type": "INT64"}, "parameterValue": {"value": str(days)}}]}
+    response = (client or httpx).post(f"https://bigquery.googleapis.com/bigquery/v2/projects/{project_id}/queries", json=body,
+                                      headers={"Authorization": "Bearer " + token}, timeout=45)
+    response.raise_for_status()
+    data = response.json()
+    if not data.get("jobComplete", True):
+        raise ValueError("BigQuery did not finish the billing query in time")
+    rows = [{"service": row["f"][0]["v"], "net_cost_usd": float(row["f"][1]["v"])} for row in data.get("rows", [])]
+    return {"window_days": days, "table": table, "total_net_cost_usd": round(sum(r["net_cost_usd"] for r in rows), 4), "by_service": rows,
+            "note": "Net of credits, from Google's billing export; up to a day behind. Compare with usd_month_at_list_price above."}
+
+
+def issue_body(report, run_url):
+    """Markdown for the living cost-report issue: the summary lines, proposals, drift and actual spend."""
+    lines = ["Updated by the weekly right-sizing workflow. Proposals are suggestions for `platform.yaml`; nothing is applied automatically.", ""]
+    lines += [f"- {line}" for line in summary_lines(report)[1:]]
+    proposals = (report.get("rightsizing") or {}).get("recommendations") or []
+    if proposals:
+        lines += ["", "| Setting | Current | Proposed | Why | Monthly saving |", "|---|---|---|---|---|"]
+        for item in proposals:
+            saving = item.get("estimated_monthly_saving_usd")
+            lines.append(f"| `{item.get('setting') or 'note'}` | {item.get('current')} | {item.get('recommended')} | {item.get('reason')} | {'' if saving is None else f'${saving:.2f}'} |")
+    drift = report.get("drift")
+    if isinstance(drift, list) and drift:
+        lines += ["", "Drift from the reviewed configuration:"] + [f"- `{d['setting']}` is {d['live']} live but {d['platform_yaml']} in platform.yaml" for d in drift]
+    actual = report.get("actual_spend") or {}
+    if actual.get("by_service") is not None:
+        lines += ["", f"Actual spend, last {actual['window_days']} days, net of credits: **${actual['total_net_cost_usd']:.2f}**"]
+        lines += [f"- {r['service']}: ${r['net_cost_usd']:.2f}" for r in actual["by_service"][:8]]
+    elif actual.get("warning"):
+        lines += ["", f"Actual spend unavailable: {actual['warning']}"]
+    lines += ["", f"Generated {report.get('generated_at')} by [this run]({run_url}). "
+              "Ask Claude for `get_cost_report` for the full JSON, or `propose_rightsizing` to turn proposals into a pull request."]
+    return "\n".join(lines)
+
+
 def report():
     """Runner entry point: measure the deployed service and write cost-report.json."""
     from .release import CloudRun, run
@@ -337,6 +395,12 @@ def report():
     monitoring = CloudMonitoring(target.project_id, lambda: run(["gcloud", "auth", "print-access-token"]))
     metrics = monitoring.collect(target.service, window_days)
     result = build_report(target.service, target.project_id, window_days, description, metrics, cost_recommender(target.project_id, target.region))
+    table = os.environ.get("BILLING_EXPORT_TABLE", "")
+    if table:
+        try:
+            result["actual_spend"] = billing_actuals(table, target.project_id, run(["gcloud", "auth", "print-access-token"]))
+        except Exception as exc:  # noqa: BLE001 - the export is optional; the report says why it is missing
+            result["actual_spend"] = {"warning": f"Could not read the billing export: {str(exc)[:200]}"}
     repository = os.environ.get("GITHUB_REPOSITORY")
     if repository:
         try:

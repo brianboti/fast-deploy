@@ -84,6 +84,8 @@ Requires regeneration of app workflows: yes. Terraform apply: no.
 
 ## Phase 3: real cost control (one and a half days) → version 0.7.0
 
+Status: implemented on 2026-10-12 as version 0.7.0; the Terraform apply (now including the migration to modules and the cap) and the billing-export console step are the operator's.
+
 | Item | Change | Where |
 |---|---|---|
 | 3.1 | Spending cap (D2): budget alerts publish to Pub/Sub; a small function closes ingress on every platform service at the chosen threshold and, if enabled, detaches billing at a higher one; a notification says what it did and how to reopen | `infra/gcp`, `infra/gcp/cap-function` |

@@ -119,6 +119,13 @@ class GitHub:
                  for f in data.get("files", [])][:50]
         return {"status": data.get("status"), "ahead_by": data.get("ahead_by", 0), "behind_by": data.get("behind_by", 0), "commits": commits[-10:], "files": files}
 
+    def schedule_health(self, app, workflow):
+        """Whether GitHub still runs a scheduled workflow and when it last did; GitHub pauses schedules in idle repositories."""
+        state = self.request("GET", f"/repos/{app.repository}/actions/workflows/{workflow}").json().get("state")
+        runs = self.request("GET", f"/repos/{app.repository}/actions/workflows/{workflow}/runs", params={"event": "schedule", "per_page": 1}).json()["workflow_runs"]
+        last = runs[0] if runs else None
+        return {"workflow": workflow, "state": state, "last_scheduled_run": last and last.get("created_at"), "last_conclusion": last and last.get("conclusion")}
+
     def cancel_run(self, app, run_id):
         """Ask GitHub to cancel a run; the recovery workflow handles whatever the runner had started."""
         self.request("POST", f"/repos/{app.repository}/actions/runs/{int(run_id)}/cancel")
@@ -217,13 +224,12 @@ class GitHub:
     def branch_head(self, repository, branch="main"):
         return self.request("GET", f"/repos/{repository}/commits/{quote(branch, safe='')}").json()["sha"]
 
-    def update_workflows(self, app, platform_sha, files):
-        """Open the pull request that pins the app's workflow files to a platform commit; never merges, never force-pushes."""
+    def open_pull_request(self, app, branch, files, title, body, message):
+        """Open one pull request with the given files on a branch; never merges, never force-pushes, reuses an open one."""
         owner = app.repository.split("/")[0]
-        branch = f"lab-deploy/platform-{platform_sha[:12]}"
         open_prs = self.request("GET", f"/repos/{app.repository}/pulls", params={"head": f"{owner}:{branch}", "state": "open"}).json()
         if open_prs:
-            return {"number": open_prs[0]["number"], "url": open_prs[0]["html_url"], "branch": branch, "changed": [], "note": "A pull request for this platform commit is already open."}
+            return {"number": open_prs[0]["number"], "url": open_prs[0]["html_url"], "branch": branch, "changed": [], "note": "A pull request on this branch is already open."}
         try:
             self.request("POST", f"/repos/{app.repository}/git/refs", json={"ref": f"refs/heads/{branch}", "sha": self.head(app)})
         except httpx.HTTPStatusError as exc:
@@ -234,20 +240,28 @@ class GitHub:
             current = self.contents(app.repository, branch, path)
             if current is not None and current["text"] == text:
                 continue
-            body = {"message": f"Pin Lab Deploy workflows to platform {platform_sha[:12]}", "branch": branch, "content": base64.b64encode(text.encode()).decode()}
+            payload = {"message": message, "branch": branch, "content": base64.b64encode(text.encode()).decode()}
             if current is not None:
-                body["sha"] = current["sha"]
-            self.request("PUT", f"/repos/{app.repository}/contents/{quote(path, safe='/')}", json=body)
+                payload["sha"] = current["sha"]
+            self.request("PUT", f"/repos/{app.repository}/contents/{quote(path, safe='/')}", json=payload)
             changed.append(path)
         if not changed:
-            return {"number": None, "url": None, "branch": branch, "changed": [], "note": "The workflows already match this platform commit."}
-        response = self.request("POST", f"/repos/{app.repository}/pulls", json={
-            "title": f"Update Lab Deploy workflows to platform {platform_sha[:12]}", "base": app.branch, "head": branch, "draft": False,
-            "body": (f"Regenerated from the platform templates at commit `{platform_sha}`.\n\nFiles: " + ", ".join(f"`{p}`" for p in changed)
-                     + "\n\nReview and merge through the normal process; the controller refuses to deploy an app whose pin it does not support. "
-                     "Nothing is merged or deployed by this pull request itself."),
-        })
+            return {"number": None, "url": None, "branch": branch, "changed": [], "note": "The files already have this content."}
+        response = self.request("POST", f"/repos/{app.repository}/pulls", json={"title": title, "base": app.branch, "head": branch, "draft": False, "body": body})
         return {"number": response.json()["number"], "url": response.json()["html_url"], "branch": branch, "changed": changed}
+
+    def update_workflows(self, app, platform_sha, files):
+        """Open the pull request that pins the app's workflow files to a platform commit; never merges, never force-pushes."""
+        body = (f"Regenerated from the platform templates at commit `{platform_sha}`.\n\nFiles: " + ", ".join(f"`{p}`" for p in files)
+                + "\n\nReview and merge through the normal process; the controller refuses to deploy an app whose pin it does not support. "
+                "Nothing is merged or deployed by this pull request itself.")
+        result = self.open_pull_request(app, f"lab-deploy/platform-{platform_sha[:12]}", files, f"Update Lab Deploy workflows to platform {platform_sha[:12]}", body,
+                                        f"Pin Lab Deploy workflows to platform {platform_sha[:12]}")
+        if result.get("note") == "The files already have this content.":
+            result["note"] = "The workflows already match this platform commit."
+        elif result.get("note"):
+            result["note"] = "A pull request for this platform commit is already open."
+        return result
 
     def dispatch(self, app, plan):
         inputs = {"commit_sha": plan["sha"], "spec_hash": plan["spec_hash"], "plan_id": plan["id"], "target_json": json.dumps(plan["target"], sort_keys=True)}

@@ -185,18 +185,39 @@ The release creates a candidate revision, probes its tagged URL with an audience
 - **Platform pins**: `list_applications` shows which platform commit each app's workflows pin. Set `platform.minimum_commit` to refuse dispatch for apps on older pins until `update_app_workflows` regenerates them.
 - **Drift**: the weekly cost report compares the live Cloud Run settings with the reviewed `platform.yaml` and names any difference.
 
+## 7c. Terraform layout for several applications
+
+`infra/gcp` is a root module with one `project` module and one `service` module per application. `terraform.tfvars` lists the applications in the `services` map, keyed by Cloud Run service name:
+
+```hcl
+services = {
+  "lab-demo" = {
+    github_repository    = "YOUR_ORG/YOUR_APP"
+    github_repository_id = "NUMERIC_REPOSITORY_ID"
+    github_owner_id      = "NUMERIC_OWNER_ID"
+    bootstrap_image      = "us-docker.pkg.dev/cloudrun/container/hello@sha256:..."
+    health_path          = "/health"
+  }
+}
+```
+
+Project-wide settings (budget, spending cap, alert channels, scanning, billing export) are plain variables. A state written by versions before 0.7.0 migrates in place through `moved.tf`; the file names the pilot's `lab-demo` service, so add equivalent blocks for other names before upgrading such a state, and delete the file after the first apply.
+
 ## 7. Cost controls and right-sizing
 
 - **Before deploying**, ask Claude to run `estimate_cost` for the application, optionally with expected monthly requests and average request duration. The reply gives the zero-traffic floor, the worst-case compute ceiling and the findings. Set `cost_ceiling_usd` for each application in `config.local.yaml` to refuse plans whose worst case is too high.
 - **After the first week of traffic**, the right-sizing workflow (weekly, or `workflow_dispatch` with a `window_days` input) uploads `cost-report.json`. Ask Claude for `get_cost_report`. Apply accepted proposals by editing `platform.yaml` through a reviewed pull request; nothing changes on its own.
 - **Image cleanup** starts in dry-run mode. Review the Artifact Registry audit logs for what would be deleted, then set `registry_cleanup_dry_run = false`. The newest `image_versions_to_keep` versions are always kept as rollback targets.
+- **Spending cap**: with a budget set, `spending_cap` (default `{ enabled = true, threshold = 1.0 }`) makes every budget notification run a Cloud Workflow that closes ingress on every platform service once spend reaches the threshold of the budget. Requests then fail and compute stops; stored data and images are untouched. Reopen with `gcloud run services update SERVICE --region REGION --ingress=all`; the next release reopens too. `detach_billing = true` with `detach_threshold` also detaches billing from the project at a higher line, which stops everything including the export, so keep it off unless the project is disposable. The budget notification itself still emails billing administrators.
+- **Actual spend**: set `billing_export_dataset` (for example `billing_export`) and apply, then enable the Cloud Billing export to BigQuery into that dataset in the Billing console (Billing export, standard usage cost). Once the table exists, set the repository variable `BILLING_EXPORT_TABLE` to `PROJECT.DATASET.TABLE`; the weekly report, the issue and `get_cost_report` then show net spend by Google service.
+- **Weekly issue and proposals**: the right-sizing workflow keeps one issue per repository up to date. Ask Claude for `propose_rightsizing` to turn the concrete proposals into a pull request against `platform.yaml`.
 - **Budget alert**: set `monthly_budget_usd` and `billing_account` (and optionally `budget_alert_email`) in `terraform.tfvars`. The administrator identity needs Billing Account Costs Manager or equivalent on that billing account. If `terraform apply` answers 403 for the budget, add `user_project_override = true` and `billing_project = var.project_id` to the provider block so the Billing Budgets API is called with a quota project. Budgets notify at 50%, 90% and 100% of actual spend and at 100% forecast spend; they do not stop spending.
 - **Keep the cheap defaults**: `scaling.minimum: 0`, 512 MiB, one vCPU, authenticated access, Tier 1 region. Raise anything only with a measurement from the report.
 
 ## 8. Provenance, scanning and dependency updates
 
 - **Build provenance**: the deployment job signs an attestation for the pushed image digest and verifies it with `gh attestation verify` before release. Nothing to configure. If the verification step fails in the first trial, confirm the runner can read the private registry through `docker-credential-gcloud`; the step fails closed by design.
-- **Image scanning**: Terraform enables Artifact Analysis (`image_vulnerability_scanning`, about USD 0.26 per new image digest). The deployment job writes `vulnerability-summary.json` into the release receipt and the job summary. To block releases with critical findings, set the repository variable `BLOCK_ON_CRITICAL_VULNERABILITIES` to `true`; an unfinished scan then also blocks.
+- **Image scanning**: Terraform enables Artifact Analysis (`image_vulnerability_scanning`, about USD 0.26 per new image digest), often more than a small staging app's compute for the month; it is a per-project cost choice, and the estimate names it. The deployment job writes `vulnerability-summary.json` into the release receipt and the job summary. To block releases with critical findings, set the repository variable `BLOCK_ON_CRITICAL_VULNERABILITIES` to `true`; an unfinished scan then also blocks.
 - **Platform dependencies** are hash-locked. Refresh them deliberately, review the diff, and let CI's pip-audit and tests judge the result:
 
 ```bash

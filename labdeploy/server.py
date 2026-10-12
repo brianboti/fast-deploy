@@ -280,6 +280,12 @@ def build_app(config, github=None, config_path=None):
         """Cost bounds from list prices for the committed platform.yaml, plus findings; optional traffic scenario."""
         return controller.cost(identity.get(), application, requests_per_month, average_request_seconds)
 
+    @mcp.tool(title="Propose right-sizing (pull request)", annotations=CREATES_RECORD, structured_output=True)
+    @plain_errors
+    def propose_rightsizing(application: str) -> dict[str, Any]:
+        """Turn the latest measured right-sizing proposals into a pull request against platform.yaml, with the savings and cost bounds. Never merges."""
+        return controller.propose_rightsizing(identity.get(), application)
+
     @mcp.tool(title="Get cost report", annotations=READ_ONLY, structured_output=True)
     @plain_errors
     def get_cost_report(application: str) -> dict[str, Any]:
