@@ -1,3 +1,15 @@
+# 1.3.0: spend by application (Phase 6, item 6.6, part one)
+
+## Added
+
+1. **Actual spend by application.** The billing export query now groups by Google service and by the `lab-deploy-app` label that every managed resource carries, so the weekly report, the living issue and `get_cost_report` show the project's spend by application beside the per-service view, and the app's own labelled spend with its breakdown. Firestore operations and Cloud Run request fees carry no label and appear as unlabelled.
+
+The other half of item 6.6, the spending cap stopping databases, arrives with Cloud SQL (item 6.5).
+
+## Upgrade steps
+
+None beyond the billing export being enabled; the next right-sizing run shows the new breakdown.
+
 # 1.2.0: needs in the health view and the retirement checklist (Phase 6, item 6.7)
 
 ## Added

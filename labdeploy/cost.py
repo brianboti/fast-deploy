@@ -323,6 +323,8 @@ def summary_lines(report):
     if actual.get("by_service") is not None:
         top = ", ".join(f"{r['service']} ${r['net_cost_usd']:.2f}" for r in actual["by_service"][:4])
         lines.append(f"Actual project spend, last {actual['window_days']} days, net of credits: ${actual['total_net_cost_usd']:.2f} ({top or 'nothing billed'})")
+        if actual.get("app"):
+            lines.append(f"Of which labelled {actual['app']['name']}: ${actual['app']['net_cost_usd']:.2f}")
     if observed:
         lines.append(f"Observed usage priced at list rates: ${observed['usd_month_at_list_price']:.2f}/month ({observed['requests']} requests)")
     else:
@@ -356,17 +358,18 @@ def reviewed_spec_from_github(repository, ref="main", token=None):
 
 BILLING_QUERY = """
 SELECT service.description AS service,
+       IFNULL((SELECT l.value FROM UNNEST(labels) l WHERE l.key = 'lab-deploy-app' LIMIT 1), '') AS app,
        ROUND(SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)), 4) AS net_cost_usd
 FROM `{table}`
 WHERE project.id = @project AND usage_start_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)
-GROUP BY service
+GROUP BY service, app
 HAVING net_cost_usd <> 0
 ORDER BY net_cost_usd DESC
 """
 
 
-def billing_actuals(table, project_id, token, days=30, client=None):
-    """Actual net spend per Google service from the Cloud Billing export in BigQuery: the bill, not a list-price estimate."""
+def billing_actuals(table, project_id, token, days=30, client=None, app=None):
+    """Actual net spend from the Cloud Billing export in BigQuery, by Google service and by the lab-deploy-app label: the bill, not an estimate."""
     import httpx
     if not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+", table):
         raise ValueError("BILLING_EXPORT_TABLE must be project.dataset.table")
@@ -379,9 +382,22 @@ def billing_actuals(table, project_id, token, days=30, client=None):
     data = response.json()
     if not data.get("jobComplete", True):
         raise ValueError("BigQuery did not finish the billing query in time")
-    rows = [{"service": row["f"][0]["v"], "net_cost_usd": float(row["f"][1]["v"])} for row in data.get("rows", [])]
-    return {"window_days": days, "table": table, "total_net_cost_usd": round(sum(r["net_cost_usd"] for r in rows), 4), "by_service": rows,
-            "note": "Net of credits, from Google's billing export; up to a day behind. Compare with usd_month_at_list_price above."}
+    cells = [{"service": row["f"][0]["v"], "app": row["f"][1]["v"] or "", "net_cost_usd": float(row["f"][2]["v"])} for row in data.get("rows", [])]
+    by_service, by_app = {}, {}
+    for cell in cells:
+        by_service[cell["service"]] = round(by_service.get(cell["service"], 0.0) + cell["net_cost_usd"], 4)
+        label = cell["app"] or "(unlabelled)"
+        by_app[label] = round(by_app.get(label, 0.0) + cell["net_cost_usd"], 4)
+    result = {"window_days": days, "table": table, "total_net_cost_usd": round(sum(c["net_cost_usd"] for c in cells), 4),
+              "by_service": [{"service": s, "net_cost_usd": v} for s, v in sorted(by_service.items(), key=lambda kv: -kv[1])],
+              "by_app": [{"app": a, "net_cost_usd": v} for a, v in sorted(by_app.items(), key=lambda kv: -kv[1])],
+              "note": "Net of credits, from Google's billing export; up to a day behind. Resources carry the lab-deploy-app label; "
+                      "Firestore and Cloud Run request fees are not labelled and show as unlabelled. Compare with usd_month_at_list_price above."}
+    if app:
+        own = [c for c in cells if c["app"] == app]
+        result["app"] = {"name": app, "net_cost_usd": round(sum(c["net_cost_usd"] for c in own), 4),
+                         "by_service": sorted(({"service": c["service"], "net_cost_usd": c["net_cost_usd"]} for c in own), key=lambda r: -r["net_cost_usd"])}
+    return result
 
 
 def issue_body(report, run_url):
@@ -401,6 +417,8 @@ def issue_body(report, run_url):
     if actual.get("by_service") is not None:
         lines += ["", f"Actual spend, last {actual['window_days']} days, net of credits: **${actual['total_net_cost_usd']:.2f}**"]
         lines += [f"- {r['service']}: ${r['net_cost_usd']:.2f}" for r in actual["by_service"][:8]]
+        if actual.get("by_app"):
+            lines += ["", "By application label:"] + [f"- {r['app']}: ${r['net_cost_usd']:.2f}" for r in actual["by_app"][:8]]
     elif actual.get("warning"):
         lines += ["", f"Actual spend unavailable: {actual['warning']}"]
     lines += ["", f"Generated {report.get('generated_at')} by [this run]({run_url}). "
@@ -425,7 +443,7 @@ def report():
     table = os.environ.get("BILLING_EXPORT_TABLE", "")
     if table:
         try:
-            result["actual_spend"] = billing_actuals(table, target.project_id, run(["gcloud", "auth", "print-access-token"]))
+            result["actual_spend"] = billing_actuals(table, target.project_id, run(["gcloud", "auth", "print-access-token"]), app=target.service)
         except Exception as exc:  # noqa: BLE001 - the export is optional; the report says why it is missing
             result["actual_spend"] = {"warning": f"Could not read the billing export: {str(exc)[:200]}"}
     repository = os.environ.get("GITHUB_REPOSITORY")
