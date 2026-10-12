@@ -1,3 +1,13 @@
+# 0.9.4: fix from the live apply, part three
+
+## Fixed
+
+1. **The uptime check was rejected again** ("validate_ssl feature is currently only allowed on uptime_url checks"): certificate validation is only offered for plain-URL checks. The option is dropped for the Cloud Run target; the check still uses HTTPS. A throwaway check with the exact final shape was created through the API and deleted again before this release, so the next apply is expected to pass.
+
+## Upgrade steps
+
+1. Re-run the Terraform apply: it creates the uptime check and the health alert.
+
 # 0.9.3: fixes from the live apply, part two
 
 ## Fixed

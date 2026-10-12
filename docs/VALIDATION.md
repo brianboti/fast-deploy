@@ -135,10 +135,11 @@ Findings that changed the code, each fixed with a regression test:
 4. `get_service_health` reported every service as not ready: Cloud Run v2 returns the Ready condition as `terminalCondition`, and the observer looked for it in `conditions` (0.9.2).
 5. The uptime check used the Monitoring service agent's OIDC token against a plain URL; Google offers that only for checks that name a Cloud Run service as a `cloud_run_revision` resource (0.9.3).
 6. The saturation alert used a greater-or-equal comparison; the Monitoring API only offers greater-than and less-than (0.9.3).
+7. The uptime check asked for certificate validation, which the API only offers for plain-URL checks (0.9.4). The third apply created the saturation alert and refreshed the dashboard; the final check shape was confirmed by creating and deleting a throwaway check through the API before the fourth run.
 
 The controller was restarted on 0.9.2 after the second apply; `get_service_health` then reported the service ready with full agreement.
 
-Not performed: a notification delivery (no webhook secret), a scheduled controller-watch run, an alert firing, the spending cap end to end, and the always-on machine (deferred by the operator). Pending the operator's third Terraform apply: the uptime check, the health alert and the saturation alert.
+Not performed: a notification delivery (no webhook secret), a scheduled controller-watch run, an alert firing, the spending cap end to end, and the always-on machine (deferred by the operator). Pending the operator's fourth Terraform apply: the uptime check and the health alert.
 
 Platform tests: 195 passed; ruff and zizmor clean.
 

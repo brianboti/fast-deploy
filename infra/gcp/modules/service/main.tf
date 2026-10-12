@@ -262,8 +262,7 @@ resource "google_monitoring_uptime_check_config" "health" {
   http_check {
     path           = var.health_path
     port           = 443
-    use_ssl        = true
-    validate_ssl   = true
+    use_ssl        = true # certificate validation (validate_ssl) is only offered for plain-URL checks, not Cloud Run targets
     request_method = "GET"
     service_agent_authentication {
       type = "OIDC_TOKEN"
@@ -273,7 +272,8 @@ resource "google_monitoring_uptime_check_config" "health" {
   # the service as a cloud_run_revision resource. Google's own example passes project_id, location and service_name.
   monitored_resource {
     type   = "cloud_run_revision"
-    labels = { project_id = var.project_id, location = var.region, service_name = google_cloud_run_v2_service.app.name }
+    # The API stores revision_name and configuration_name as empty labels; naming them keeps every later plan clean.
+    labels = { project_id = var.project_id, location = var.region, service_name = google_cloud_run_v2_service.app.name, revision_name = "", configuration_name = "" }
   }
   depends_on = [google_cloud_run_v2_service_iam_member.uptime_probe]
 }
