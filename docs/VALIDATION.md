@@ -150,6 +150,25 @@ Platform tests: 195 passed; ruff and zizmor clean.
 
 Version 1.0.0 splits the staging state into a foundation state and one state per application. Before asking the operator to run the migration, it was rehearsed on a pulled copy: the 54-resource state was split locally into 35 foundation resources and 35 for the demo application, and each new root was planned against its split state through a local backend override, with the demo root reading a hand-written copy of the foundation's outputs. Foundation: 20 to add (the pipeline's pool, provider, two identities and their grants; the cap's list permission), 1 to change (the cap workflow now discovers services by label), 0 to destroy. Demo application: 0 to add, 3 to change (the managed labels on the service, registry and recovery bucket), 0 to destroy. The rehearsal found that moving a module inside one state file with an explicit output path makes Terraform write the source last and lose the move; the migration script was corrected before anyone ran it. Platform tests: 213 passed; ruff and zizmor clean; both roots validate.
 
+## Live exercise of 1.0.0 to 1.0.2: the infrastructure pipeline (2026-10-12)
+
+| Scenario | Run | Observed |
+|---|---|---|
+| State migration | operator script | `migrate-state.sh` pulled the 54-resource state, split it into 35 foundation and 35 demo resources, pushed both new states and kept the old object; a read-only plan of the foundation against the real new state matched the rehearsal exactly (20 to add, 1 to change, 0 to destroy). |
+| Foundation apply | operator script | All 20 additions created: the platform pool and provider, both pipeline identities with their roles and federation, the state-bucket read grant, the cap's list permission. The cap workflow's update was rejected by Cloud Workflows (finding 9); a throwaway deploy of the corrected source succeeded and was deleted, and the re-apply is pending. |
+| First pipeline apply, by hand | 38292740794 | Dispatched with `apps=lab-demo` after the three variables were set: the job authenticated through the apply identity from the `infra` environment, planned with the state lock (0 to add, 3 to change, 0 to destroy) and **refused** the plan: the region rule read the bucket's location `US-CENTRAL1` literally (finding 10). The refusal worked as designed; nothing was applied. |
+| Pipeline apply after 1.0.1 | 38292960201 | 0 violations; applied the three managed labels on the service, registry and recovery bucket. The publish step crashed on an output the committed root did not have yet, and the pipe to the job summary hid the failure (finding 11). |
+| Pipeline apply on push, 1.0.2 | 38293174529 | Triggered by the push that re-rendered the root: no resource changes, outputs refreshed, and the eight variables printed for the operator with the note that no `APP_REPOS_TOKEN` exists. Labels confirmed on the service and the registry with gcloud; the release labels from the last deploy sit beside them. |
+| Plan on a pull request | 38293202671 | brianboti/lab-deploy#4 changes the saturation threshold of the demo app: the plan job ran with the read-only identity and without the lock, and posted one comment: `0 to add, 1 to change, 0 to destroy, 0 to replace`, the one alert policy, `Policy: passed`. Merging it applies from the `infra` environment (pending the operator). |
+
+Findings that changed the code, each fixed with a regression test:
+
+9. Cloud Workflows expressions take no map or list literals; the discovery step now tests fields with `in` and ordered switch conditions (1.0.1).
+10. Cloud Storage reports locations in capitals; the region policy compares without regard to case (1.0.1).
+11. A step that pipes its output into the job summary did not fail on an error before the pipe; both workflows run with `pipefail`, and `publish` explains a stale root instead of crashing (1.0.2).
+
+Not performed: the apply-on-merge run (awaiting the operator's merge of the test pull request), the automatic publishing of outputs (no `APP_REPOS_TOKEN`), and a release with the merged label flag (awaiting the operator's merge of the demo app's pin). Platform tests: 213 passed; ruff and zizmor clean.
+
 ## Live staging trial (2026-10-12)
 
 Environment: a new Google Cloud project `lab-deploy-staging-f29a` linked to billing with a USD 20 monthly budget alert; the platform repository `brianboti/lab-deploy` and the application repository `brianboti/lab-demo-app`, both public; Terraform 1.13.5 in the official container with the pinned Google provider 7.46.1 and a versioned GCS state bucket; a GitHub `staging` environment restricted to `main` holding the eight Terraform outputs; and the controller on a workstation with a fine-grained token (Contents read, Actions write) and `live_dispatch: true`. Every step below ran against the real GitHub and Google Cloud APIs. Google's public Cloud Run sample image, pinned by digest, served as the bootstrap image.
