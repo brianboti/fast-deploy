@@ -68,6 +68,17 @@ def test_serving_tag_update_failure_is_a_warning(tmp_path):
     cloud.run = lambda args: (_ for _ in ()).throw(RuntimeError("registry unavailable"))
     receipt = rollout(cloud, IMAGE, SPEC, PLAN_ID, tmp_path / "receipt.json", image_path=IMAGE_PATH)
     assert receipt["state"] == "succeeded" and "registry unavailable" in receipt["tag_warning"]
+
+    class NoDelete(Recorder):
+        def __call__(self, args):
+            if "delete" in args:
+                raise RuntimeError("PERMISSION_DENIED: artifactregistry.tags.delete")
+            return super().__call__(args)
+    stale = json.dumps([{"tag": "projects/p/locations/l/repositories/demo/packages/demo/tags/serving-demo-old"}])
+    cloud = Cloud([True, True])
+    cloud.run = NoDelete({"tags list": stale})
+    result = reconcile_serving_tags(cloud, IMAGE_PATH, cloud.run)
+    assert result["removed"] == [] and "serving-demo-old" in result["warnings"][0] and "PERMISSION_DENIED" in result["warnings"][0]
     with pytest.raises(ValueError, match="image path"):
         reconcile_serving_tags(cloud, "not-a-registry-path", lambda args: "")
 

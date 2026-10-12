@@ -83,6 +83,19 @@ resource "google_artifact_registry_repository_iam_member" "writer" {
   role       = "roles/artifactregistry.writer"
   member     = "serviceAccount:${google_service_account.deployer.email}"
 }
+# The writer role can create tags but not delete them; retiring stale serving-<revision> tags needs this one permission.
+resource "google_project_iam_custom_role" "tag_manager" {
+  role_id     = "${replace(var.service, "-", "_")}TagManager"
+  title       = "${var.service} registry tag manager"
+  description = "Lets the deployer retire serving-<revision> tags in its own repository"
+  permissions = ["artifactregistry.tags.delete"]
+}
+resource "google_artifact_registry_repository_iam_member" "tag_manager" {
+  location   = var.region
+  repository = google_artifact_registry_repository.images.name
+  role       = google_project_iam_custom_role.tag_manager.name
+  member     = "serviceAccount:${google_service_account.deployer.email}"
+}
 resource "google_service_account_iam_member" "act_as_runtime" {
   service_account_id = google_service_account.runtime.name
   role               = "roles/iam.serviceAccountUser"

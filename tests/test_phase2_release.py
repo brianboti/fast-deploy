@@ -153,6 +153,10 @@ def test_a_commit_released_before_reuses_its_attested_image(tmp_path):
     assert again["checks"]["tests"] == "passed_in_earlier_release" and again["checks"]["dependency_scan"] == "passed_in_earlier_release"
     foreign = release(c, p, gh, "2" * 40, "demo-r2", image="us-central1-docker.pkg.dev/other/demo/demo@sha256:" + "f" * 64)
     assert "reuse_image" not in c.plan(p, "demo") and foreign["id"]
+    c.store.mark(first["id"], rolled_back=True)  # a rolled-back release still proves its image for that commit
+    gh.sha = "1" * 40
+    assert c.plan(p, "demo")["reuse_image"] == IMAGE
+    assert c.store.latest_success("demo") is None or c.store.latest_success("demo")["id"] != first["id"]
 
 
 def test_dispatch_sends_the_image_digest_only_when_reusing(monkeypatch):
@@ -187,6 +191,23 @@ def test_github_status_identifies_rollback_runs_by_title(monkeypatch):
         github.status(app, {"id": PLAN_ID, "sha": "2" * 40, "dispatch_result": {"workflow_run_id": 777}})
 
 
+def test_github_status_accepts_pinned_commit_runs_whose_head_is_the_branch_tip(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "github_pat_test")
+    app = Config.model_validate({"applications": {"demo": {"repository": "lab/demo", "service": "demo", "target": TARGET}}, "principals": []}).applications["demo"]
+
+    def handler(request):
+        if request.url.path == "/repos/lab/demo/actions/runs/778":
+            return httpx.Response(200, json={"id": 778, "status": "in_progress", "conclusion": None, "head_sha": "m" * 40, "display_title": "deploy-" + PLAN_ID, "run_attempt": 1})
+        if request.url.path == "/repos/lab/demo/actions/runs/778/attempts/1/jobs":
+            return httpx.Response(200, json={"jobs": []})
+        raise AssertionError(request.url.path)
+    github = GitHub(httpx.Client(base_url="https://api.github.com", transport=httpx.MockTransport(handler)))
+    pinned = {"id": PLAN_ID, "sha": "o" * 40, "pinned_commit": True, "dispatch_result": {"workflow_run_id": 778}}
+    assert github.status(app, pinned)["status"] == "in_progress"
+    with pytest.raises(ValueError, match="identity"):  # a plan of the tip still has to match the tip
+        github.status(app, {"id": PLAN_ID, "sha": "o" * 40, "dispatch_result": {"workflow_run_id": 778}})
+
+
 def test_drift_lists_live_settings_that_differ_from_the_reviewed_spec():
     spec = AppSpec(name="demo", reviewed=True)
     assert drift({"cpu": 1, "memory_mib": 512, "concurrency": 80, "minimum": 0, "maximum": 2}, spec) == []
@@ -206,6 +227,7 @@ def test_workflows_support_reuse_rollback_and_history_checks():
     assert "Validate dispatch inputs for reuse" in names and names.index("Validate dispatch inputs for reuse") < names.index("Validate artifact and deployment configuration")
     validate = deploy["jobs"]["build"]["steps"][0]
     assert "compare/$COMMIT_SHA...$GITHUB_SHA" in validate["run"] and 'test "$COMMIT_SHA" = "$GITHUB_SHA"' not in validate["run"]
+    assert names.index("Configure registry access") < names.index("Verify build provenance")  # provenance verification pulls the manifest in both modes
     recover = yaml.safe_load(Path("templates/recover-gcp.yml").read_text())
     assert recover[True]["workflow_dispatch"]["inputs"]["rollback_plan_id"]["default"] == "" and "rollback-{0}" in recover["run-name"]
     assert recover["jobs"]["recover"]["env"]["ROLLBACK_PLAN_ID"] == "${{ inputs.rollback_plan_id }}"

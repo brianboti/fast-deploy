@@ -1,3 +1,16 @@
+# 0.6.1: fixes from the live steering exercise
+
+## Fixed
+
+1. **Status of a plan pinned to an older commit** was rejected as a workflow identity mismatch: GitHub reports the run's head as the branch tip, not the plan's commit. The unique plan id in the run title is the identity; the head check now applies only to plans of the tip itself.
+2. **Image reuse ignored a rolled-back release.** A rolled-back release's image is still the attested image of that commit, so it now counts for reuse.
+3. **Provenance verification failed when the build was skipped**, because the registry login lived in the push step. A dedicated "Configure registry access" step now runs in both modes.
+4. **Stale serving tags could not be deleted**: the deployer's writer role creates tags but cannot delete them. Terraform adds a one-permission custom role on the repository, and the reconcile reports a failed deletion instead of abandoning the update.
+
+## Upgrade steps
+
+1. Apply the Terraform change (custom role and binding) and regenerate the app workflows.
+
 # 0.6.0: steer after a release
 
 ## Added

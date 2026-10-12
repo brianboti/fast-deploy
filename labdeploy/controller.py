@@ -80,11 +80,12 @@ class Store:
                               "revision": receipt.get("revision") if state == "succeeded" else None})
         return summaries
 
-    def latest_success(self, application, sha=None):
-        """The newest release that succeeded and was not rolled back, for an application (optionally for one commit)."""
-        query = ("SELECT payload FROM plans WHERE state='succeeded' AND json_extract(payload, '$.application')=? "
-                 "AND json_extract(payload, '$.rolled_back') IS NULL AND json_extract(payload, '$.kind') IS NULL")
+    def latest_success(self, application, sha=None, include_rolled_back=False):
+        """The newest release that succeeded for an application, by default excluding ones rolled back since (optionally for one commit)."""
+        query = "SELECT payload FROM plans WHERE state='succeeded' AND json_extract(payload, '$.application')=? AND json_extract(payload, '$.kind') IS NULL"
         params = [application]
+        if not include_rolled_back:
+            query += " AND json_extract(payload, '$.rolled_back') IS NULL"
         if sha:
             query += " AND json_extract(payload, '$.sha')=?"
             params.append(sha)
@@ -229,7 +230,8 @@ class Controller:
             "checks": {"config_policy": "passed", "tests": "pending_in_ci", "dependency_scan": "pending_in_ci", "health": "pending_after_deployment"},
             "pinned_commit": bool(commit_sha), "behind_branch_by": behind,
         }
-        prior = self.store.latest_success(app_id, sha)
+        # A rolled-back release's image is still the attested image of that commit, so it counts for reuse.
+        prior = self.store.latest_success(app_id, sha, include_rolled_back=True)
         image = ((prior or {}).get("receipt") or {}).get("image")
         prefix = f"{app.target.region}-docker.pkg.dev/{app.target.project_id}/{app.target.registry}/{app.target.service}@sha256:"
         if image and image.startswith(prefix):

@@ -290,8 +290,10 @@ class GitHub:
             run = next((r for r in runs if r.get("display_title") == title), None)
         if run is None:
             return {"status": "not_visible_yet", "note": "Do not redispatch; inspect GitHub Actions if this persists."}
-        # A rollback runs the recovery workflow on the branch tip, so only its title identifies it.
-        if (not rollback and run.get("head_sha") != plan["sha"]) or run.get("display_title") != title:
+        # The unique plan id in the run title is the identity. The head SHA is the branch tip the workflow ran on, which
+        # only equals the plan's commit for a plan of the tip itself: rollbacks and plans pinned to older commits differ.
+        tip_only = not rollback and not plan.get("pinned_commit")
+        if (tip_only and run.get("head_sha") != plan["sha"]) or run.get("display_title") != title:
             # Observed live: for a second or two after dispatch the run exists but its title and commit are not
             # populated yet. Only a run that has started or finished must prove its identity.
             if run_id and run.get("status") in {None, "", "requested", "queued", "pending", "waiting"}:

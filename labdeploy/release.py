@@ -166,15 +166,21 @@ def reconcile_serving_tags(adapter, image_path, runner=run):
         digest = adapter.revision_image(revision)
         if IMAGE_DIGEST.fullmatch(digest):
             wanted[f"serving-{revision}"] = digest
-    added, removed = [], []
+    added, removed, warnings = [], [], []
     for tag, digest in wanted.items():
         if tag not in current:
             runner(["gcloud", "artifacts", "docker", "tags", "add", digest, f"{image_path}:{tag}"])
             added.append(tag)
     for tag in sorted(current - set(wanted)):
-        runner(["gcloud", "artifacts", "docker", "tags", "delete", f"{image_path}:{tag}", "--quiet"])
-        removed.append(tag)
-    return {"serving": sorted(wanted), "added": added, "removed": removed}
+        try:
+            runner(["gcloud", "artifacts", "docker", "tags", "delete", f"{image_path}:{tag}", "--quiet"])
+            removed.append(tag)
+        except Exception as error:  # a stale tag only keeps one more image; protecting the serving ones matters more
+            warnings.append(f"{tag}: {describe_error(error)}")
+    result = {"serving": sorted(wanted), "added": added, "removed": removed}
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 def traffic_snapshot(status):
