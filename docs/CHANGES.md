@@ -11,6 +11,7 @@
 
 - The spec hash leaves default values out, so adding an optional field to the schema no longer changes the hash of a spec that does not use it. This change itself changes every hash once.
 - The foundation enables the Pub/Sub and Firestore APIs.
+- Per-app infrastructure settings (alert thresholds, image retention) live under `applications.<app>.infra` in the controller configuration; the renderer writes them into the root, which is never the source of truth.
 
 ## Upgrade steps
 

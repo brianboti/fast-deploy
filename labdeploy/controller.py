@@ -513,7 +513,7 @@ class Controller:
             health_path, note = "/health", f"Defaults used until the app has a reviewed platform.yaml: {exc}"
         files = app_root(target.service, project_id=target.project_id, region=target.region, state_bucket=state_bucket or f"{target.project_id}-tfstate",
                          github_repository=app.repository, github_repository_id=ids["repository_id"], github_owner_id=ids["owner_id"],
-                         bootstrap_image=bootstrap_image or BOOTSTRAP_IMAGE, health_path=health_path, settings=settings, needs=needs)
+                         bootstrap_image=bootstrap_image or BOOTSTRAP_IMAGE, health_path=health_path, settings={**app.infra, **(settings or {})}, needs=needs)
         return {"application": app_id, "service": target.service, "directory": f"infra/gcp/apps/{target.service}", "files": files, "note": note}
 
     def propose_infrastructure(self, principal, app_id, allow_writes=False, **render):

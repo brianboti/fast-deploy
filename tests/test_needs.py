@@ -125,3 +125,13 @@ def test_plan_and_root_render_carry_the_needs(tmp_path):
     assert any("Declares needs" in w for w in plan["warnings"])
     rendered = c.render_infrastructure(p, "demo")
     assert 'needs                        = { buckets = ["uploads"], topics = [], database = "firestore" }' in rendered["files"]["main.tf"]
+    base["applications"]["demo"]["infra"] = {"instance_alert_count": 4}
+    with_settings = Config.model_validate(base)
+    rendered = Controller(with_settings, gh, Store(with_settings.database)).render_infrastructure(p, "demo")
+    assert "instance_alert_count         = 4" in rendered["files"]["main.tf"]
+    base["applications"]["demo"]["infra"] = {"instance_alert_count": 0}
+    with pytest.raises(ValueError, match="infra.instance_alert_count"):
+        Config.model_validate(base)
+    base["applications"]["demo"]["infra"] = {"unknown": 1}
+    with pytest.raises(ValueError, match="not a known setting"):
+        Config.model_validate(base)

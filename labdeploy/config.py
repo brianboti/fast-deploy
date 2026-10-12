@@ -20,6 +20,9 @@ class Application(StrictModel):
     cost_ceiling_usd: float | int | None = None
     paused: bool = False  # refuse new plans and dispatches for this app without touching anything else
     auto_deploy: bool = False  # release the tip of main on its own when it is not the live release; every guardrail still applies
+    # Per-app infrastructure settings the renderer writes into the app's Terraform root (alert thresholds, image retention);
+    # keys and ranges are those of labdeploy.infra.DEFAULT_SETTINGS. The generated root is never the source of truth.
+    infra: dict[str, int | bool] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def workflow_fixed(self):
@@ -31,6 +34,12 @@ class Application(StrictModel):
             raise ValueError("Only the reviewed deploy-gcp.yml workflow is supported")
         if self.cost_ceiling_usd is not None and self.cost_ceiling_usd <= 0:
             raise ValueError("cost_ceiling_usd must be a positive amount")
+        from .infra import DEFAULT_SETTINGS, SETTING_RANGES
+        for key, value in self.infra.items():
+            if key not in DEFAULT_SETTINGS or type(value) is not type(DEFAULT_SETTINGS[key]):
+                raise ValueError(f"infra.{key} is not a known setting of the right type ({', '.join(DEFAULT_SETTINGS)})")
+            if key in SETTING_RANGES and not SETTING_RANGES[key][0] <= value <= SETTING_RANGES[key][1]:
+                raise ValueError(f"infra.{key} must be between {SETTING_RANGES[key][0]} and {SETTING_RANGES[key][1]}")
         return self
 
 
