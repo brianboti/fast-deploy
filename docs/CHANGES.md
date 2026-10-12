@@ -1,3 +1,14 @@
+# 1.0.1: fixes from the live run
+
+## Fixed
+
+1. **The region policy refused every recovery bucket**: Cloud Storage reports locations in capitals (`US-CENTRAL1`), and the rule compared literally. Found by the first pipeline apply, which refused the demo app's plan exactly as designed; the comparison now ignores case.
+2. **Cloud Workflows rejected the spending-cap workflow's discovery step**: its expressions cannot contain map or list literals (`{}`, `[]`). Missing fields are now tested with `in` and ordered switch conditions; the test asserts no such literal appears, and the rendered workflow was deployed and deleted as a throwaway before this release.
+
+## Upgrade steps
+
+1. Re-apply the foundation root (one change: the cap workflow's source).
+
 # 1.0.0: infrastructure as pull requests (Phase 6, item 6.3)
 
 ## Added

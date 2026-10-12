@@ -79,7 +79,7 @@ def test_check_plan_flags_each_policy_and_passes_a_clean_plan():
         change("module.service.google_cloud_run_v2_service.app", "google_cloud_run_v2_service", ["create"],
                {"location": "us-central1", "labels": {"lab-deploy-app": "demo", "lab-deploy-managed": "true"}}),
         change("module.service.google_project_iam_member.log_reader", "google_project_iam_member", ["create"], {"role": "roles/logging.viewer", "member": "serviceAccount:demo-deploy@p"}),
-        change("module.service.google_storage_bucket.recovery", "google_storage_bucket", ["update"], {"location": "us-central1", "labels": {"lab-deploy-app": "demo"}}),
+        change("module.service.google_storage_bucket.recovery", "google_storage_bucket", ["update"], {"location": "US-CENTRAL1", "labels": {"lab-deploy-app": "demo"}}),
         change("data.terraform_remote_state.project", "terraform_remote_state", ["read"], {}),
     ]}
     assert check_plan(clean) == []

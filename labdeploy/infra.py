@@ -191,7 +191,8 @@ def check_plan(plan, allowed_locations=ALLOWED_LOCATIONS):
         if creating or "update" in actions:
             for field in ("location", "region"):
                 value = after.get(field)
-                if isinstance(value, str) and value not in allowed_locations:
+                # Cloud Storage reports locations in capitals (US-CENTRAL1); compare without regard to case.
+                if isinstance(value, str) and value.lower() not in allowed_locations:
                     add("region_policy", address, f"{field} {value!r} is outside {', '.join(allowed_locations)}")
             if kind in ("google_project_iam_member", "google_project_iam_binding") and after.get("role") in BROAD_ROLES:
                 add("no_broad_roles", address, f"{after.get('role')} is never granted by an application root")

@@ -1,6 +1,7 @@
 # Spending cap: runs on every budget notification. Once the budget line is crossed it closes ingress on every Cloud Run
 # service in the region that carries the label lab-deploy-managed=true (set by the service module), and optionally
 # detaches billing at a higher line. Reopen with: gcloud run services update SERVICE --ingress=all
+# Workflows expressions take no map or list literals ({} or []), so missing fields are tested with `in` instead of default().
 main:
   params: [event]
   steps:
@@ -22,14 +23,22 @@ main:
           auth:
             type: OAuth2
         result: listing
+    - nothing_to_close:
+        switch:
+          - condition: ${not ("services" in listing.body)}
+            next: log_closed
     - close_ingress:
         for:
           value: service
-          in: ${default(map.get(listing.body, "services"), [])}
+          in: ${listing.body.services}
           steps:
             - managed_only:
                 switch:
-                  - condition: ${default(map.get(default(map.get(service, "labels"), {}), "lab-deploy-managed"), "") != "true"}
+                  - condition: ${not ("labels" in service)}
+                    next: continue
+                  - condition: ${not ("lab-deploy-managed" in service.labels)}
+                    next: continue
+                  - condition: ${service.labels["lab-deploy-managed"] != "true"}
                     next: continue
             - patch:
                 call: http.patch
