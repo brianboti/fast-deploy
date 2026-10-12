@@ -1,6 +1,5 @@
 # One application: its identities, registry, Cloud Run service, GitHub trust, recovery bucket and runtime alerts.
 locals {
-  service_host   = replace(google_cloud_run_v2_service.app.uri, "https://", "")
   service_filter = "resource.type=\"cloud_run_revision\" AND resource.label.service_name=\"${var.service}\""
 }
 
@@ -270,9 +269,11 @@ resource "google_monitoring_uptime_check_config" "health" {
       type = "OIDC_TOKEN"
     }
   }
+  # Service-agent (OIDC) authentication is only offered for Cloud Run targets, not arbitrary URLs: the check must name
+  # the service as a cloud_run_revision resource. Google's own example passes project_id, location and service_name.
   monitored_resource {
-    type   = "uptime_url"
-    labels = { project_id = var.project_id, host = local.service_host }
+    type   = "cloud_run_revision"
+    labels = { project_id = var.project_id, location = var.region, service_name = google_cloud_run_v2_service.app.name }
   }
   depends_on = [google_cloud_run_v2_service_iam_member.uptime_probe]
 }
@@ -283,7 +284,7 @@ resource "google_monitoring_alert_policy" "health" {
   conditions {
     display_name = "uptime check failed from more than one region"
     condition_threshold {
-      filter          = "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND resource.type=\"uptime_url\" AND metric.label.check_id=\"${google_monitoring_uptime_check_config.health[0].uptime_check_id}\""
+      filter          = "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND resource.type=\"cloud_run_revision\" AND metric.label.check_id=\"${google_monitoring_uptime_check_config.health[0].uptime_check_id}\""
       comparison      = "COMPARISON_GT"
       threshold_value = 1
       duration        = "300s"
@@ -365,8 +366,8 @@ resource "google_monitoring_alert_policy" "saturation" {
     display_name = "${var.instance_alert_count} or more active instances for five minutes"
     condition_threshold {
       filter          = "metric.type=\"run.googleapis.com/container/instance_count\" AND ${local.service_filter} AND metric.label.state=\"active\""
-      comparison      = "COMPARISON_GE"
-      threshold_value = var.instance_alert_count
+      comparison      = "COMPARISON_GT" # the API only offers GT and LT; instance counts are whole numbers, so GT n-1 means "n or more"
+      threshold_value = var.instance_alert_count - 1
       duration        = "300s"
       aggregations {
         alignment_period     = "60s"

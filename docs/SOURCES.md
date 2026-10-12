@@ -41,6 +41,7 @@ Official references for the cost optimizer (0.2.0), read on 2026-10-11:
 - [About maximum concurrent requests per instance](https://docs.cloud.google.com/run/docs/about-concurrency): default 80, maximum 1,000, when to lower or raise
 - [Optimize with Recommender](https://docs.cloud.google.com/run/docs/recommender) and [Recommenders](https://docs.cloud.google.com/recommender/docs/recommenders): `google.run.service.CostRecommender`
 - [gcloud recommender recommendations list](https://docs.cloud.google.com/sdk/gcloud/reference/recommender/recommendations/list)
+- [Analyze your application using metrics (Cloud Deploy)](https://docs.cloud.google.com/deploy/docs/deploy-app-analysis): Google's own uptime check for a Cloud Run service with service-agent OIDC authentication, naming the service as a `cloud-run-revision` resource with `project_id`, `location` and `service_name`; the shape `infra/gcp/modules/service` uses
 - [Google Cloud metrics, `run.googleapis.com`](https://docs.cloud.google.com/monitoring/api/metrics_gcp_p_z): metric kinds, value types and units used by `labdeploy/telemetry.py`
 - [Monitoring API `projects.timeSeries.list`](https://docs.cloud.google.com/monitoring/api/ref_v3/rest/v3/projects.timeSeries/list) and [Aligner/Reducer reference](https://docs.cloud.google.com/monitoring/api/ref_v3/rest/v3/projects.alertPolicies#Aligner)
 - [Terraform `google_artifact_registry_repository`](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/artifact_registry_repository): cleanup policies

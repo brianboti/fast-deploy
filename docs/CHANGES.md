@@ -1,3 +1,14 @@
+# 0.9.3: fixes from the live apply, part two
+
+## Fixed
+
+1. **The uptime check was rejected** ("Service agent authentication is not supported for arbitrary URLs"): Google offers the Monitoring service agent's OIDC token only for checks that name a Cloud Run service as a `cloud_run_revision` resource, not for a plain URL. The check now names the service by project, location and name, as Google's own example does, and the health alert filters on that resource type.
+2. **The saturation alert was rejected**: the Monitoring API only offers greater-than and less-than comparisons. "n or more instances" is now expressed as "more than n-1", which is the same test for whole numbers.
+
+## Upgrade steps
+
+1. Re-run the Terraform apply: it creates the uptime check, the health alert and the saturation alert that the previous apply could not.
+
 # 0.9.2: fix from the live apply
 
 ## Fixed
