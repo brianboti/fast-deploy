@@ -4,7 +4,7 @@ claude.ai can only add a fixed bearer header for organizations in a limited beta
 own small authorization server instead: the operator signs in once in the browser with the existing operator token,
 Claude receives a short-lived access token plus a rotating refresh token, and every later call passes through the
 same request gate as a static token. Static bearer tokens keep working for Claude Code, the REST routes and the
-walkthrough. Nothing here contacts a third party; codes and tokens are stored only as SHA-256 hashes.
+walkthrough. Nothing here contacts a third party; codes and tokens are stored only as SHA-256 hashes, and clients are public (no secrets).
 """
 import hashlib
 import hmac
@@ -170,6 +170,7 @@ class Provider:
         self.issuer = normalize(self.oauth.public_url)
         self.resource = self.issuer + "/mcp"
         self.metadata_url = str(build_resource_metadata_url(AnyHttpUrl(self.resource)))
+        self.pruned = time.time()
 
     def principal(self, subject, credential):
         """The configured principal that signed in, or None once its token was rotated or the principal removed."""
@@ -180,9 +181,13 @@ class Provider:
         return next((p for p in self.config.principals if token and hmac.compare_digest(digest, p.token_sha256)), None)
 
     def authenticate(self, token):
-        """Synchronous lookup for the request gate: the principal behind a live access token, or None."""
+        """Synchronous lookup for the request gate: the principal behind a live access token issued for this resource, or None."""
+        now = time.time()
+        if now - self.pruned > 3600:  # the sign-in tables are reachable without a token; keep them bounded
+            self.pruned = now
+            self.store.prune(now)
         row = self.store.token(token)
-        if row is None or row["kind"] != "access" or row["revoked"] or row["expires"] < time.time():
+        if row is None or row["kind"] != "access" or row["revoked"] or row["expires"] < now or row["payload"].get("resource") != self.resource:
             return None
         return self.principal(row["payload"]["subject"], row["payload"]["credential"])
 
@@ -213,17 +218,22 @@ class Provider:
             if not redirect_allowed(str(uri), self.oauth.redirect_uris):
                 raise RegistrationError("invalid_redirect_uri", f"Redirect URI {uri} is not on this controller's allowlist")
         self.store.prune(time.time())
+        # Every client is public: PKCE protects the code and nothing secret is stored. The SDK would otherwise mint a
+        # client secret that this file would have to keep in clear text.
+        client_info.token_endpoint_auth_method = "none"  # noqa: S105 - the OAuth method name, not a password
+        client_info.client_secret = None
+        client_info.client_secret_expires_at = None
         self.store.add_client(client_info.client_id, client_info.model_dump_json())
         self.audit.record_event("client_registered", name=client_info.client_name, outcome="ok", detail=client_info.client_id)
 
     async def authorize(self, client, params):
-        if params.resource is not None:
-            try:
-                same = normalize(params.resource) == self.resource
-            except ValueError:
-                same = False
-            if not same:
-                raise AuthorizeError("invalid_request", f"This server only issues tokens for {self.resource}")
+        # MCP clients must name the resource (RFC 8707); the token is bound to it and the gate checks the binding.
+        try:
+            same = params.resource is not None and normalize(params.resource) == self.resource
+        except ValueError:
+            same = False
+        if not same:
+            raise AuthorizeError("invalid_request", f"This server only issues tokens for {self.resource}; send that resource parameter")
         login_id = secrets.token_urlsafe(32)
         self.store.add_login(login_id, time.time() + LOGIN_SECONDS, {"client_id": client.client_id, "client_name": client.client_name, "params": params.model_dump(mode="json")})
         return f"{self.issuer}/login?request={login_id}"
@@ -263,7 +273,7 @@ class Provider:
 
     async def load_access_token(self, token):
         row = self.store.token(token)
-        if row is None or row["kind"] != "access" or row["revoked"] or row["expires"] < time.time():
+        if row is None or row["kind"] != "access" or row["revoked"] or row["expires"] < time.time() or row["payload"].get("resource") != self.resource:
             return None
         payload = row["payload"]
         if self.principal(payload["subject"], payload["credential"]) is None:

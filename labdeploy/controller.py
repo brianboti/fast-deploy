@@ -29,6 +29,7 @@ class Store:
             db.execute("CREATE TABLE IF NOT EXISTS events (at REAL NOT NULL, identity TEXT, client TEXT, kind TEXT NOT NULL, name TEXT, application TEXT, "
                        "outcome TEXT, duration_ms INTEGER, detail TEXT)")
             db.execute("CREATE INDEX IF NOT EXISTS events_at ON events (at)")
+            db.execute("PRAGMA journal_mode=WAL")  # readers never block the scheduler's and the request handlers' writes
 
     @contextlib.contextmanager
     def connect(self):
@@ -75,11 +76,15 @@ class Store:
         return bool(changed)
 
     def finish(self, owner, plan, state):
+        """Store a plan's new state; a concurrent writer that got there first wins, so an outcome is recorded once."""
         with self.connect() as db:
             before = db.execute("SELECT state FROM plans WHERE id=? AND owner=?", (plan["id"], owner)).fetchone()
-            db.execute("UPDATE plans SET state=?,payload=? WHERE id=? AND owner=?", (state, json.dumps(plan), plan["id"], owner))
-            if before is None or before[0] != state:  # re-saving a record with more detail is not a new event
+            if before is None:
+                return False
+            changed = db.execute("UPDATE plans SET state=?,payload=? WHERE id=? AND owner=? AND state=?", (state, json.dumps(plan), plan["id"], owner, before[0])).rowcount
+            if changed and before[0] != state:  # re-saving a record with more detail is not a new event
                 db.execute("INSERT INTO audit VALUES (?, ?, ?, ?)", (time.time(), owner, plan["id"], state))
+        return bool(changed)
 
     def plans(self, owner=None, applications=None, limit=100):
         """Plan summaries, newest first: one identity's own plans, or every plan of the given applications."""
@@ -155,9 +160,25 @@ class Store:
 
 class Controller:
     def __init__(self, config, github, store, observer=None):
+        self._cache = {}
         self.config, self.github, self.store, self.observer = config, github, store, observer
 
     AUTO_DEPLOY_IDENTITY = "auto-deploy"
+
+    @staticmethod
+    def retryable(attempt, now=None):
+        """A plan that never became a run (left planned, or its dispatch was lost) is tried again half an hour later."""
+        now = now or time.time()
+        return attempt["state"] in {"planned", "dispatch_lost"} and now > attempt["expires_at"] - 900 + 1800
+
+    def cached(self, key, seconds, fn):
+        """Remember one GitHub answer per application for a few minutes; the first tool Claude calls asks for all of them."""
+        entry = self._cache.get(key)
+        if entry and time.monotonic() - entry[0] < seconds:
+            return entry[1]
+        value = fn()
+        self._cache[key] = (time.monotonic(), value)
+        return value
 
     def auto_deploy_tick(self):
         """One pass: for every app with auto_deploy, release the tip of main when it is neither live nor already attempted."""
@@ -177,7 +198,7 @@ class Controller:
                     results[app_id] = "up to date"
                     continue
                 attempted = self.store.latest_plan(app_id, head)
-                if attempted:
+                if attempted and not self.retryable(attempted):
                     results[app_id] = f"commit {head[:12]} already handled by plan {attempted['id'][:8]} ({attempted['state']})"
                     continue
                 principal = Principal(name=self.AUTO_DEPLOY_IDENTITY, token_sha256="0" * 64, applications=[app_id], can_deploy=True)
@@ -248,8 +269,21 @@ class Controller:
             if old != destination and old.stat().st_mtime < cutoff:
                 old.unlink()
                 removed.append(old.name)
-        self.store.record_event("backup", outcome="ok", detail=str(destination))
-        return {"backup": str(destination), "removed": removed, "kept_days": self.config.backup_keep_days}
+        uploaded = None
+        bucket = getattr(self.config, "backup_bucket", None)
+        if bucket:
+            # The copy and the configuration (principal hashes, targets, settings; never the raw operator token) go to a
+            # private, versioned bucket so a lost laptop loses nothing but its tunnel.
+            import subprocess
+            config_path = getattr(self.config, "path", None)
+            targets = [(str(destination), f"gs://{bucket}/controller/{destination.name}")]
+            if config_path and Path(config_path).is_file():
+                targets.append((str(config_path), f"gs://{bucket}/controller/config.yaml"))
+            for source_path, target in targets:
+                subprocess.run(["gcloud", "storage", "cp", source_path, target], check=True, capture_output=True, text=True, timeout=120)
+            uploaded = [target for _, target in targets]
+        self.store.record_event("backup", outcome="ok", detail=str(destination) + (f" + {len(uploaded)} uploaded" if uploaded else ""))
+        return {"backup": str(destination), "removed": removed, "kept_days": self.config.backup_keep_days, "uploaded": uploaded}
 
     def require_observer(self):
         if self.observer is None:
@@ -556,11 +590,11 @@ class Controller:
             entry = app.model_dump()
             entry["paused"] = bool(self.config.paused or app.paused)
             try:
-                entry["platform_pin"] = self.platform_pin(app)
+                entry["platform_pin"] = self.cached(("pin", app_id), 300, lambda app=app: self.platform_pin(app))
             except Exception as exc:  # noqa: BLE001 - the pin is informational here; dispatch enforces it
                 entry["platform_pin"] = {"commit": None, "supported": None, "note": f"Could not read the app's workflow: {str(exc)[:120]}"}
             try:
-                entry["schedules"] = self.schedule_health(app)
+                entry["schedules"] = self.cached(("schedules", app_id), 300, lambda app=app: self.schedule_health(app))
             except Exception as exc:  # noqa: BLE001 - a GitHub hiccup must not hide the application list
                 entry["schedules"] = {"warning": f"Could not read the scheduled workflows: {str(exc)[:120]}"}
             live = self.store.latest_success(app_id)
@@ -586,7 +620,8 @@ class Controller:
         over = limit is not None and compared > limit
         summary["ceiling_policy"] = {"limit_usd_month": limit, "compared_usd_month": compared,
                                      "status": "not_configured" if limit is None else ("exceeds_limit" if over else "within_limit")}
-        summary["note"] = ("Bounds from list prices and the reviewed configuration, not a bill forecast. "
+        summary["note"] = ("Bounds from list prices and the reviewed configuration, not a bill forecast: the ceiling policy compares the compute bound "
+                           "plus the needs' floor with the operator's limit; request fees, egress and the per-image scan are extra and unbounded by it. "
                            "Measured right-sizing comes from the rightsizing workflow report (get_cost_report).")
         return summary
 
@@ -784,7 +819,10 @@ class Controller:
             plan["dispatch_state"] = plan["state"]
             plan["workflow"] = workflow
             plan.update(summarize(workflow, plan["checks"], plan.get("kind")))
-            if plan["state"] in TERMINAL:
+            if plan["state"] == "awaiting_workflow" and self.dispatch_lost(plan):
+                plan["state"] = "dispatch_lost"
+                self.store.finish(owner, plan, "dispatch_lost")
+            elif plan["state"] in TERMINAL:
                 self.record_outcome(owner, app, plan, workflow)
         elif plan["state"] in {"failed", "cancelled", "timed_out"} and not (plan.get("recovery_run") or {}).get("conclusion"):
             self.record_recovery(owner, app, plan)
@@ -793,6 +831,15 @@ class Controller:
         plan["events"] = self.store.events(owner, plan_id)
         plan["next_action"] = advice(plan)
         return plan
+
+    @staticmethod
+    def dispatch_lost(plan, now=None):
+        """No run is visible: lost when the dispatch itself never completed and two minutes passed, or the plan has expired."""
+        now = now or time.time()
+        created = plan["expires_at"] - 900
+        if plan.get("dispatch_state") in {"dispatching", "dispatch_unknown"}:
+            return now > created + 120
+        return now > plan["expires_at"]
 
     def record_outcome(self, owner, app, plan, workflow):
         """A finished run is stored once with its receipt, so history survives GitHub's artifact retention."""

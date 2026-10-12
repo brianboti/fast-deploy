@@ -65,8 +65,9 @@ NEEDS_PRICING = {
     # List prices read on 2026-10-12 from the Cloud Storage, Pub/Sub and Firestore pricing pages (docs/SOURCES.md).
     "bucket": {"storage_usd_per_gib_month": 0.020, "free_gib_months": 5, "note": "Standard storage in us-central1; the Always Free 5 GB is shared by the whole account"},
     "topic": {"usd_per_tib": 40.0, "free_gib_month": 10, "note": "Message delivery, after the account's free 10 GiB each month"},
-    "firestore": {"usd_per_100k_reads": 0.03, "usd_per_100k_writes": 0.09, "usd_per_100k_deletes": 0.01, "storage_usd_per_gib_month": 0.18,
-                  "free_per_day": {"reads": 50_000, "writes": 20_000, "deletes": 20_000}, "note": "Standard edition; Google allows one free database per project"},
+    "firestore": {"usd_per_100k_reads": 0.03, "usd_per_100k_writes": 0.09, "usd_per_100k_deletes": 0.01, "storage_usd_per_gib_month": 0.15,
+                  "free_quota": "none: Google's free daily quota applies to a project's default database only; this platform creates a named database per app",
+                  "note": "Standard edition, regional (us-central1): cents per 100,000 operations and 15 cents per GiB-month stored, from the first operation"},
     "postgres": {"instance_usd_month": 7.67, "storage_usd_per_gb_month": 0.09, "storage_gb": 10, "backup_usd_per_gb_month": 0.08,
                  "note": "db-f1-micro (shared core, Enterprise, zonal) in us-central1 with 10 GB of HDD: billed every hour it exists; stopped, only the storage"},
 }
@@ -193,8 +194,8 @@ def findings(spec, pricing=PRICING):
     if spec.needs.buckets or spec.needs.topics or spec.needs.database != "none":
         items.append({"id": "needs_by_use", "severity": "info", "setting": "needs", "current": spec.needs.model_dump(),
                       "message": "Buckets, topics and Firestore cost by use and nothing while idle: 2 cents per GiB-month stored after the free 5 GB, "
-                                 "40 dollars per TiB of messages after the free 10 GiB, and cents per 100,000 document operations after the free daily quota. "
-                                 "Keep stored data small and delete what the app no longer needs."})
+                                 "40 dollars per TiB of messages after the free 10 GiB, and cents per 100,000 document operations from the first one (a named database "
+                                 "gets no free quota). Keep stored data small and delete what the app no longer needs."})
     items.append({"id": "authenticated_only", "severity": "info", "setting": "exposure", "current": spec.exposure,
                   "message": "Cloud Run requires IAM authentication for this service, so anonymous internet traffic cannot create charges."})
     return items
@@ -318,10 +319,17 @@ def cost_recommender(project, region, runner=None):
 def build_report(service, project_id, window_days, description, metrics, recommender, generated_at=None):
     settings = live_settings(description)
     spec = spec_from_settings(service, settings)
-    return {"generated_at": generated_at or datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
-            "service": service, "project_id": project_id, "window_days": window_days, "live_settings": settings,
-            "estimate": estimate(spec), "findings": findings(spec), "metrics": metrics,
-            "rightsizing": recommend(spec, metrics), "cloud_run_cost_recommender": recommender}
+    report = {"generated_at": generated_at or datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+              "service": service, "project_id": project_id, "window_days": window_days, "live_settings": settings,
+              "estimate": estimate(spec), "findings": findings(spec), "metrics": metrics,
+              "rightsizing": recommend(spec, metrics), "cloud_run_cost_recommender": recommender}
+    # The estimate prices a spec clamped to the platform's bounds; a drifted service may allow more instances than that.
+    live_max = settings.get("maximum")
+    if isinstance(live_max, int) and live_max > spec.scaling.maximum:
+        report["estimate"]["live_compute_ceiling_usd_month"] = _usd(live_max * instance_second_usd(spec) * SECONDS_PER_MONTH)
+        report["estimate"]["warnings"].append(f"The live service allows {live_max} instances, above the platform's bound of {spec.scaling.maximum}; "
+                                              "its real compute bound is live_compute_ceiling_usd_month.")
+    return report
 
 
 def summary_lines(report):

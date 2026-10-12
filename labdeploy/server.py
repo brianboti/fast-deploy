@@ -31,7 +31,7 @@ log = logging.getLogger("labdeploy")
 
 identity = contextvars.ContextVar("identity")
 client_address = contextvars.ContextVar("client_address", default="unknown")
-LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access", "labdeploy")
+LOGGERS = ("uvicorn", "uvicorn.error", "labdeploy")  # not uvicorn.access: request lines carry sign-in links and query strings
 
 
 class UpstreamError(ValueError):
@@ -62,12 +62,22 @@ def invoke(store, kind, name, fn, subject=None, record=True):
 
 
 def audited(store, record=True):
-    """Decorator for MCP tools: every call is recorded with its identity, subject, outcome and duration."""
+    """Decorator for MCP tools: every call is recorded with its identity, subject, outcome and duration.
+
+    The MCP SDK calls synchronous tools on the event loop, so a waiting status call would stall every other caller;
+    the wrapper is asynchronous and runs the tool in the thread pool with the caller's identity carried along.
+    """
     def decorate(fn):
         @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
+        async def wrapper(*args, **kwargs):
             subject = kwargs.get("application") or kwargs.get("plan_id")
-            return invoke(store, "tool", fn.__name__, lambda: fn(*args, **kwargs), subject, record)
+            principal, client = identity.get(None), client_address.get(None)
+
+            def call():
+                identity.set(principal)
+                client_address.set(client)
+                return invoke(store, "tool", fn.__name__, lambda: fn(*args, **kwargs), subject, record)
+            return await run_in_threadpool(call)
         return wrapper
     return decorate
 

@@ -46,8 +46,11 @@ class Scheduler(threading.Thread):
                 if now >= self.state[name]["next_run"]:
                     self.run_job(name)
 
-    def stop(self):
+    def stop(self, timeout=30):
+        """Ask the thread to finish and wait for the job in flight, so a shutdown never leaves half a backup or a half-claimed plan."""
         self.stop_event.set()
+        if self.is_alive() and threading.current_thread() is not self:
+            self.join(timeout)
 
     def snapshot(self):
         return {name: {**entry, "next_run": datetime.datetime.fromtimestamp(entry["next_run"], datetime.UTC).isoformat(timespec="seconds")} for name, entry in self.state.items()}

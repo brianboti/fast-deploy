@@ -162,9 +162,12 @@ def test_platform_pin_is_reported_and_enforced_at_dispatch(tmp_path):
     with pytest.raises(ValueError, match="older than the minimum"):
         c.deploy(p, plan["id"])
     gh.pin = NEW
+    c._cache.clear()  # list_applications remembers pins for five minutes; the test moves the pin faster than that
     assert c.applications(p)["demo"]["platform_pin"]["supported"] is True
     assert c.deploy(p, plan["id"])["state"] == "dispatched"
     gh.pin = None
+    assert c.applications(p)["demo"]["platform_pin"]["supported"] is True  # still the cached answer
+    c._cache.clear()
     assert c.applications(p)["demo"]["platform_pin"]["supported"] is False
     unenforced, p2, _ = make(tmp_path, Pinned(), platform={"repository": "lab/lab-deploy"})
     assert unenforced.applications(p2)["demo"]["platform_pin"]["supported"] is None

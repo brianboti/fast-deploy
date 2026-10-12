@@ -103,6 +103,8 @@ class Config(StrictModel):
     notify_webhook_url: str | None = None  # Slack or Discord incoming webhook for the daily watchdog's findings
     backup_dir: str | None = None  # nightly SQLite backups; default: <database>.backups next to the database
     backup_keep_days: int = Field(default=14, ge=1, le=365)
+    # A private, versioned bucket the nightly backup also uploads to (the database copy and this configuration).
+    backup_bucket: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$")
     log_file: str | None = None  # rotating controller log (requests, warnings); the audit trail itself lives in the database
     live_dispatch: bool = False
     database: str = "deployments.db"

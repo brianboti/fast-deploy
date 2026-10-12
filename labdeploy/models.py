@@ -40,8 +40,8 @@ class Needs(StrictModel):
         if len(self.migrate) > 16:
             raise ValueError("migrate takes at most 16 arguments")
         for part in self.migrate:
-            if not 1 <= len(part) <= 200 or not part.isprintable() or "," in part:
-                raise ValueError("each migrate argument is printable, at most 200 characters, and contains no comma")
+            if not 1 <= len(part) <= 200 or not part.isprintable() or any(c in part for c in ",$^\""):
+                raise ValueError("each migrate argument is printable, at most 200 characters, and contains no comma, dollar sign, caret or double quote")
         for kind, names in (("buckets", self.buckets), ("topics", self.topics)):
             if len(names) > 8:
                 raise ValueError(f"At most 8 {kind}")
@@ -86,7 +86,7 @@ class Scaling(StrictModel):
 
 class AppSpec(StrictModel):
     api_version: Literal["lab/v1"] = "lab/v1"
-    name: str = Field(pattern=r"^[a-z][a-z0-9-]{0,29}$")
+    name: str = Field(pattern=r"^[a-z][a-z0-9-]{1,19}[a-z0-9]$")  # 3 to 21 characters: what Cloud Run, the registry and the root accept
     runtime: Literal["python-http"] = "python-http"
     port: int = Field(default=8080, ge=1024, le=65535)
     health_path: str = Field(default="/health", pattern=r"^/[A-Za-z0-9/_-]*$")

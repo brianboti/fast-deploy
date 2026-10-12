@@ -9,7 +9,7 @@ CHECKS = {
 }
 PASSED = {"passed", "passed_in_earlier_release", "skipped_by_config"}  # reused image: proved earlier; tests: none: declared, and warned about
 RELEASE_STEP = CHECKS["health"][1]
-TERMINAL = {"succeeded", "failed", "cancelled", "timed_out", "completed_unverified"}
+TERMINAL = {"succeeded", "failed", "cancelled", "timed_out", "completed_unverified", "dispatch_lost"}
 # Plain next actions keyed by a substring of the failed step's name, in the order the steps run.
 STEP_ADVICE = [
     ("Validate dispatch inputs", "The dispatched commit is no longer the tip of main, or the inputs were malformed; create a new plan."),
@@ -97,7 +97,8 @@ def release_phases(receipt):
     phases = {"state": receipt.get("state"), "revision": receipt.get("revision"), "url": receipt.get("url"), "error": receipt.get("error"),
               "restore_error": receipt.get("restore_error"), "service_ready": receipt.get("service_ready"), "note": receipt.get("note"),
               "previous_traffic": receipt.get("previous_traffic"), "cleanup_warning": receipt.get("cleanup_warning"),
-              "timestamps": receipt.get("phases"), "candidate_logs": receipt.get("candidate_logs")}
+              "timestamps": receipt.get("phases"), "candidate_logs": receipt.get("candidate_logs"), "candidate_logs_note": receipt.get("candidate_logs_note"),
+              "migration": receipt.get("migration")}
     return {key: value for key, value in phases.items() if value is not None}
 
 
@@ -120,6 +121,8 @@ def advice(plan):
         return "Call deploy_staging with this plan id within 15 minutes of planning, or create a new plan."
     if state in {"dispatching", "dispatch_unknown"}:
         return "The dispatch outcome is unknown; inspect GitHub Actions for a run titled with this plan id before dispatching again."
+    if state == "dispatch_lost":
+        return "GitHub never showed a run for this plan, so the dispatch was lost; nothing was deployed. Create a new plan and deploy again."
     if state in {"awaiting_workflow", "queued", "running"}:
         return "The release is in progress; ask again, or call get_deployment_status with wait_seconds to wait for a change."
     if state == "succeeded":
@@ -137,8 +140,9 @@ def advice(plan):
         if receipt.get("state") == "rollback_failed_manual_recovery_required":
             return (f"Traffic restoration failed ({receipt.get('restore_error', 'see the receipt')}). Run the recovery workflow now and inspect Cloud Run; "
                     f"the previous split was {receipt.get('previous_traffic')}.{recovered}")
-        if receipt.get("state") in {"preparing", "deploying", "promoting"}:
-            return f"The runner stopped mid-release at '{receipt['state']}'; the recovery workflow restores traffic from the checkpoint.{recovered}"
+        if receipt.get("state") in {"preparing", "migrating", "deploying", "promoting"}:
+            note = " The migration job may have run; check its log before releasing again." if receipt.get("state") == "migrating" else ""
+            return f"The runner stopped mid-release at '{receipt['state']}'; the recovery workflow restores traffic from the checkpoint.{note}{recovered}"
         if receipt.get("state") == "succeeded":
             return f"The release itself completed before the run ended; revision {receipt.get('revision')} serves traffic.{recovered}"
     for needle, text in STEP_ADVICE:

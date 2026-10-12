@@ -116,7 +116,7 @@ def test_cost_model_reports_needs_as_use_based_with_a_zero_floor():
     spec = AppSpec(name="demo", needs={"buckets": ["uploads"], "topics": ["events"], "database": "firestore"})
     needs = estimate(spec)["needs"]
     assert [n["need"] for n in needs] == ["bucket", "topic", "firestore"] and all(n["floor_usd_month"] == 0.0 for n in needs)
-    assert needs[0]["pricing"]["storage_usd_per_gib_month"] == 0.02 and needs[2]["pricing"]["free_per_day"]["reads"] == 50_000
+    assert needs[0]["pricing"]["storage_usd_per_gib_month"] == 0.02 and needs[2]["pricing"]["free_quota"].startswith("none") and needs[2]["pricing"]["storage_usd_per_gib_month"] == 0.15
     assert estimate(AppSpec(name="demo"))["needs"] == []
     ids = [f["id"] for f in findings(spec)]
     assert "needs_by_use" in ids and "needs_by_use" not in [f["id"] for f in findings(AppSpec(name="demo"))]
@@ -210,7 +210,7 @@ def test_postgres_adds_connection_variables_private_egress_and_the_migration_pha
     assert "--clear-network" in recorder.commands[-1]
     result = adapter.migrate("img@sha256:" + "b" * 64, spec)
     update, execute = recorder.commands[-2], recorder.commands[-1]
-    assert update[:5] == ["gcloud", "run", "jobs", "update", "demo-migrate"] and "--command" in update and "alembic" in update and "--args=upgrade,head" in update
+    assert update[:5] == ["gcloud", "run", "jobs", "update", "demo-migrate"] and "--command=alembic" in update and "--args=upgrade,head" in update
     assert "--max-retries=0" in update and "--network=lab-deploy" in update and "--env-vars-file=revision-env.yaml" in update
     assert execute[:6] == ["gcloud", "run", "jobs", "execute", "demo-migrate", "--wait"] and result == {"job": "demo-migrate", "execution": "ok"}
     adapter.require_needs(spec)

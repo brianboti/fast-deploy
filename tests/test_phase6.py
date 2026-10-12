@@ -74,12 +74,13 @@ def test_check_plan_flags_each_policy_and_passes_a_clean_plan():
         change("module.service.google_cloud_run_v2_service.app", "google_cloud_run_v2_service", ["create"], {"location": "us-central1", "labels": {}}),
     ]}
     rules = sorted(v["rule"] for v in check_plan(plan))
-    assert rules == ["labels_present", "no_broad_roles", "no_data_loss", "no_service_account_keys", "platform_identities_untouched", "private_database", "region_policy"]
+    assert rules == ["labels_present", "no_data_loss", "no_service_account_keys", "platform_identities_untouched", "private_database", "region_policy", "role_not_allowed", "role_not_allowed"]
     clean = {"resource_changes": [
         change("module.service.google_cloud_run_v2_service.app", "google_cloud_run_v2_service", ["create"],
                {"location": "us-central1", "labels": {"lab-deploy-app": "demo", "lab-deploy-managed": "true"}}),
         change("module.service.google_project_iam_member.log_reader", "google_project_iam_member", ["create"], {"role": "roles/logging.viewer", "member": "serviceAccount:demo-deploy@p"}),
-        change("module.service.google_storage_bucket.recovery", "google_storage_bucket", ["update"], {"location": "US-CENTRAL1", "labels": {"lab-deploy-app": "demo"}}),
+        change("module.service.google_storage_bucket.recovery", "google_storage_bucket", ["update"],
+               {"location": "US-CENTRAL1", "labels": {"lab-deploy-app": "demo"}, "uniform_bucket_level_access": True, "public_access_prevention": "enforced"}),
         change("data.terraform_remote_state.project", "terraform_remote_state", ["read"], {}),
     ]}
     assert check_plan(clean) == []

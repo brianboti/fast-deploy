@@ -60,7 +60,10 @@ def _hcl(value):
         return "true" if value else "false"
     if isinstance(value, int | float):
         return str(value)
-    return json.dumps(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_hcl(item) for item in value) + "]"
+    # A value is always a literal: Terraform's template sequences are escaped so nothing in a spec becomes an expression.
+    return json.dumps(value).replace("${", "$${").replace("%{", "%%{")
 
 
 def app_root(name, *, project_id, region, state_bucket, github_repository, github_repository_id, github_owner_id,
@@ -90,8 +93,10 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
     needs = {"buckets": [], "topics": [], "database": "none", "migrate": [], **(needs or {})}
     if set(needs) != {"buckets", "topics", "database", "migrate"} or needs["database"] not in ("none", "firestore", "postgres"):
         raise ValueError("needs must hold buckets, topics, database (none, firestore or postgres) and migrate")
-    if not isinstance(needs["migrate"], list) or any(not isinstance(p, str) or not p.isprintable() or "," in p or '"' in p or len(p) > 200 for p in needs["migrate"]) or len(needs["migrate"]) > 16:
-        raise ValueError("migrate is a list of at most 16 printable arguments without commas or double quotes")
+    parts_ok = isinstance(needs["migrate"], list) and len(needs["migrate"]) <= 16 and all(
+        isinstance(p, str) and p.isprintable() and not any(c in p for c in ',"$^') and len(p) <= 200 for p in needs["migrate"])
+    if not parts_ok:
+        raise ValueError("migrate is a list of at most 16 printable arguments without commas, double quotes, dollar signs or carets")
     for kind in ("buckets", "topics"):
         for item in needs[kind]:
             if not isinstance(item, str) or not RESOURCE_NAME.fullmatch(item):
@@ -189,8 +194,42 @@ def _nested(value, *keys):
     return value
 
 
+def _unknown(change, *keys):
+    """True when a field the policy relies on is only known after apply."""
+    return _nested(change.get("change", {}).get("after_unknown") or {}, *keys) is True
+
+
+def _strings(value):
+    """Every string inside a plan value, however nested, so an identity or a public member cannot hide in a sub-field."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
+PUBLIC_MEMBERS = ("allUsers", "allAuthenticatedUsers")
+# The only roles an application root may grant; everything else is the foundation's business.
+ALLOWED_ROLES = frozenset({
+    "roles/run.invoker", "roles/run.developer", "roles/run.viewer", "roles/artifactregistry.writer", "roles/artifactregistry.reader",
+    "roles/storage.objectUser", "roles/storage.objectViewer", "roles/storage.bucketViewer", "roles/pubsub.publisher", "roles/pubsub.subscriber",
+    "roles/pubsub.viewer", "roles/datastore.user", "roles/datastore.viewer", "roles/cloudsql.client", "roles/cloudsql.instanceUser", "roles/cloudsql.viewer",
+    "roles/logging.viewer", "roles/monitoring.viewer", "roles/secretmanager.secretAccessor", "roles/secretmanager.viewer", "roles/bigquery.dataViewer",
+    "roles/bigquery.jobUser", "roles/iam.serviceAccountUser", "roles/iam.serviceAccountOpenIdTokenCreator", "roles/iam.workloadIdentityUser",
+})
+CUSTOM_ROLE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/roles/labDeploy[A-Za-z]+$")
+STATE_BUCKET = re.compile(r"-tfstate$")
+
+
 def check_plan(plan, allowed_locations=ALLOWED_LOCATIONS):
-    """Violations of the platform's policies in a `terraform show -json` plan; an empty list means the plan may apply."""
+    """Violations of the platform's policies in a `terraform show -json` plan; an empty list means the plan may apply.
+
+    The rules fail closed: a value the plan does not know yet, or a field the policy expects and cannot find, is a
+    violation. Invariants hold on creation and on every later update, not only when a resource first appears.
+    """
     violations = []
 
     def add(rule, address, detail):
@@ -198,38 +237,57 @@ def check_plan(plan, allowed_locations=ALLOWED_LOCATIONS):
 
     for change in plan.get("resource_changes", []):
         actions = change.get("change", {}).get("actions", [])
+        if actions in (["no-op"], ["read"], []):
+            continue
         address, kind, after = change.get("address", "?"), change.get("type", ""), _after(change)
-        creating = "create" in actions
+        creating, updating, deleting = "create" in actions, "update" in actions, "delete" in actions
+        touching = creating or updating
+        iam = kind.endswith(("_iam_member", "_iam_binding", "_iam_policy"))
         if kind == "google_service_account_key" and creating:
             add("no_service_account_keys", address, "service account keys are never created; use Workload Identity Federation")
-        if "delete" in actions and kind in DATA_TYPES:
+        if deleting and kind in DATA_TYPES:
             add("no_data_loss", address, "the pipeline never destroys resources that hold data; retire them through `lab-deploy decommission`")
-        if creating or "update" in actions:
-            for field in ("location", "region"):
+        texts = list(_strings(after))
+        if touching and any(marker in text for marker in PLATFORM_IDENTITIES for text in texts):
+            add("platform_identities_untouched", address, "application roots may not create, grant or reference the platform's own identities")
+        if touching and iam:
+            if kind.endswith("_iam_policy"):
+                add("authoritative_policy_forbidden", address, "an authoritative IAM policy replaces every binding on the resource; grant members one at a time")
+            if any(text in PUBLIC_MEMBERS for text in texts):
+                add("no_public_access", address, "nothing managed here is ever public; allUsers and allAuthenticatedUsers are refused")
+            role = after.get("role")
+            if not kind.endswith("_iam_policy"):
+                if _unknown(change, "role") or role is None:
+                    add("unknown_value", address, "the role is not known until apply; policy cannot judge it")
+                elif role not in ALLOWED_ROLES and not CUSTOM_ROLE.fullmatch(role):
+                    add("role_not_allowed", address, f"{role} is not a role an application root may grant")
+            if kind.startswith("google_storage_bucket_iam") and STATE_BUCKET.search(after.get("bucket") or ""):
+                add("state_bucket_untouched", address, "the Terraform state bucket's access is managed by the foundation only")
+        if touching and kind == "google_iam_workload_identity_pool_provider":
+            condition = after.get("attribute_condition") or ""
+            if _unknown(change, "attribute_condition") or "assertion.repository_id ==" not in condition or "assertion.repository_owner_id ==" not in condition:
+                add("federation_unconditioned", address, "a federation provider must pin the repository and owner ids in its attribute condition")
+        if touching:
+            for field in ("location", "region", "location_id"):
+                if _unknown(change, field):
+                    add("unknown_value", address, f"{field} is not known until apply; policy cannot judge it")
                 value = after.get(field)
-                # Cloud Storage reports locations in capitals (US-CENTRAL1); compare without regard to case.
                 if isinstance(value, str) and value.lower() not in allowed_locations:
                     add("region_policy", address, f"{field} {value!r} is outside {', '.join(allowed_locations)}")
-            if kind in ("google_project_iam_member", "google_project_iam_binding") and after.get("role") in BROAD_ROLES:
-                add("no_broad_roles", address, f"{after.get('role')} is never granted by an application root")
-            member = after.get("member") or ""
-            members = after.get("members") or []
-            if any(marker in text for marker in PLATFORM_IDENTITIES for text in [member, *members]) or any(
-                    marker in (after.get("account_id") or "") for marker in PLATFORM_IDENTITIES):
-                add("platform_identities_untouched", address, "application roots may not create or grant the platform's own identities")
-            if kind == "google_sql_database_instance" and _nested(after, "settings", "ip_configuration", "ipv4_enabled") is True:
-                add("private_database", address, "databases get a private address only; public IPv4 is off by policy")
-        if creating and kind == "google_storage_bucket" and (after.get("uniform_bucket_level_access") is not True or after.get("public_access_prevention") != "enforced"):
-            add("private_bucket", address, "buckets use uniform bucket-level access and enforced public access prevention")
-        if creating and kind == "google_firestore_database" and after.get("delete_protection_state") != "DELETE_PROTECTION_ENABLED":
-            add("protected_database", address, "databases are created with delete protection on")
-        if creating and kind == "google_sql_database_instance" and after.get("deletion_protection") is not True:
-            add("protected_database", address, "databases are created with deletion protection on")
-        if creating and kind in LABELLED_TYPES:
-            # Cloud SQL keeps its labels under settings.user_labels; everything else has a top-level labels map.
-            labels = (_nested(after, "settings", "user_labels") if kind == "google_sql_database_instance" else after.get("labels")) or {}
-            if not isinstance(labels, dict) or "lab-deploy-app" not in labels:
-                add("labels_present", address, "every managed resource carries the lab-deploy-app label for cost allocation and the spending cap")
+            if kind == "google_sql_database_instance":
+                if _nested(after, "settings", "ip_configuration", "ipv4_enabled") is not False or _unknown(change, "settings", "ip_configuration", "ipv4_enabled"):
+                    add("private_database", address, "databases get a private address only: settings.ip_configuration.ipv4_enabled must be false")
+                if after.get("deletion_protection") is not True:
+                    add("protected_database", address, "databases keep deletion protection on")
+            if kind == "google_firestore_database" and after.get("delete_protection_state") != "DELETE_PROTECTION_ENABLED":
+                add("protected_database", address, "databases keep delete protection on")
+            if kind == "google_storage_bucket" and (after.get("uniform_bucket_level_access") is not True or after.get("public_access_prevention") != "enforced"
+                                                   or _unknown(change, "public_access_prevention")):
+                add("private_bucket", address, "buckets use uniform bucket-level access and enforced public access prevention")
+            if kind in LABELLED_TYPES:
+                labels = (_nested(after, "settings", "user_labels") if kind == "google_sql_database_instance" else after.get("labels")) or {}
+                if not isinstance(labels, dict) or "lab-deploy-app" not in labels:
+                    add("labels_present", address, "every managed resource carries the lab-deploy-app label for cost allocation and the spending cap")
     return violations
 
 
@@ -257,8 +315,8 @@ def summary(plan):
     return {"counts": counts, "lines": lines}
 
 
-def comment(app, plan, violations):
-    """Markdown for the pull request: what the apply would do and whether policy allows it. One comment per app."""
+def comment(app, plan, violations, plan_text=None):
+    """Markdown for the pull request: what the apply would do, the full plan folded away, and whether policy allows it."""
     digest = summary(plan)
     counts = digest["counts"]
     head = (f"<!-- lab-deploy-infra:{app} -->\n### Infrastructure plan for `{app}`\n\n"
@@ -267,6 +325,9 @@ def comment(app, plan, violations):
         body = "\n```\n" + "\n".join(digest["lines"][:200]) + ("\n…" if len(digest["lines"]) > 200 else "") + "\n```\n"
     else:
         body = "\nNo changes.\n"
+    if plan_text and digest["lines"]:
+        text = plan_text if len(plan_text) <= 50_000 else plan_text[:50_000] + "\n… (truncated; the full plan is in the workflow log)"
+        body += "\n<details><summary>Full plan with every attribute</summary>\n\n```\n" + text.replace("```", "'''") + "\n```\n</details>\n"
     if violations:
         verdict = "\n**Policy: blocked.** The apply job refuses this plan until these are resolved:\n\n" + "\n".join(
             f"- `{v['address']}`: {v['detail']} ({v['rule']})" for v in violations) + "\n"
@@ -325,7 +386,7 @@ def publish(outputs, token=None, environment="staging", request=github_request):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    usage = "usage: python -m labdeploy.infra check PLAN.json | summary PLAN.json APP | roots CHANGED.txt APPS_DIR | publish OUTPUTS.json"
+    usage = "usage: python -m labdeploy.infra check PLAN.json | summary PLAN.json APP [PLAN.txt] | roots CHANGED.txt APPS_DIR | publish OUTPUTS.json"
     if len(argv) < 2 or argv[0] not in ("check", "summary", "roots", "publish"):
         print(usage, file=sys.stderr)
         return 1
@@ -349,7 +410,8 @@ def main(argv=None):
         print(text)
         return 0 if ok else 1
     app = argv[2] if len(argv) > 2 else "app"
-    print(comment(app, document, check_plan(document)))
+    plan_text = Path(argv[3]).read_text() if len(argv) > 3 and Path(argv[3]).is_file() else None
+    print(comment(app, document, check_plan(document), plan_text))
     return 0
 
 
