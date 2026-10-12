@@ -271,8 +271,11 @@ def github_request(method, url, token, body=None):
 
 def publish(outputs, token=None, environment="staging", request=github_request):
     """Set the application's GitHub environment variables from the root's outputs; without a token, say what to set."""
-    values = outputs["github_environment_variables"]["value"]
-    repository = outputs["github_repository"]["value"]
+    try:
+        values = outputs["github_environment_variables"]["value"]
+        repository = outputs["github_repository"]["value"]
+    except KeyError as missing:
+        raise ValueError(f"The root's outputs lack {missing}; render the root again with the current platform and merge it") from None
     if not REPOSITORY.fullmatch(repository) or not ENVIRONMENT.fullmatch(environment):
         raise ValueError("Unexpected repository or environment name in the outputs")
     lines = [f"### Variables for `{repository}`, environment `{environment}`", "", "| Variable | Value |", "|---|---|"]
@@ -315,7 +318,11 @@ def main(argv=None):
         print(f"{len(violations)} violation(s)")
         return 2 if violations else 0
     if argv[0] == "publish":
-        text, ok = publish(document, os.environ.get("APP_REPOS_TOKEN") or None)
+        try:
+            text, ok = publish(document, os.environ.get("APP_REPOS_TOKEN") or None)
+        except ValueError as exc:
+            print(f"Outputs not published: {exc}")
+            return 1
         print(text)
         return 0 if ok else 1
     app = argv[2] if len(argv) > 2 else "app"

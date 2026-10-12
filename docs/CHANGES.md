@@ -1,3 +1,10 @@
+# 1.0.2: fixes from the live run, part two
+
+## Fixed
+
+1. **A failure in the publish step was hidden** by the pipe that also writes the job summary, so the first pipeline apply reported success although the outputs were never published. Both workflows now run their steps with `pipefail`, and `publish` explains a root whose outputs predate the current renderer instead of crashing.
+2. The demo app's committed root was rendered before the `github_repository` output existed; it is re-rendered.
+
 # 1.0.1: fixes from the live run
 
 ## Fixed

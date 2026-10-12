@@ -10,6 +10,9 @@ on:
       - "infra/gcp/modules/service/**"
       - ".github/workflows/infra-plan.yml"
 permissions: {}
+defaults:
+  run:
+    shell: bash # -eo pipefail: a failure before a pipe (tee) fails the step
 concurrency:
   group: infra-plan-${{ github.event.pull_request.number }}
   cancel-in-progress: true

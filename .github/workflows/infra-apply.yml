@@ -17,6 +17,9 @@ on:
         required: true
         type: string
 permissions: {}
+defaults:
+  run:
+    shell: bash # -eo pipefail: a failure before a pipe (tee) fails the step
 jobs:
   roots:
     runs-on: ubuntu-24.04

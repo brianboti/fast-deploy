@@ -108,6 +108,8 @@ def test_module_entry_point_exits_two_on_violations(tmp_path, capsys):
     plan.write_text(json.dumps({"resource_changes": []}))
     assert main(["check", str(plan)]) == 0
     assert main(["summary", str(plan), "demo"]) == 0 and "lab-deploy-infra:demo" in capsys.readouterr().out
+    plan.write_text(json.dumps({"github_environment_variables": {"value": {}}}))
+    assert main(["publish", str(plan)]) == 1 and "Outputs not published" in capsys.readouterr().out
     assert main(["nonsense"]) == 1
 
 
@@ -140,6 +142,8 @@ def test_publish_sets_variables_through_the_api_or_tells_the_operator_what_to_se
     assert not ok and "failed (HTTP 403)" in text and "Variables: write" in text
     with pytest.raises(ValueError):
         publish({"github_repository": {"value": "bad repo"}, "github_environment_variables": {"value": {}}}, token="t", request=fake)
+    with pytest.raises(ValueError, match="render the root again"):
+        publish({"github_environment_variables": {"value": {}}}, token="t", request=fake)
 
 
 def test_controller_renders_the_root_from_the_spec_and_opens_the_platform_pull_request(tmp_path):
