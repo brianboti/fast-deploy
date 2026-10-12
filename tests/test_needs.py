@@ -97,8 +97,8 @@ def test_root_carries_the_needs_and_policies_guard_them():
     ]}
     assert sorted(v["rule"] for v in check_plan(plan)) == ["labels_present", "private_bucket", "protected_database"]
     unprotected = {"resource_changes": [change("module.service.google_sql_database_instance.need[0]", "google_sql_database_instance", ["create"],
-                                               {"region": "us-central1", "deletion_protection": False, "labels": {"lab-deploy-app": "demo"},
-                                                "settings": [{"ip_configuration": [{"ipv4_enabled": False}]}]})]}
+                                               {"region": "us-central1", "deletion_protection": False,
+                                                "settings": [{"user_labels": {"lab-deploy-app": "demo"}, "ip_configuration": [{"ipv4_enabled": False}]}]})]}
     assert [v["rule"] for v in check_plan(unprotected)] == ["protected_database"]
     labelled = {"resource_changes": [change("module.service.google_sql_database_instance.need[0]", "google_sql_database_instance", ["create"],
                                             {"region": "us-central1", "deletion_protection": True,
