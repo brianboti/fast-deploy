@@ -15,10 +15,13 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 run() { docker run --rm -e GOOGLE_OAUTH_ACCESS_TOKEN="$TOKEN" -e USER_PROJECT_OVERRIDE=true -e GOOGLE_BILLING_PROJECT="$PROJECT" -v "$PWD/..":/infra -w /infra/project hashicorp/terraform:1.13.5 "$@"; }
 run init -reconfigure -input=false -backend-config="bucket=$PROJECT-tfstate" -backend-config="prefix=project/$ENVIRONMENT" > /dev/null
 run plan -input=false -no-color -out=project.tfplan | grep -E "^  # |^Plan:|^No changes" || true
-if [[ -t 0 ]]; then
+# The apply needs a typed "yes" at the prompt, or LAB_DEPLOY_APPLY_CONFIRMED=yes in the environment for an unattended run.
+if [[ "${LAB_DEPLOY_APPLY_CONFIRMED:-}" == "yes" ]]; then
+  echo "Applying: confirmed through LAB_DEPLOY_APPLY_CONFIRMED."
+elif [[ -t 0 ]]; then
   read -r "answer?Apply this plan to $PROJECT? Type yes to continue: "
   [[ "$answer" == "yes" ]] || { echo "Nothing applied."; rm -f project.tfplan; exit 1; }
-elif [[ "${LAB_DEPLOY_APPLY_CONFIRMED:-}" != "yes" ]]; then
+else
   echo "Not a terminal and LAB_DEPLOY_APPLY_CONFIRMED is not 'yes'; nothing applied."; rm -f project.tfplan; exit 1
 fi
 run apply -input=false -no-color project.tfplan
