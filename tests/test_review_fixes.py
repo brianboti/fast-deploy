@@ -194,8 +194,18 @@ def test_policy_refuses_public_members_powerful_roles_platform_identities_and_un
     good = {"resource_changes": [
         change("ok", "google_project_iam_member", ["create"], {"role": "projects/test-project/roles/labDeployTagManager", "member": "serviceAccount:demo-deploy@p"}),
         change("ok2", "google_iam_workload_identity_pool_provider", ["create"], {"attribute_condition": "assertion.repository_id == '123' && assertion.repository_owner_id == '45'"}),
+        # the service module's own grant to the spending cap: the cap-operator role on this application's service only
+        change("ok3", "google_cloud_run_v2_service_iam_member", ["create", "delete"],
+               {"name": "demo", "role": "projects/test-project/roles/labDeployCapOperator", "member": "serviceAccount:lab-deploy-spending-cap@p.iam.gserviceaccount.com"}),
     ]}
     assert check_plan(good) == []
+    cap, operator = "serviceAccount:lab-deploy-spending-cap@p.iam.gserviceaccount.com", "projects/test-project/roles/labDeployCapOperator"
+    cap_elsewhere = {"resource_changes": [
+        change("x", "google_cloud_run_v2_service_iam_member", ["create"], {"name": "demo", "role": "roles/run.developer", "member": cap}),
+        change("y", "google_storage_bucket_iam_member", ["create"], {"bucket": "b", "role": operator, "member": cap}),
+        change("z", "google_cloud_run_v2_service_iam_member", ["create"], {"name": "demo", "role": operator, "member": "serviceAccount:lab-deploy-infra-apply@p.iam.gserviceaccount.com"}),
+    ]}
+    assert {v["address"] for v in check_plan(cap_elsewhere)} == {"x", "y", "z"}  # any other reference to a platform identity stays refused
 
 
 def test_rendered_values_cannot_become_terraform_expressions():
@@ -253,3 +263,17 @@ def test_sign_in_requires_the_resource_and_registers_public_clients(tmp_path):
     assert url.startswith("https://controller.example.test/login?request=")
     token = provider.issue("c1", "m", "0" * 64, [], "https://other.example.test/mcp", "fam")
     assert provider.authenticate(token.access_token) is None  # issued for another resource: refused by the gate
+
+
+# ---- finding 17: the backup bucket receives the copy and the configuration file, from the CLI too
+
+def test_backup_uploads_the_copy_and_the_configuration(tmp_path, monkeypatch):
+    cfg = Config(**settings(tmp_path, backup_bucket="lab-backups"))
+    c = Controller(cfg, FakeGitHub(), Store(cfg.database))
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("principals: []\n")
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda command, **kwargs: calls.append(command))
+    result = c.backup_tick(config_path=str(config_file))
+    assert result["uploaded"] == [f"gs://lab-backups/controller/{Path(result['backup']).name}", "gs://lab-backups/controller/config.yaml"]
+    assert [command[:3] for command in calls] == [["gcloud", "storage", "cp"]] * 2 and calls[1][3] == str(config_file)
