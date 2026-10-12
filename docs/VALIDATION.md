@@ -185,7 +185,10 @@ Findings that changed the code, each fixed with a regression test or a documente
 
 12. The pipeline's apply identity needs `roles/pubsub.admin` and `roles/datastore.owner` on top of editor to grant on topics and create databases (1.1.1).
 
-Not performed: a read or write by the application itself against the bucket, topic or database (the demo app does not use them yet); removal of a need (refused by design); Cloud SQL, jobs and migrations (roadmap 6.5). Platform tests: 219 passed; ruff and zizmor clean; both roots validate.
+| Needs in the health view (1.2.0) | tool call | After the foundation granted the observer the bucket, Pub/Sub and Datastore viewer roles (three additions), `get_service_health` listed the four needs with their facts: bucket in US-CENTRAL1, topic, subscription with a 20 s acknowledgement deadline, database in us-central1 with delete protection; no notes. In the minute before the roles propagated the view said `Needs not checked: the observer identity is not allowed to read this` and kept the rest intact. |
+| Retirement checklist (1.2.0) | command | `lab-deploy decommission demo` read the app's `platform.yaml` and printed twelve steps, including the bucket, the subscription and topic, and the database with its delete-protection switch, before the `terraform state rm` and `terraform destroy` step. Nothing was run. |
+
+Not performed: a read or write by the application itself against the bucket, topic or database (the demo app does not use them yet); removal of a need (refused by design); Cloud SQL, jobs and migrations (roadmap 6.5); the spend-by-application query against a real export table (none exists yet; covered by a unit test with a mocked response). Platform tests: 221 passed; ruff and zizmor clean; both roots validate.
 
 ## Live staging trial (2026-10-12)
 
