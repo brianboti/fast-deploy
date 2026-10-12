@@ -236,7 +236,7 @@ def test_status_and_tools_expose_the_laptop_jobs(tmp_path):
         assert health["metrics"]["window_minutes"] == 30 and health["console_url"].startswith("https://console.cloud.google.com/run/detail/")
         assert call("get_recent_logs", application="demo", minutes=10, severity="WARNING", limit=5)["structuredContent"]["count"] == 1
     workflow = yaml.safe_load(Path(".github/workflows/controller-watch.yml").read_text())
-    assert workflow["jobs"]["ping"]["if"] == "vars.CONTROLLER_HEALTH_URL != ''" and "*/30" in workflow[True]["schedule"][0]["cron"]
+    assert workflow["jobs"]["ping"]["if"] == "vars.CONTROLLER_HEALTH_URL != ''" and workflow[True]["schedule"][0]["cron"].startswith("13,43 ")  # off the hour and half-hour, which GitHub delays
 
 
 def test_observer_reads_readiness_from_the_terminal_condition(tmp_path):
