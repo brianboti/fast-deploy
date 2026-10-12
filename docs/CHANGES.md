@@ -1,3 +1,18 @@
+# 0.3.1: fixes from the live staging trial
+
+## Fixed
+
+1. **Identity federation condition:** GitHub's OIDC `sub` claim now embeds numeric IDs, so the Workload Identity Federation condition matches the `environment` claim plus the immutable repository and owner IDs, the branch and the workflow paths. Re-apply Terraform; the provider updates in place.
+2. **Status right after dispatch:** a run that GitHub has not finished creating is reported as not visible yet instead of failing the identity check.
+3. **Traffic and tag commands verify the routing state** rather than trusting gcloud's exit code, which is non-zero whenever the service's newest revision is not Ready.
+4. **Failed candidates stay in place:** Cloud Run refuses to delete a service's newest revision. The failure path restores traffic, drops the tag, and records `service_ready` with a note; the previous revision keeps serving until the next successful release.
+5. **Receipts record the underlying error text** (the command's ERROR line) for the failed step and for a failed restoration.
+
+## Upgrade steps
+
+1. Apply the Terraform change (one in-place update of the identity provider).
+2. Regenerate the three app workflows with the new platform commit.
+
 # 0.3.0: hardening against 2026 practice
 
 ## Added

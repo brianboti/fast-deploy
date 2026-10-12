@@ -1,9 +1,9 @@
 # Lab Deploy — Project Context and LLM Handoff
 
-**Project version:** 0.3.0 (0.1.1 reviewed and extended through 0.1.2, 0.2.0 and 0.3.0 on October 11 and 12, 2026 America/Chicago)  
+**Project version:** 0.3.1 (0.1.1 reviewed and extended through 0.1.2, 0.2.0, 0.3.0 and the live-trial fixes in 0.3.1 on October 11 and 12, 2026 America/Chicago)  
 **Handoff date:** October 12, 2026 UTC / October 11, 2026 America/Chicago  
 **Source package:** `lab-deploy-mvp.zip`  
-**Status:** Implemented and locally tested GCP staging prototype. Not deployed or verified end to end against live cloud resources.
+**Status:** Live-tested GCP staging prototype. On 2026-10-12 it released a demo app to a disposable staging project end to end, rolled back an unhealthy release, recovered a checkpoint, and produced a measured cost report (docs/VALIDATION.md, "Live staging trial").
 
 > Read this document before continuing development. It explains the user's goal, the implementation that exists, the decisions behind it, and the evidence supporting its current status. Inspect the actual source before changing it. If source and this handoff disagree, investigate the difference rather than assuming either is current.
 
@@ -355,7 +355,11 @@ The user named cost the most important part. After reading Google's Cloud Run pr
 
 ### Hardening against 2026 practice: 0.3.0
 
-A review against the MCP specification, OWASP's agentic and MCP lists, GitHub and OpenSSF hardening guidance, Google's Cloud Run guidance and the published release practices of Amazon, Google, Microsoft and Netflix found the design sound and five gaps. The release closed them: rate limiting per identity and per client address, tool safety hints with structured output, a Cloud Run startup probe, signed build provenance verified before release plus an image vulnerability summary with optional blocking, and repository hygiene (ruff, zizmor, pip-audit and Terraform validation in CI, Dependabot, CODEOWNERS, SECURITY.md, pre-commit, pin-consistency tests). The production milestone remains: metric-based canary with bake time, OAuth 2.1, Binary Authorization enforcement, streaming SQLite backup, telemetry and service objectives. Current version is 0.3.0.
+A review against the MCP specification, OWASP's agentic and MCP lists, GitHub and OpenSSF hardening guidance, Google's Cloud Run guidance and the published release practices of Amazon, Google, Microsoft and Netflix found the design sound and five gaps. The release closed them: rate limiting per identity and per client address, tool safety hints with structured output, a Cloud Run startup probe, signed build provenance verified before release plus an image vulnerability summary with optional blocking, and repository hygiene (ruff, zizmor, pip-audit and Terraform validation in CI, Dependabot, CODEOWNERS, SECURITY.md, pre-commit, pin-consistency tests). The production milestone remains: metric-based canary with bake time, OAuth 2.1, Binary Authorization enforcement, streaming SQLite backup, telemetry and service objectives.
+
+### Live staging trial: 0.3.1
+
+The platform was published to `brianboti/lab-deploy`, the demo app to `brianboti/lab-demo-app`, and a disposable project `lab-deploy-staging-f29a` was bootstrapped with Terraform. The trial released the demo app end to end, exercised an unhealthy candidate, manual and automatic recovery, a cancellation, and the right-sizing report, and found five defects that only live APIs could reveal (identity subject format, dispatch race, traffic command exit codes, newest-revision deletion, receipt error text). All are fixed with regression tests and documented in docs/VALIDATION.md. The staging project remains available. Current version is 0.3.1.
 
 ## 12. Validation evidence and limitations
 
@@ -420,7 +424,7 @@ The detailed setup, workflow-render commands and migration instructions are in `
 
 ## 14. Immediate next steps
 
-1. Obtain the first application repository URL, the platform repository location and the GCP staging project ID. Obtain missing nonsecret identifiers from the user or authorized APIs; do not invent them.
+1. The first application, platform repository and staging project exist (see the live trial section). Keep using them, or destroy the staging project with `terraform destroy` when it is no longer needed.
 2. Inspect that actual app before marking any generated configuration reviewed.
 3. Run full Terraform validation in a suitable environment and resolve any provider-level issues.
 4. Publish the platform code through the user's normal repository process and record its full commit SHA.

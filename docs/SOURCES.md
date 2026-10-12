@@ -60,3 +60,9 @@ Official and primary references for the 0.3.0 hardening review, read on 2026-10-
 - [Artifact Analysis automatic scanning](https://docs.cloud.google.com/artifact-analysis/docs/scan-os-automatically) and [pricing](https://cloud.google.com/artifact-analysis/pricing)
 - [zizmor](https://docs.zizmor.sh/) and [Grafana's adoption write-up](https://grafana.com/blog/2025/06/25/how-to-detect-vulnerable-github-actions-at-scale-with-zizmor/)
 - [Litestream](https://litestream.io/how-it-works/): the planned control-plane backup approach
+
+References checked during the live staging trial (2026-10-12):
+
+- [GitHub: OpenID Connect token claims](https://docs.github.com/en/actions/concepts/security/openid-connect): the `sub`, `environment`, `repository_id`, `repository_owner_id` and `workflow_ref` claims used by the trust condition; the subject format observed live embeds numeric IDs
+- [Cloud Run: managing revisions](https://docs.cloud.google.com/run/docs/managing/revisions): the newest revision of a service cannot be deleted
+- [Cloud Run troubleshooting: container failed to start](https://cloud.google.com/run/docs/troubleshooting#container-failed-to-start): the startup-probe failure observed for the deliberately unhealthy candidate

@@ -82,3 +82,36 @@ Local validation date: 2026-10-12 America/Chicago, macOS, Python 3.12.12, hash-l
 - The MCP SDK in use (1.30.0) accepts the annotations and emits `outputSchema` and `structuredContent`; verified through the real JSON-RPC path in tests.
 
 Still not performed: a live run of the attestation, verification and scan steps against a real registry (those steps use official actions and gcloud commands but have not executed here), and everything listed as not performed for 0.2.0.
+
+
+## Live staging trial (2026-10-12)
+
+Environment: a new Google Cloud project `lab-deploy-staging-f29a` linked to billing with a USD 20 monthly budget alert; the platform repository `brianboti/lab-deploy` and the application repository `brianboti/lab-demo-app`, both public; Terraform 1.13.5 in the official container with the pinned Google provider 7.46.1 and a versioned GCS state bucket; a GitHub `staging` environment restricted to `main` holding the eight Terraform outputs; and the controller on a workstation with a fine-grained token (Contents read, Actions write) and `live_dispatch: true`. Every step below ran against the real GitHub and Google Cloud APIs. Google's public Cloud Run sample image, pinned by digest, served as the bootstrap image.
+
+Bootstrap: `terraform plan` showed 29 resources to add and `terraform apply` created all of them, including the budget. The bootstrap service was Ready, routed 100% to a concrete revision, scaled to zero, and answered anonymous requests with 403.
+
+Findings that changed the code, each fixed, covered by a regression test, and re-verified live:
+
+1. **Identity token subject format.** GitHub's OIDC `sub` claim is now `repo:OWNER@ID/NAME@ID:environment:ENV`; the trust condition expected the older `repo:OWNER/NAME:environment:ENV` and rejected every token. A temporary diagnostic workflow printed the claims; the condition now matches the dedicated `environment` claim together with the numeric IDs, branch and workflow paths. Applied as an in-place update of the provider.
+2. **Status immediately after dispatch.** GitHub returns the run id before the run's title and commit are populated, so the identity check raised for about a second. A run that has not started is now reported as not visible yet; a started or finished run must still prove its identity.
+3. **Traffic commands and readiness.** When a candidate fails its startup probe, `gcloud run services update-traffic` applies the requested split and still exits non-zero because the service's newest revision is not Ready. Trusting the exit code reported a successful rollback as failed and made every recovery run fail the same way. Traffic and tag commands now verify the routing state.
+4. **Newest revision cannot be deleted.** Cloud Run refuses to delete a service's newest revision, so a failed candidate cannot be retired; it stays with no traffic and the service reports not Ready until the next successful release. Receipts record `service_ready` and say so.
+5. **Receipt error text.** Receipts now carry the command's ERROR line rather than gcloud's trailing troubleshooting hint.
+
+| Scenario | GitHub run | Observed |
+|---|---|---|
+| First release attempt | 38209448641 | Build job passed (tests, dependency audit, image). Deploy job failed at federated authentication (finding 1). Controller reported `failed` with tests, dependency scan and target `passed`, health `not_run`. |
+| Release after the trust-condition fix | 38209818454 | Every deploy step passed: validation, authentication, recovery check, push and digest, provenance attestation, attestation verification, vulnerability summary, candidate deploy, probe, promotion, final probe. Receipt `succeeded` with the previous split recorded. Traffic 100% on the new revision, candidate tag removed, startup probe configured from `health_path`. An IAM identity-token probe of `/health` returned 200. GCS checkpoint `succeeded`. GitHub holds one SLSA v1 provenance attestation for the exact digest, signed by `deploy-gcp.yml@refs/heads/main` at the released commit. Scan `FINISHED_SUCCESS`: 0 critical, 5 high (none fixable), 6 medium. The automatic recovery run that followed reported no recovery needed. |
+| Unhealthy candidate, original code | 38210212231 | The candidate never passed its startup probe; traffic never left the previous revision and the service kept answering. Controller: `failed`, health `release_failed_health_unconfirmed`, recovery hint set. The receipt wrongly said `rollback_failed_manual_recovery_required` (finding 3) and the automatic recovery run failed for the same reason. |
+| Recovery with the fixed code, manual dispatch | 38211014088 | Checkpoint moved to `recovered`; traffic verified unchanged on the good revision. |
+| Unhealthy candidate, fixed code | 38211230331 | Receipt `traffic_restored` with the command error recorded, no restore error, `service_ready: false` with the explanatory note; checkpoint `traffic_restored`; automatic recovery: no recovery needed. |
+| Healthy release after the failure | 38211728097 | `succeeded`; the service reported Ready again with 100% on the new revision. |
+| Right-sizing | 38210931979 | Fourteen-day window: 6 requests, 63 vCPU-seconds, 32 GiB-seconds, p95 CPU 5%, p95 memory 14%, at most 2 instances; USD 0.0034 per month at list price; no proposals because the service already runs at the smallest allowed size; Google's Cloud Run cost recommender returned none. The controller fetched the report through the GitHub artifact API (`get_cost_report`). |
+| Cancellation during promotion | 38212354902 | The cancel request was submitted one second after the checkpoint reached `promoting`, but promotion and the final probe completed three seconds later, before the runner stopped the step. GitHub concluded `cancelled`; the controller reported `cancelled` with health `cancelled` and the recovery hint; the receipt and checkpoint say `succeeded` with traffic on the new revision; the automatic recovery run reported no recovery needed, last release succeeded. Honest reporting held: dispatch bookkeeping, workflow conclusion and recovery evidence were shown separately rather than merged into a guess. |
+| Cancellation while the candidate is being created | 38212799331 | The cancel request was submitted eight seconds into `deploying`. GitHub stopped the runner hard: the release step shows only "The operation was canceled", no graceful rollback ran, and the uploaded receipt still says `promoting`. This is the runner-loss case. The automatic recovery workflow that GitHub triggered on the cancelled run read the durable checkpoint, restored 100% of traffic to the previous revision, and marked it `recovered` with the service Ready; the final routing confirmed it. The controller reported `cancelled` with the recovery hint. |
+
+Cost tools: `estimate_cost` read the committed `platform.yaml` from the real repository and the plan carried the bounds with the operator ceiling (`within_limit` at USD 150).
+
+Platform tests after the trial fixes: 111 passed; ruff, zizmor and the platform CI on GitHub are clean for every trial commit.
+
+Not performed: an abrupt runner kill (only a graceful cancellation), Binary Authorization enforcement, and anything production-related. The staging project remains available for further exercises and costs nothing while idle.
