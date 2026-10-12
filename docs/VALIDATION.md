@@ -96,6 +96,8 @@ Environment as in the staging trial below, with the app repository pinned to eac
 | Redeploy a released commit | 38272860779 | Build job skipped, provenance verified for the existing digest, release in about 90 s instead of about eight minutes. |
 | Cancel during the build | 38273142134 | `cancelled`; status named the recovery run that followed (`no_recovery_needed`) and said nothing had changed. |
 | Commit that breaks its own tests | 38273468357 | `failed` at "Run unit tests" with the matching next action; traffic untouched. |
+| Configuration from `platform.yaml` (0.8.0) | 38279769779 | `env` value and `timeout_seconds: 120` shown in the plan; the revision Cloud Run created carries the variable and the 120 s timeout. |
+| Living cost-report issue (0.7.1) | 38278826507 | The right-sizing run created brianboti/lab-demo-app#6 with the summary; `propose_rightsizing` correctly reported nothing to propose. |
 | Candidate that crashes only inside Cloud Run | 38273603111 | `failed` at the release step; receipt `traffic_restored` with the gcloud error line and phases preparing, deploying, traffic_restored in 21 s; service reported not ready with the explanatory note; the recovery run that followed found nothing to do; traffic stayed on the healthy revision. |
 
 Findings that changed the code, each fixed with a regression test and re-verified live:
