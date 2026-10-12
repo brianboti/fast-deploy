@@ -4,6 +4,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import time
 import urllib.request
 from pathlib import Path
@@ -13,6 +14,12 @@ from .models import enforce, parse_spec, spec_hash
 
 def run(args):
     return subprocess.run(args, check=True, capture_output=True, text=True, timeout=600).stdout.strip()
+
+
+def describe_error(error):
+    """Short, log-safe description of a failure: the last line of a command's stderr when there is one."""
+    lines = (getattr(error, "stderr", "") or "").strip().splitlines()
+    return (lines[-1] if lines else f"{type(error).__name__}: {error}")[:300]
 
 
 class CloudRun:
@@ -38,10 +45,30 @@ class CloudRun:
     def traffic(self, allocations):
         if not allocations or sum(allocations.values()) != 100:
             raise ValueError("Expected explicit revision traffic totaling 100%")
-        self.run(self.command("services", "update-traffic", self.service, "--to-revisions", ",".join(f"{k}={v}" for k, v in sorted(allocations.items()))))
+        try:
+            self.run(self.command("services", "update-traffic", self.service, "--to-revisions", ",".join(f"{k}={v}" for k, v in sorted(allocations.items()))))
+        except subprocess.CalledProcessError as error:
+            # Observed live: gcloud applies the split and then exits non-zero because the service's newest revision,
+            # a candidate that never became ready, is not Ready. The routing state is the truth, so verify it.
+            try:
+                observed = traffic_snapshot(self.describe()["status"])
+            except (ValueError, KeyError):
+                observed = None
+            if observed != allocations:
+                raise RuntimeError(f"Traffic update failed: {describe_error(error)}") from None
 
     def remove_candidate(self):
-        self.run(self.command("services", "update-traffic", self.service, "--remove-tags=candidate"))
+        try:
+            self.run(self.command("services", "update-traffic", self.service, "--remove-tags=candidate"))
+        except subprocess.CalledProcessError as error:
+            description = self.describe()
+            entries = list(description.get("spec", {}).get("traffic") or []) + list(description.get("status", {}).get("traffic") or [])
+            if any(entry.get("tag") == "candidate" for entry in entries):
+                raise RuntimeError(f"Candidate tag removal failed: {describe_error(error)}") from None
+
+    def delete_revision(self, name):
+        """Remove a candidate revision that carries no traffic; a failed newest revision otherwise keeps the service not Ready."""
+        self.run(self.command("revisions", "delete", name))
 
     def deploy(self, image, spec, suffix):
         # Cloud Run gates traffic on this HTTP startup probe (up to 60 s of grace) before the platform's own probes run.
@@ -128,12 +155,23 @@ def recover(adapter, journal, target):
     adapter.traffic(verified)
     saved["state"] = "recovered"
     journal.write(saved)
+    retire_candidate(adapter, candidate, saved)
+    journal.write(saved)
+    return saved
+
+
+def retire_candidate(adapter, revision, record):
+    """Best effort after traffic is safely off the candidate: delete the revision, then drop the tag. Outcomes are recorded."""
+    try:
+        adapter.delete_revision(revision)
+        record["candidate_removed"] = True
+    except Exception as error:
+        record["candidate_removed"] = False
+        record["candidate_warning"] = describe_error(error)
     try:
         adapter.remove_candidate()
-    except Exception:
-        saved["cleanup_warning"] = "Candidate tag cleanup failed"
-        journal.write(saved)
-    return saved
+    except Exception as error:
+        record["cleanup_warning"] = f"Candidate tag cleanup failed: {describe_error(error)}"
 
 
 def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=None):
@@ -145,6 +183,8 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
     previous = adapter.describe()
     status = previous["status"]
     allocations = traffic_snapshot(status)
+    suffix = "r" + plan_id[:16]
+    revision = f"{adapter.service}-{suffix}"
     receipt = {"plan_id": plan_id, "image": image, "previous_traffic": allocations, "state": "preparing", "target": target}
     def save():
         if journal is not None:
@@ -155,12 +195,10 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
     try:
         # Freeze any LATEST allocation to concrete revisions before creating a new revision.
         adapter.traffic(allocations)
-        suffix = "r" + plan_id[:16]
         receipt["state"] = "deploying"
         save()
         adapter.deploy(image, spec, suffix)
         candidate = adapter.describe()["status"]
-        revision = f"{adapter.service}-{suffix}"
         entry = next((t for t in candidate.get("traffic", []) if t.get("tag") == "candidate" and t.get("revisionName") == revision), None)
         if not entry or not adapter.health(entry["url"], candidate["url"], spec.health_path):
             raise RuntimeError("Candidate health check failed")
@@ -174,11 +212,17 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
     except (Exception, KeyboardInterrupt, SystemExit) as error:
         # Graceful termination gets an immediate recovery attempt. A killed runner is
         # handled by the durable journal and separate recovery workflow instead.
+        receipt["error"] = describe_error(error)
+        print(f"Release step failed: {receipt['error']}", file=sys.stderr)
         try:
             adapter.traffic(allocations)
             receipt["state"] = "traffic_restored"
-        except Exception:
+        except Exception as restore_error:
             receipt["state"] = "rollback_failed_manual_recovery_required"
+            receipt["restore_error"] = describe_error(restore_error)
+            print(f"Traffic restoration failed: {receipt['restore_error']}", file=sys.stderr)
+        if receipt["state"] == "traffic_restored":
+            retire_candidate(adapter, revision, receipt)
         try:
             save()
         except Exception:
@@ -186,12 +230,11 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
         if isinstance(error, (KeyboardInterrupt, SystemExit)):
             raise
         raise RuntimeError(f"Release failed: {receipt['state']}; inspect the receipt and Cloud Run") from None
-    finally:
-        try:
-            adapter.remove_candidate()
-        except Exception:
-            receipt["cleanup_warning"] = "Candidate tag cleanup failed; remove it manually"
-            save()
+    try:
+        adapter.remove_candidate()
+    except Exception as error:
+        receipt["cleanup_warning"] = f"Candidate tag cleanup failed: {describe_error(error)}; remove it manually"
+        save()
     return receipt
 
 

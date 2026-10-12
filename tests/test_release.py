@@ -1,9 +1,10 @@
 import json
+import subprocess
 
 import pytest
 
 from labdeploy.models import AppSpec
-from labdeploy.release import rollout
+from labdeploy.release import CloudRun, rollout
 
 PLAN_ID = "a" * 32
 IMAGE = "us-central1-docker.pkg.dev/test-project/demo/demo@sha256:" + "b" * 64
@@ -38,6 +39,9 @@ class Cloud:
     def remove_candidate(self):
         self.cleaned = True
 
+    def delete_revision(self, name):
+        self.deleted = getattr(self, "deleted", []) + [name]
+
 
 def test_success(tmp_path):
     cloud = Cloud([True, True])
@@ -54,8 +58,9 @@ def test_health_failure_restores_exact_previous_split(tmp_path, checks):
     with pytest.raises(RuntimeError, match="traffic_restored"):
         rollout(cloud, IMAGE, AppSpec(name="demo", reviewed=True), PLAN_ID, receipt)
     assert cloud.moves[-1] == {"demo-old-a": 60, "demo-old-b": 40}
-    assert json.loads(receipt.read_text())["state"] == "traffic_restored"
-    assert cloud.cleaned
+    saved = json.loads(receipt.read_text())
+    assert saved["state"] == "traffic_restored" and "health check failed" in saved["error"] and saved["candidate_removed"] is True
+    assert cloud.cleaned and cloud.deleted == ["demo-r" + PLAN_ID[:16]]
 
 
 def test_rollback_failure_reported_truthfully(tmp_path):
@@ -68,3 +73,40 @@ def test_mutable_image_rejected(tmp_path):
     with pytest.raises(ValueError, match="immutable"):
         rollout(Cloud([]), "demo:latest", AppSpec(name="demo", reviewed=True), PLAN_ID, tmp_path / "receipt.json")
 
+
+def failing(stderr):
+    def runner(args):
+        raise subprocess.CalledProcessError(1, args, stderr=stderr)
+    return runner
+
+
+def adapter_with(describe_payload, runner):
+    adapter = CloudRun("test-project", "us-central1", "demo", "demo-probe@test-project.iam.gserviceaccount.com", runner=runner)
+    adapter.describe = lambda: describe_payload
+    return adapter
+
+
+def test_traffic_update_is_judged_by_routing_state_not_exit_code():
+    stderr = "ERROR: (gcloud.run.services.update-traffic) The user-provided container failed the configured startup probe checks."
+    applied = {"status": {"traffic": [{"revisionName": "demo-old-a", "percent": 100}]}}
+    adapter_with(applied, failing(stderr)).traffic({"demo-old-a": 100})  # gcloud failed, but the split is in place
+    with pytest.raises(RuntimeError, match="startup probe"):
+        adapter_with({"status": {"traffic": [{"revisionName": "demo-old-b", "percent": 100}]}}, failing(stderr)).traffic({"demo-old-a": 100})
+
+
+def test_candidate_tag_removal_is_judged_by_tag_presence():
+    stderr = "ERROR: (gcloud.run.services.update-traffic) revision is not ready"
+    adapter_with({"spec": {"traffic": [{"revisionName": "demo-old-a", "percent": 100}]}, "status": {"traffic": []}}, failing(stderr)).remove_candidate()
+    with pytest.raises(RuntimeError, match="not ready"):
+        adapter_with({"spec": {"traffic": [{"revisionName": "demo-r1", "tag": "candidate"}]}, "status": {"traffic": []}}, failing(stderr)).remove_candidate()
+
+
+def test_failed_deploy_records_the_command_error(tmp_path):
+    class Rejected(Cloud):
+        def deploy(self, image, spec, suffix):
+            raise subprocess.CalledProcessError(1, ["gcloud"], stderr="ERROR: (gcloud.run.deploy) The user-provided container failed the configured startup probe checks.")
+    cloud = Rejected([])
+    with pytest.raises(RuntimeError, match="traffic_restored"):
+        rollout(cloud, IMAGE, AppSpec(name="demo", reviewed=True), PLAN_ID, tmp_path / "receipt.json")
+    saved = json.loads((tmp_path / "receipt.json").read_text())
+    assert "startup probe" in saved["error"] and saved["candidate_removed"] is True
