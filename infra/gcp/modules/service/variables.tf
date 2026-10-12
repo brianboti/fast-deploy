@@ -65,6 +65,11 @@ variable "cap_service_account" {
   description = "Service account of the spending-cap workflow, allowed to close this service's ingress; empty disables."
   default     = ""
 }
+variable "cap_operator_role" {
+  type        = string
+  description = "The foundation's custom role that only reads and updates a service's ingress, granted to the cap on this service."
+  default     = ""
+}
 variable "billing_dataset" {
   type        = string
   description = "BigQuery dataset id holding the billing export the deployer may read; empty disables."

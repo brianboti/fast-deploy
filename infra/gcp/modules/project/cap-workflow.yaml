@@ -1,30 +1,46 @@
-# Spending cap: runs on every budget notification. Once the budget line is crossed it closes ingress on every Cloud Run
-# service in the region that carries the label lab-deploy-managed=true (set by the service module), stops every Cloud SQL
-# instance with that label, and optionally detaches billing at a higher line.
-# Reopen with: gcloud run services update SERVICE --ingress=all; restart a database with: gcloud sql instances patch NAME --activation-policy=ALWAYS
-# Workflows expressions take no map or list literals ({} or []), so missing fields are tested with `in` instead of default().
+# Spending cap: runs on every budget notification. Once spend reaches the threshold of the budget it closes ingress on
+# every Cloud Run service in the region that carries the label lab-deploy-managed=true and stops every Cloud SQL
+# instance with that label, then optionally detaches billing at a higher line. Each resource is handled on its own
+# with retries, so one failure never leaves the others open; failures are logged, counted and reported through a
+# failed execution, which an alert policy watches. A service or instance carrying lab-deploy-cap-lifted=true is left
+# alone: that is how an operator reopens one for the rest of the month (gcloud run services update SERVICE
+# --ingress=all --update-labels lab-deploy-cap-lifted=true; gcloud sql instances patch NAME --activation-policy=ALWAYS
+# --update-labels lab-deploy-cap-lifted=true). The ratio comes from the notification's costAmount and budgetAmount, so
+# the detach line can sit above the highest alert threshold of the budget.
+# Workflows expressions take no map or list literals ({} or []) and at most 400 characters, so missing fields are
+# tested with `in` or map.get and messages are built in parts.
 main:
   params: [event]
   steps:
     - decode:
         assign:
           - message: ${json.decode(text.decode(base64.decode(event.data.message.data)))}
-          - exceeded: ${default(map.get(message, "alertThresholdExceeded"), 0)}
           - cost: ${default(map.get(message, "costAmount"), 0)}
           - budget: ${default(map.get(message, "budgetAmount"), 0)}
+          - exceeded: ${default(map.get(message, "alertThresholdExceeded"), 0)}
           - closed: []
           - stopped: []
+          - failed: []
+    - ratio:
+        switch:
+          - condition: ${budget > 0}
+            steps:
+              - from_amounts:
+                  assign:
+                    - exceeded: ${cost / budget}
     - below_cap:
         switch:
           - condition: ${exceeded < __THRESHOLD__}
             next: report_below
     - list_services:
-        call: http.get
-        args:
-          url: '${"https://run.googleapis.com/v2/projects/__PROJECT__/locations/__REGION__/services"}'
-          auth:
-            type: OAuth2
-        result: listing
+        try:
+          call: http.get
+          args:
+            url: '${"https://run.googleapis.com/v2/projects/__PROJECT__/locations/__REGION__/services"}'
+            auth:
+              type: OAuth2
+          result: listing
+        retry: ${http.default_retry}
     - nothing_to_close:
         switch:
           - condition: ${not ("services" in listing.body)}
@@ -38,78 +54,129 @@ main:
                 switch:
                   - condition: ${not ("labels" in service)}
                     next: continue
-                  - condition: ${not ("lab-deploy-managed" in service.labels)}
+                  - condition: ${default(map.get(service.labels, "lab-deploy-managed"), "false") != "true"}
                     next: continue
-                  - condition: ${service.labels["lab-deploy-managed"] != "true"}
+                  - condition: ${default(map.get(service.labels, "lab-deploy-cap-lifted"), "false") == "true"}
                     next: continue
-            - patch:
-                call: http.patch
-                args:
-                  url: '${"https://run.googleapis.com/v2/" + service.name + "?updateMask=ingress"}'
-                  auth:
-                    type: OAuth2
-                  body:
-                    ingress: INGRESS_TRAFFIC_INTERNAL_ONLY
-            - remember:
-                assign:
-                  - closed: ${list.concat(closed, service.name)}
+                  - condition: ${default(map.get(service, "ingress"), "") == "INGRESS_TRAFFIC_INTERNAL_ONLY"}
+                    next: continue
+            - close:
+                try:
+                  steps:
+                    - patch:
+                        call: http.patch
+                        args:
+                          url: '${"https://run.googleapis.com/v2/" + service.name + "?updateMask=ingress"}'
+                          auth:
+                            type: OAuth2
+                          body:
+                            ingress: INGRESS_TRAFFIC_INTERNAL_ONLY
+                    - remember:
+                        assign:
+                          - closed: ${list.concat(closed, service.name)}
+                retry: ${http.default_retry}
+                except:
+                  as: problem
+                  steps:
+                    - remember_failure:
+                        assign:
+                          - failed: ${list.concat(failed, service.name)}
+                    - log_failure:
+                        call: sys.log
+                        args:
+                          severity: ERROR
+                          text: '${"Lab Deploy spending cap could not close " + service.name + ": " + json.encode_to_string(problem)}'
     - list_instances:
-        call: http.get
-        args:
-          url: '${"https://sqladmin.googleapis.com/v1/projects/__PROJECT__/instances"}'
-          query:
-            filter: "settings.userLabels.lab-deploy-managed:true"
-          auth:
-            type: OAuth2
-        result: instances
+        try:
+          call: http.get
+          args:
+            url: '${"https://sqladmin.googleapis.com/v1/projects/__PROJECT__/instances"}'
+            query:
+              filter: "settings.userLabels.lab-deploy-managed:true"
+            auth:
+              type: OAuth2
+          result: instances
+        retry: ${http.default_retry}
     - nothing_to_stop:
         switch:
           - condition: ${not ("items" in instances.body)}
-            next: log_closed
+            next: compose
     - stop_instances:
         for:
           value: instance
           in: ${instances.body.items}
           steps:
+            - instance_managed_only:
+                switch:
+                  - condition: ${not ("userLabels" in instance.settings)}
+                    next: policy_check
+                  - condition: ${default(map.get(instance.settings.userLabels, "lab-deploy-cap-lifted"), "false") == "true"}
+                    next: continue
+            - policy_check:
+                switch:
+                  - condition: ${default(map.get(instance.settings, "activationPolicy"), "") == "NEVER"}
+                    next: continue
             - stop:
-                call: http.patch
-                args:
-                  url: '${"https://sqladmin.googleapis.com/v1/projects/__PROJECT__/instances/" + instance.name}'
-                  auth:
-                    type: OAuth2
-                  body:
-                    settings:
-                      activationPolicy: NEVER
-            - remember_stop:
-                assign:
-                  - stopped: ${list.concat(stopped, instance.name)}
-    - log_closed:
-        assign:  # expressions are limited to 400 characters, so the message is built in parts
-          - headline: '${"Lab Deploy spending cap: budget line crossed (" + string(cost) + " of " + string(budget) + ", threshold " + string(exceeded) + ")"}'
-          - actions: '${"; ingress closed on " + string(len(closed)) + " managed services " + json.encode_to_string(closed) + "; stopped " + string(len(stopped)) + " databases " + json.encode_to_string(stopped)}'
+                try:
+                  steps:
+                    - patch_instance:
+                        call: http.patch
+                        args:
+                          url: '${"https://sqladmin.googleapis.com/v1/projects/__PROJECT__/instances/" + instance.name}'
+                          auth:
+                            type: OAuth2
+                          body:
+                            settings:
+                              activationPolicy: NEVER
+                    - remember_stop:
+                        assign:
+                          - stopped: ${list.concat(stopped, instance.name)}
+                retry: ${http.default_retry}
+                except:
+                  as: problem
+                  steps:
+                    - remember_stop_failure:
+                        assign:
+                          - failed: ${list.concat(failed, instance.name)}
+                    - log_stop_failure:
+                        call: sys.log
+                        args:
+                          severity: ERROR
+                          text: '${"Lab Deploy spending cap could not stop " + instance.name + ": " + json.encode_to_string(problem)}'
+    - compose:
+        assign:
+          - headline: '${"Lab Deploy spending cap: budget line crossed (" + string(cost) + " of " + string(budget) + ", ratio " + string(exceeded) + ")"}'
+          - actions: '${"; closed " + string(len(closed)) + " services " + json.encode_to_string(closed) + "; stopped " + string(len(stopped)) + " databases " + json.encode_to_string(stopped)}'
+          - problems: '${"; failed on " + string(len(failed)) + " " + json.encode_to_string(failed)}'
     - log_message:
         call: sys.log
         args:
           severity: WARNING
-          text: '${headline + actions + ". Reopen with gcloud run services update SERVICE --ingress=all and gcloud sql instances patch NAME --activation-policy=ALWAYS"}'
+          text: '${headline + actions + problems + ". Reopen one with gcloud run services update SERVICE --ingress=all --update-labels lab-deploy-cap-lifted=true"}'
     - maybe_detach:
         switch:
           - condition: ${"__DETACH__" == "true" and exceeded >= __DETACH_THRESHOLD__}
             steps:
               - detach:
-                  call: http.put
-                  args:
-                    url: '${"https://cloudbilling.googleapis.com/v1/projects/__PROJECT__/billingInfo"}'
-                    auth:
-                      type: OAuth2
-                    body:
-                      billingAccountName: ""
+                  try:
+                    call: http.put
+                    args:
+                      url: '${"https://cloudbilling.googleapis.com/v1/projects/__PROJECT__/billingInfo"}'
+                      auth:
+                        type: OAuth2
+                      body:
+                        billingAccountName: ""
+                  retry: ${http.default_retry}
               - log_detached:
                   call: sys.log
                   args:
                     severity: CRITICAL
                     text: '${"Lab Deploy spending cap: billing detached from the project at " + string(exceeded) + " of the budget"}'
+    - fail_if_needed:
+        switch:
+          - condition: ${len(failed) > 0}
+            raise: '${"Lab Deploy spending cap finished with failures: " + json.encode_to_string(failed)}'
     - done:
-        return: '${"cap enforced at threshold " + string(exceeded) + " on " + string(len(closed)) + " services and " + string(len(stopped)) + " databases"}'
+        return: '${"cap enforced at " + string(exceeded) + " of the budget: " + string(len(closed)) + " services closed, " + string(len(stopped)) + " databases stopped"}'
     - report_below:
-        return: '${"below cap: threshold " + string(exceeded) + " of budget " + string(budget)}'
+        return: '${"below cap: " + string(exceeded) + " of the budget"}'

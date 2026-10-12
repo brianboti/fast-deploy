@@ -1,5 +1,6 @@
 # Applies every application root a merge to main touches, with the write pipeline identity, from the protected `infra`
-# environment (restrict it to main and add required reviewers in the repository settings). The plan is checked
+# environment (restrict it to main and add required reviewers in the repository settings). The identity's provider only
+# accepts this workflow file on main in that environment (INFRA_APPLY_WIF_PROVIDER, INFRA_APPLY_SERVICE_ACCOUNT). The plan is checked
 # against the platform's policies again right before the apply, and the outputs are published to the application's
 # GitHub environment when the APP_REPOS_TOKEN secret exists; otherwise they are printed for the operator to copy.
 name: Infrastructure apply
@@ -51,7 +52,7 @@ jobs:
   apply:
     needs: roots
     # Dormant until the operator sets the INFRA_* repository variables from the foundation root's outputs.
-    if: needs.roots.outputs.apps != '[]' && vars.INFRA_WIF_PROVIDER != ''
+    if: needs.roots.outputs.apps != '[]' && vars.INFRA_APPLY_WIF_PROVIDER != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: infra
@@ -75,7 +76,7 @@ jobs:
           persist-credentials: false
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
-          workload_identity_provider: ${{ vars.INFRA_WIF_PROVIDER }}
+          workload_identity_provider: ${{ vars.INFRA_APPLY_WIF_PROVIDER }}
           service_account: ${{ vars.INFRA_APPLY_SERVICE_ACCOUNT }}
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:

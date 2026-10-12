@@ -190,6 +190,16 @@ resource "google_cloud_run_v2_job" "migrate" {
         command = [var.needs.migrate[0]]
         args    = slice(var.needs.migrate, 1, length(var.needs.migrate))
       }
+      dynamic "vpc_access" {
+        for_each = var.needs.database == "postgres" && var.network != "" ? [1] : []
+        content {
+          egress = "PRIVATE_RANGES_ONLY"
+          network_interfaces {
+            network    = var.network
+            subnetwork = var.subnet
+          }
+        }
+      }
     }
   }
   lifecycle {

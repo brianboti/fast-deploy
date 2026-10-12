@@ -164,7 +164,8 @@ resource "google_cloud_run_v2_service" "app" {
   }
   # CI owns subsequent workload revisions and traffic. Terraform owns IAM/foundation.
   lifecycle {
-    ignore_changes = [template, traffic, client, client_version]
+    # ingress too: the spending cap closes it and the operator reopens it; a later apply must not undo either.
+    ignore_changes = [template, traffic, client, client_version, ingress]
   }
 }
 resource "google_cloud_run_v2_service_iam_member" "deployer" {
@@ -184,7 +185,7 @@ resource "google_cloud_run_v2_service_iam_member" "cap" {
   count    = var.cap_service_account != "" ? 1 : 0
   location = var.region
   name     = google_cloud_run_v2_service.app.name
-  role     = "roles/run.developer"
+  role     = var.cap_operator_role
   member   = "serviceAccount:${var.cap_service_account}"
 }
 

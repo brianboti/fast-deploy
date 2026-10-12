@@ -134,7 +134,7 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
     shared = {
         "project_number": "project_number", "image_vulnerability_scanning": "image_vulnerability_scanning",
         "tag_manager_role": "tag_manager_role", "alert_channels": "alert_channels", "cap_service_account": "cap_service_account",
-        "billing_dataset": "billing_dataset", "network": "network", "subnet": "subnet",
+        "billing_dataset": "billing_dataset", "network": "network", "subnet": "subnet", "cap_operator_role": "cap_operator_role",
     }
     lines += [f"  {key.ljust(width)} = data.terraform_remote_state.project.outputs.{output}" for key, output in shared.items()]
     main = header + f'''provider "google" {{

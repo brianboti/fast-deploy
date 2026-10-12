@@ -94,3 +94,18 @@ References read for 1.4.0, Cloud SQL and migrations (2026-10-12):
 - [Connect from Cloud Run to Cloud SQL](https://docs.cloud.google.com/sql/docs/postgres/connect-run): connectors, private IP through VPC egress, the Cloud SQL Client role, the 100-connection limit per instance
 - [Cloud Run jobs](https://docs.cloud.google.com/run/docs/create-jobs): the migration job, `--max-retries` and task timeouts
 - [Private Service Access](https://docs.cloud.google.com/vpc/docs/configure-private-services-access) and [Direct VPC egress](https://docs.cloud.google.com/run/docs/configuring/vpc-direct-vpc): the network the foundation creates
+
+References read for the strict review and its fixes, 1.5.0 (2026-10-12):
+
+- [Workload Identity Federation attribute conditions](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines) and [GitHub's OIDC token claims](https://docs.github.com/en/actions/concepts/security/openid-connect): `event_name`, `ref`, `environment` and `workflow_ref` pinned per provider in `infra/gcp/modules/project/pipeline.tf`
+- [IAM Conditions for Cloud Storage](https://docs.cloud.google.com/storage/docs/access-control/iam#conditions): `resource.name` prefixes for objects and `resource.type` for bucket-level operations, used to scope the pipeline's state access
+- [Cloud Storage IAM roles](https://docs.cloud.google.com/storage/docs/access-control/iam-roles) and [basic roles guidance](https://docs.cloud.google.com/iam/docs/understanding-roles#basic): why `roles/viewer`, `roles/editor` and `roles/storage.admin` left the pipeline identities
+- [Workflows syntax: retries, try/except, loops and expressions](https://docs.cloud.google.com/workflows/docs/reference/syntax) and [Workflows metrics](https://docs.cloud.google.com/workflows/docs/monitoring): `http.default_retry`, per-resource error handling and the `finished_execution_count` metric behind the cap's failure alert
+- [Budget notification format](https://docs.cloud.google.com/billing/docs/how-to/budgets-programmatic-notifications): `costAmount` and `budgetAmount` carry the ratio; `alertThresholdExceeded` is only the highest budget rule reached
+- [gcloud run jobs update](https://docs.cloud.google.com/sdk/gcloud/reference/run/jobs/update): `--args` with an empty value resets the arguments; there is no `--clear-args`
+- [Firestore pricing](https://cloud.google.com/firestore/pricing): no free quota for named databases; regional storage price
+- [SQLite write-ahead logging](https://www.sqlite.org/wal.html): concurrent readers with one writer for the controller's database
+- [uvicorn settings: proxy headers](https://uvicorn.dev/settings/): `FORWARDED_ALLOW_IPS` for the container path behind a reverse proxy
+- [GitHub branch protection](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches), [deployment environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments) and [CODEOWNERS](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners): the review gate the pipeline's apply identity relies on
+- [Dependabot `directories`](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference#directories-or-directory--) and [scheduled workflows](https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#schedule): the Terraform roots watched and the weekly audit
+

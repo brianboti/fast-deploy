@@ -1,6 +1,7 @@
-# Replace the placeholder team with real maintainers before enabling "require review from code owners".
-# These paths gate every release of every application that uses this platform.
-*                     @YOUR_ORG/lab-platform-admins
-/templates/           @YOUR_ORG/lab-platform-admins
-/infra/               @YOUR_ORG/lab-platform-admins
-/.github/workflows/   @YOUR_ORG/lab-platform-admins
+# Every change to the platform's trust boundaries is reviewed by the owner: the policy, the pipeline, the Terraform
+# modules and the workflows that run as the pipeline's identities. Branch protection requires a pull request on main.
+*                         @brianboti
+/infra/                   @brianboti
+/labdeploy/infra.py       @brianboti
+/.github/workflows/       @brianboti
+/.github/CODEOWNERS       @brianboti

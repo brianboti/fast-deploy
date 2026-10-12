@@ -8,6 +8,8 @@ updates:
     schedule:
       interval: weekly
   - package-ecosystem: terraform
-    directory: /infra/gcp
+    directories:
+      - /infra/gcp/project
+      - /infra/gcp/apps/*
     schedule:
       interval: weekly

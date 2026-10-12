@@ -1,11 +1,13 @@
 [build-system]
-requires = ["setuptools>=75"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "lab-deploy"
-version = "1.4.2"
+version = "1.5.0"
 description = "Policy-controlled Claude/MCP deployment to GCP staging"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = ["mcp==1.30.0", "fastapi==0.143.0", "httpx==0.28.1", "pydantic==2.14.1", "PyYAML==6.0.3", "PyJWT[crypto]==2.15.1", "uvicorn==0.54.0"]
 

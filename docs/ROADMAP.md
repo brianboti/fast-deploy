@@ -1,7 +1,7 @@
 # Roadmap: from staging pilot to a lab platform you can trust unattended
 
 Written 2026-10-12 from three reviews of version 0.4.0: general gaps, versioning and redeploys, and monitoring.
-Every item below is a gap found in those reviews. Nothing here is implemented yet.
+Every item below was a gap found in those reviews when this was written; the status lines under each phase say what has shipped since (Phases 0 to 6 by 2026-10-12, with the always-on machine of 5.1 deferred).
 
 Order of phases is by value per effort with cost first, then control, then scope, then the always-on move.
 Each phase ships as one platform version with tests, lint, `docs/CHANGES.md`, and a live staging exercise.
@@ -132,7 +132,7 @@ Status: implemented on 2026-10-12 as version 0.9.0 in the laptop variant the ope
 
 Cost effect: machine within the free tier; a reserved external address is about 3.65 if Google charges it; uptime checks within the free allotment.
 
-## Phase 6: everything an app needs (about eleven days) → versions 1.0 to 1.3
+## Phase 6: everything an app needs (about eleven days) → versions 1.0 to 1.4
 
 Status: researched on 2026-10-12 after the operator restated the goal: "the whole process of build and deploy fully automatic; any service the app needs, the platform should provide". Item 6.3, the pipeline, shipped as 1.0.0 to 1.0.2 and was exercised live (state migration, foundation apply, plan on pull request, apply on merge). Items 6.1 and 6.2 shipped as 1.1.0 for the first three types: buckets, topics and a Firestore database declared under `needs`, with derived variables, least-privilege grants, policies and cost notes (6.4's variable wiring came with them). Item 6.7 shipped as 1.2.0 (needs in the health view through the observer, and in the retirement checklist); the per-application spend half of 6.6 shipped as 1.3.0; Cloud SQL with the migration job (6.5) and the cap stopping databases (the rest of 6.6) shipped as 1.4.0. Every item of Phase 6 is implemented; the live trials per type (6.8) are in `docs/VALIDATION.md`.
 

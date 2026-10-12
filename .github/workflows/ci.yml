@@ -1,5 +1,9 @@
 name: Platform tests
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '19 6 * * 1' # weekly: the dependency audit must run even when nothing is pushed
 permissions:
   contents: read
 jobs:
@@ -22,6 +26,7 @@ jobs:
         run: |
           python -m pip install --require-hashes -r audit.lock
           python -m pip_audit --require-hashes -r requirements.lock
+          python -m pip_audit --require-hashes -r requirements-dev.lock
       - run: python -m pytest -q
       - run: python -m pytest examples/demo-app -q
       - run: python -m labdeploy.cli validate examples/demo-app/platform.yaml

@@ -138,7 +138,10 @@ def load_config(path: str) -> Config:
 
 
 class LiveConfig:
-    """The configuration, re-read when its file changes, so pauses, principals and registry edits apply without a restart.
+    """The configuration, re-read when its file changes, so pauses, principals and application entries apply without a restart.
+
+    Rate limits, the observer identity, OAuth settings, allowed hosts, the log file and the database path are read once at
+    start; changing them needs a restart.
 
     Attribute reads pass through to the current Config. An invalid new file is reported and ignored; the previous
     configuration stays in force. The database path and the OAuth block are read once at start and need a restart.

@@ -1,3 +1,35 @@
+# 1.5.0: the review's fixes
+
+Every finding of the strict review of 2026-10-12 (`docs/REVIEW-2026-10-12.md`), in its order, with a regression test where code changed.
+
+## Fixed
+
+1. **Merging is now the gate** (finding 1): the apply identity's provider accepts only `infra-apply.yml` on `refs/heads/main` in the `infra` environment, the plan identity's provider only `infra-plan.yml` on a `pull_request` event, and each binds through an attribute the other provider never maps. `main` is protected (pull request, the `test` and `terraform` checks, administrators included, no force push), the environment forbids administrator bypass, and `.github/CODEOWNERS` names the owner.
+2. **The plan policy fails closed** (findings 2, 15): public members refused everywhere, an allow-list of roles an application may grant (plus the platform's `labDeploy*` custom roles), the platform's identities and the state bucket matched in every string field, authoritative policies refused, the invariants (private database, delete protection, private bucket, labels, region including `location_id`) checked on update too, unknown values refused. The checker runs from a checkout of `main`, not from the pull request, and the comment carries the full plan. The renderer escapes `${` and `%{`, and `migrate` parts reject `,`, `$`, `^` and `"`.
+3. **Tools no longer block the controller** (finding 3): every tool runs in a thread pool with the caller's identity carried along; a status wait no longer stalls sign-ins or other callers.
+4. **A runner lost during a migration recovers** (finding 4): `migrating` is a recoverable checkpoint state (traffic untouched), the advice names it.
+5. **One-word migration commands release** (finding 5): `--args=` resets the job's arguments; `--clear-args` never existed.
+6. **The cap is robust** (finding 6): every call retries, each service and instance is handled in its own try block, failures are logged, counted and end the execution, an alert policy watches failed executions, the ratio comes from `costAmount` and `budgetAmount` (so any threshold works), a resource labelled `lab-deploy-cap-lifted=true` is left alone, and `ingress` joined the service's `ignore_changes` so a later apply does not reopen a capped service. The cap's per-service grant is a custom role (`labDeployCapOperator`: read and update a service) instead of `roles/run.developer`.
+7. **Lost dispatches end** (finding 7): a plan still `dispatching` or `dispatch_unknown` two minutes later with no visible run becomes `dispatch_lost`, a final state with advice.
+8. **Auto-deploy retries** (finding 8): a `planned`, errored or lost attempt is retried after thirty minutes instead of sticking forever.
+9. **Firestore cost note corrected** (finding 9): no free quota for named databases, regional storage at 0.15 per GiB-month.
+10. **One migration timeout** (finding 10): the job's task timeout is derived from the runner's command timeout; a timeout records the execution as still running and the release fails without a second migration.
+11. **The ceiling is named** (finding 11): the policy text says it compares the compute bound plus the needs' floor; the report prices live settings as they are and warns when live `maxScale` exceeds the reviewed bound.
+12. **SQLite in WAL mode with guarded writes** (finding 12): `finish` only completes a record in its claimed state; OAuth tables are pruned hourly.
+13. **No client secrets** (finding 13): registered clients are public (`token_endpoint_auth_method: none`, PKCE); the access log no longer records query strings. Access tokens and authorization requests are bound to the resource (finding 26).
+14. **Narrower pipeline identities** (finding 14): plan has specific viewer roles and security reviewer, no `roles/viewer`; apply has the admin roles a root needs and a custom bucket-manager role, no `roles/editor`, no `roles/storage.admin`; state access is conditioned to the `apps/` prefix (plus read of the foundation's outputs).
+15. **Documents match the code** (finding 16): README, ARCHITECTURE, HANDOFF, SETUP and ROADMAP corrected; `LICENSE` (MIT); Dependabot watches the roots that exist; CI runs weekly and audits both lock files.
+16. **Disaster recovery** (finding 17): `backup_bucket` sends the nightly copy and the configuration to the foundation's new private versioned bucket (`PROJECT-lab-deploy-backups`); the operator scripts live in `scripts/`; `docs/RUNBOOK.md` covers the laptop-off case, a rehearsed restore, the cap, stuck releases, credentials and a monthly alert exercise.
+17. **Container behind a proxy** (finding 18): the Dockerfile documents `FORWARDED_ALLOW_IPS`.
+18. Low findings 19 to 25: a re-run gets a fresh revision suffix (`a2`, `a3`); candidate log lines are marked untrusted; names must be 3 to 21 characters without a trailing dash; the scheduler is joined on shutdown; `var.subnet` is used by the migration job; the Pub/Sub API is managed once; the billing dataset is labelled; `install-launch-agent.sh` defines its variable; the foundation apply script shows the plan and asks; `start.sh` never puts the token on a command line; the reload scope is documented.
+
+## Upgrade steps
+
+1. Re-apply the foundation (`scripts/apply-foundation.sh PROJECT_ID`): two providers replace the old one, roles change, the cap's custom role, alert policy and the backup bucket appear.
+2. On the platform repository replace `INFRA_WIF_PROVIDER` with `INFRA_PLAN_WIF_PROVIDER` and `INFRA_APPLY_WIF_PROVIDER` from the output; protect `main` and forbid bypass on the `infra` environment.
+3. Re-render every application root (the cap's role input) and merge; runner code changed, so regenerate the app workflows against this commit and raise `platform.minimum_commit`.
+4. Set `backup_bucket` in the controller configuration to the foundation's `backup_bucket` output and restart; the scripts in `~/.local/share/lab-deploy/` now call the ones in `scripts/`.
+
 # 1.4.2: fix from the live plan
 
 ## Fixed

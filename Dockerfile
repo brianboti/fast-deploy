@@ -9,5 +9,7 @@ RUN mkdir /data && chown 65532:65532 /data
 USER 65532:65532
 ENV LAB_CONFIG=/config/config.yaml
 EXPOSE 8000
+# Behind a reverse proxy set FORWARDED_ALLOW_IPS to the proxy's address (uvicorn reads it), or every caller looks like
+# the proxy and the per-address limits collapse into one.
 CMD ["uvicorn", "labdeploy.server:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
 

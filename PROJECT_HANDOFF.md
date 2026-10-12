@@ -33,7 +33,7 @@ The user explicitly asked that official documentation be read before coding. The
 
 ## 2. Current implementation in one paragraph
 
-Lab Deploy is a Python deployment controller exposed through authenticated MCP tools and a small REST API. Claude Chat can act as its conversational client. The controller inspects allowlisted GitHub repositories, proposes configuration PRs, validates committed configuration, and creates plans tied to a specific commit and GCP destination. It dispatches a pinned GitHub Actions workflow that tests and builds the application, obtains short-lived GCP credentials, pushes a container image, and deploys that image by digest to Cloud Run. Release code performs health probes and traffic restoration. A durable Cloud Storage checkpoint and an independent recovery workflow support recovery after runner loss. Since 0.4.0 the controller is also an OAuth 2.1 authorization server, so Claude chat signs in through a browser page. Versions 0.5.0 to 0.9.2 show every step of a release with receipts and candidate logs, steer after a release (traffic rollback, cancel, deploy by commit, image reuse, pause), control cost (spending cap, actual spend from the billing export, a living cost-report issue, right-sizing pull requests, drift check), support environment values, secrets, a test policy and timeouts in `platform.yaml`, read live health and logs through a viewer-only observer identity, auto-deploy the tip of main when asked to, and run a daily watchdog and nightly backups in-process.
+Lab Deploy is a Python deployment controller exposed through authenticated MCP tools and a small REST API. Claude Chat can act as its conversational client. The controller inspects allowlisted GitHub repositories, proposes configuration PRs, validates committed configuration, and creates plans tied to a specific commit and GCP destination. It dispatches a pinned GitHub Actions workflow that tests and builds the application, obtains short-lived GCP credentials, pushes a container image, and deploys that image by digest to Cloud Run. Release code performs health probes and traffic restoration. A durable Cloud Storage checkpoint and an independent recovery workflow support recovery after runner loss. Since 0.4.0 the controller is also an OAuth 2.1 authorization server, so Claude chat signs in through a browser page. Versions 0.5.0 to 0.9.2 show every step of a release with receipts and candidate logs, steer after a release (traffic rollback, cancel, deploy by commit, image reuse, pause), control cost (spending cap, actual spend from the billing export, a living cost-report issue, right-sizing pull requests, drift check), support environment values, secrets, a test policy and timeouts in `platform.yaml`, read live health and logs through a viewer-only observer identity, auto-deploy the tip of main when asked to, and run a daily watchdog and nightly backups in-process. Versions 1.0.0 to 1.4.2 turned application infrastructure into pull requests (one Terraform root per application, plan on pull request, policy, apply on merge) and let an application declare buckets, topics, a Firestore or Cloud SQL database and a migration job under `needs`. Version 1.5.0 applied the strict review of 2026-10-12: pinned pipeline identities without basic roles, a fail-closed policy judged from `main`, non-blocking tools, recoverable migrations, a cap with retries and an alert, off-machine backups, a runbook and a license.
 
 There is no custom chat frontend. The backend does not call an Anthropic model API and does not require an Anthropic API key. The model operates through Claude's own interface; the backend implements the tools and execution rules.
 
@@ -135,9 +135,9 @@ flowchart TD
 | Environment | `staging` |
 | Cloud/runtime | GCP Cloud Run |
 | Region | `us-central1` |
-| Access | Cloud Run IAM authentication; internet-reachable ingress |
+| Access | Cloud Run IAM authentication; internet-reachable ingress, closed by the spending cap at the budget line |
 | Resource policy | At most 2 CPUs, 2048 MiB RAM, 3 instances per revision |
-| Database/dependency provisioning | Not implemented; declared dependencies are rejected by deployment policy |
+| Needs | Buckets, Pub/Sub topics, a Firestore or private Cloud SQL (IAM sign-in) database and a migration job from `needs` in `platform.yaml`, rendered into the application's Terraform root and applied by the pipeline |
 | GPUs | Not implemented; rejected |
 | AWS and production | Not implemented; rejected |
 | Traffic strategy | Probe a tagged candidate, switch traffic, probe again |
@@ -157,6 +157,10 @@ Paths below are relative to the extracted `lab-deploy/` project root.
 |---|---|
 | `README.md` | Scope, local execution and project entry point |
 | `pyproject.toml` | Version, Python requirements and package dependencies |
+| `scripts/` | The operator's scripts: launcher, domain setup, foundation apply, state migration, REST and tool callers, launch agent |
+| `docs/RUNBOOK.md` | Owner, what "up" means, the laptop-off case, restore from the backup bucket, lifting the cap, credentials |
+| `docs/REVIEW-2026-10-12.md` | The strict review whose findings 1.5.0 applied |
+| `LICENSE` | MIT |
 | `labdeploy/analyzer.py` | Conservative local/remote manifest analysis |
 | `labdeploy/models.py` | App schema, YAML parsing, spec hashing and resource policy |
 | `labdeploy/config.py` | Operator configuration, app registration and principal permissions |
@@ -339,7 +343,7 @@ Different plans can request separate deployments. The workflows use a shared `gc
 
 The checkpoint is stored at `gs://RECOVERY_BUCKET/releases/SERVICE.json`. It contains the plan ID, target, image and previous traffic map. GCS generation preconditions detect competing writes.
 
-The independent recovery workflow runs following release-workflow completion and on a roughly ten-minute schedule. It executes only pinned platform code and uses the same concurrency group as deployment. Each new deployment also checks for unfinished recovery work before proceeding.
+The independent recovery workflow runs following release-workflow completion and on a six-hour schedule. It executes only pinned platform code and uses the same concurrency group as deployment. Each new deployment also checks for unfinished recovery work before proceeding.
 
 Recovery verifies the target and permits automatic restoration only when current traffic references the checkpoint's previous revisions or that release's candidate. It refuses unrelated revisions. Successful or already-restored checkpoints are not rolled back again.
 
@@ -432,12 +436,10 @@ The detailed setup, workflow-render commands and migration instructions are in `
 
 ## 14. Immediate next steps
 
-1. Run `~/.local/share/lab-deploy/migrate-state.sh` once (splits the staging state into the foundation and per-app states), then `apply-staging-alerts.sh` (now the foundation root: adds the pipeline identities). Set the three `INFRA_*` variables and the `infra` environment on the platform repository; merge the rendered `infra/gcp/apps/lab-demo` root so the pipeline applies it. Restart the controller for 1.0.0 and regenerate the demo app's workflows (runner code changed).
-2. Enable Cloud Billing export to the `billing_export` dataset in the console and set the `BILLING_EXPORT_TABLE` variable on the app repository, so the weekly report shows actual spend.
-3. Optionally add a `NOTIFY_WEBHOOK_URL` secret to the app repository and `notify_webhook_url` to the controller configuration, and verify one delivery.
-4. Onboard the first real lab application: its repository needs a root Dockerfile, requirements files, tests and a health endpoint; `propose_configuration` and `update_app_workflows` open the pull requests; one Terraform apply adds its service; one `applications` entry and a controller restart finish it.
-5. Decide on the always-on machine (roadmap item 5.1) once the laptop setup becomes limiting.
-6. Review Dependabot's Google provider 8.x pull request before upgrading Terraform.
+1. Keep `main` protected (pull request plus the `test` and `terraform` checks, administrators included) and the `infra` environment without administrator bypass; both were set on 2026-10-12 and are what makes "merging applies exactly this plan" true.
+2. Onboard the first real lab application: its repository needs a root Dockerfile, requirements files, tests and a health endpoint; `propose_configuration` and `update_app_workflows` open the pull requests; `propose_infrastructure` opens the root's pull request, the pipeline applies it on merge; one `applications` entry and a controller restart finish it. Declare what it needs under `needs`.
+3. Exercise one real alert end to end once a month (`docs/RUNBOOK.md`, "Prove the alerts work") and keep the backup bucket's copies fresh (`get_controller_status` shows the last backup).
+4. Decide on the always-on machine (roadmap item 5.1) once the laptop setup becomes limiting; the runbook's restore procedure is the move.
 
 ## 15. Features still planned
 
@@ -445,7 +447,7 @@ The detailed setup, workflow-render commands and migration instructions are in `
 - Per-member sign-in through an identity provider when lab members get their own Claude access; today one operator holds one token.
 - Production release safety: metric-based canary with bake time, Binary Authorization enforcement, approval integration and production deployment policies.
 - OpenTelemetry, service objectives and streaming database replication (today: nightly consistent copies).
-- AWS deployment adapter; managed database provisioning and migrations.
+- AWS deployment adapter.
 - Shared transactional storage and a durable job system for several controller instances.
 
 These require design and implementation; they are not hidden existing capabilities.
@@ -488,4 +490,4 @@ These sources informed the implementation. The links are references, not evidenc
 
 ## 18. Suggested context prompt for the next LLM
 
-> Read `PROJECT_HANDOFF.md`, `docs/ROADMAP.md`, `docs/CHANGES.md` and `docs/VALIDATION.md` before making changes. Continue from version 0.9.2. The platform is operated from Claude chat by one operator, has 195 passing tests, and was exercised end to end against GitHub, Claude chat and Google Cloud staging on 2026-10-12 (releases, rollback, cancel, redeploys, auto-deploy, cost report, live health). Preserve its permission boundaries, exact deployment targets, honest status reporting, cost guardrails and durable recovery behavior. Check the operator's pending steps in section 14 first; the controller, launcher and data live on the operator's laptop under `~/.local/share/lab-deploy/`, and Terraform applies and secret values are the operator's to run.
+> Read `PROJECT_HANDOFF.md`, `docs/ROADMAP.md`, `docs/CHANGES.md` and `docs/VALIDATION.md` before making changes. Continue from version 1.5.0. The platform is operated from Claude chat by one operator, has 234 passing tests, and was exercised end to end against GitHub, Claude chat and Google Cloud staging on 2026-10-12 (releases, rollback, cancel, redeploys, auto-deploy, cost report, live health, the infrastructure pipeline, buckets, topics, Firestore, Cloud SQL and a migration job). Read `docs/REVIEW-2026-10-12.md` for what a strict review found and `docs/RUNBOOK.md` for how the platform is operated. Preserve its permission boundaries, exact deployment targets, honest status reporting, cost guardrails and durable recovery behavior. Check the operator's pending steps in section 14 first; the controller's data lives on the operator's laptop under `~/.local/share/lab-deploy/` (the scripts are in `scripts/`, the backups in the foundation's bucket), and foundation applies and secret values are the operator's to run.

@@ -18,7 +18,7 @@ resource "google_project_service" "apis" {
   disable_on_destroy = false
 }
 resource "google_project_service" "cap_apis" {
-  for_each           = local.cap_enabled ? toset(["pubsub.googleapis.com", "workflows.googleapis.com", "workflowexecutions.googleapis.com", "eventarc.googleapis.com", "cloudbilling.googleapis.com"]) : toset([])
+  for_each           = local.cap_enabled ? toset(["workflows.googleapis.com", "workflowexecutions.googleapis.com", "eventarc.googleapis.com", "cloudbilling.googleapis.com"]) : toset([])
   service            = each.value
   disable_on_destroy = false
 }
@@ -203,6 +203,62 @@ resource "google_bigquery_dataset" "billing" {
   dataset_id                 = var.billing_export_dataset
   location                   = "US"
   description                = "Cloud Billing export read by Lab Deploy's weekly cost report"
+  labels                     = { lab-deploy-managed = "true" }
   delete_contents_on_destroy = false
   depends_on                 = [google_project_service.bigquery]
+}
+
+# The cap acts through this role on each managed service (granted per service by the service module) and on
+# instances through roles/cloudsql.editor: the narrowest set that can close ingress and stop an instance.
+resource "google_project_iam_custom_role" "cap_operator" {
+  count       = local.cap_enabled ? 1 : 0
+  role_id     = "labDeployCapOperator"
+  title       = "Lab Deploy spending-cap operator"
+  description = "Reads and updates a Cloud Run service's ingress setting; nothing else"
+  permissions = ["run.services.get", "run.services.update", "run.services.list", "run.operations.get"]
+}
+# A cap execution that fails is the one failure that must never go unnoticed.
+resource "google_monitoring_alert_policy" "cap_failures" {
+  count        = local.cap_enabled ? 1 : 0
+  display_name = "Lab Deploy: spending-cap workflow failed"
+  combiner     = "OR"
+  conditions {
+    display_name = "a cap execution finished with an error"
+    condition_threshold {
+      filter          = "metric.type=\"workflows.googleapis.com/finished_execution_count\" AND resource.type=\"workflows.googleapis.com/Workflow\" AND resource.label.workflow_id=\"${google_workflows_workflow.cap[0].name}\" AND metric.label.status!=\"SUCCEEDED\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+      aggregations {
+        alignment_period   = "300s"
+        per_series_aligner = "ALIGN_SUM"
+      }
+      trigger {
+        count = 1
+      }
+    }
+  }
+  notification_channels = concat(google_monitoring_notification_channel.alert_email[*].id, google_monitoring_notification_channel.alert_webhook[*].id)
+  alert_strategy {
+    auto_close = "1800s"
+  }
+}
+
+# Controller backups: the laptop controller copies its database and configuration here (config `backup_bucket`), so a
+# lost laptop loses nothing but its tunnel (docs/RUNBOOK.md, "Restore the controller"). Private, versioned and pruned.
+resource "google_storage_bucket" "backups" {
+  name                        = "${var.project_id}-lab-deploy-backups"
+  location                    = var.region
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+  labels                      = { lab-deploy-managed = "true" }
+  versioning { enabled = true }
+  lifecycle_rule {
+    condition { num_newer_versions = 10 }
+    action { type = "Delete" }
+  }
+  lifecycle_rule {
+    condition { age = 120 }
+    action { type = "Delete" }
+  }
 }
