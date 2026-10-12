@@ -101,6 +101,8 @@ Cost effect: cap can only reduce spend; BigQuery export stays within the free ti
 
 ## Phase 4: more kinds of apps (one and a half days) → version 0.8.0
 
+Status: implemented on 2026-10-12 as version 0.8.0; the Secret Manager grants join the operator's pending Terraform apply.
+
 | Item | Change | Where |
 |---|---|---|
 | 4.1 | Secrets and plain environment variables (D5): `env` and `secrets` in `platform.yaml`; the runner checks the secrets exist before deploying; the runtime identity may read only its own app's secrets | `labdeploy/models.py`, `labdeploy/release.py`, Terraform, docs |

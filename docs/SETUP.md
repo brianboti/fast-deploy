@@ -165,6 +165,21 @@ Anthropic's connector permission prompts are additional user-interface controls.
 
 The release creates a candidate revision, probes its tagged URL with an audience-bound identity token, promotes it, and probes the service URL. On failure it restores the prior concrete revisions. It reports `rollback_failed_manual_recovery_required` if that restoration fails. Cleanup removes the candidate tag on both success and failure. It does not claim that restored traffic guarantees healthy downstream data or dependencies.
 
+## 6a. Configuration, secrets, tests and timeouts
+
+- **Plain values**: list them under `env` in `platform.yaml` (uppercase names, single-line values, at most 32). They are set on every revision and are part of the reviewed configuration, so a change is a release.
+- **Secrets**: list names under `secrets`; the value lives in Secret Manager as `<service>-NAME` and reaches the container as the variable `NAME`. Create and rotate values yourself, never through Claude:
+
+```bash
+printf '%s' 'the value' | gcloud secrets create lab-demo-API_KEY --replication-policy=automatic --data-file=- --project YOUR_PROJECT
+printf '%s' 'the new value' | gcloud secrets versions add lab-demo-API_KEY --data-file=- --project YOUR_PROJECT
+```
+
+  The next release picks up the newest enabled version. A release whose secret is missing stops before anything changes and names the secret. Only the app's runtime identity can read its own `<service>-` secrets.
+- **Apps without tests**: set `tests: none` knowingly. Every plan then warns that nothing checks the app's behaviour before a release; the health probe still guards traffic. Prefer adding one pytest that imports the app and calls the health path.
+- **Request timeout**: `timeout_seconds`, up to 300 in staging (default 60).
+- **Reproducible builds**: a `requirements.txt` without hashes makes the same commit build differently over time. Generate `requirements.lock` with `pip-compile --generate-hashes requirements.txt -o requirements.lock`, install it with `--require-hashes` in the Dockerfile, and commit both; the analyzer and the test step recognise it.
+
 ## 7a. Watch it run
 
 - **Status in Claude** shows every workflow step with timing, the release phases from the receipt, the candidate's last log lines when it fails, the recovery run that followed, and a next action. Ask for `get_deployment_status` with `wait_seconds: 45` to wait for a change instead of asking repeatedly.
@@ -213,6 +228,10 @@ Project-wide settings (budget, spending cap, alert channels, scanning, billing e
 - **Weekly issue and proposals**: the right-sizing workflow keeps one issue per repository up to date. Ask Claude for `propose_rightsizing` to turn the concrete proposals into a pull request against `platform.yaml`.
 - **Budget alert**: set `monthly_budget_usd` and `billing_account` (and optionally `budget_alert_email`) in `terraform.tfvars`. The administrator identity needs Billing Account Costs Manager or equivalent on that billing account. If `terraform apply` answers 403 for the budget, add `user_project_override = true` and `billing_project = var.project_id` to the provider block so the Billing Budgets API is called with a quota project. Budgets notify at 50%, 90% and 100% of actual spend and at 100% forecast spend; they do not stop spending.
 - **Keep the cheap defaults**: `scaling.minimum: 0`, 512 MiB, one vCPU, authenticated access, Tier 1 region. Raise anything only with a measurement from the report.
+
+## 7d. Retire an application
+
+`python -m labdeploy.cli decommission APP` prints the ordered checklist with the app's own names: pause it, warn its owners, delete the service, empty and delete the recovery bucket, delete the images and secrets, remove the entry from the Terraform `services` map and apply, remove it from the controller configuration, and disable its workflows and credential access. Plans stay in the database as history.
 
 ## 8. Provenance, scanning and dependency updates
 

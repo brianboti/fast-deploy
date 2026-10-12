@@ -1,9 +1,13 @@
 import hashlib
 import json
+import re
 from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+RESERVED_ENV = {"PORT", "K_SERVICE", "K_REVISION", "K_CONFIGURATION", "PATH", "HOME", "PYTHONPATH", "GOOGLE_APPLICATION_CREDENTIALS"}
 
 
 class StrictModel(BaseModel):
@@ -33,6 +37,12 @@ class AppSpec(StrictModel):
     state: Literal["stateless"] = "stateless"
     dependencies: list[str] = Field(default_factory=list)
     gpu: bool = False
+    # Plain configuration values set on every revision; secrets are names of Secret Manager secrets called <service>-NAME.
+    env: dict[str, str] = Field(default_factory=dict)
+    secrets: list[str] = Field(default_factory=list)
+    # "none" declares that no automated tests run before a release; every plan then carries a warning.
+    tests: Literal["required", "none"] = "required"
+    timeout_seconds: int = Field(default=60, ge=1, le=300)
     reviewed: bool = False
 
     @model_validator(mode="after")
@@ -41,6 +51,18 @@ class AppSpec(StrictModel):
             raise ValueError("minimum cannot exceed maximum")
         if self.resources.memory_mib % 256:
             raise ValueError("memory_mib must be a multiple of 256")
+        if len(self.env) > 32 or len(self.secrets) > 16:
+            raise ValueError("At most 32 env values and 16 secrets")
+        for name in list(self.env) + list(self.secrets):
+            if not ENV_NAME.fullmatch(name):
+                raise ValueError(f"'{name}' is not a valid variable name (uppercase letters, digits, underscores)")
+            if name in RESERVED_ENV:
+                raise ValueError(f"'{name}' is set by Cloud Run or the platform and cannot be overridden")
+        for name, value in self.env.items():
+            if len(value) > 1024 or "\n" in value:
+                raise ValueError(f"env value for {name} must be a single line of at most 1024 characters")
+        if len(set(self.secrets)) != len(self.secrets) or set(self.secrets) & set(self.env):
+            raise ValueError("secrets must be unique and must not repeat an env name")
         return self
 
 

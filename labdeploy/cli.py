@@ -39,12 +39,31 @@ def build_parser():
     se.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
     se.add_argument("--revoke", action="append", default=[], metavar="SESSION", help="end one session by its id (repeatable)")
     se.add_argument("--revoke-all", action="store_true", help="end every session; Claude must sign in again")
+    d = commands.add_parser("decommission", help="print the checklist that retires one application cleanly")
+    d.add_argument("app")
+    d.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
     u = commands.add_parser("update-workflows", help="open pull requests that pin registered apps' workflows to a platform commit")
     u.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
     u.add_argument("--all", action="store_true", help="every registered application")
     u.add_argument("--app", action="append", default=[], help="one application id (repeatable)")
     u.add_argument("--platform-commit", default=None, help="full platform commit SHA (default: platform.commit, else the platform branch tip)")
     return parser
+
+
+def decommission_steps(app_id, app):
+    """The order that retires an app without leaving a bill or a dangling trust: drain, delete, then let Terraform forget it."""
+    t = app.target
+    return [
+        f"Pause it: add `paused: true` under applications.{app_id} in the controller configuration (applies without a restart).",
+        f"Tell its owners; a rollback target no longer exists once the service is gone. Last chance for `gcloud run services describe {t.service} --region {t.region} --project {t.project_id}`.",
+        f"Delete the service: gcloud run services delete {t.service} --region {t.region} --project {t.project_id}",
+        f"Empty and delete the recovery bucket: gcloud storage rm -r gs://{t.recovery_bucket}/** && gcloud storage buckets delete gs://{t.recovery_bucket}",
+        f"Delete the images: gcloud artifacts repositories delete {t.registry} --location {t.region} --project {t.project_id}",
+        f"Delete its secrets, if any: gcloud secrets list --filter='name:{t.service}-' --project {t.project_id}",
+        f"Remove the \"{t.service}\" entry from the services map in infra/gcp/terraform.tfvars and apply; Terraform drops the identities, trust and alerts it still owns.",
+        f"Remove applications.{app_id} from the controller configuration; its plans stay in the database as history.",
+        f"In {app.repository}: disable or delete the three workflows and the staging environment, and revoke the platform credential's access to the repository.",
+    ]
 
 
 def update_workflows(config, github, app_ids, platform_sha=None):
@@ -138,6 +157,15 @@ def run(parser, args):
             print(f"Ended {len(targets)} session(s).")
         elif not sessions:
             print("No sign-in sessions recorded.")
+    elif args.command == "decommission":
+        import os
+
+        from .config import load_config
+        config = load_config(args.config or os.environ.get("LAB_CONFIG", "config.local.yaml"))
+        if args.app not in config.applications:
+            parser.error(f"Unknown application: {args.app}")
+        for number, step in enumerate(decommission_steps(args.app, config.applications[args.app]), 1):
+            print(f"{number}. {step}")
     elif args.command == "update-workflows":
         import os
 

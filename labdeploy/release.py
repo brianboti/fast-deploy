@@ -72,6 +72,26 @@ class CloudRun:
         conditions = self.describe().get("status", {}).get("conditions", [])
         return any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
 
+    def secret_name(self, name):
+        return f"{self.service}-{name}"
+
+    def require_secrets(self, spec):
+        """Every secret the spec references must exist with an enabled version before anything is deployed."""
+        missing = []
+        for name in spec.secrets:
+            secret = self.secret_name(name)
+            try:
+                self.run(["gcloud", "secrets", "describe", secret, "--project", self.project, "--format=value(name)"])
+                versions = self.run(["gcloud", "secrets", "versions", "list", secret, "--project", self.project, "--filter=state:ENABLED", "--limit=1", "--format=value(name)"])
+            except subprocess.CalledProcessError:
+                missing.append(secret)
+                continue
+            if not versions.strip():
+                missing.append(f"{secret} (no enabled version)")
+        if missing:
+            raise ValueError("Missing secrets: " + ", ".join(missing) + ". Create them with: gcloud secrets create NAME --replication-policy=automatic --data-file=- "
+                             f"--project {self.project}")
+
     def deploy(self, image, spec, suffix, labels=None):
         # Cloud Run gates traffic on this HTTP startup probe (up to 60 s of grace) before the platform's own probes run.
         probe = (f"httpGet.path={spec.health_path},httpGet.port={spec.port},"
@@ -82,12 +102,23 @@ class CloudRun:
                 if not re.fullmatch(r"[a-z][a-z0-9_-]{0,62}", key) or not re.fullmatch(r"[a-z0-9_-]{0,63}", value):
                     raise ValueError("Revision labels must be lowercase letters, digits, dashes or underscores")
             extra.append("--labels=" + ",".join(f"{key}={value}" for key, value in sorted(labels.items())))
+        # The reviewed spec is the whole truth for configuration: values not in it are removed from the revision.
+        if spec.env:
+            env_file = Path("revision-env.yaml")
+            env_file.write_text(json.dumps(dict(spec.env)))  # JSON is valid YAML, and the values stay single-line strings
+            extra.append(f"--env-vars-file={env_file}")
+        else:
+            extra.append("--clear-env-vars")
+        if spec.secrets:
+            extra.append("--set-secrets=" + ",".join(f"{name}={self.secret_name(name)}:latest" for name in spec.secrets))
+        else:
+            extra.append("--clear-secrets")
         self.run(self.command("deploy", self.service, "--image", image,
             "--revision-suffix", suffix, "--no-traffic", "--tag=candidate", "--startup-probe", probe,
             "--ingress=all", "--port", str(spec.port),
             "--cpu", str(spec.resources.cpu), "--memory", f"{spec.resources.memory_mib}Mi",
             "--min-instances", str(spec.scaling.minimum), "--max-instances", str(spec.scaling.maximum),
-            "--concurrency", str(spec.concurrency), "--timeout=60", "--cpu-throttling", *extra))
+            "--concurrency", str(spec.concurrency), f"--timeout={spec.timeout_seconds}", "--cpu-throttling", *extra))
 
     def revision_logs(self, revision, limit=50):
         """The last log lines a revision wrote, oldest first: the answer to 'why did the candidate not start?'."""
@@ -310,6 +341,10 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
     # Fail before any cloud mutation if the recovery checkpoint cannot be saved.
     save()
     try:
+        # A referenced secret that does not exist would fail the candidate at startup; say so before touching anything.
+        check = getattr(adapter, "require_secrets", None)
+        if callable(check) and spec.secrets:
+            check(spec)
         # Freeze any LATEST allocation to concrete revisions before creating a new revision.
         adapter.traffic(allocations)
         receipt["state"] = "deploying"

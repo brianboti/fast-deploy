@@ -22,6 +22,10 @@ def analyze(files: dict[str, str], name: str) -> dict:
     for label, pattern in (("postgres", r"psycopg|asyncpg"), ("redis", r"\bredis\b"), ("mysql", r"pymysql|mysqlclient")):
         if re.search(pattern, deps, re.I):
             dependencies.append(label)
+    requirements = files.get("requirements.txt", "")
+    if requirements.strip() and "--hash=" not in requirements:
+        evidence.append("requirements.txt pins without hashes: builds are not reproducible. Add a requirements.lock from "
+                        "'pip-compile --generate-hashes' and install it with --require-hashes in the Dockerfile.")
     sync_framework = any(re.search(rf"\b{framework}\b", deps, re.I) for framework in ("flask", "django"))
     if sync_framework:
         evidence.append("Synchronous framework hint: draft concurrency lowered to 8 per instance")
@@ -37,6 +41,8 @@ def analyze(files: dict[str, str], name: str) -> dict:
             "Confirm all external services, secrets, data classification, and access needs.",
             "Dependency matches are hints; unknown dependencies require review.",
             "Confirm concurrency: it must not exceed what the server's workers or threads can serve in parallel; higher values need fewer instances and cost less.",
+            "Add pytest tests, or declare tests: none knowingly; every plan for an app without tests carries a warning.",
+            "List configuration as env (plain values) and secrets (names of Secret Manager secrets called <service>-NAME); nothing else reaches the container.",
         ],
     }
 

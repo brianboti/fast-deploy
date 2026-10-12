@@ -7,7 +7,7 @@ CHECKS = {
     "health": ("deploy", "Deploy, probe, promote; restore traffic on failure"),
     "target": ("deploy", "Validate artifact and deployment configuration"),
 }
-PASSED = {"passed", "passed_in_earlier_release"}  # a reused image skips the build job, whose checks the earlier release already proved
+PASSED = {"passed", "passed_in_earlier_release", "skipped_by_config"}  # reused image: proved earlier; tests: none: declared, and warned about
 RELEASE_STEP = CHECKS["health"][1]
 TERMINAL = {"succeeded", "failed", "cancelled", "timed_out", "completed_unverified"}
 # Plain next actions keyed by a substring of the failed step's name, in the order the steps run.
@@ -74,6 +74,8 @@ def summarize(workflow, prior, kind=None):
         else:
             conclusion = step.get("conclusion")
             checks[name] = {"success": "passed", "failure": "failed", "skipped": "not_run", "cancelled": "cancelled"}.get(conclusion, "unconfirmed")
+            if conclusion == "skipped" and prior.get(name) == "skipped_by_config":
+                checks[name] = "skipped_by_config"
             if name == "health" and conclusion == "failure":
                 checks[name] = "release_failed_health_unconfirmed"
     conclusion = workflow.get("conclusion")

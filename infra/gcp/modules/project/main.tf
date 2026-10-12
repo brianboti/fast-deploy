@@ -22,6 +22,10 @@ resource "google_project_service" "cap_apis" {
   service            = each.value
   disable_on_destroy = false
 }
+resource "google_project_service" "secrets" {
+  service            = "secretmanager.googleapis.com"
+  disable_on_destroy = false
+}
 resource "google_project_service" "bigquery" {
   count              = var.billing_export_dataset != "" ? 1 : 0
   service            = "bigquery.googleapis.com"

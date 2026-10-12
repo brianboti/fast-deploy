@@ -262,7 +262,13 @@ class Controller:
             "cost": cost,
             "checks": {"config_policy": "passed", "tests": "pending_in_ci", "dependency_scan": "pending_in_ci", "health": "pending_after_deployment"},
             "pinned_commit": bool(commit_sha), "behind_branch_by": behind,
+            "warnings": [],
         }
+        if spec.tests == "none":
+            plan["checks"]["tests"] = "skipped_by_config"
+            plan["warnings"].append("platform.yaml declares tests: none, so nothing checks this app's behaviour before a release; only the health probe guards it.")
+        if spec.secrets:
+            plan["warnings"].append("References secrets " + ", ".join(f"{app.service}-{name}" for name in spec.secrets) + "; each must exist in Secret Manager with an enabled version.")
         # A rolled-back release's image is still the attested image of that commit, so it counts for reuse.
         prior = self.store.latest_success(app_id, sha, include_rolled_back=True)
         image = ((prior or {}).get("receipt") or {}).get("image")

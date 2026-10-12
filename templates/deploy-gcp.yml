@@ -84,12 +84,29 @@ jobs:
           enforce(spec)
           assert spec_hash(spec) == os.environ['SPEC_HASH'], 'Spec hash mismatch'
           PY
+      - name: Read the application's test policy
+        id: policy
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          TESTS=$(python -c 'from pathlib import Path; from labdeploy.models import parse_spec; print(parse_spec(Path("app/platform.yaml").read_text()).tests)')
+          [[ "$TESTS" =~ ^(required|none)$ ]]
+          echo "tests=$TESTS" >> "$GITHUB_OUTPUT"
+          [ "$TESTS" = "required" ] || echo "::warning::platform.yaml declares tests: none; no automated tests guard this release"
       - name: Run unit tests
+        if: steps.policy.outputs.tests == 'required'
         working-directory: app
         run: |
           set -euo pipefail
           python -m venv .test-venv
-          .test-venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+          if [ -f requirements.lock ]; then
+            .test-venv/bin/pip install --require-hashes -r requirements.lock
+          else
+            .test-venv/bin/pip install -r requirements.txt
+          fi
+          .test-venv/bin/pip install -r requirements-dev.txt
           .test-venv/bin/python -m pytest
       - name: Audit Python dependencies
         working-directory: app

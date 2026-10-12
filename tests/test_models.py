@@ -16,7 +16,7 @@ def test_generated_config_requires_review():
     assert result["draft_spec"]["port"] == 8000
     assert result["draft_spec"]["dependencies"] == ["postgres"]
     assert result["draft_spec"]["reviewed"] is False
-    assert len(result["review_required"]) == 6 and result["draft_spec"]["concurrency"] == 80
+    assert len(result["review_required"]) == 8 and result["draft_spec"]["concurrency"] == 80  # two more questions: tests policy, configuration
     assert analyze({"requirements.txt": "flask==3.0"}, "demo")["draft_spec"]["concurrency"] == 8
 
 

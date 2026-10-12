@@ -101,6 +101,28 @@ resource "google_project_iam_member" "log_reader" {
   role    = "roles/logging.viewer"
   member  = "serviceAccount:${google_service_account.deployer.email}"
 }
+# Secrets: platform.yaml references names; the values live in Secret Manager as <service>-NAME. The runtime identity may
+# read only those, and the deployer may only check that they exist. Both grants are limited by name through an IAM condition.
+resource "google_project_iam_member" "secret_accessor" {
+  project = var.project_id
+  role    = "roles/secretmanager.secretAccessor"
+  member  = "serviceAccount:${google_service_account.runtime.email}"
+  condition {
+    title       = "${var.service} secrets only"
+    description = "Secrets named ${var.service}-NAME, as platform.yaml references them"
+    expression  = "resource.name.startsWith(\"projects/${var.project_number}/secrets/${var.service}-\")"
+  }
+}
+resource "google_project_iam_member" "secret_viewer" {
+  project = var.project_id
+  role    = "roles/secretmanager.viewer"
+  member  = "serviceAccount:${google_service_account.deployer.email}"
+  condition {
+    title       = "${var.service} secrets only"
+    description = "Lets the deployer confirm a referenced secret exists before deploying"
+    expression  = "resource.name.startsWith(\"projects/${var.project_number}/secrets/${var.service}-\")"
+  }
+}
 # Actual spend from the billing export, read by the weekly cost report.
 resource "google_project_iam_member" "billing_query" {
   count   = var.billing_dataset != "" ? 1 : 0
