@@ -1,6 +1,6 @@
 # Lab Deploy — Project Context and LLM Handoff
 
-**Project version:** 1.1.1 (0.1.1 reviewed and extended through 0.3.1, the Claude chat sign-in in 0.4.0, the roadmap phases 0.4.1 to 0.9.5, the infrastructure pipeline in 1.0.x and the first application needs in 1.1.x, all on October 11 and 12, 2026 America/Chicago)  
+**Project version:** 1.4.2 (0.1.1 reviewed and extended through 0.3.1, the Claude chat sign-in in 0.4.0, the roadmap phases 0.4.1 to 0.9.5, and Phase 6 in 1.0.0 to 1.4.2: the pipeline, buckets, topics, Firestore, Cloud SQL with migrations, needs in the health view and the cost report, and a cap that stops databases, all on October 11 and 12, 2026 America/Chicago)  
 **Handoff date:** October 12, 2026 (America/Chicago), the evening the roadmap shipped  
 **Source:** github.com/brianboti/lab-deploy (public); demo app github.com/brianboti/lab-demo-app; staging project `lab-deploy-staging-f29a`  
 **Status:** Live-tested on Google Cloud staging and operated from Claude chat by one operator. On 2026-10-12 it released, rolled back, cancelled, redeployed, auto-deployed and right-sized a demo app in a disposable staging project, and read the service's live health and logs (docs/VALIDATION.md).
@@ -229,7 +229,7 @@ Generated files start with `reviewed: false`. Confirm assumptions before changin
 
 The parser rejects duplicate YAML keys, unknown schema fields and invalid types. Deployment policy is intentionally stricter than some schema upper bounds. When changing policy, inspect both model validation and `enforce()`.
 
-Since 1.1.0 `platform.yaml` may declare `needs` (`buckets`, `topics`, `database: firestore`); the platform provisions them through the app's Terraform root and sets `BUCKET_<NAME>`, `TOPIC_<NAME>`, `SUBSCRIPTION_<NAME>` and `FIRESTORE_DATABASE` on every revision. A release whose needs do not exist yet stops before deploying. Per-app infrastructure settings (alert thresholds, image retention) live under `applications.<app>.infra` in the controller configuration.
+Since 1.1.0 `platform.yaml` may declare `needs` (`buckets`, `topics`, `database: firestore` or `postgres`, and `migrate`); the platform provisions them through the app's Terraform root and sets `BUCKET_<NAME>`, `TOPIC_<NAME>`, `SUBSCRIPTION_<NAME>`, `FIRESTORE_DATABASE` or the `DATABASE_*` values on every revision, and runs the migrate command as a Cloud Run job before the candidate exists. A release whose needs do not exist yet stops before deploying. Data-holding needs are never destroyed by a plan; the operator retires them through the checklist. Per-app infrastructure settings (alert thresholds, image retention) live under `applications.<app>.infra` in the controller configuration.
 
 ### Operator-owned configuration
 
@@ -395,7 +395,7 @@ Three read-only reviews (general gaps; versioning and redeploys; monitoring and 
 
 ## 12. Validation evidence and limitations
 
-The last local run reported **219 platform tests passed**, with ruff and zizmor clean; the platform CI on GitHub (tests, ruff, zizmor, pip-audit, Terraform validation in the official container) passes for every commit on main.
+The last local run reported **224 platform tests passed**, with ruff and zizmor clean; the platform CI on GitHub (tests, ruff, zizmor, pip-audit, Terraform validation in the official container) passes for every commit on main.
 
 Live evidence, all on 2026-10-12 against the real GitHub and Google Cloud APIs and recorded in `docs/VALIDATION.md`: the staging trial (release, unhealthy candidate with traffic restoration, manual and automatic recovery, graceful and hard cancellation, right-sizing report); the 0.5.0 to 0.6.2 exercise (healthy release with phases, tags and labels, traffic rollback in 70 s, deploy of an older commit, image reuse, cancel, a commit that fails its tests, a candidate that crashes only in Cloud Run); 0.7.1 and 0.8.0 (the living cost-report issue, environment values and timeout on the revision); and the 0.9.0 exercise (unattended auto-deploy, in-process watchdog and backup, the controller watch, live health and logs through the observer identity).
 

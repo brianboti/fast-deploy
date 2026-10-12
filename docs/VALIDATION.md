@@ -190,6 +190,27 @@ Findings that changed the code, each fixed with a regression test or a documente
 
 Not performed: a read or write by the application itself against the bucket, topic or database (the demo app does not use them yet); removal of a need (refused by design); Cloud SQL, jobs and migrations (roadmap 6.5); the spend-by-application query against a real export table (none exists yet; covered by a unit test with a mocked response). Platform tests: 221 passed; ruff and zizmor clean; both roots validate.
 
+## Live exercise of 1.4.0 to 1.4.2: Cloud SQL, the migration job and the cap (2026-10-12)
+
+The foundation gained the private network (VPC, subnet, Private Service Access, three APIs, the cap's Cloud SQL role) in one operator apply; the demo app was pinned to 1.4.0 (brianboti/lab-demo-app#11) and then declared `database: postgres` with `migrate: [python, -c, "print('no migrations yet')"]` (brianboti/lab-demo-app#12). The instance existed for about twenty-five minutes.
+
+| Scenario | Run | Observed |
+|---|---|---|
+| Cap workflow with the database stop | operator apply | Cloud Workflows rejected the first version: an expression may hold at most 400 characters (finding 13). Built in parts, deployed as a throwaway and deleted, then applied. |
+| Release before the instance exists | 38300... (auto-deploy) | Stopped before deploying with `Missing needs: Cloud SQL instance lab-demo, migration job lab-demo-migrate`; traffic untouched. |
+| Changing the database type | plan 38298942168 | The root moved from `firestore` to `postgres`, which means destroying the Firestore database; the plan was refused with `Instance cannot be destroyed`, as designed. The operator retired the empty database deliberately with `retire-demo-firestore.sh` (delete protection off, delete, `terraform state rm`); only then did the plan proceed. |
+| Policy on the first database plan | plan 38298942168 (re-run) | 8 to add and 2 to destroy (the Firestore grants), then **blocked**: the label rule looked for a top-level `labels` map while Cloud SQL keeps them under `settings.user_labels` (finding 14). After 1.4.2 and a rebase: `Policy: passed`. |
+| Apply with the instance | 38301546097 | 8 added, 2 destroyed, 0 changed in 14 min 33 s, of which the instance took 14 min 5 s: instance, `app` database, the runtime identity as IAM user, the client, instance-user and viewer grants, the migration job and the deployer's grant on it. gcloud confirmed: `db-f1-micro`, zonal, 10 GB HDD, deletion protection on, no public address, attached to the foundation's network, `cloudsql.iam_authentication=on`, managed labels, the IAM user beside Cloud SQL's built-in `postgres`. |
+| Release with the migration step | plan 73beb134 | Phases `preparing, migrating, deploying, promoting, succeeded`; execution `lab-demo-migrate-5vlzj` succeeded with "no migrations yet" in its log; revision `lab-demo-r73beb134006f4ded` carries `DATABASE_INSTANCE`, `DATABASE_NAME`, `DATABASE_USER` and `DATABASE_IP_TYPE` and routes its egress through `lab-deploy`/`lab-deploy-run` with `private-ranges-only`. |
+| Retiring the instance | operator script | `retire-demo-postgres.sh` turned deletion protection off, deleted the instance and removed the instance, database and user from the state. The spec went back to `database: none` (brianboti/lab-demo-app#13); the rendered root's plan destroyed only the migration job and five grants (brianboti/lab-deploy#7, run 38304242421), `Policy: passed`. |
+
+Findings that changed the code, each fixed with a regression test:
+
+13. Cloud Workflows limits an expression to 400 characters (1.4.1).
+14. The label policy must read Cloud SQL labels from `settings.user_labels` (1.4.2).
+
+Not performed: an application actually connecting to the instance (the demo has no database code; the connector path is documented), a migration that changes a schema, the cap stopping an instance (no budget event), a stopped instance's restart. Platform tests: 224 passed; ruff and zizmor clean; both roots validate. Every item of the Phase 6 roadmap is implemented and exercised on staging; the staging project holds no Cloud SQL instance after the trial.
+
 ## Live staging trial (2026-10-12)
 
 Environment: a new Google Cloud project `lab-deploy-staging-f29a` linked to billing with a USD 20 monthly budget alert; the platform repository `brianboti/lab-deploy` and the application repository `brianboti/lab-demo-app`, both public; Terraform 1.13.5 in the official container with the pinned Google provider 7.46.1 and a versioned GCS state bucket; a GitHub `staging` environment restricted to `main` holding the eight Terraform outputs; and the controller on a workstation with a fine-grained token (Contents read, Actions write) and `live_dispatch: true`. Every step below ran against the real GitHub and Google Cloud APIs. Google's public Cloud Run sample image, pinned by digest, served as the bootstrap image.
