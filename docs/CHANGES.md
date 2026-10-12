@@ -1,3 +1,15 @@
+# 0.9.2: fix from the live apply
+
+## Fixed
+
+1. **Cloud Workflows rejected the spending-cap workflow** ("Unterminated expression"): its log messages contain a colon followed by a space inside expressions that were not quoted, which YAML reads as a nested key. The six string-building expressions are now single-quoted, as Google's workflow syntax guide asks, and a test renders the file with Terraform's placeholders, parses it and checks that every expression is a complete scalar.
+2. **`get_service_health` reported every service as not ready.** Cloud Run v2 returns the Ready condition as `terminalCondition`; the observer looked for it in `conditions`, which only holds RoutesReady and ConfigurationsReady. Found on the first live call after the observer identity existed.
+
+## Upgrade steps
+
+1. Re-run the Terraform apply: it creates the workflow and the Eventarc trigger that the first apply could not.
+2. Restart the controller.
+
 # 0.9.1: fix from the live run
 
 ## Fixed

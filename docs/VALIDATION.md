@@ -123,15 +123,22 @@ Environment as in the exercise above: the controller on the operator's laptop be
 | Controller watch from GitHub | 38282088934 | Dispatched by hand with the `CONTROLLER_HEALTH_URL` variable set: the run fetched `/healthz` through the tunnel, received `{"status":"ok"}` and passed in 8 s. The half-hourly schedule had not fired yet when this was written. |
 | Live health before the observer exists | tool call | `get_service_health` failed with the plain reason that no observer token could be obtained and what to do about it (sign in with gcloud; create the Terraform observer identity with the operator as impersonator). Nothing else was touched. |
 | Controller status | tool call | `get_controller_status` listed the version, the observer identity, the auto-deploy applications, each background job's last run, result and next run, the credential's expiry and the configuration reload. |
+| Live health and logs through the observer | tool call | After the apply created the observer identity and the impersonation grant: `get_recent_logs` returned the last 30 minutes at ERROR and above (none), and `get_service_health` showed the URL, ingress, the serving revision with its plan and commit, the hour's metrics (4 requests, 0 server errors, p95 9.5 ms, 1 instance, 14% memory) and agreement with the recorded live release. The first call, seconds after the grant, was refused for permissions; the refusal cleared within two minutes (IAM propagation). Readiness was reported false for a Ready service (finding 4). |
+
+Terraform apply by the operator (2026-10-12, after the exercise above): the project module's resources were created, namely the observer identity with its three viewer roles and the operator's impersonation grant, the tag-manager custom role, the e-mail notification channel, the billing dataset, the spending-cap service account with its roles, the Pub/Sub topic with the budget publisher grant and the APIs, and the budget was updated to publish to the topic. Cloud Workflows rejected the spending-cap workflow (finding 3), which stopped the apply before the service module's resources. A read-only plan after the fix shows 18 to add, 1 to change, 0 to destroy: the workflow and its trigger, the six alert policies, the uptime check and its probe grant, the dashboard, the logging viewer, the Secret Manager grants, the tag-manager and billing-reader grants, the cap's invoker grant, and the registry keep policy. The re-run is pending.
 
 Findings that changed the code, each fixed with a regression test:
 
 1. Plans created by the auto-deploy identity were invisible to the human deployers of the application; deployers now see every plan of their applications (0.9.0, found while building).
-2. The observer error quoted gcloud's impersonation warning instead of its error line (0.9.1). The controller exercised here still runs 0.9.0; a restart picks up the fix.
+2. The observer error quoted gcloud's impersonation warning instead of its error line (0.9.1).
+3. Cloud Workflows rejected the spending-cap workflow with "Unterminated expression": its log messages contain a colon followed by a space inside unquoted expressions, which YAML reads as a nested key, and no test parsed the file (0.9.2).
+4. `get_service_health` reported every service as not ready: Cloud Run v2 returns the Ready condition as `terminalCondition`, and the observer looked for it in `conditions` (0.9.2).
 
-Not performed: reading live health and logs (needs the observer identity, created by the pending Terraform apply), a notification delivery (no webhook secret), a scheduled controller-watch run, and the always-on machine (deferred by the operator). Pending the operator's Terraform apply: everything listed in the previous section plus the observer identity and its impersonation grant.
+The controller exercised here still runs 0.9.0; a restart picks up 0.9.1 and 0.9.2.
 
-Platform tests: 193 passed; ruff and zizmor clean.
+Not performed: a notification delivery (no webhook secret), a scheduled controller-watch run, an alert firing, the spending cap end to end, and the always-on machine (deferred by the operator). Pending the operator's re-run of the Terraform apply: the service module's resources listed above and the spending-cap workflow with its trigger.
+
+Platform tests: 195 passed; ruff and zizmor clean.
 
 ## Live staging trial (2026-10-12)
 

@@ -59,7 +59,8 @@ def test_observer_reads_service_metrics_and_logs(tmp_path):
         if path.endswith("/services/demo"):
             return httpx.Response(200, json={"uri": "https://demo.run.app", "ingress": "INGRESS_TRAFFIC_ALL", "updateTime": "2026-10-12T10:00:00Z",
                                              "latestReadyRevision": "projects/p/locations/l/services/demo/revisions/demo-r2",
-                                             "conditions": [{"type": "Ready", "state": "CONDITION_SUCCEEDED"}],
+                                             "terminalCondition": {"type": "Ready", "state": "CONDITION_SUCCEEDED"},
+                                             "conditions": [{"type": "RoutesReady", "state": "CONDITION_SUCCEEDED"}, {"type": "ConfigurationsReady", "state": "CONDITION_SUCCEEDED"}],
                                              "trafficStatuses": [{"revision": "demo-r2", "percent": 100, "uri": "https://demo.run.app"}]})
         if path.endswith("/revisions/demo-r2"):
             return httpx.Response(200, json={"labels": {"lab-deploy-plan": "p" * 32, "lab-deploy-commit": "a" * 40}})
@@ -233,3 +234,19 @@ def test_status_and_tools_expose_the_laptop_jobs(tmp_path):
         assert call("get_recent_logs", application="demo", minutes=10, severity="WARNING", limit=5)["structuredContent"]["count"] == 1
     workflow = yaml.safe_load(Path(".github/workflows/controller-watch.yml").read_text())
     assert workflow["jobs"]["ping"]["if"] == "vars.CONTROLLER_HEALTH_URL != ''" and "*/30" in workflow[True]["schedule"][0]["cron"]
+
+
+def test_observer_reads_readiness_from_the_terminal_condition(tmp_path):
+    # Cloud Run v2 returns the Ready condition as terminalCondition; "conditions" only holds RoutesReady and ConfigurationsReady.
+    payloads = iter([
+        {"uri": "u", "terminalCondition": {"type": "Ready", "state": "CONDITION_FAILED", "message": "Revision demo-r3 failed"},
+         "conditions": [{"type": "RoutesReady", "state": "CONDITION_SUCCEEDED"}], "trafficStatuses": []},
+        {"uri": "u", "conditions": [{"type": "Ready", "state": "CONDITION_SUCCEEDED"}], "trafficStatuses": []},
+    ])
+    client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=next(payloads))))
+    observer = Observer(config(tmp_path, observer={"service_account": OBSERVER}), client=client, runner=lambda args: "t")
+    observer.until, observer.cached = time.time() + 999, "t"
+    target = config(tmp_path).applications["demo"].target
+    failed = observer.service(target)
+    assert failed["ready"] is False and failed["ready_message"] == "Revision demo-r3 failed"
+    assert observer.service(target)["ready"] is True

@@ -72,7 +72,10 @@ class Observer:
         """The service as Cloud Run sees it now: readiness, traffic by revision with the plan and commit each carries, URL."""
         base = f"https://run.googleapis.com/v2/projects/{target.project_id}/locations/{target.region}/services/{target.service}"
         data = self.get(base)
-        ready = next((c for c in data.get("conditions", []) if c.get("type") == "Ready"), {})
+        # Cloud Run v2 reports readiness as terminalCondition; "conditions" holds RoutesReady and ConfigurationsReady.
+        ready = data.get("terminalCondition") or {}
+        if ready.get("type") != "Ready":
+            ready = next((c for c in data.get("conditions", []) if c.get("type") == "Ready"), {})
         traffic = []
         for item in data.get("trafficStatuses") or data.get("traffic") or []:
             revision = item.get("revision")

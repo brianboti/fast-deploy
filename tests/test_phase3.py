@@ -1,10 +1,12 @@
 """Phase 3: actual spend from the billing export, the cost-report issue, right-sizing pull requests, the schedule watchdog."""
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import httpx
 import pytest
+import yaml
 from conftest import TARGET, FakeGitHub
 
 from labdeploy.config import Config
@@ -106,3 +108,41 @@ def test_schedule_watchdog_flags_paused_and_stale_schedules(tmp_path):
     stale = schedules["rightsize-gcp.yml"]
     assert stale["ok"] is False and any("disabled_inactivity" in s for s in stale["problems"]) and any("failure" in s for s in stale["problems"])
     assert make(tmp_path, FakeGitHub())[0].applications(p)["demo"]["schedules"] is None  # adapters without the check report nothing
+
+
+def test_cap_workflow_renders_to_valid_yaml_with_complete_expressions():
+    # Cloud Workflows rejected the first live deploy with "Unterminated expression": a colon followed by a space
+    # inside an unquoted ${...} reads as a nested YAML key. Render the file the way Terraform does and parse it.
+    source = Path("infra/gcp/modules/project/cap-workflow.yaml").read_text()
+    placeholders = {
+        "__SERVICES__": "lab-demo,other",
+        "__THRESHOLD__": "1.0",
+        "__PROJECT__": "proj",
+        "__REGION__": "us-central1",
+        "__DETACH__": "true",
+        "__DETACH_THRESHOLD__": "1.5",
+    }
+    rendered = source
+    for key, value in placeholders.items():
+        assert key in source, key
+        rendered = rendered.replace(key, value)
+    assert not re.search(r"__[A-Z_]+__", rendered)
+    document = yaml.safe_load(rendered)
+
+    def scalars(node):
+        if isinstance(node, dict):
+            for value in node.values():
+                yield from scalars(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from scalars(value)
+        elif isinstance(node, str):
+            yield node
+
+    expressions = [text for text in scalars(document) if "${" in text]
+    assert len(expressions) >= 10
+    for text in expressions:
+        assert text.startswith("${") and text.endswith("}") and text.count("{") == text.count("}"), text
+    steps = [next(iter(step)) for step in document["main"]["steps"]]
+    assert steps == ["decode", "below_cap", "close_ingress", "log_closed", "maybe_detach", "done", "report_below"]
+    assert "ingress closed on lab-demo,other" in document["main"]["steps"][3]["log_closed"]["args"]["text"]
