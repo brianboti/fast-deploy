@@ -2,7 +2,7 @@
 
 A working first implementation of the lab deployment platform: Claude calls authenticated MCP tools; the Python controller creates reviewed configuration proposals and immutable deployment plans; GitHub Actions tests, builds, and deploys to GCP Cloud Run.
 
-**Status: live-tested GCP staging MVP. On 2026-10-12 the platform released a demo app to a disposable staging project end to end, rolled back a deliberately unhealthy release, recovered a checkpoint, and produced a measured cost report; see docs/VALIDATION.md.** This project does not call the Anthropic API; Claude Chat is the model and conversational interface. No Anthropic API key is required by this backend.
+**Status: live-tested on Google Cloud staging and operated from Claude chat. On 2026-10-12 the platform released, rolled back, cancelled, redeployed, auto-deployed and right-sized a demo app in a disposable staging project, and read its live health and logs; see docs/VALIDATION.md.** This project does not call the Anthropic API; Claude Chat is the model and conversational interface. No Anthropic API key is required by this backend.
 
 ## What is implemented
 
