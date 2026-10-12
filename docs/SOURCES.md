@@ -69,3 +69,15 @@ References checked during the live staging trial (2026-10-12):
 - [GitHub: OpenID Connect token claims](https://docs.github.com/en/actions/concepts/security/openid-connect): the `sub`, `environment`, `repository_id`, `repository_owner_id` and `workflow_ref` claims used by the trust condition; the subject format observed live embeds numeric IDs
 - [Cloud Run: managing revisions](https://docs.cloud.google.com/run/docs/managing/revisions): the newest revision of a service cannot be deleted
 - [Cloud Run troubleshooting: container failed to start](https://cloud.google.com/run/docs/troubleshooting#container-failed-to-start): the startup-probe failure observed for the deliberately unhealthy candidate
+
+References read for the Phase 6 research, "everything an app needs" (2026-10-12):
+
+- [Score specification reference](https://docs.score.dev/docs/score-specification/score-spec-reference/): the `resources` block, placeholders and provisioning order the `platform.yaml` design borrows
+- [Application Design Center: design application templates](https://docs.cloud.google.com/application-design-center/docs/design-application-templates?hl=en) and [Cloud Run connections](https://docs.cloud.google.com/application-design-center/docs/configure-cloud-run): Google's component model and the role and variable each connection sets
+- [Infrastructure Manager overview](https://docs.cloud.google.com/infrastructure-manager/docs/overview): Google's managed Terraform apply, evaluated and not chosen for the pipeline
+- [Terraform best practices: root modules](https://docs.cloud.google.com/docs/terraform/best-practices/root-modules), [operations](https://docs.cloud.google.com/docs/terraform/best-practices/operations) and [general](https://docs.cloud.google.com/docs/terraform/best-practices-for-terraform): state size, one directory per application, plan before apply, pipelines with Workload Identity Federation, deletion protection
+- [Terraform policy validation](https://docs.cloud.google.com/docs/terraform/policy-validation/validate-policies): `gcloud beta terraform vet` in the pipeline
+- [Connect to Cloud SQL from Cloud Run](https://docs.cloud.google.com/sql/docs/postgres/connect-run): connectors, the Cloud SQL Client role, Secret Manager for credentials, connection limits
+- [Start, stop and restart a Cloud SQL instance](https://docs.cloud.google.com/sql/docs/postgres/start-stop-restart-instance): what a stopped instance still costs
+- [Cloud Run jobs](https://docs.cloud.google.com/run/docs/create-jobs): the migration and worker shape
+- [Cloud Storage volume mounts for Cloud Run](https://docs.cloud.google.com/run/docs/configuring/services/cloud-storage-volume-mounts): the file-storage option and its limits
