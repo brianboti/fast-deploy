@@ -49,7 +49,7 @@ python -m labdeploy.cli render-workflow \
   --output /path/to/app/.github/workflows/rightsize-gcp.yml
 ```
 
-All three workflows must use the same pinned platform commit. Deployment and recovery share a concurrency group; right-sizing is read-only and queues separately. The generator refuses placeholder SHAs and will not overwrite files. If the platform repository is private, add `PLATFORM_READ_TOKEN` as a read-only Contents credential scoped only to that repository. GitHub's app-repository token cannot read a different private repository. An organization-managed GitHub App installation token can replace the development token. Do not use this credential for cloud access.
+All three workflows must use the same pinned platform commit. After the first onboarding, `python -m labdeploy.cli update-workflows --all` (or Claude's `update_app_workflows`) regenerates them against the platform's current commit and opens one pull request per app; set `platform: {repository: OWNER/lab-deploy}` in the controller configuration first. Deployment and recovery share a concurrency group; right-sizing is read-only and queues separately. The generator refuses placeholder SHAs and will not overwrite files. If the platform repository is private, add `PLATFORM_READ_TOKEN` as a read-only Contents credential scoped only to that repository. GitHub's app-repository token cannot read a different private repository. An organization-managed GitHub App installation token can replace the development token. Do not use this credential for cloud access.
 
 Create a GitHub environment named **staging**. Restrict deployment branches to `main`. Add a reviewer during initial integration if supported by your GitHub plan; routine staging releases can run without manual approval after validation. No production environment is used by this implementation.
 
@@ -126,7 +126,7 @@ Prefer a GitHub App installed only on allowed app repositories. Set these enviro
 - `GITHUB_INSTALLATION_ID`
 - `GITHUB_APP_PRIVATE_KEY_FILE`: a secret-mounted private key path
 
-Minimum repository permissions for analyze/plan/dispatch/status: **Contents read**, **Actions write**, and metadata read. If enabling `propose_configuration`, additionally allow **Contents write** and **Pull requests write**. Branch protection must prevent the App from bypassing review on `main`; the proposal tool only creates a new branch and draft PR.
+Minimum repository permissions for analyze/plan/dispatch/status: **Contents read**, **Actions write**, and metadata read. If enabling `propose_configuration` or `update_app_workflows`, additionally allow **Contents write**, **Pull requests write** and, for workflow files, **Workflows write**. Branch protection must prevent the App from bypassing review on `main`; the proposal tool only creates a new branch and draft PR.
 
 For a local pilot, `GITHUB_TOKEN` may hold a fine-grained token with the same restricted repository permissions. It takes precedence over App credentials. Never return this token to Claude or reuse it as the MCP bearer token. App installation tokens refresh in the server; no client credential is passed through to GitHub.
 
@@ -164,6 +164,15 @@ Anthropic's connector permission prompts are additional user-interface controls.
 6. Download the workflow's `release-receipt` artifact to inspect the image digest, previous traffic split, revision, and result. If the runner disappeared before artifact upload, the checkpoint remains at `gs://RECOVERY_BUCKET/releases/SERVICE.json`; the independent workflow emits a `recovery-receipt` artifact.
 
 The release creates a candidate revision, probes its tagged URL with an audience-bound identity token, promotes it, and probes the service URL. On failure it restores the prior concrete revisions. It reports `rollback_failed_manual_recovery_required` if that restoration fails. Cleanup removes the candidate tag on both success and failure. It does not claim that restored traffic guarantees healthy downstream data or dependencies.
+
+## 7a. Watch it run
+
+- **Status in Claude** shows every workflow step with timing, the release phases from the receipt, the candidate's last log lines when it fails, the recovery run that followed, and a next action. Ask for `get_deployment_status` with `wait_seconds: 45` to wait for a change instead of asking repeatedly.
+- **Notifications**: add a repository secret `NOTIFY_WEBHOOK_URL` holding a Slack or Discord incoming webhook. The deploy, recovery and right-sizing workflows post their outcome; without the secret they stay silent. Turn on GitHub's own failed-workflow emails as well.
+- **GitHub Deployments**: every release appears on its commit and under the repository's Environments as in progress, then success or failure with the service URL.
+- **Runtime alerts** (Terraform, `runtime_alerts = true` by default): an uptime check that signs in to the service, alerts for the health check, 5xx responses, p95 latency, instances at maximum, memory above 80% and error lines in the log, and a dashboard (`dashboard_url` output). Set `alert_email`, optionally `alert_webhook_url`, and `health_path` if it differs from `/health`. The uptime check runs as the Monitoring service agent `service-PROJECT_NUMBER@gcp-sa-monitoring-notification.iam.gserviceaccount.com`; in a project where it does not exist yet, run `gcloud beta services identity create --service=monitoring.googleapis.com` once before `terraform apply`.
+- **Audit trail**: `list_events` (or `GET /events`) lists every tool and REST call, sign-in, throttled burst, client registration, token reuse and revocation with identity, client address, outcome and duration. `log_file` in the configuration adds a rotating controller log.
+- **Serving images are protected**: the release job tags each serving revision's image `serving-<revision>` and the registry cleanup keeps those tags, so a rollback target never loses its image. The weekly right-sizing job reconciles the tags.
 
 ## 7. Cost controls and right-sizing
 

@@ -49,6 +49,16 @@ resource "google_artifact_registry_repository" "images" {
       keep_count = var.image_versions_to_keep
     }
   }
+  # The release and right-sizing jobs tag every serving revision's digest serving-<revision>, so an image that still
+  # serves traffic, including one a rollback returned to, is never deleted whatever its age.
+  cleanup_policies {
+    id     = "keep-serving-images"
+    action = "KEEP"
+    condition {
+      tag_state    = "TAGGED"
+      tag_prefixes = ["serving-"]
+    }
+  }
   cleanup_policies {
     id     = "delete-untagged"
     action = "DELETE"
@@ -105,6 +115,12 @@ resource "google_project_iam_member" "metrics_reader" {
 resource "google_project_iam_member" "recommendation_reader" {
   project = var.project_id
   role    = "roles/run.viewer"
+  member  = "serviceAccount:${google_service_account.deployer.email}"
+}
+# A failed candidate's own last log lines go into the release receipt; reading logs is project-level and read-only.
+resource "google_project_iam_member" "log_reader" {
+  project = var.project_id
+  role    = "roles/logging.viewer"
   member  = "serviceAccount:${google_service_account.deployer.email}"
 }
 
@@ -263,3 +279,254 @@ resource "google_storage_bucket_iam_member" "recovery" {
   member = "serviceAccount:${google_service_account.deployer.email}"
 }
 
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Runtime watch: what tells you about trouble after a release has been promoted. Everything here stays within Google's
+# free monitoring allotment at lab traffic. Set runtime_alerts = false to create none of it.
+# ---------------------------------------------------------------------------------------------------------------------
+locals {
+  service_host   = replace(google_cloud_run_v2_service.app.uri, "https://", "")
+  alert_channels = concat(google_monitoring_notification_channel.alert_email[*].id, google_monitoring_notification_channel.alert_webhook[*].id)
+  service_filter = "resource.type=\"cloud_run_revision\" AND resource.label.service_name=\"${var.service}\""
+}
+resource "google_monitoring_notification_channel" "alert_email" {
+  count        = var.runtime_alerts && var.alert_email != "" ? 1 : 0
+  display_name = "${var.service} alerts (email)"
+  type         = "email"
+  labels       = { email_address = var.alert_email }
+  depends_on   = [google_project_service.apis]
+}
+resource "google_monitoring_notification_channel" "alert_webhook" {
+  count        = var.runtime_alerts && var.alert_webhook_url != "" ? 1 : 0
+  display_name = "${var.service} alerts (webhook)"
+  type         = "webhook_tokenauth"
+  labels       = { url = var.alert_webhook_url }
+  depends_on   = [google_project_service.apis]
+}
+# The uptime check signs its requests as the Monitoring service agent, so that agent needs invoker on this service.
+# If the agent does not exist yet in a new project: gcloud beta services identity create --service=monitoring.googleapis.com
+resource "google_cloud_run_v2_service_iam_member" "uptime_probe" {
+  count    = var.runtime_alerts ? 1 : 0
+  location = var.region
+  name     = google_cloud_run_v2_service.app.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-monitoring-notification.iam.gserviceaccount.com"
+}
+resource "google_monitoring_uptime_check_config" "health" {
+  count        = var.runtime_alerts ? 1 : 0
+  display_name = "${var.service} health"
+  timeout      = "10s"
+  period       = "300s"
+  http_check {
+    path           = var.health_path
+    port           = 443
+    use_ssl        = true
+    validate_ssl   = true
+    request_method = "GET"
+    service_agent_authentication {
+      type = "OIDC_TOKEN"
+    }
+  }
+  monitored_resource {
+    type   = "uptime_url"
+    labels = { project_id = var.project_id, host = local.service_host }
+  }
+  depends_on = [google_cloud_run_v2_service_iam_member.uptime_probe]
+}
+resource "google_monitoring_alert_policy" "health" {
+  count        = var.runtime_alerts ? 1 : 0
+  display_name = "${var.service}: health check failing"
+  combiner     = "OR"
+  conditions {
+    display_name = "uptime check failed from more than one region"
+    condition_threshold {
+      filter          = "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND resource.type=\"uptime_url\" AND metric.label.check_id=\"${google_monitoring_uptime_check_config.health[0].uptime_check_id}\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 1
+      duration        = "300s"
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_NEXT_OLDER"
+        cross_series_reducer = "REDUCE_COUNT_FALSE"
+        group_by_fields      = ["resource.label.*"]
+      }
+      trigger {
+        count = 1
+      }
+    }
+  }
+  notification_channels = local.alert_channels
+  alert_strategy {
+    auto_close = "1800s"
+  }
+}
+resource "google_monitoring_alert_policy" "errors" {
+  count        = var.runtime_alerts ? 1 : 0
+  display_name = "${var.service}: server errors"
+  combiner     = "OR"
+  conditions {
+    display_name = "more than ${var.error_alert_count} 5xx responses in five minutes"
+    condition_threshold {
+      filter          = "metric.type=\"run.googleapis.com/request_count\" AND ${local.service_filter} AND metric.label.response_code_class=\"5xx\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = var.error_alert_count
+      duration        = "0s"
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["resource.label.service_name"]
+      }
+      trigger {
+        count = 1
+      }
+    }
+  }
+  notification_channels = local.alert_channels
+  alert_strategy {
+    auto_close = "1800s"
+  }
+}
+resource "google_monitoring_alert_policy" "latency" {
+  count        = var.runtime_alerts ? 1 : 0
+  display_name = "${var.service}: slow responses"
+  combiner     = "OR"
+  conditions {
+    display_name = "p95 latency above ${var.latency_alert_ms} ms for five minutes"
+    condition_threshold {
+      filter          = "metric.type=\"run.googleapis.com/request_latencies\" AND ${local.service_filter}"
+      comparison      = "COMPARISON_GT"
+      threshold_value = var.latency_alert_ms
+      duration        = "300s"
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_PERCENTILE_95"
+        cross_series_reducer = "REDUCE_MAX"
+        group_by_fields      = ["resource.label.service_name"]
+      }
+      trigger {
+        count = 1
+      }
+    }
+  }
+  notification_channels = local.alert_channels
+  alert_strategy {
+    auto_close = "1800s"
+  }
+}
+resource "google_monitoring_alert_policy" "saturation" {
+  count        = var.runtime_alerts ? 1 : 0
+  display_name = "${var.service}: at maximum instances"
+  combiner     = "OR"
+  conditions {
+    display_name = "${var.instance_alert_count} or more active instances for five minutes"
+    condition_threshold {
+      filter          = "metric.type=\"run.googleapis.com/container/instance_count\" AND ${local.service_filter} AND metric.label.state=\"active\""
+      comparison      = "COMPARISON_GE"
+      threshold_value = var.instance_alert_count
+      duration        = "300s"
+      aggregations {
+        alignment_period     = "60s"
+        per_series_aligner   = "ALIGN_MAX"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["resource.label.service_name"]
+      }
+      trigger {
+        count = 1
+      }
+    }
+  }
+  notification_channels = local.alert_channels
+  alert_strategy {
+    auto_close = "1800s"
+  }
+}
+resource "google_monitoring_alert_policy" "memory" {
+  count        = var.runtime_alerts ? 1 : 0
+  display_name = "${var.service}: memory above 80%"
+  combiner     = "OR"
+  conditions {
+    display_name = "p95 memory utilization above 80% for five minutes"
+    condition_threshold {
+      filter          = "metric.type=\"run.googleapis.com/container/memory/utilizations\" AND ${local.service_filter}"
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0.8
+      duration        = "300s"
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_PERCENTILE_95"
+        cross_series_reducer = "REDUCE_MAX"
+        group_by_fields      = ["resource.label.service_name"]
+      }
+      trigger {
+        count = 1
+      }
+    }
+  }
+  notification_channels = local.alert_channels
+  alert_strategy {
+    auto_close = "1800s"
+  }
+}
+resource "google_monitoring_alert_policy" "log_errors" {
+  count        = var.runtime_alerts ? 1 : 0
+  display_name = "${var.service}: errors in the application log"
+  combiner     = "OR"
+  conditions {
+    display_name = "a log line of severity ERROR or worse"
+    condition_matched_log {
+      filter = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"${var.service}\" AND severity>=ERROR"
+    }
+  }
+  notification_channels = local.alert_channels
+  alert_strategy {
+    notification_rate_limit {
+      period = "3600s"
+    }
+    auto_close = "1800s"
+  }
+}
+resource "google_monitoring_dashboard" "service" {
+  count = var.runtime_alerts ? 1 : 0
+  dashboard_json = jsonencode({
+    displayName = "${var.service} staging"
+    mosaicLayout = {
+      columns = 12
+      tiles = [
+        for index, tile in [
+          { title = "Requests per minute by response class", metric = "run.googleapis.com/request_count", aligner = "ALIGN_RATE", reducer = "REDUCE_SUM", groups = ["metric.label.response_code_class"] },
+          { title = "Request latency p95 (ms)", metric = "run.googleapis.com/request_latencies", aligner = "ALIGN_PERCENTILE_95", reducer = "REDUCE_MAX", groups = [] },
+          { title = "Active instances", metric = "run.googleapis.com/container/instance_count", aligner = "ALIGN_MAX", reducer = "REDUCE_SUM", groups = ["metric.label.state"] },
+          { title = "Memory utilization p95", metric = "run.googleapis.com/container/memory/utilizations", aligner = "ALIGN_PERCENTILE_95", reducer = "REDUCE_MAX", groups = [] },
+          { title = "CPU utilization p95", metric = "run.googleapis.com/container/cpu/utilizations", aligner = "ALIGN_PERCENTILE_95", reducer = "REDUCE_MAX", groups = [] },
+          { title = "Billable instance time (s/min)", metric = "run.googleapis.com/container/billable_instance_time", aligner = "ALIGN_RATE", reducer = "REDUCE_SUM", groups = [] },
+          ] : {
+          xPos   = (index % 2) * 6
+          yPos   = floor(index / 2) * 4
+          width  = 6
+          height = 4
+          widget = {
+            title = tile.title
+            xyChart = {
+              dataSets = [{
+                plotType = "LINE"
+                timeSeriesQuery = {
+                  timeSeriesFilter = {
+                    filter = "metric.type=\"${tile.metric}\" AND ${local.service_filter}"
+                    aggregation = {
+                      alignmentPeriod    = "60s"
+                      perSeriesAligner   = tile.aligner
+                      crossSeriesReducer = tile.reducer
+                      groupByFields      = tile.groups
+                    }
+                  }
+                }
+              }]
+            }
+          }
+        }
+      ]
+    }
+  })
+  depends_on = [google_project_service.apis]
+}

@@ -94,6 +94,46 @@ variable "budget_alert_email" {
   default     = ""
   description = "Optional email address for budget threshold notifications in addition to billing administrators."
 }
+variable "runtime_alerts" {
+  type        = bool
+  default     = true
+  description = "Create the authenticated uptime check, the alert policies and the dashboard for the service."
+}
+variable "health_path" {
+  type        = string
+  default     = "/health"
+  description = "Health path probed by the uptime check; keep it equal to health_path in platform.yaml."
+  validation {
+    condition     = can(regex("^/[A-Za-z0-9/_-]*$", var.health_path))
+    error_message = "health_path must start with / and contain only letters, digits, /, _ and -."
+  }
+}
+variable "alert_email" {
+  type        = string
+  default     = ""
+  description = "Email address for runtime alerts (health, errors, latency, saturation); empty disables email."
+}
+variable "alert_webhook_url" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Optional Slack or Discord incoming webhook URL for runtime alerts; empty disables the webhook channel."
+}
+variable "error_alert_count" {
+  type        = number
+  default     = 5
+  description = "5xx responses within five minutes that trigger the error alert."
+}
+variable "latency_alert_ms" {
+  type        = number
+  default     = 2000
+  description = "p95 request latency in milliseconds, sustained for five minutes, that triggers the latency alert."
+}
+variable "instance_alert_count" {
+  type        = number
+  default     = 3
+  description = "Active instances that trigger the saturation alert; the staging policy caps revisions at 3."
+}
 variable "image_vulnerability_scanning" {
   type        = bool
   default     = true

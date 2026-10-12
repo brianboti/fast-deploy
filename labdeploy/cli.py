@@ -35,7 +35,30 @@ def build_parser():
     s = commands.add_parser("sync-pins", help="copy the action commit pins from the platform CI workflow into the templates")
     s.add_argument("--ci", type=Path, default=Path(".github/workflows/ci.yml"))
     s.add_argument("--templates", type=Path, default=Path("templates"))
+    u = commands.add_parser("update-workflows", help="open pull requests that pin registered apps' workflows to a platform commit")
+    u.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
+    u.add_argument("--all", action="store_true", help="every registered application")
+    u.add_argument("--app", action="append", default=[], help="one application id (repeatable)")
+    u.add_argument("--platform-commit", default=None, help="full platform commit SHA (default: platform.commit, else the platform branch tip)")
     return parser
+
+
+def update_workflows(config, github, app_ids, platform_sha=None):
+    """Open one pull request per app on the operator's behalf; GitHub failures are reported per app, not raised."""
+    from .config import Principal
+    from .controller import Controller, Store
+    from .github import explain
+    operator = Principal(name="operator-cli", token_sha256="0" * 64, applications=sorted(config.applications), can_deploy=True)
+    controller = Controller(config, github, Store(config.database))
+    results = []
+    for app_id in app_ids:
+        try:
+            results.append(controller.update_workflows(operator, app_id, platform_sha, allow_writes=True))
+        except ValueError as exc:
+            results.append({"application": app_id, "error": str(exc)})
+        except Exception as exc:  # noqa: BLE001 - every GitHub transport failure is reported in plain words
+            results.append({"application": app_id, "error": explain(exc) or str(exc)})
+    return results
 
 
 USES = re.compile(r"^(?P<lead>\s*-?\s*uses:\s*)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)@(?P<sha>[a-f0-9]{40})(?P<comment>\s*#.*)?\s*$")
@@ -91,6 +114,19 @@ def run(parser, args):
     elif args.command == "sync-pins":
         changed = sync_pins(args.ci, args.templates)
         print("\n".join(changed) if changed else "Templates already match the CI pins")
+    elif args.command == "update-workflows":
+        import os
+
+        from .config import load_config
+        from .github import GitHub
+        config = load_config(args.config or os.environ.get("LAB_CONFIG", "config.local.yaml"))
+        app_ids = sorted(config.applications) if args.all else args.app
+        if not app_ids:
+            parser.error("Give --all or at least one --app")
+        unknown = [a for a in app_ids if a not in config.applications]
+        if unknown:
+            parser.error(f"Unknown application(s): {', '.join(unknown)}")
+        print(json.dumps(update_workflows(config, GitHub(), app_ids, args.platform_commit), indent=2))
     else:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.platform_repo) or not re.fullmatch(r"[a-f0-9]{40}", args.platform_sha):
             parser.error("Provide owner/repository and a full 40-character platform commit SHA")

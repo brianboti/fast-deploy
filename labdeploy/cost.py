@@ -315,6 +315,11 @@ def report():
     monitoring = CloudMonitoring(target.project_id, lambda: run(["gcloud", "auth", "print-access-token"]))
     metrics = monitoring.collect(target.service, window_days)
     result = build_report(target.service, target.project_id, window_days, description, metrics, cost_recommender(target.project_id, target.region))
+    try:
+        from .release import reconcile_serving_tags
+        result["serving_tags"] = reconcile_serving_tags(adapter, f"{target.region}-docker.pkg.dev/{target.project_id}/{target.registry}/{target.service}", run)
+    except Exception as exc:  # the report is still useful without the tag reconcile
+        result["serving_tags"] = {"warning": str(exc)[:200]}
     Path("cost-report.json").write_text(json.dumps(result, indent=2) + "\n")
     lines = summary_lines(result)
     print("\n".join(lines))

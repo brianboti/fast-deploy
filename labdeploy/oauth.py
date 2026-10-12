@@ -154,6 +154,7 @@ class Provider:
     def __init__(self, config, store):
         self.config, self.oauth = config, config.oauth
         self.store = OAuthStore(store)
+        self.audit = store  # the controller's event trail: sign-ins, registrations, reuse detection, revocations
         self.issuer = normalize(self.oauth.public_url)
         self.resource = self.issuer + "/mcp"
         self.metadata_url = str(build_resource_metadata_url(AnyHttpUrl(self.resource)))
@@ -201,6 +202,7 @@ class Provider:
                 raise RegistrationError("invalid_redirect_uri", f"Redirect URI {uri} is not on this controller's allowlist")
         self.store.prune(time.time())
         self.store.add_client(client_info.client_id, client_info.model_dump_json())
+        self.audit.record_event("client_registered", name=client_info.client_name, outcome="ok", detail=client_info.client_id)
 
     async def authorize(self, client, params):
         if params.resource is not None:
@@ -232,6 +234,7 @@ class Provider:
         if row["revoked"]:
             # A rotated-out refresh token presented again means a copy leaked: end every token in the session.
             self.store.revoke_family(row["family"])
+            self.audit.record_event("token_reuse", identity=row["payload"].get("subject"), outcome="session_revoked", detail=f"client {client.client_id}")
             return None
         if row["expires"] < time.time():
             return None
@@ -259,6 +262,7 @@ class Provider:
         row = self.store.token(token.token)
         if row is not None:
             self.store.revoke_family(row["family"])
+            self.audit.record_event("session_revoked", identity=row["payload"].get("subject"), outcome="ok", detail=f"client {row['client_id']}")
 
 
 def login_routes(provider, failures):
@@ -285,13 +289,18 @@ def login_routes(provider, failures):
         if login is None:
             return expired()
         principal = provider.login(token)
+        host = request.client.host if request.client else "unknown"
+        client_name = login.get("client_name") or login["client_id"]
         if principal is None:
-            allowed, retry_after = failures.allow(request.client.host if request.client else "unknown")
+            allowed, retry_after = failures.allow(host)
             if not allowed:
+                provider.audit.record_event("sign_in", name=client_name, client=host, outcome="throttled")
                 return HTMLResponse("<p>Too many failed sign-in attempts from this address. Wait a minute and try again.</p>", status_code=429,
                                     headers={**PAGE_HEADERS, "Retry-After": str(retry_after)})
+            provider.audit.record_event("sign_in", name=client_name, client=host, outcome="rejected")
             return page(login, request_id, "That token was not accepted.", status=401)
         provider.store.delete_login(request_id)
+        provider.audit.record_event("sign_in", name=client_name, identity=principal.name, client=host, outcome="ok")
         return RedirectResponse(provider.complete_login(login, principal), status_code=302, headers={"Cache-Control": "no-store"})
 
     return [Route("/login", form, methods=["GET"]), Route("/login", submit, methods=["POST"])]

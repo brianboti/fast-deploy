@@ -11,6 +11,17 @@ output "github_environment_variables" {
   }
 }
 output "service_url" { value = google_cloud_run_v2_service.app.uri }
+output "console_url" { value = "https://console.cloud.google.com/run/detail/${var.region}/${var.service}/metrics?project=${var.project_id}" }
+output "dashboard_url" {
+  value = var.runtime_alerts ? "https://console.cloud.google.com/monitoring/dashboards/builder/${element(split("/", google_monitoring_dashboard.service[0].id), 3)}?project=${var.project_id}" : "not configured"
+}
+output "runtime_alerts" {
+  value = var.runtime_alerts ? {
+    uptime_check          = google_monitoring_uptime_check_config.health[0].uptime_check_id
+    notification_channels = length(local.alert_channels)
+    policies              = ["health", "errors", "latency", "saturation", "memory", "log_errors"]
+  } : null
+}
 output "cost_controls" {
   value = {
     registry_cleanup_dry_run = var.registry_cleanup_dry_run

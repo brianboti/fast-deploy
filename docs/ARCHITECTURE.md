@@ -119,6 +119,10 @@ The rightsizing workflow never checks out application code. It authenticates wit
 Terraform cost controls: Artifact Registry cleanup policies (keep the newest releases, delete untagged layers after a week and stale tags after a configurable age, dry run by default), lifecycle rules on the recovery bucket, project-level read-only `monitoring.viewer` and `run.viewer` grants for the deployer identity, and an optional monthly budget with current and forecast thresholds.
 
 
+## Every step visible (0.5.0)
+
+Status is assembled from four sources and says which one each fact came from: GitHub's job and step results (timeline, timing, first failed step), the release receipt the runner uploads (phases with timestamps, the gcloud error line, previous traffic, candidate logs), the recovery run that followed a cancelled or lost release, and the controller's own records. A finished run is stored once, with its receipt, so history outlives artifact retention and a second status call does not ask GitHub again. Notifications and GitHub Deployments records are produced by the workflows themselves, so they work even when the controller is down. The audit trail is a table in the same database: every call and sign-in with identity, client address, outcome and duration. Runtime alerts live in Terraform and watch the service after promotion, which the probe-and-switch release cannot.
+
 ## Hardening against 2026 practice (0.3.0)
 
 An architecture review against the MCP specification, the OWASP agentic and MCP Top 10 lists, GitHub and OpenSSF hardening guidance, Google's Cloud Run guidance, and the published release practices of Amazon, Google, Microsoft and Netflix found the design sound and five gaps, all closed in this release:

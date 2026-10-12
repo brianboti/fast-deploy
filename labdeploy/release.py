@@ -1,4 +1,5 @@
 """Runs only on the deployment runner, never inside Claude or the MCP server."""
+import datetime
 import json
 import os
 import re
@@ -71,16 +72,44 @@ class CloudRun:
         conditions = self.describe().get("status", {}).get("conditions", [])
         return any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
 
-    def deploy(self, image, spec, suffix):
+    def deploy(self, image, spec, suffix, labels=None):
         # Cloud Run gates traffic on this HTTP startup probe (up to 60 s of grace) before the platform's own probes run.
         probe = (f"httpGet.path={spec.health_path},httpGet.port={spec.port},"
                  "initialDelaySeconds=0,periodSeconds=5,timeoutSeconds=3,failureThreshold=12")
+        extra = []
+        if labels:
+            for key, value in labels.items():
+                if not re.fullmatch(r"[a-z][a-z0-9_-]{0,62}", key) or not re.fullmatch(r"[a-z0-9_-]{0,63}", value):
+                    raise ValueError("Revision labels must be lowercase letters, digits, dashes or underscores")
+            extra.append("--labels=" + ",".join(f"{key}={value}" for key, value in sorted(labels.items())))
         self.run(self.command("deploy", self.service, "--image", image,
             "--revision-suffix", suffix, "--no-traffic", "--tag=candidate", "--startup-probe", probe,
             "--ingress=all", "--port", str(spec.port),
             "--cpu", str(spec.resources.cpu), "--memory", f"{spec.resources.memory_mib}Mi",
             "--min-instances", str(spec.scaling.minimum), "--max-instances", str(spec.scaling.maximum),
-            "--concurrency", str(spec.concurrency), "--timeout=60", "--cpu-throttling"))
+            "--concurrency", str(spec.concurrency), "--timeout=60", "--cpu-throttling", *extra))
+
+    def revision_logs(self, revision, limit=50):
+        """The last log lines a revision wrote, oldest first: the answer to 'why did the candidate not start?'."""
+        if not re.fullmatch(r"[a-z][a-z0-9-]{1,62}", revision):
+            raise ValueError("Invalid revision name")
+        query = (f'resource.type="cloud_run_revision" AND resource.labels.service_name="{self.service}" AND resource.labels.revision_name="{revision}"')
+        raw = self.run(["gcloud", "logging", "read", query, "--project", self.project, "--limit", str(limit), "--freshness=2h", "--order=desc", "--format=json"])
+        lines = []
+        for entry in reversed(json.loads(raw or "[]")):
+            payload = entry.get("textPayload")
+            if payload is None and isinstance(entry.get("jsonPayload"), dict):
+                payload = entry["jsonPayload"].get("message") or json.dumps(entry["jsonPayload"])
+            if payload is None and isinstance(entry.get("httpRequest"), dict):
+                request = entry["httpRequest"]
+                payload = f"{request.get('status')} {request.get('requestMethod')} {request.get('requestUrl')}"
+            if payload is None and isinstance(entry.get("protoPayload"), dict):
+                payload = (entry["protoPayload"].get("status") or {}).get("message")
+            lines.append({"at": entry.get("timestamp"), "severity": entry.get("severity"), "message": str(payload or "")[:500]})
+        return lines
+
+    def revision_image(self, revision):
+        return self.run(self.command("revisions", "describe", revision, "--format=value(status.imageDigest)"))
 
     def health(self, url, audience, path):
         # Both URLs come from the Cloud Run API, not the application or a tool argument.
@@ -113,6 +142,39 @@ class CloudRun:
 
 
 TERMINAL = {"succeeded", "traffic_restored", "recovered"}
+IMAGE_DIGEST = re.compile(r"[a-z0-9-]+-docker\.pkg\.dev/[a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+@sha256:[a-f0-9]{64}")
+
+
+def now_iso():
+    return datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
+
+
+def reconcile_serving_tags(adapter, image_path, runner=run):
+    """Tag each serving revision's image digest `serving-<revision>` and drop such tags for revisions that no longer serve.
+
+    Registry cleanup keeps every image with a `serving-` tag, so an image that still serves traffic, including one a
+    rollback returned to, is never deleted. Called after each successful release and by the weekly right-sizing job.
+    """
+    if not re.fullmatch(r"[a-z0-9-]+-docker\.pkg\.dev/[a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+", image_path):
+        raise ValueError("Unexpected image path")
+    traffic = adapter.describe().get("status", {}).get("traffic", [])
+    serving = sorted({item["revisionName"] for item in traffic if item.get("percent") and isinstance(item.get("revisionName"), str)})
+    listed = json.loads(runner(["gcloud", "artifacts", "docker", "tags", "list", image_path, "--format=json"]) or "[]")
+    current = {entry["tag"].rsplit("/", 1)[-1] for entry in listed if isinstance(entry.get("tag"), str) and entry["tag"].rsplit("/", 1)[-1].startswith("serving-")}
+    wanted = {}
+    for revision in serving:
+        digest = adapter.revision_image(revision)
+        if IMAGE_DIGEST.fullmatch(digest):
+            wanted[f"serving-{revision}"] = digest
+    added, removed = [], []
+    for tag, digest in wanted.items():
+        if tag not in current:
+            runner(["gcloud", "artifacts", "docker", "tags", "add", digest, f"{image_path}:{tag}"])
+            added.append(tag)
+    for tag in sorted(current - set(wanted)):
+        runner(["gcloud", "artifacts", "docker", "tags", "delete", f"{image_path}:{tag}", "--quiet"])
+        removed.append(tag)
+    return {"serving": sorted(wanted), "added": added, "removed": removed}
 
 
 def traffic_snapshot(status):
@@ -181,10 +243,10 @@ def retire_candidate(adapter, record):
                           "not ready until the next successful release; requests are served by the previous revision.")
 
 
-def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=None):
+def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=None, labels=None, image_path=None):
     if not re.fullmatch(r"[a-f0-9]{32}", plan_id):
         raise ValueError("Invalid plan ID")
-    if not re.fullmatch(r"[a-z0-9-]+-docker\.pkg\.dev/[a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+@sha256:[a-f0-9]{64}", image):
+    if not IMAGE_DIGEST.fullmatch(image):
         raise ValueError("An immutable Artifact Registry image digest is required")
     enforce(spec)
     previous = adapter.describe()
@@ -192,8 +254,11 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
     allocations = traffic_snapshot(status)
     suffix = "r" + plan_id[:16]
     revision = f"{adapter.service}-{suffix}"
-    receipt = {"plan_id": plan_id, "image": image, "previous_traffic": allocations, "state": "preparing", "target": target}
+    receipt = {"plan_id": plan_id, "image": image, "previous_traffic": allocations, "state": "preparing", "target": target, "phases": []}
     def save():
+        # Each state change is timestamped so the controller can show how long every phase took.
+        if not receipt["phases"] or receipt["phases"][-1]["state"] != receipt["state"]:
+            receipt["phases"].append({"state": receipt["state"], "at": now_iso()})
         if journal is not None:
             journal.write(receipt)
         Path(receipt_path).write_text(json.dumps(receipt, indent=2) + "\n")
@@ -204,7 +269,7 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
         adapter.traffic(allocations)
         receipt["state"] = "deploying"
         save()
-        adapter.deploy(image, spec, suffix)
+        adapter.deploy(image, spec, suffix, labels)
         candidate = adapter.describe()["status"]
         entry = next((t for t in candidate.get("traffic", []) if t.get("tag") == "candidate" and t.get("revisionName") == revision), None)
         if not entry or not adapter.health(entry["url"], candidate["url"], spec.health_path):
@@ -231,6 +296,11 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
         if receipt["state"] == "traffic_restored":
             retire_candidate(adapter, receipt)
         try:
+            # Best effort: the candidate's own last lines explain most startup failures.
+            receipt["candidate_logs"] = adapter.revision_logs(revision)
+        except Exception as log_error:
+            receipt["log_warning"] = f"Candidate logs unavailable: {describe_error(log_error)}"
+        try:
             save()
         except Exception:
             Path(receipt_path).write_text(json.dumps({**receipt, "journal_warning": "Recovery checkpoint update failed"}, indent=2))
@@ -238,6 +308,11 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
             raise
         raise RuntimeError(f"Release failed: {receipt['state']}; inspect the receipt and Cloud Run") from None
     retire_candidate(adapter, receipt)
+    if image_path:
+        try:
+            receipt["serving_tags"] = reconcile_serving_tags(adapter, image_path, adapter.run)
+        except Exception as tag_error:
+            receipt["tag_warning"] = f"Serving-tag update failed: {describe_error(tag_error)}"
     save()
     return receipt
 
@@ -266,7 +341,11 @@ def main():
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         raise SystemExit(128 + signum)
     signal.signal(signal.SIGTERM, terminate)
-    rollout(adapter, os.environ["IMAGE_DIGEST"], spec, os.environ["PLAN_ID"], "release-receipt.json", journal, target.model_dump())
+    labels = {"lab-deploy-plan": os.environ["PLAN_ID"]}
+    if re.fullmatch(r"[a-f0-9]{40}", os.environ.get("COMMIT_SHA", "")):
+        labels["lab-deploy-commit"] = os.environ["COMMIT_SHA"]
+    image_path = f"{target.region}-docker.pkg.dev/{target.project_id}/{target.registry}/{target.service}"
+    rollout(adapter, os.environ["IMAGE_DIGEST"], spec, os.environ["PLAN_ID"], "release-receipt.json", journal, target.model_dump(), labels, image_path)
 
 
 if __name__ == "__main__":

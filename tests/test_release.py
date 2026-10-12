@@ -30,8 +30,15 @@ class Cloud:
             raise RuntimeError("cloud unavailable")
         self.moves.append(allocations)
 
-    def deploy(self, image, spec, suffix):
+    def deploy(self, image, spec, suffix, labels=None):
         self.deployed = True
+        self.labels = labels
+
+    def revision_logs(self, revision, limit=50):
+        return [{"at": "2026-10-12T10:00:00Z", "severity": "ERROR", "message": "ModuleNotFoundError: No module named 'numpy'"}]
+
+    def revision_image(self, revision):
+        return IMAGE
 
     def health(self, *args):
         return next(self.checks)
@@ -105,7 +112,7 @@ def test_failed_deploy_records_the_command_error(tmp_path):
     class Rejected(Cloud):
         broken = True  # the failed candidate is now the newest revision, so the service reports not Ready
 
-        def deploy(self, image, spec, suffix):
+        def deploy(self, image, spec, suffix, labels=None):
             raise subprocess.CalledProcessError(1, ["gcloud"], stderr="ERROR: (gcloud.run.deploy) The user-provided container failed the configured startup probe checks.")
     cloud = Rejected([])
     with pytest.raises(RuntimeError, match="traffic_restored"):

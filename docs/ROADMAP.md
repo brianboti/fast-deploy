@@ -42,6 +42,8 @@ Requires regeneration of app workflows: yes (0.2).
 
 ## Phase 1: see every step (two days) → version 0.5.0
 
+Status: implemented on 2026-10-12 as version 0.5.0; the live exercise and the Terraform apply are pending the operator's go-ahead.
+
 | Item | Change | Where |
 |---|---|---|
 | 1.1 | `cli update-workflows --all`: regenerate the three workflows for every registered app and open one pull request per repo with the new platform commit | `labdeploy/cli.py`, `labdeploy/github.py` |

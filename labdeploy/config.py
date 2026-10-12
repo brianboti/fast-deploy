@@ -65,10 +65,19 @@ class OAuth(StrictModel):
         return self
 
 
+class Platform(StrictModel):
+    """Where this platform's own code lives, so app workflows can be regenerated against a pinned commit of it."""
+    repository: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")  # default: the tip of the platform repository's main branch
+    branch: str = Field(default="main", pattern=r"^[A-Za-z0-9_/-]+$")
+
+
 class Config(StrictModel):
     applications: dict[str, Application]
     principals: list[Principal]
+    platform: Platform | None = None
     oauth: OAuth | None = None
+    log_file: str | None = None  # rotating controller log (requests, warnings); the audit trail itself lives in the database
     live_dispatch: bool = False
     database: str = "deployments.db"
     allowed_hosts: list[str] = Field(default_factory=lambda: ["127.0.0.1:*", "localhost:*", "testserver"])

@@ -71,3 +71,49 @@ jobs:
           path: cost-report.json
           if-no-files-found: warn
           retention-days: 90
+  notify:
+    needs: [rightsize]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      RIGHTSIZE_RESULT: ${{ needs.rightsize.result }}
+      WEBHOOK: ${{ secrets.NOTIFY_WEBHOOK_URL }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      REPOSITORY: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        continue-on-error: true
+        with:
+          name: cost-report
+          path: report
+      - name: Post the summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$WEBHOOK" ]; then
+            echo "NOTIFY_WEBHOOK_URL is not set; no notification sent"
+            exit 0
+          fi
+          python3 - <<'PY'
+          import json, os, urllib.request
+          report = {}
+          try:
+              report = json.load(open("report/cost-report.json"))
+          except (OSError, ValueError):
+              pass
+          if os.environ["RIGHTSIZE_RESULT"] != "success":
+              line = f"RIGHT-SIZING FAILED ({os.environ['RIGHTSIZE_RESULT']})"
+          else:
+              observed = (report.get("rightsizing") or {}).get("observed") or {}
+              proposals = (report.get("rightsizing") or {}).get("recommendations") or []
+              usage = f"about ${observed['usd_month_at_list_price']:.2f}/month at list price from measured usage" if observed else "no usage metrics in the window"
+              line = f"weekly cost report: {usage}; {len(proposals)} proposal(s)"
+          text = f"Lab Deploy, {os.environ['REPOSITORY']}: {line}. {os.environ['RUN_URL']}"
+          body = json.dumps({"text": text, "content": text}).encode()
+          request = urllib.request.Request(os.environ["WEBHOOK"], data=body, headers={"Content-Type": "application/json"})
+          with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 - operator-configured webhook secret
+              print("notification sent:", response.status)
+          PY

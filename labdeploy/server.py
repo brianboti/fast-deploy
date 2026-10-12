@@ -28,17 +28,59 @@ from .oauth import PUBLIC_PATHS, Provider, mount
 log = logging.getLogger("labdeploy")
 
 identity = contextvars.ContextVar("identity")
+client_address = contextvars.ContextVar("client_address", default="unknown")
+LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access", "labdeploy")
 
 
-def plain_errors(fn):
-    """GitHub transport failures reach Claude as one plain sentence instead of a raw HTTP error."""
-    @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
-        try:
-            return fn(*args, **kwargs)
-        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
-            raise ValueError(explain(exc)) from None
-    return wrapper
+class UpstreamError(ValueError):
+    """GitHub could not serve the request; explained in plain words and reported as a gateway failure on REST."""
+
+
+def invoke(store, kind, name, fn, subject=None, record=True):
+    """Run one operation for the authenticated identity: plain GitHub errors, and one audit event with outcome and duration."""
+    started = time.monotonic()
+    principal = identity.get(None)
+    who = principal.name if principal is not None else None
+
+    def note(outcome, detail=None):
+        if record:
+            store.record_event(kind, name=name, identity=who, client=client_address.get(), application=subject, outcome=outcome,
+                               duration_ms=int((time.monotonic() - started) * 1000), detail=detail)
+    try:
+        result = fn()
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        message = explain(exc)
+        note("error", message)
+        raise UpstreamError(message) from None
+    except Exception as exc:
+        note("error", str(exc))
+        raise
+    note("ok")
+    return result
+
+
+def audited(store, record=True):
+    """Decorator for MCP tools: every call is recorded with its identity, subject, outcome and duration."""
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            subject = kwargs.get("application") or kwargs.get("plan_id")
+            return invoke(store, "tool", fn.__name__, lambda: fn(*args, **kwargs), subject, record)
+        return wrapper
+    return decorate
+
+
+def attach_log_file(path):
+    """A rotating log file for the controller's own output; idempotent across restarts of the factory."""
+    from logging.handlers import RotatingFileHandler
+    handler = RotatingFileHandler(path, maxBytes=5_000_000, backupCount=5)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    for name in LOGGERS:
+        logger = logging.getLogger(name)
+        if not any(getattr(h, "baseFilename", None) == handler.baseFilename for h in logger.handlers):
+            logger.addHandler(handler)
+        if logger.level > logging.INFO or logger.level == logging.NOTSET:
+            logger.setLevel(logging.INFO)
 
 # Safety hints let the client ask the human before risky calls; every tool acts on a closed, registered set of resources.
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
@@ -91,8 +133,8 @@ class Limits:
 
 
 class Authenticate:
-    def __init__(self, app, config, limits=None, oauth=None):
-        self.app, self.config, self.oauth = app, config, oauth
+    def __init__(self, app, config, limits=None, oauth=None, store=None):
+        self.app, self.config, self.oauth, self.store = app, config, oauth, store
         self.limits = limits or Limits(config)
         # RFC 9728: the challenge tells Claude where to find the authorization server when sign-in is enabled.
         self.challenge = "Bearer" if oauth is None else f'Bearer resource_metadata="{oauth.metadata_url}"'
@@ -101,6 +143,13 @@ class Authenticate:
         if scope["type"] != "http" or scope["path"] == "/healthz":
             return await self.app(scope, receive, send)
         client = (scope.get("client") or ("unknown", 0))[0]
+        address = client_address.set(client)
+        try:
+            return await self.gate(scope, receive, send, client)
+        finally:
+            client_address.reset(address)
+
+    async def gate(self, scope, receive, send, client):
         if self.oauth is not None and (scope["path"] in PUBLIC_PATHS or scope["path"].startswith("/.well-known/")):
             allowed, retry_after = self.limits.public.allow(client)
             if not allowed:
@@ -119,6 +168,8 @@ class Authenticate:
             # Failed logins are budgeted per client address to slow token guessing; the proxy should limit as well.
             allowed, retry_after = self.limits.failures.allow(client)
             if not allowed:
+                if self.store is not None:
+                    self.store.record_event("auth_burst", client=client, outcome="throttled", detail=scope["path"])
                 return await JSONResponse({"error": "Too many failed authentication attempts"}, status_code=429,
                                           headers={"Retry-After": str(retry_after)})(scope, receive, send)
             return await JSONResponse({"error": "Authentication required"}, status_code=401, headers={"WWW-Authenticate": self.challenge})(scope, receive, send)
@@ -141,6 +192,11 @@ def build_app(config, github=None):
     mcp = FastMCP("Lab Deploy", instructions=INSTRUCTIONS, stateless_http=True, json_response=True,
                   transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=config.allowed_hosts, allowed_origins=[]))
     mcp._mcp_server.version = __version__  # the handshake reports Lab Deploy's version, not the SDK's
+    plain_errors = audited(store)
+    quiet = audited(store, record=False)
+
+    def rest(name, fn, subject=None):
+        return invoke(store, "rest", name, fn, subject)
 
     @mcp.tool(title="List applications", annotations=READ_ONLY, structured_output=True)
     @plain_errors
@@ -165,6 +221,12 @@ def build_app(config, github=None):
     def propose_configuration(application: str) -> dict[str, Any]:
         """Create a draft config PR for a new app. Never merges or replaces existing platform.yaml."""
         return controller.propose_config(identity.get(), application)
+
+    @mcp.tool(title="Update app workflows (pull request)", annotations=CREATES_RECORD, structured_output=True)
+    @plain_errors
+    def update_app_workflows(application: str, platform_commit: str | None = None) -> dict[str, Any]:
+        """Regenerate the app's three workflow files against the platform's current (or given) commit and open a pull request. Never merges."""
+        return controller.update_workflows(identity.get(), application, platform_commit)
 
     @mcp.tool(title="Deploy to staging", annotations=CHANGES_CLOUD, structured_output=True)
     @plain_errors
@@ -196,6 +258,13 @@ def build_app(config, github=None):
         """Latest measured right-sizing report from the rightsizing workflow; never estimated."""
         return controller.cost_report(identity.get(), application)
 
+    @mcp.tool(title="List events", annotations=READ_ONLY, structured_output=True)
+    @quiet
+    def list_events(limit: int = 50, application: str | None = None) -> dict[str, Any]:
+        """Recent audit events: tool and REST calls, sign-ins, throttling, token reuse. Deployers see every identity; read-only identities see their own."""
+        principal = identity.get()
+        return {"events": store.recent_events(min(max(int(limit), 1), 500), identity=None if principal.can_deploy else principal.name, application=application)}
+
     @mcp.tool(title="Get controller status", annotations=READ_ONLY, structured_output=True)
     @plain_errors
     def get_controller_status() -> dict[str, Any]:
@@ -215,11 +284,15 @@ def build_app(config, github=None):
     app = FastAPI(title="Lab Deploy", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     limits = Limits(config)
     oauth = Provider(config, store) if config.oauth else None
-    app.add_middleware(Authenticate, config=config, limits=limits, oauth=oauth)
+    app.add_middleware(Authenticate, config=config, limits=limits, oauth=oauth, store=store)
 
     @app.get("/healthz")
     def health():
         return {"status": "ok"}
+
+    @app.exception_handler(UpstreamError)
+    async def upstream_failed(request, exc):
+        return JSONResponse({"error": str(exc)}, status_code=502)
 
     @app.exception_handler(ValueError)
     async def bad_request(request, exc):
@@ -235,31 +308,36 @@ def build_app(config, github=None):
 
     @app.get("/applications")
     def applications():
-        return list_applications()
+        return rest("applications", lambda: controller.applications(identity.get()))
 
     @app.post("/applications/{application}/plans")
     def plan(application: str):
-        return controller.plan(identity.get(), application)
+        return rest("create_plan", lambda: controller.plan(identity.get(), application), application)
 
     @app.post("/plans/{plan_id}/deploy")
     def deploy(plan_id: str):
-        return controller.deploy(identity.get(), plan_id)
+        return rest("deploy", lambda: controller.deploy(identity.get(), plan_id), plan_id)
 
     @app.get("/plans")
     def plans():
-        return controller.plans(identity.get())
+        return rest("plans", lambda: controller.plans(identity.get()))
 
     @app.get("/applications/{application}/cost")
     def cost(application: str, requests_per_month: int | None = None, average_request_seconds: float | None = None):
-        return controller.cost(identity.get(), application, requests_per_month, average_request_seconds)
+        return rest("cost", lambda: controller.cost(identity.get(), application, requests_per_month, average_request_seconds), application)
 
     @app.get("/applications/{application}/cost-report")
     def cost_report(application: str):
-        return controller.cost_report(identity.get(), application)
+        return rest("cost_report", lambda: controller.cost_report(identity.get(), application), application)
 
     @app.get("/plans/{plan_id}")
-    def status(plan_id: str):
-        return controller.status(identity.get(), plan_id)
+    def status(plan_id: str, wait_seconds: int = 0):
+        return rest("status", lambda: controller.status(identity.get(), plan_id, wait_seconds), plan_id)
+
+    @app.get("/events")
+    def events(limit: int = 50, application: str | None = None):
+        principal = identity.get()
+        return {"events": store.recent_events(min(max(limit, 1), 500), identity=None if principal.can_deploy else principal.name, application=application)}
 
     if oauth is not None:
         mount(app, oauth, limits.failures)  # must precede the catch-all MCP mount
@@ -268,7 +346,10 @@ def build_app(config, github=None):
 
 
 def create_app():
-    app = build_app(load_config(os.environ.get("LAB_CONFIG", "config.local.yaml")))
+    config = load_config(os.environ.get("LAB_CONFIG", "config.local.yaml"))
+    if config.log_file:
+        attach_log_file(config.log_file)
+    app = build_app(config)
     try:
         credential = GitHub().credential_status()
     except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as exc:

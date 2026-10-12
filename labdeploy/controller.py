@@ -9,6 +9,7 @@ from .analyzer import FILES, analyze
 from .cost import estimate, findings
 from .models import enforce, parse_spec, spec_hash
 from .status import TERMINAL, advice, release_phases, summarize
+from .workflows import TEMPLATES, pinned_commit, render
 
 DISPATCHED = {"dispatched", "dispatch_unknown", "dispatching"}
 WAIT_LIMIT = 45  # seconds; keeps a waiting status call inside the client's tool timeout
@@ -20,6 +21,9 @@ class Store:
         with self.connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, owner TEXT NOT NULL, state TEXT NOT NULL, payload TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS audit (at REAL, owner TEXT, plan_id TEXT, event TEXT)")
+            db.execute("CREATE TABLE IF NOT EXISTS events (at REAL NOT NULL, identity TEXT, client TEXT, kind TEXT NOT NULL, name TEXT, application TEXT, "
+                       "outcome TEXT, duration_ms INTEGER, detail TEXT)")
+            db.execute("CREATE INDEX IF NOT EXISTS events_at ON events (at)")
 
     @contextlib.contextmanager
     def connect(self):
@@ -78,6 +82,29 @@ class Store:
         with self.connect() as db:
             rows = db.execute("SELECT at, event FROM audit WHERE owner=? AND plan_id=? ORDER BY at, rowid", (owner, plan_id)).fetchall()
         return [{"at": at, "event": event} for at, event in rows]
+
+    def record_event(self, kind, name=None, identity=None, client=None, application=None, outcome=None, duration_ms=None, detail=None):
+        """One line of the audit trail: tool calls, REST calls, sign-ins, throttling, token reuse. Kept for a year."""
+        with self.connect() as db:
+            db.execute("INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                       (time.time(), identity, client, kind, name, application, outcome, duration_ms, (detail or "")[:500] or None))
+            db.execute("DELETE FROM events WHERE at < ?", (time.time() - 365 * 86_400,))
+
+    def recent_events(self, limit=50, identity=None, application=None):
+        query, params = "SELECT at, identity, client, kind, name, application, outcome, duration_ms, detail FROM events", []
+        clauses = []
+        if identity is not None:
+            clauses.append("identity=?")
+            params.append(identity)
+        if application is not None:
+            clauses.append("application=?")
+            params.append(application)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        with self.connect() as db:
+            rows = db.execute(query + " ORDER BY rowid DESC LIMIT ?", (*params, limit)).fetchall()
+        keys = ("at", "identity", "client", "kind", "name", "application", "outcome", "duration_ms", "detail")
+        return [dict(zip(keys, row, strict=True)) for row in rows]
 
 
 class Controller:
@@ -163,6 +190,33 @@ class Controller:
 
     def plans(self, principal):
         return {"plans": self.store.plans(principal.name)}
+
+    def pinned_platform(self, app, repository):
+        """The platform commit the app's deploy workflow pins today, or None when the workflow is absent."""
+        found = self.github.contents(app.repository, app.branch, ".github/workflows/deploy-gcp.yml")
+        return pinned_commit(found["text"], repository) if found else None
+
+    def update_workflows(self, principal, app_id, platform_sha=None, allow_writes=False):
+        """Regenerate the app's three workflows against a platform commit and open one pull request. Review and merge stay human."""
+        app = self.app(principal, app_id, write=True)
+        platform = self.config.platform
+        if platform is None:
+            raise ValueError("Set platform.repository in the controller configuration before updating app workflows")
+        if not allow_writes and not self.config.live_dispatch:
+            raise ValueError("Writes are disabled (live_dispatch: false); enable them, or run the command on the controller host")
+        sha = platform_sha or platform.commit or self.github.branch_head(platform.repository, platform.branch)
+        if not re.fullmatch(r"[a-f0-9]{40}", sha or ""):
+            raise ValueError("The platform commit must be a full 40-character SHA")
+        current = self.pinned_platform(app, platform.repository)
+        if current == sha:
+            return {"application": app_id, "platform_commit": sha, "current_pin": current, "pull_request": None, "note": "Already pinned to this platform commit."}
+        files = {}
+        for name in TEMPLATES:
+            template = self.github.contents(platform.repository, sha, f"templates/{name}")
+            if template is None:
+                raise ValueError(f"templates/{name} does not exist at platform commit {sha[:12]}")
+            files[f".github/workflows/{name}"] = render(template["text"], platform.repository, sha)
+        return {"application": app_id, "platform_commit": sha, "current_pin": current, "pull_request": self.github.update_workflows(app, sha, files)}
 
     def applications(self, principal):
         """Registered apps this identity may see, each with the live release this controller recorded and what main holds beyond it."""

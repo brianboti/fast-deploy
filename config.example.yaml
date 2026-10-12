@@ -1,5 +1,10 @@
 live_dispatch: false
 database: deployments.db
+# Where this platform's code lives; lets update_app_workflows regenerate app workflows against its commits.
+# platform:
+#   repository: YOUR_ORG/lab-deploy
+#   commit: null              # default: the tip of main
+# log_file: /var/lib/lab-deploy/controller.log   # optional rotating controller log
 allowed_hosts:
   - "127.0.0.1:*"
   - "localhost:*"

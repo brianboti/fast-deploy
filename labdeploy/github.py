@@ -185,6 +185,56 @@ class GitHub:
             raise ValueError("Repository input exceeds 64 KiB")
         return base64.b64decode(data["content"], validate=False).decode("utf-8")
 
+    def contents(self, repository, ref, path):
+        """A regular file from any repository the credential can read, at a ref; None when it does not exist."""
+        try:
+            response = self.request("GET", f"/repos/{repository}/contents/{quote(path, safe='/')}", params={"ref": ref})
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+        data = response.json()
+        if not isinstance(data, dict) or data.get("type") != "file" or data.get("encoding") != "base64":
+            raise ValueError("Expected regular, base64-encoded GitHub file")
+        if data.get("size", 0) > 65_536:
+            raise ValueError("Repository input exceeds 64 KiB")
+        return {"sha": data.get("sha"), "text": base64.b64decode(data["content"], validate=False).decode("utf-8")}
+
+    def branch_head(self, repository, branch="main"):
+        return self.request("GET", f"/repos/{repository}/commits/{quote(branch, safe='')}").json()["sha"]
+
+    def update_workflows(self, app, platform_sha, files):
+        """Open the pull request that pins the app's workflow files to a platform commit; never merges, never force-pushes."""
+        owner = app.repository.split("/")[0]
+        branch = f"lab-deploy/platform-{platform_sha[:12]}"
+        open_prs = self.request("GET", f"/repos/{app.repository}/pulls", params={"head": f"{owner}:{branch}", "state": "open"}).json()
+        if open_prs:
+            return {"number": open_prs[0]["number"], "url": open_prs[0]["html_url"], "branch": branch, "changed": [], "note": "A pull request for this platform commit is already open."}
+        try:
+            self.request("POST", f"/repos/{app.repository}/git/refs", json={"ref": f"refs/heads/{branch}", "sha": self.head(app)})
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 422:  # 422: the branch already exists from an earlier, closed attempt; reuse it
+                raise
+        changed = []
+        for path, text in files.items():
+            current = self.contents(app.repository, branch, path)
+            if current is not None and current["text"] == text:
+                continue
+            body = {"message": f"Pin Lab Deploy workflows to platform {platform_sha[:12]}", "branch": branch, "content": base64.b64encode(text.encode()).decode()}
+            if current is not None:
+                body["sha"] = current["sha"]
+            self.request("PUT", f"/repos/{app.repository}/contents/{quote(path, safe='/')}", json=body)
+            changed.append(path)
+        if not changed:
+            return {"number": None, "url": None, "branch": branch, "changed": [], "note": "The workflows already match this platform commit."}
+        response = self.request("POST", f"/repos/{app.repository}/pulls", json={
+            "title": f"Update Lab Deploy workflows to platform {platform_sha[:12]}", "base": app.branch, "head": branch, "draft": False,
+            "body": (f"Regenerated from the platform templates at commit `{platform_sha}`.\n\nFiles: " + ", ".join(f"`{p}`" for p in changed)
+                     + "\n\nReview and merge through the normal process; the controller refuses to deploy an app whose pin it does not support. "
+                     "Nothing is merged or deployed by this pull request itself."),
+        })
+        return {"number": response.json()["number"], "url": response.json()["html_url"], "branch": branch, "changed": changed}
+
     def dispatch(self, app, plan):
         response = self.request("POST", f"/repos/{app.repository}/actions/workflows/{app.workflow}/dispatches", json={
             "ref": app.branch,
