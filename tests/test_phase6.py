@@ -154,7 +154,7 @@ def test_controller_renders_the_root_from_the_spec_and_opens_the_platform_pull_r
     assert 'bucket = "test-project-tfstate"' in rendered["files"]["backend.tf"]
     proposed = c.propose_infrastructure(p, "demo")
     assert proposed["pull_request"]["number"] == 7
-    assert proposed["files"] == ["infra/gcp/apps/demo/backend.tf", "infra/gcp/apps/demo/main.tf", "infra/gcp/apps/demo/outputs.tf"]
+    assert proposed["files"] == ["infra/gcp/apps/demo/.terraform.lock.hcl", "infra/gcp/apps/demo/backend.tf", "infra/gcp/apps/demo/main.tf", "infra/gcp/apps/demo/outputs.tf"]
     assert gh.platform_prs[-1]["repository"] == "lab/platform" and gh.platform_prs[-1]["branch"] == "lab-deploy/infra-demo"
 
     class NoSpec(FakeGitHub):
@@ -178,6 +178,10 @@ def test_cli_renders_and_writes_a_root_and_checks_a_plan(tmp_path, monkeypatch, 
     cli.run(parser, parser.parse_args(["infra", "render", "demo", "--write", "--root", str(tmp_path / "apps")]))
     written = sorted(p.name for p in (tmp_path / "apps" / "demo").iterdir())
     assert written == ["backend.tf", "main.tf", "outputs.tf"] and "apps/demo/main.tf" in capsys.readouterr().out
+    (tmp_path / "project").mkdir()
+    (tmp_path / "project" / ".terraform.lock.hcl").write_text("# lock\n")
+    cli.run(parser, parser.parse_args(["infra", "render", "demo", "--write", "--root", str(tmp_path / "apps")]))
+    assert (tmp_path / "apps" / "demo" / ".terraform.lock.hcl").read_text() == "# lock\n"
     cli.run(parser, parser.parse_args(["infra", "render", "demo"]))
     assert "# ---- infra/gcp/apps/demo/backend.tf" in capsys.readouterr().out
     plan = tmp_path / "plan.json"

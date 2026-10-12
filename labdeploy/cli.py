@@ -220,6 +220,9 @@ def run(parser, args):
             if args.write:
                 directory = args.root / rendered["service"]
                 directory.mkdir(parents=True, exist_ok=True)
+                lock = args.root.parent / "project" / ".terraform.lock.hcl"
+                if lock.is_file():  # every root pins the same provider build as the foundation
+                    rendered["files"][".terraform.lock.hcl"] = lock.read_text()
                 for name, text in rendered["files"].items():
                     (directory / name).write_text(text)  # generated files are replaced on purpose; the sources are elsewhere
                     print(directory / name)

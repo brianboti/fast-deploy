@@ -29,6 +29,11 @@ class FakeGitHub:
     def head(self, app):
         return self.sha
 
+    def contents(self, repository, ref, path):
+        if path.endswith(".terraform.lock.hcl"):
+            return {"sha": "lock", "text": "# lock\n"}
+        return None
+
     def repository_ids(self, repository):
         return {"repository_id": "123", "owner_id": "45"}
 

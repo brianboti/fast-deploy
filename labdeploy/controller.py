@@ -518,6 +518,9 @@ class Controller:
         if not allow_writes and not self.config.live_dispatch:
             raise ValueError("Writes are disabled (live_dispatch: false); enable them, or run `lab-deploy infra render` on the controller host")
         rendered = self.render_infrastructure(principal, app_id, **render)
+        lock = self.github.contents(platform.repository, platform.branch, "infra/gcp/project/.terraform.lock.hcl")
+        if lock is not None:  # every root pins the same provider build as the foundation
+            rendered["files"][".terraform.lock.hcl"] = lock["text"]
         paths = {f"{rendered['directory']}/{name}": text for name, text in rendered["files"].items()}
         body = (f"Terraform root for `{rendered['service']}` rendered by the controller from the configuration, the app's reviewed "
                 "platform.yaml and GitHub's immutable ids.\n\nThe infrastructure plan workflow posts what an apply would do; "
