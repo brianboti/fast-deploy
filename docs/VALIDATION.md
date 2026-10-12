@@ -1,0 +1,84 @@
+# Validation record
+
+Local validation date: 2026-10-12 UTC.
+
+## Completed
+
+- Controller/schema/analyzer/GitHub adapter/REST/MCP/release tests: 58 passed.
+- Separate demo app test: 1 passed.
+- MCP tests exercise real SDK JSON-RPC initialization, tool listing and a deployment-plan tool call through the ASGI application.
+- Controller tests include concurrent duplicate requests, stale commit, expired plan, read-only identity, per-identity plan access, uncertain network outcome, disabled dispatch and unsupported targets/settings.
+- Release tests cover successful promotion, candidate failure, post-promotion failure, exact prior traffic restoration, rollback failure and rejection of mutable image references.
+- GitHub adapter tests validate the dispatch payload and draft create-only PR behavior using HTTP mocks. They do not call a real app repository.
+- CLI example analysis and policy validation passed.
+- Python bytecode compilation passed.
+- `actionlint` passes for deployment, recovery, and platform CI with one explicit compatibility exclusion: the installed linter does not recognize GitHub's newly documented `concurrency.queue` field. Tests separately require `queue: max` in both templates; all other lint diagnostics remain enabled.
+- Terraform formatting passed; backend-free initialization downloaded the signed Google provider and wrote its lockfile.
+
+## Not completed here
+
+Full `terraform validate` could not start the Google provider because this execution environment prohibits the provider's local Unix socket (`socket: operation not permitted`). This is an environment limitation; it is not a successful validation result. Run this on an unrestricted development machine:
+
+```bash
+cd infra/gcp
+terraform init -backend=false
+terraform validate
+```
+
+No cloud plan/apply, actual GitHub workflow run, Docker build, image vulnerability audit, hosted Claude connector handshake, or live Cloud Run health/rollback test was executed. Docker and gcloud are not installed in this environment, and the target repository/project/credentials were not supplied.
+
+One dependency deprecation warning appears in the local FastAPI/Starlette TestClient path about a future HTTP client migration; tests still pass. It does not validate live network behavior.
+
+Before the first real release, perform the disposable staging integration described in SETUP.md, including an intentionally unhealthy revision and verification that traffic returns to the earlier revision. Unit tests are evidence about program behavior, not proof of cloud integration.
+
+
+## Regression checks added in 0.1.1
+
+Status success/failure/cancellation and missing evidence; cloud-target drift rejection; current workflow-attempt identity; generation-checked journal writes; graceful interruption; simulated abrupt loss after traffic promotion followed by independent recovery; failed checkpoint preventing mutation; unrelated traffic/target rejection; and shared workflow queue configuration.
+
+To reproduce the linter compatibility check:
+
+```bash
+actionlint -shellcheck='' -ignore 'unexpected key "queue" for "concurrency" section' templates/deploy-gcp.yml templates/recover-gcp.yml .github/workflows/ci.yml
+```
+
+The recovery interruption test simulates abrupt process loss and reconstructs recovery from the saved journal. It does not replace a real killed-runner integration test against GCP. No new live-cloud claims are made by this patch.
+
+
+## 0.1.2 validation
+
+Local validation date: 2026-10-11 America/Chicago, macOS, Python 3.12.12, hash-locked dependencies.
+
+- Platform tests: 72 passed (58 existing plus 14 added for demo mode, plan listing, audit events, bearer scheme handling, host validation and CLI error reporting). Demo app test: 1 passed.
+- Both Dockerfiles build with the pinned `python:3.12-slim` digest. The controller image runs as uid 65532 and answered public, unauthenticated and authenticated requests correctly from a container with a mounted config and data directory.
+- `python -m labdeploy.demo serve` plus `walkthrough` completed all twelve steps: health, 401 without a token, MCP handshake with instructions, tool listing, list, analyze, plan, deploy (`dispatch: disabled`), status with events, `list_plans`, and two policy refusals.
+- Live server probes: public `/healthz`; 401 for a missing or wrong token; 421 for a spoofed Host header; `/docs` disabled.
+- All six pinned action commits were confirmed to exist in their upstream repositories through the GitHub API. GitHub lists `2026-03-10` as a supported REST API version, and `concurrency.queue: max` is documented (GitHub changelog, 2026-05-07).
+
+Still not performed: `terraform validate`, `actionlint`, any real GitHub workflow run, and any real Cloud Run deployment or recovery.
+
+
+## 0.2.0 validation
+
+Local validation date: 2026-10-11 America/Chicago, macOS, Python 3.12.12, hash-locked dependencies.
+
+- Platform tests: 94 passed (72 existing plus 22 for the cost model, telemetry queries, ceiling policy, cost tools and routes, artifact download, and the right-sizing template). Demo app test: 1 passed.
+- Cost model checks are exact against the recorded list prices: a 1 vCPU / 512 MiB / 2-instance service bounds at $132.71 per month worst case and $0 idle; one warm instance costs $9.86 per month idle; 100,000 requests of 0.2 s cost between $0.05 and $0.55 per month before the free tier.
+- Telemetry queries are verified against mocked Monitoring API responses: scoped filters, the aligner and reducer per metric kind, whole-window alignment for totals and percentiles, 5-minute alignment for instance counts, pagination, and `null` for missing data.
+- The GitHub artifact fetch is verified with a mocked 302 redirect: the GitHub credential is sent only to `api.github.com`, never to the signed download host; oversized artifacts are refused.
+- `terraform fmt -check`, `terraform init -backend=false` with the pinned Google provider 7.46.1, and `terraform validate` all passed inside the official `hashicorp/terraform:1.13.5` container. This completes the provider-schema validation that earlier releases could not run.
+- The demo walkthrough runs fifteen steps including `estimate_cost` with and without a traffic scenario and the honest `get_cost_report` refusal in demo mode.
+
+Still not performed: a live right-sizing run against a real Cloud Run service (the Monitoring queries, the recommender listing and the artifact round-trip are mocked), `terraform plan` or `apply`, and any real deployment. Prices in `labdeploy/cost.py` must be re-verified against the Cloud Run pricing page when upgrading.
+
+
+## 0.3.0 validation
+
+Local validation date: 2026-10-12 America/Chicago, macOS, Python 3.12.12, hash-locked dependencies.
+
+- Platform tests: 106 passed (94 existing plus 12 for rate limiting, safety hints and structured output, the startup probe arguments, the scan summary, the deployment template's provenance and scan steps, and template pin consistency). Demo app test: 1 passed.
+- `ruff check` is clean with the configured rule set; `zizmor` reports no findings on the three templates and the CI workflow; `pip-audit --require-hashes` finds no known vulnerabilities in the platform lock; the regenerated dev lock changed only by adding ruff and zizmor.
+- `terraform fmt -check` and `terraform validate` pass with the scanning switch and reader role added, inside the official `hashicorp/terraform:1.13.5` container.
+- The MCP SDK in use (1.30.0) accepts the annotations and emits `outputSchema` and `structuredContent`; verified through the real JSON-RPC path in tests.
+
+Still not performed: a live run of the attestation, verification and scan steps against a real registry (those steps use official actions and gcloud commands but have not executed here), and everything listed as not performed for 0.2.0.

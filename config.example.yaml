@@ -1,0 +1,32 @@
+live_dispatch: false
+database: deployments.db
+allowed_hosts:
+  - "127.0.0.1:*"
+  - "localhost:*"
+# Add the exact remote HTTPS host before using Claude Chat.
+# rate_limit_per_minute: 120      # requests per operator identity (default)
+# auth_failures_per_minute: 20    # failed logins per client address (default)
+applications:
+  demo:
+    repository: YOUR_ORG/YOUR_APP
+    branch: main
+    service: lab-demo
+    workflow: deploy-gcp.yml
+    # Optional guardrail: refuse plans whose worst-case monthly compute (every allowed instance busy all month) exceeds this.
+    cost_ceiling_usd: 150
+    target:
+      project_id: your-staging-project
+      region: us-central1
+      service: lab-demo
+      registry: lab-demo
+      deploy_service_account: lab-demo-deploy@your-staging-project.iam.gserviceaccount.com
+      probe_service_account: lab-demo-probe@your-staging-project.iam.gserviceaccount.com
+      wif_provider: projects/123456789/locations/global/workloadIdentityPools/lab-demo-gh/providers/github
+      recovery_bucket: your-staging-project-lab-demo-recovery
+principals:
+  - name: release-manager
+    # Generate with `lab-deploy token`; keep raw token in your password manager.
+    token_sha256: "REPLACE_WITH_GENERATED_SHA256"
+    applications: [demo]
+    can_deploy: true
+

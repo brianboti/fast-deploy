@@ -1,0 +1,73 @@
+name: Rightsize GCP staging
+on:
+  workflow_dispatch:
+    inputs:
+      window_days:
+        description: Days of Cloud Monitoring data to analyze (1-90)
+        required: false
+        default: '14'
+        type: string
+  schedule:
+    - cron: '23 6 * * 1'
+permissions:
+  contents: read
+concurrency:
+  group: gcp-staging-rightsize
+  cancel-in-progress: false
+jobs:
+  rightsize:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+      REGISTRY_NAME: ${{ vars.ARTIFACT_REPOSITORY }}
+      PROBE_SERVICE_ACCOUNT: ${{ vars.PROBE_SERVICE_ACCOUNT }}
+      DEPLOY_SERVICE_ACCOUNT: ${{ vars.DEPLOY_SERVICE_ACCOUNT }}
+      WIF_PROVIDER: ${{ vars.WIF_PROVIDER }}
+      RECOVERY_BUCKET: ${{ vars.RECOVERY_BUCKET }}
+      WINDOW_DAYS: ${{ inputs.window_days || '14' }}
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$WINDOW_DAYS" =~ ^[0-9]{1,2}$ ]]
+      # Read-only analysis of the deployed service. Never checks out or executes application code.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: PLATFORM_REPOSITORY
+          ref: PLATFORM_COMMIT
+          persist-credentials: false
+          path: platform
+          token: ${{ secrets.PLATFORM_READ_TOKEN || github.token }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --require-hashes -r platform/requirements.lock
+      - name: Validate configured destination
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        run: python -m labdeploy.target
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+      - name: Measure usage and compute right-sizing proposals
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        run: python -m labdeploy.cost
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: cost-report
+          path: cost-report.json
+          if-no-files-found: warn
+          retention-days: 90

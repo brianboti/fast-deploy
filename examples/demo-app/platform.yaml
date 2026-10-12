@@ -1,0 +1,20 @@
+api_version: lab/v1
+name: lab-demo
+runtime: python-http
+port: 8080
+health_path: /health
+resources:
+  cpu: 1
+  memory_mib: 512
+scaling:
+  minimum: 0
+  maximum: 2
+# Requests served in parallel by one instance; higher values need fewer instances and cost less when the app can handle it.
+concurrency: 80
+exposure: authenticated
+state: stateless
+dependencies: []
+gpu: false
+# This example app has been inspected; generated configs default to false.
+reviewed: true
+

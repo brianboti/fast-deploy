@@ -1,0 +1,126 @@
+{
+  "$defs": {
+    "Resources": {
+      "additionalProperties": false,
+      "properties": {
+        "cpu": {
+          "default": 1,
+          "maximum": 4,
+          "minimum": 1,
+          "title": "Cpu",
+          "type": "integer"
+        },
+        "memory_mib": {
+          "default": 512,
+          "maximum": 4096,
+          "minimum": 512,
+          "title": "Memory Mib",
+          "type": "integer"
+        }
+      },
+      "title": "Resources",
+      "type": "object"
+    },
+    "Scaling": {
+      "additionalProperties": false,
+      "properties": {
+        "minimum": {
+          "default": 0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Minimum",
+          "type": "integer"
+        },
+        "maximum": {
+          "default": 2,
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Maximum",
+          "type": "integer"
+        }
+      },
+      "title": "Scaling",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "api_version": {
+      "const": "lab/v1",
+      "default": "lab/v1",
+      "title": "Api Version",
+      "type": "string"
+    },
+    "name": {
+      "pattern": "^[a-z][a-z0-9-]{0,29}$",
+      "title": "Name",
+      "type": "string"
+    },
+    "runtime": {
+      "const": "python-http",
+      "default": "python-http",
+      "title": "Runtime",
+      "type": "string"
+    },
+    "port": {
+      "default": 8080,
+      "maximum": 65535,
+      "minimum": 1024,
+      "title": "Port",
+      "type": "integer"
+    },
+    "health_path": {
+      "default": "/health",
+      "pattern": "^/[A-Za-z0-9/_-]*$",
+      "title": "Health Path",
+      "type": "string"
+    },
+    "resources": {
+      "$ref": "#/$defs/Resources"
+    },
+    "scaling": {
+      "$ref": "#/$defs/Scaling"
+    },
+    "concurrency": {
+      "default": 80,
+      "maximum": 1000,
+      "minimum": 1,
+      "title": "Concurrency",
+      "type": "integer"
+    },
+    "exposure": {
+      "const": "authenticated",
+      "default": "authenticated",
+      "title": "Exposure",
+      "type": "string"
+    },
+    "state": {
+      "const": "stateless",
+      "default": "stateless",
+      "title": "State",
+      "type": "string"
+    },
+    "dependencies": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Dependencies",
+      "type": "array"
+    },
+    "gpu": {
+      "default": false,
+      "title": "Gpu",
+      "type": "boolean"
+    },
+    "reviewed": {
+      "default": false,
+      "title": "Reviewed",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "AppSpec",
+  "type": "object"
+}

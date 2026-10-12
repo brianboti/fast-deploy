@@ -1,0 +1,6 @@
+# Replace the placeholder team with real maintainers before enabling "require review from code owners".
+# These paths gate every release of every application that uses this platform.
+*                     @YOUR_ORG/lab-platform-admins
+/templates/           @YOUR_ORG/lab-platform-admins
+/infra/               @YOUR_ORG/lab-platform-admins
+/.github/workflows/   @YOUR_ORG/lab-platform-admins

@@ -1,0 +1,13 @@
+# Keeps the pinned action commits and Terraform providers current with weekly pull requests.
+# Python dependencies are hash-locked with uv; refresh them deliberately (see docs/SETUP.md) and
+# rely on the pip-audit step in CI to flag known vulnerabilities in between.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: terraform
+    directory: /infra/gcp
+    schedule:
+      interval: weekly

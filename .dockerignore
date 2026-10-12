@@ -1,0 +1,12 @@
+.git
+.venv
+.env
+*.pem
+*.db*
+gha-creds-*.json
+config.local.yaml
+tests
+examples
+.pytest_cache
+__pycache__
+

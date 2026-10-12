@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lab-deploy"
+version = "0.3.0"
+description = "Policy-controlled Claude/MCP deployment to GCP staging"
+requires-python = ">=3.12"
+dependencies = ["mcp==1.30.0", "fastapi==0.143.0", "httpx==0.28.1", "pydantic==2.14.1", "PyYAML==6.0.3", "PyJWT[crypto]==2.15.1", "uvicorn==0.54.0"]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1", "python-hcl2==7.3.1", "ruff==0.17.0", "zizmor==1.30.1"]
+
+[project.scripts]
+lab-deploy = "labdeploy.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["labdeploy*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 200
+target-version = "py312"
+extend-exclude = [".venv", "examples/demo-app/.test-venv"]
+
+[tool.ruff.lint]
+# Correctness, imports, bug-prone patterns, modern syntax, and the bandit security rules.
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+# Every subprocess call in this code base passes a fixed argument list and never a shell string.
+ignore = ["S603", "S607"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S105", "S106", "S108"]
+"examples/demo-app/*" = ["S101"]
+
