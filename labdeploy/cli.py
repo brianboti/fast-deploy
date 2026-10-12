@@ -39,6 +39,9 @@ def build_parser():
     se.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
     se.add_argument("--revoke", action="append", default=[], metavar="SESSION", help="end one session by its id (repeatable)")
     se.add_argument("--revoke-all", action="store_true", help="end every session; Claude must sign in again")
+    for name, text in (("watchdog", "run the daily watchdog once and print its findings"), ("backup", "write one backup of the controller database now")):
+        job = commands.add_parser(name, help=text)
+        job.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
     d = commands.add_parser("decommission", help="print the checklist that retires one application cleanly")
     d.add_argument("app")
     d.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
@@ -157,6 +160,15 @@ def run(parser, args):
             print(f"Ended {len(targets)} session(s).")
         elif not sessions:
             print("No sign-in sessions recorded.")
+    elif args.command in ("watchdog", "backup"):
+        import os
+
+        from .config import load_config
+        from .controller import Controller, Store
+        from .github import GitHub
+        config = load_config(args.config or os.environ.get("LAB_CONFIG", "config.local.yaml"))
+        controller = Controller(config, GitHub(), Store(config.database))
+        print(json.dumps(controller.watchdog_tick() if args.command == "watchdog" else controller.backup_tick(), indent=2))
     elif args.command == "decommission":
         import os
 

@@ -116,6 +116,8 @@ Requires regeneration of app workflows: yes. Terraform apply: yes (Secret Manage
 
 ## Phase 5: always on, and live answers (two days) → version 0.9.0
 
+Status: implemented on 2026-10-12 as version 0.9.0 in the laptop variant the operator chose: live views through an impersonated observer identity, auto-deploy, watchdog, backups and a GitHub controller watch. Item 5.1, the machine, is deferred; the observer identity attaches to it unchanged when the time comes.
+
 | Item | Change | Where |
 |---|---|---|
 | 5.1 | Controller on a free-tier e2-micro (D6): Terraform module with Caddy for HTTPS, the controller image built by platform CI, SQLite on the disk with a snapshot schedule, the GitHub token in Secret Manager, a read-only identity for Cloud Run, Monitoring and Logging; the laptop launcher becomes the fallback | `infra/gcp/controller`, `Dockerfile`, docs |

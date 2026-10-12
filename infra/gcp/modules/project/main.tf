@@ -159,6 +159,26 @@ resource "google_eventarc_trigger" "cap" {
   depends_on      = [google_project_iam_member.cap_roles]
 }
 
+# A viewer-only identity for the controller's live health and log views. On a machine it is attached directly; on a
+# laptop the operator impersonates it through gcloud, so the controller never holds a key and never gains write access.
+resource "google_service_account" "observer" {
+  account_id   = "lab-deploy-observer"
+  display_name = "Lab Deploy observer (viewer only)"
+  depends_on   = [google_project_service.apis]
+}
+resource "google_project_iam_member" "observer_roles" {
+  for_each = toset(["roles/run.viewer", "roles/monitoring.viewer", "roles/logging.viewer"])
+  project  = var.project_id
+  role     = each.value
+  member   = "serviceAccount:${google_service_account.observer.email}"
+}
+resource "google_service_account_iam_member" "observer_impersonators" {
+  for_each           = toset(var.observer_impersonators)
+  service_account_id = google_service_account.observer.name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = each.value
+}
+
 # Runtime alert channels shared by every app in the project.
 resource "google_monitoring_notification_channel" "alert_email" {
   count        = var.alert_email != "" ? 1 : 0

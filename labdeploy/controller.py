@@ -7,7 +7,9 @@ import time
 import uuid
 
 from .analyzer import FILES, analyze
+from .config import Principal
 from .cost import estimate, findings
+from .github import explain
 from .models import enforce, parse_spec, spec_hash
 from .rightsize import SETTINGS, apply_settings
 from .status import TERMINAL, advice, release_phases, summarize
@@ -58,6 +60,12 @@ class Store:
             raise ValueError("Plan not found for this identity")
         return {**json.loads(row[1]), "state": row[0]}
 
+    def fetch(self, plan_id):
+        """A plan by id regardless of who created it, with its owner; None when unknown."""
+        with self.connect() as db:
+            row = db.execute("SELECT owner, state, payload FROM plans WHERE id=?", (plan_id,)).fetchone()
+        return (row[0], {**json.loads(row[2]), "state": row[1]}) if row else None
+
     def claim(self, owner, plan_id):
         with self.connect() as db:
             changed = db.execute("UPDATE plans SET state='dispatching' WHERE id=? AND owner=? AND state='planned'", (plan_id, owner)).rowcount
@@ -72,17 +80,35 @@ class Store:
             if before is None or before[0] != state:  # re-saving a record with more detail is not a new event
                 db.execute("INSERT INTO audit VALUES (?, ?, ?, ?)", (time.time(), owner, plan["id"], state))
 
-    def plans(self, owner, limit=100):
+    def plans(self, owner=None, applications=None, limit=100):
+        """Plan summaries, newest first: one identity's own plans, or every plan of the given applications."""
         with self.connect() as db:
-            rows = db.execute("SELECT state, payload FROM plans WHERE owner=? ORDER BY rowid DESC LIMIT ?", (owner, limit)).fetchall()
+            if applications is not None:
+                marks = ",".join("?" for _ in applications) or "''"  # only placeholders are interpolated; every value is bound
+                query = f"SELECT owner, state, payload FROM plans WHERE json_extract(payload, '$.application') IN ({marks}) ORDER BY rowid DESC LIMIT ?"  # noqa: S608
+                rows = db.execute(query, (*applications, limit)).fetchall()
+            else:
+                rows = db.execute("SELECT owner, state, payload FROM plans WHERE owner=? ORDER BY rowid DESC LIMIT ?", (owner, limit)).fetchall()
         summaries = []
-        for state, payload in rows:
+        for plan_owner, state, payload in rows:
             plan = json.loads(payload)
             receipt = plan.get("receipt") or {}
             summaries.append({"id": plan["id"], "application": plan["application"], "sha": plan["sha"], "expires_at": plan["expires_at"], "state": state,
+                              "owner": plan_owner, "kind": plan.get("kind") or "release",
                               "summary": (plan.get("commit") or {}).get("message"), "completed_at": (plan.get("outcome") or {}).get("completed_at"),
                               "revision": receipt.get("revision") if state == "succeeded" else None})
         return summaries
+
+    def latest_plan(self, application, sha=None):
+        """The newest plan of any state for an application, optionally for one commit; rollback records excluded."""
+        query = "SELECT state, payload FROM plans WHERE json_extract(payload, '$.application')=? AND json_extract(payload, '$.kind') IS NULL"
+        params = [application]
+        if sha:
+            query += " AND json_extract(payload, '$.sha')=?"
+            params.append(sha)
+        with self.connect() as db:
+            row = db.execute(query + " ORDER BY rowid DESC LIMIT 1", params).fetchone()
+        return {**json.loads(row[1]), "state": row[0]} if row else None
 
     def latest_success(self, application, sha=None, include_rolled_back=False):
         """The newest release that succeeded for an application, by default excluding ones rolled back since (optionally for one commit)."""
@@ -127,8 +153,135 @@ class Store:
 
 
 class Controller:
-    def __init__(self, config, github, store):
-        self.config, self.github, self.store = config, github, store
+    def __init__(self, config, github, store, observer=None):
+        self.config, self.github, self.store, self.observer = config, github, store, observer
+
+    AUTO_DEPLOY_IDENTITY = "auto-deploy"
+
+    def auto_deploy_tick(self):
+        """One pass: for every app with auto_deploy, release the tip of main when it is neither live nor already attempted."""
+        if self.config.paused:
+            return {"paused": True}
+        results = {}
+        for app_id, app in self.config.applications.items():
+            if not app.auto_deploy:
+                continue
+            if app.paused:
+                results[app_id] = "paused"
+                continue
+            try:
+                head = self.github.head(app)
+                live = self.store.latest_success(app_id)
+                if live and live["sha"] == head:
+                    results[app_id] = "up to date"
+                    continue
+                attempted = self.store.latest_plan(app_id, head)
+                if attempted:
+                    results[app_id] = f"commit {head[:12]} already handled by plan {attempted['id'][:8]} ({attempted['state']})"
+                    continue
+                principal = Principal(name=self.AUTO_DEPLOY_IDENTITY, token_sha256="0" * 64, applications=[app_id], can_deploy=True)
+                plan = self.plan(principal, app_id)
+                outcome = self.deploy(principal, plan["id"])
+                state = "dispatch disabled" if outcome.get("dispatch") == "disabled" else outcome.get("state")
+                self.store.record_event("auto_deploy", name=app_id, identity=self.AUTO_DEPLOY_IDENTITY, application=app_id, outcome=state, detail=f"{head[:12]} plan {plan['id'][:8]}")
+                results[app_id] = f"{state}: plan {plan['id']} for commit {head[:12]}"
+            except Exception as exc:  # noqa: BLE001 - one app's trouble must not stop the others; the trail keeps the reason
+                message = explain(exc) or str(exc)
+                self.store.record_event("auto_deploy", name=app_id, identity=self.AUTO_DEPLOY_IDENTITY, application=app_id, outcome="error", detail=message)
+                results[app_id] = f"error: {message}"
+        return results
+
+    def watchdog_tick(self):
+        """The daily look around: configuration, credential, each app's schedules, pin and newest attempt. Posts findings to the webhook."""
+        problems = []
+        error = getattr(self.config, "error", None)
+        if error:
+            problems.append(f"configuration file could not be loaded, the previous one is in force: {error}")
+        check = getattr(self.github, "credential_status", None)
+        if callable(check):
+            try:
+                credential = check()
+                if credential.get("warning"):
+                    problems.append(credential["warning"])
+            except Exception as exc:  # noqa: BLE001
+                problems.append(f"GitHub credential check failed: {explain(exc) or exc}")
+        for app_id, app in self.config.applications.items():
+            try:
+                for workflow, health in (self.schedule_health(app) or {}).items():
+                    problems.extend(f"{app_id}: {workflow}: {problem}" for problem in health.get("problems", []))
+                pin = self.platform_pin(app)
+                if pin and pin.get("supported") is False:
+                    problems.append(f"{app_id}: {pin['note']}")
+                newest = self.store.latest_plan(app_id)
+                if newest and newest.get("state") in {"failed", "cancelled", "timed_out", "dispatch_unknown"}:
+                    problems.append(f"{app_id}: the newest release attempt is '{newest['state']}' (plan {newest['id'][:8]}); nothing newer has succeeded")
+            except Exception as exc:  # noqa: BLE001
+                problems.append(f"{app_id}: check failed: {explain(exc) or exc}")
+        report = {"checked_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"), "problems": problems, "notified": False}
+        self.store.record_event("watchdog", outcome="problems" if problems else "ok", detail="; ".join(problems) or None)
+        if problems and self.config.notify_webhook_url:
+            import httpx
+            text = "Lab Deploy watchdog found " + str(len(problems)) + " problem(s):\n- " + "\n- ".join(problems)
+            try:
+                httpx.post(self.config.notify_webhook_url, json={"text": text, "content": text}, timeout=20).raise_for_status()
+                report["notified"] = True
+            except Exception as exc:  # noqa: BLE001
+                report["notify_error"] = str(exc)[:200]
+        return report
+
+    def backup_tick(self):
+        """A consistent copy of the SQLite database next to it (or in backup_dir); copies older than backup_keep_days go."""
+        from pathlib import Path
+        folder = Path(self.config.backup_dir or f"{self.config.database}.backups")
+        folder.mkdir(parents=True, exist_ok=True)
+        destination = folder / f"deployments-{datetime.datetime.now(datetime.UTC):%Y%m%d-%H%M%S}.db"
+        source, copy = sqlite3.connect(self.config.database), sqlite3.connect(destination)
+        try:
+            source.backup(copy)
+        finally:
+            copy.close()
+            source.close()
+        cutoff = time.time() - self.config.backup_keep_days * 86_400
+        removed = []
+        for old in folder.glob("deployments-*.db"):
+            if old != destination and old.stat().st_mtime < cutoff:
+                old.unlink()
+                removed.append(old.name)
+        self.store.record_event("backup", outcome="ok", detail=str(destination))
+        return {"backup": str(destination), "removed": removed, "kept_days": self.config.backup_keep_days}
+
+    def require_observer(self):
+        if self.observer is None:
+            raise ValueError("Live cloud views need observer.service_account in the controller configuration and the Terraform observer identity")
+        return self.observer
+
+    def service_health(self, principal, app_id, minutes=60):
+        """What serves right now and how it behaves, from Cloud Run and Cloud Monitoring, next to what this controller recorded."""
+        app = self.app(principal, app_id)
+        observer = self.require_observer()
+        service = observer.service(app.target)
+        metrics = observer.metrics(app.target, max(5, min(int(minutes), 1440)))
+        live = self.store.latest_success(app_id)
+        serving = [t for t in service["traffic"] if t.get("percent")]
+        recorded = ((live or {}).get("receipt") or {}).get("revision")
+        agreement = None if live is None else any(t.get("revision") == recorded for t in serving)
+        notes = []
+        if not service["ready"]:
+            notes.append(f"Cloud Run reports the service not ready: {service.get('ready_message') or 'see the console'}")
+        if service.get("ingress") and service["ingress"] != "INGRESS_TRAFFIC_ALL":
+            notes.append(f"Ingress is {service['ingress']}: the spending cap or an operator closed the service; reopen with gcloud run services update --ingress=all")
+        if live is not None and not agreement:
+            notes.append(f"The controller's live release is revision {recorded}, but Cloud Run serves {[t.get('revision') for t in serving]}; "
+                         "someone changed traffic outside the pipeline, or a release is in progress")
+        if metrics.get("server_errors"):
+            notes.append(f"{metrics['server_errors']} server errors in the last {metrics['window_minutes']} minutes")
+        return {"application": app_id, "service": service, "metrics": metrics, "recorded_live_release": live and {"plan_id": live["id"], "sha": live["sha"], "revision": recorded},
+                "agreement": agreement, "notes": notes, "console_url": f"https://console.cloud.google.com/run/detail/{app.target.region}/{app.target.service}/metrics?project={app.target.project_id}"}
+
+    def recent_logs(self, principal, app_id, minutes=30, severity="ERROR", limit=50):
+        app = self.app(principal, app_id)
+        lines = self.require_observer().logs(app.target, minutes, severity, limit)
+        return {"application": app_id, "minutes": minutes, "severity": severity, "count": len(lines), "lines": lines}
 
     def app(self, principal, app_id, write=False):
         if app_id not in principal.applications or app_id not in self.config.applications:
@@ -300,7 +453,19 @@ class Controller:
         return self.github.propose_config(app, report["commit_sha"], report["draft_spec"], report["review_required"])
 
     def plans(self, principal):
+        """Deployers see every plan of their applications, including auto-deploy's; read-only identities see their own."""
+        if principal.can_deploy:
+            return {"plans": self.store.plans(applications=list(principal.applications))}
         return {"plans": self.store.plans(principal.name)}
+
+    def load(self, principal, plan_id):
+        """A plan this identity may see, with the identity that created it: deployers may see any plan of their applications."""
+        if principal.can_deploy:
+            found = self.store.fetch(plan_id)
+            if found is None or found[1].get("application") not in principal.applications:
+                raise ValueError("Plan not found for this identity")
+            return found
+        return principal.name, self.store.get(principal.name, plan_id)
 
     def pinned_platform(self, app, repository):
         """The platform commit the app's deploy workflow pins today, or None when the workflow is absent."""
@@ -468,14 +633,14 @@ class Controller:
 
     def cancel(self, principal, plan_id):
         """Cancel the GitHub run of a dispatched plan; the recovery workflow restores traffic if the runner had started changing it."""
-        plan = self.store.get(principal.name, plan_id)
+        owner, plan = self.load(principal, plan_id)
         app = self.app(principal, plan["application"], write=True)
         run_id = (plan.get("dispatch_result") or {}).get("workflow_run_id")
         if plan["state"] not in DISPATCHED or not run_id:
             raise ValueError(f"Plan is '{plan['state']}' and has no running workflow to cancel")
         result = self.github.cancel_run(app, run_id)
         with self.store.connect() as db:
-            db.execute("INSERT INTO audit VALUES (?, ?, ?, 'cancel_requested')", (time.time(), principal.name, plan_id))
+            db.execute("INSERT INTO audit VALUES (?, ?, ?, 'cancel_requested')", (time.time(), owner, plan_id))
         status = self.refresh(principal, plan_id)
         status["cancel"] = result
         status["next_action"] = ("Cancellation requested. GitHub stops the runner within a minute; the recovery workflow then restores traffic "
@@ -556,7 +721,7 @@ class Controller:
             time.sleep(min(5, max(0.0, deadline - time.time())))
 
     def refresh(self, principal, plan_id):
-        plan = self.store.get(principal.name, plan_id)
+        owner, plan = self.load(principal, plan_id)
         app = self.app(principal, plan["application"])
         if plan["state"] in DISPATCHED:
             workflow = self.github.status(app, plan)
@@ -564,15 +729,16 @@ class Controller:
             plan["workflow"] = workflow
             plan.update(summarize(workflow, plan["checks"], plan.get("kind")))
             if plan["state"] in TERMINAL:
-                self.record_outcome(principal, app, plan, workflow)
+                self.record_outcome(owner, app, plan, workflow)
         elif plan["state"] in {"failed", "cancelled", "timed_out"} and not (plan.get("recovery_run") or {}).get("conclusion"):
-            self.record_recovery(principal, app, plan)
+            self.record_recovery(owner, app, plan)
+        plan["owner"] = owner
         plan["phases"] = release_phases(plan.get("receipt"))
-        plan["events"] = self.store.events(principal.name, plan_id)
+        plan["events"] = self.store.events(owner, plan_id)
         plan["next_action"] = advice(plan)
         return plan
 
-    def record_outcome(self, principal, app, plan, workflow):
+    def record_outcome(self, owner, app, plan, workflow):
         """A finished run is stored once with its receipt, so history survives GitHub's artifact retention."""
         if plan.get("kind") == "rollback":
             fetch = getattr(self.github, "artifact_json", None)
@@ -590,18 +756,18 @@ class Controller:
                            "completed_at": workflow.get("updated_at"), "recorded_at": time.time()}
         plan["workflow"] = {key: workflow.get(key) for key in ("id", "status", "conclusion", "html_url", "head_sha", "run_attempt", "created_at", "updated_at")}
         if plan["state"] in {"failed", "cancelled", "timed_out"}:
-            self.record_recovery(principal, app, plan, persist=False)
-        self.persist(principal, plan)
+            self.record_recovery(owner, app, plan, persist=False)
+        self.persist(owner, plan)
 
-    def record_recovery(self, principal, app, plan, persist=True):
+    def record_recovery(self, owner, app, plan, persist=True):
         lookup = getattr(self.github, "recovery_after", None)
         if not callable(lookup) or not (plan.get("workflow") or {}).get("id"):
             return
         plan["recovery_run"] = lookup(app, plan["workflow"])
         if persist and (plan["recovery_run"] or {}).get("conclusion"):
-            self.persist(principal, plan)
+            self.persist(owner, plan)
 
-    def persist(self, principal, plan):
-        record = {key: value for key, value in plan.items() if key not in {"events", "phases", "next_action"}}
-        self.store.finish(principal.name, record, plan["state"])
+    def persist(self, owner, plan):
+        record = {key: value for key, value in plan.items() if key not in {"events", "phases", "next_action", "owner"}}
+        self.store.finish(owner, record, plan["state"])
 

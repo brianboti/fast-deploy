@@ -42,7 +42,8 @@ def test_list_plans_and_audit_events_are_per_identity(setup):
     listed = c.plans(p)["plans"]
     assert [x["id"] for x in listed] == [plan["id"]] and listed[0]["state"] == "dispatched"
     assert [e["event"] for e in c.status(p, plan["id"])["events"]] == ["planned", "dispatching", "dispatched", "succeeded"]  # the outcome is recorded too
-    assert c.plans(p.model_copy(update={"name": "other"})) == {"plans": []}
+    assert c.plans(p.model_copy(update={"name": "other", "can_deploy": False})) == {"plans": []}  # read-only identities see their own plans
+    assert [x["owner"] for x in c.plans(p.model_copy(update={"name": "other"}))["plans"]] == ["manager"]  # deployers see every plan of their apps
 
 
 def test_cli_reports_errors_without_tracebacks(tmp_path):

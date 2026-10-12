@@ -68,6 +68,12 @@ variable "billing_export_dataset" {
   description = "BigQuery dataset id for the Cloud Billing export; create it here, then point the export at it in the Billing console. Empty creates nothing."
 }
 
+variable "observer_impersonators" {
+  type        = list(string)
+  default     = []
+  description = "Principals allowed to impersonate the viewer-only observer identity, for example [\"user:you@example.edu\"] when the controller runs on a laptop."
+}
+
 # Runtime alert channels shared by every application
 variable "alert_email" {
   type        = string

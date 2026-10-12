@@ -6,6 +6,11 @@ database: deployments.db
 #   commit: null              # default: the tip of main
 #   minimum_commit: null      # refuse apps pinned to older platform commits
 # paused: false               # the kill switch; also available per application
+# observer:                   # viewer-only identity for live health and logs (Terraform creates it)
+#   service_account: lab-deploy-observer@your-staging-project.iam.gserviceaccount.com
+# notify_webhook_url: https://hooks.slack.com/services/...   # daily watchdog findings
+# auto_deploy_interval_seconds: 300
+# backup_dir: /var/lib/lab-deploy/backups
 # log_file: /var/lib/lab-deploy/controller.log   # optional rotating controller log
 allowed_hosts:
   - "127.0.0.1:*"

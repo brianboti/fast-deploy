@@ -19,6 +19,7 @@ class Application(StrictModel):
     # Refuse plans whose worst-case monthly compute (every allowed instance busy all month) exceeds this many USD.
     cost_ceiling_usd: float | int | None = None
     paused: bool = False  # refuse new plans and dispatches for this app without touching anything else
+    auto_deploy: bool = False  # release the tip of main on its own when it is not the live release; every guardrail still applies
 
     @model_validator(mode="after")
     def workflow_fixed(self):
@@ -76,12 +77,23 @@ class Platform(StrictModel):
     minimum_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")
 
 
+class ObserverIdentity(StrictModel):
+    """A viewer-only cloud identity the controller impersonates (laptop) or carries (machine) for live health and logs."""
+    service_account: str = Field(pattern=r"^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$")
+    cache_seconds: int = Field(default=2700, ge=60, le=3500)
+
+
 class Config(StrictModel):
     applications: dict[str, Application]
     principals: list[Principal]
     platform: Platform | None = None
+    observer: ObserverIdentity | None = None
     oauth: OAuth | None = None
     paused: bool = False  # the kill switch: no new plans or dispatches for any app; reads keep working
+    auto_deploy_interval_seconds: int = Field(default=300, ge=60, le=3600)
+    notify_webhook_url: str | None = None  # Slack or Discord incoming webhook for the daily watchdog's findings
+    backup_dir: str | None = None  # nightly SQLite backups; default: <database>.backups next to the database
+    backup_keep_days: int = Field(default=14, ge=1, le=365)
     log_file: str | None = None  # rotating controller log (requests, warnings); the audit trail itself lives in the database
     live_dispatch: bool = False
     database: str = "deployments.db"

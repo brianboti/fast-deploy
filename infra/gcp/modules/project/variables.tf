@@ -23,6 +23,10 @@ variable "spending_cap" {
   })
   description = "What happens at the budget line: close ingress on the platform's services at `threshold` of the budget; optionally detach billing from the project at `detach_threshold`."
 }
+variable "observer_impersonators" {
+  type        = list(string)
+  description = "Principals (user:… or serviceAccount:…) allowed to mint tokens for the viewer-only observer identity, for the controller on a laptop."
+}
 variable "billing_export_dataset" {
   type        = string
   description = "BigQuery dataset id for the billing export (enable the export in the Billing console to this dataset); empty creates nothing."

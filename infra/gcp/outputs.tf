@@ -5,6 +5,7 @@ output "service_urls" { value = { for name, app in module.service : name => app.
 output "console_urls" { value = { for name, app in module.service : name => app.console_url } }
 output "dashboard_urls" { value = { for name, app in module.service : name => app.dashboard_url } }
 output "runtime_alerts" { value = { for name, app in module.service : name => app.runtime_alerts } }
+output "observer_service_account" { value = module.project.observer_service_account }
 output "cost_controls" {
   value = {
     image_vulnerability_scanning = var.image_vulnerability_scanning

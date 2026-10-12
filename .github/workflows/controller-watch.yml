@@ -1,0 +1,27 @@
+name: Controller watch
+# Pings the controller's public health address every thirty minutes; a failed run means the laptop, the tunnel or
+# the controller is down, and GitHub's failed-workflow email says so. Set the CONTROLLER_HEALTH_URL repository variable.
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: controller-watch
+  cancel-in-progress: true
+jobs:
+  ping:
+    if: vars.CONTROLLER_HEALTH_URL != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    env:
+      URL: ${{ vars.CONTROLLER_HEALTH_URL }}
+    steps:
+      - name: Expect the controller's health endpoint to answer
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$URL" =~ ^https://[A-Za-z0-9.-]+/healthz$ ]]
+          curl --fail --silent --show-error --max-time 20 --retry 3 --retry-delay 20 "$URL"
+          echo

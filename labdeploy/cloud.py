@@ -1,0 +1,120 @@
+"""Read-only views of the cloud for Claude: what serves, how it behaves, what it logs. Never a mutation.
+
+The controller still holds no cloud credential of its own. On a Google Cloud machine it uses the attached service
+account through the metadata server; on a laptop it asks gcloud for a short-lived token impersonating the observer
+identity, which has only viewer roles. Either way the token is cached and never written anywhere.
+"""
+import datetime
+import json
+import re
+import subprocess
+import time
+
+import httpx
+
+from .telemetry import CloudMonitoring
+
+METADATA = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+
+
+def log_line(entry):
+    """One readable line from a Cloud Logging entry: text, JSON message, HTTP summary or proto status."""
+    payload = entry.get("textPayload")
+    if payload is None and isinstance(entry.get("jsonPayload"), dict):
+        payload = entry["jsonPayload"].get("message") or json.dumps(entry["jsonPayload"])
+    if payload is None and isinstance(entry.get("httpRequest"), dict):
+        request = entry["httpRequest"]
+        payload = f"{request.get('status')} {request.get('requestMethod')} {request.get('requestUrl')}"
+    if payload is None and isinstance(entry.get("protoPayload"), dict):
+        payload = (entry["protoPayload"].get("status") or {}).get("message")
+    labels = (entry.get("resource") or {}).get("labels") or {}
+    return {"at": entry.get("timestamp"), "severity": entry.get("severity"), "revision": labels.get("revision_name"), "message": str(payload or "")[:500]}
+
+
+class Observer:
+    def __init__(self, config, client=None, runner=None):
+        self.account = config.observer.service_account
+        self.cache_seconds = config.observer.cache_seconds
+        self.client = client or httpx.Client(timeout=30, follow_redirects=False)
+        self.runner = runner or (lambda args: subprocess.run(args, check=True, capture_output=True, text=True, timeout=60).stdout.strip())
+        self.cached, self.until = None, 0.0
+
+    def token(self):
+        if self.cached and time.time() < self.until:
+            return self.cached
+        token, lifetime = None, self.cache_seconds
+        try:
+            response = self.client.get(METADATA, headers={"Metadata-Flavor": "Google"}, timeout=0.5)
+            if response.status_code == 200:
+                data = response.json()
+                token, lifetime = data["access_token"], min(lifetime, int(data.get("expires_in", lifetime)) - 60)
+        except (httpx.HTTPError, ValueError, KeyError):
+            token = None
+        if token is None:
+            try:
+                token = self.runner(["gcloud", "auth", "print-access-token", "--impersonate-service-account", self.account])
+            except (subprocess.CalledProcessError, OSError, subprocess.SubprocessError) as exc:
+                detail = getattr(exc, "stderr", "") or str(exc)
+                raise ValueError("Could not obtain a token for the observer identity: sign in with gcloud on this machine and make sure the Terraform "
+                                 f"observer identity exists with you as an impersonator ({str(detail).strip()[:160]})") from None
+        self.cached, self.until = token, time.time() + lifetime
+        return token
+
+    def get(self, url, **params):
+        response = self.client.get(url, params=params, headers={"Authorization": "Bearer " + self.token()})
+        if response.status_code == 403:
+            raise ValueError("The observer identity is not allowed to read this; apply the Terraform that grants it the viewer roles")
+        response.raise_for_status()
+        return response.json()
+
+    def service(self, target):
+        """The service as Cloud Run sees it now: readiness, traffic by revision with the plan and commit each carries, URL."""
+        base = f"https://run.googleapis.com/v2/projects/{target.project_id}/locations/{target.region}/services/{target.service}"
+        data = self.get(base)
+        ready = next((c for c in data.get("conditions", []) if c.get("type") == "Ready"), {})
+        traffic = []
+        for item in data.get("trafficStatuses") or data.get("traffic") or []:
+            revision = item.get("revision")
+            entry = {"revision": revision, "percent": item.get("percent", 0), "tag": item.get("tag"), "url": item.get("uri")}
+            if revision and re.fullmatch(r"[a-z][a-z0-9-]{1,62}", revision):
+                labels = (self.get(f"{base}/revisions/{revision}").get("labels") or {})
+                entry["plan_id"] = labels.get("lab-deploy-plan")
+                entry["commit"] = labels.get("lab-deploy-commit")
+            traffic.append(entry)
+        return {"url": data.get("uri"), "ready": ready.get("state") == "CONDITION_SUCCEEDED", "ready_message": ready.get("message"),
+                "ingress": data.get("ingress"), "latest_ready_revision": (data.get("latestReadyRevision") or "").rsplit("/", 1)[-1] or None,
+                "updated_at": data.get("updateTime"), "traffic": traffic}
+
+    def metrics(self, target, minutes=60):
+        """The last hour at a glance: requests, server errors, p95 latency, instances, memory. Missing data stays None."""
+        monitoring = CloudMonitoring(target.project_id, self.token, self.client)
+        end = datetime.datetime.now(datetime.UTC)
+        start = end - datetime.timedelta(minutes=minutes)
+        whole = minutes * 60
+        service = f'resource.labels.service_name="{target.service}"'
+
+        def total(metric, extra=None):
+            values = monitoring.query(metric, "ALIGN_DELTA", "REDUCE_SUM", start, end, whole, " AND ".join(filter(None, (service, extra))))
+            return sum(values) if values else 0
+
+        def peak(metric, aligner, extra=None):
+            values = monitoring.query(metric, aligner, "REDUCE_MAX", start, end, whole, " AND ".join(filter(None, (service, extra))))
+            return max(values) if values else None
+        return {"window_minutes": minutes, "requests": total("run.googleapis.com/request_count"),
+                "server_errors": total("run.googleapis.com/request_count", 'metric.labels.response_code_class="5xx"'),
+                "request_latency_ms_p95": peak("run.googleapis.com/request_latencies", "ALIGN_PERCENTILE_95"),
+                "max_active_instances": peak("run.googleapis.com/container/instance_count", "ALIGN_MAX", 'metric.labels.state="active"'),
+                "memory_utilization_p95": peak("run.googleapis.com/container/memory/utilizations", "ALIGN_PERCENTILE_95")}
+
+    def logs(self, target, minutes=30, severity="ERROR", limit=50):
+        """The newest log lines of the service at or above a severity, newest first."""
+        if severity not in {"DEFAULT", "DEBUG", "INFO", "NOTICE", "WARNING", "ERROR", "CRITICAL"}:
+            raise ValueError("severity must be one of DEFAULT, DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL")
+        since = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(minutes=max(1, min(int(minutes), 1440)))).isoformat(timespec="seconds").replace("+00:00", "Z")
+        body = {"resourceNames": [f"projects/{target.project_id}"], "orderBy": "timestamp desc", "pageSize": max(1, min(int(limit), 200)),
+                "filter": f'resource.type="cloud_run_revision" AND resource.labels.service_name="{target.service}" AND severity>={severity} AND timestamp>="{since}"'}
+        response = self.client.post("https://logging.googleapis.com/v2/entries:list", json=body, headers={"Authorization": "Bearer " + self.token()})
+        if response.status_code == 403:
+            raise ValueError("The observer identity is not allowed to read logs; apply the Terraform that grants it the viewer roles")
+        response.raise_for_status()
+        return [log_line(entry) for entry in response.json().get("entries", [])]

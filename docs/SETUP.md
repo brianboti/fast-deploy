@@ -189,6 +189,14 @@ printf '%s' 'the new value' | gcloud secrets versions add lab-demo-API_KEY --dat
 - **Audit trail**: `list_events` (or `GET /events`) lists every tool and REST call, sign-in, throttled burst, client registration, token reuse and revocation with identity, client address, outcome and duration. `log_file` in the configuration adds a rotating controller log.
 - **Serving images are protected**: the release job tags each serving revision's image `serving-<revision>` and the registry cleanup keeps those tags, so a rollback target never loses its image. The weekly right-sizing job reconciles the tags.
 
+## 7e. Always on, on a laptop
+
+- **Live views**: add `observer: {service_account: lab-deploy-observer@PROJECT.iam.gserviceaccount.com}` to the configuration and list yourself in Terraform's `observer_impersonators` (for example `["user:you@example.edu"]`). The controller then asks gcloud for short-lived tokens of that viewer-only identity for `get_service_health` and `get_recent_logs`; on a Google Cloud machine it uses the attached identity instead. Nothing here can change anything in the cloud.
+- **Auto-deploy**: `auto_deploy: true` on an application. Every few minutes the controller compares the tip of main with the live release and releases it once, as the identity `auto-deploy`, unless the commit was already attempted, the app or the controller is paused, or a policy refuses it. Notifications come from the workflow as usual.
+- **Watchdog**: set `notify_webhook_url` (Slack or Discord) to receive the daily findings: an expiring GitHub credential, a paused or stale schedule, an unsupported platform pin, a newest release attempt that failed, or a configuration file that could not be loaded. `python -m labdeploy.cli watchdog` runs it now.
+- **Backups**: the database is copied nightly next to itself (`backup_dir` to change), fourteen copies kept. `python -m labdeploy.cli backup` runs it now; restoring is copying a file back while the controller is stopped.
+- **Is the controller up?** Set the repository variable `CONTROLLER_HEALTH_URL` on the platform repository to `https://YOUR_HOST/healthz`; its controller-watch workflow pings it every thirty minutes and fails loudly when it does not answer.
+
 ## 7b. Steer after a release
 
 - **Roll back**: ask Claude for `rollback_staging`. Traffic returns to the split that served before the live release through the recovery workflow, in seconds, with no build. The runner refuses if traffic has moved since or the checkpoint belongs to another release; deploy the wanted commit instead in that case.

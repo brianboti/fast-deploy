@@ -32,6 +32,7 @@ module "project" {
   alert_webhook_url            = var.alert_webhook_url
   spending_cap                 = var.spending_cap
   billing_export_dataset       = var.billing_export_dataset
+  observer_impersonators       = var.observer_impersonators
 }
 
 module "service" {

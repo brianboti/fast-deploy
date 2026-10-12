@@ -19,11 +19,13 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 from . import __version__
+from .cloud import Observer
 from .config import LiveConfig, load_config
 from .controller import Controller, Store
 from .cost import PRICING
 from .github import GitHub, explain
 from .oauth import PUBLIC_PATHS, Provider, mount
+from .scheduler import Scheduler
 
 log = logging.getLogger("labdeploy")
 
@@ -187,11 +189,12 @@ class Authenticate:
             identity.reset(ctx)
 
 
-def build_app(config, github=None, config_path=None):
+def build_app(config, github=None, config_path=None, observer_factory=Observer, background=False):
     config = config if isinstance(config, LiveConfig) else LiveConfig(config, config_path)
     store = Store(config.database)
     adapter = github or GitHub()
-    controller = Controller(config, adapter, store)
+    observer = observer_factory(config) if config.observer else None
+    controller = Controller(config, adapter, store, observer)
     started = time.time()
     mcp = FastMCP("Lab Deploy", instructions=INSTRUCTIONS, stateless_http=True, json_response=True,
                   transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=config.allowed_hosts, allowed_origins=[]))
@@ -262,6 +265,19 @@ def build_app(config, github=None, config_path=None):
         """Commits and files on main since the live release, what kinds of change they are, and the cost bounds before and after."""
         return controller.compare_with_live(identity.get(), application)
 
+    @mcp.tool(title="Get service health (live)", annotations=READ_ONLY, structured_output=True)
+    @plain_errors
+    def get_service_health(application: str, minutes: int = 60) -> dict[str, Any]:
+        """Live view from Cloud Run and Cloud Monitoring: readiness, serving revisions with their plan and commit, requests, errors, latency,
+        instances, memory, and whether it matches what this controller recorded."""
+        return controller.service_health(identity.get(), application, minutes)
+
+    @mcp.tool(title="Get recent logs (live)", annotations=READ_ONLY, structured_output=True)
+    @plain_errors
+    def get_recent_logs(application: str, minutes: int = 30, severity: str = "ERROR", limit: int = 50) -> dict[str, Any]:
+        """The newest log lines of the service at or above a severity (DEFAULT, INFO, WARNING, ERROR, CRITICAL), newest first."""
+        return controller.recent_logs(identity.get(), application, minutes, severity, limit)
+
     @mcp.tool(title="Get deployment status", annotations=READ_ONLY, structured_output=True)
     @plain_errors
     def get_deployment_status(plan_id: str, wait_seconds: int = 0) -> dict[str, Any]:
@@ -306,16 +322,28 @@ def build_app(config, github=None, config_path=None):
         status = getattr(adapter, "credential_status", None)
         credential = status() if callable(status) else {"kind": "unknown", "expires_at": None, "days_left": None, "warning": None}
         return {"version": __version__, "live_dispatch": config.live_dispatch, "oauth_sign_in": config.oauth is not None, "paused": config.paused,
+                "observer": config.observer.service_account if config.observer else None,
+                "auto_deploy": sorted(k for k, a in config.applications.items() if a.auto_deploy),
+                "background": scheduler["thread"].snapshot() if scheduler["thread"] is not None else None,
                 "paused_applications": sorted(k for k, a in config.applications.items() if a.paused),
                 "configuration": {"path": getattr(config, "path", None), "reloaded_at": getattr(config, "reloaded_at", None), "error": getattr(config, "error", None)},
                 "applications": sorted(config.applications), "github_credential": credential,
                 "pricing_verified": PRICING["verified"], "started_at": datetime.datetime.fromtimestamp(started, datetime.UTC).isoformat(timespec="seconds"),
                 "uptime_seconds": int(time.time() - started)}
 
+    scheduler = {"thread": None}
+
     @contextlib.asynccontextmanager
     async def lifespan(app):
-        async with mcp.session_manager.run():
-            yield
+        if background:
+            scheduler["thread"] = Scheduler(controller, config)
+            scheduler["thread"].start()
+        try:
+            async with mcp.session_manager.run():
+                yield
+        finally:
+            if scheduler["thread"] is not None:
+                scheduler["thread"].stop()
 
     app = FastAPI(title="Lab Deploy", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     limits = Limits(config)
@@ -386,7 +414,7 @@ def create_app():
     config = load_config(path)
     if config.log_file:
         attach_log_file(config.log_file)
-    app = build_app(config, config_path=path)
+    app = build_app(config, config_path=path, background=True)
     try:
         credential = GitHub().credential_status()
     except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as exc:
