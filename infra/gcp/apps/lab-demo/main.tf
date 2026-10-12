@@ -40,4 +40,5 @@ module "service" {
   billing_dataset              = data.terraform_remote_state.project.outputs.billing_dataset
   network                      = data.terraform_remote_state.project.outputs.network
   subnet                       = data.terraform_remote_state.project.outputs.subnet
+  cap_operator_role            = data.terraform_remote_state.project.outputs.cap_operator_role
 }
