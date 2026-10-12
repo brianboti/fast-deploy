@@ -1,5 +1,36 @@
 {
   "$defs": {
+    "Needs": {
+      "additionalProperties": false,
+      "description": "What the application needs besides its container. Names are short; the platform derives the real resource names.",
+      "properties": {
+        "buckets": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Buckets",
+          "type": "array"
+        },
+        "topics": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Topics",
+          "type": "array"
+        },
+        "database": {
+          "default": "none",
+          "enum": [
+            "none",
+            "firestore"
+          ],
+          "title": "Database",
+          "type": "string"
+        }
+      },
+      "title": "Needs",
+      "type": "object"
+    },
     "Resources": {
       "additionalProperties": false,
       "properties": {
@@ -141,6 +172,9 @@
       "minimum": 1,
       "title": "Timeout Seconds",
       "type": "integer"
+    },
+    "needs": {
+      "$ref": "#/$defs/Needs"
     },
     "reviewed": {
       "default": false,

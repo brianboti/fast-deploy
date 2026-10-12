@@ -19,6 +19,49 @@ class Resources(StrictModel):
     memory_mib: int = Field(default=512, ge=512, le=4096)
 
 
+RESOURCE_NAME = re.compile(r"^[a-z][a-z0-9-]{1,20}$")
+
+
+class Needs(StrictModel):
+    """What the application needs besides its container. Names are short; the platform derives the real resource names."""
+    buckets: list[str] = Field(default_factory=list)
+    topics: list[str] = Field(default_factory=list)
+    database: Literal["none", "firestore"] = "none"
+
+    @model_validator(mode="after")
+    def valid(self):
+        for kind, names in (("buckets", self.buckets), ("topics", self.topics)):
+            if len(names) > 8:
+                raise ValueError(f"At most 8 {kind}")
+            if len(set(names)) != len(names):
+                raise ValueError(f"{kind} must be unique")
+            for name in names:
+                if not RESOURCE_NAME.fullmatch(name):
+                    raise ValueError(f"'{name}' is not a valid {kind[:-1]} name (lowercase letters, digits and dashes, 2 to 21 characters)")
+        return self
+
+
+def variable_name(need):
+    return need.upper().replace("-", "_")
+
+
+def needs_env(spec, project_id):
+    """The variables the platform sets for declared needs: fixed conventions, so no output has to travel anywhere.
+
+    BUCKET_<NAME> = <project>-<service>-<name>; TOPIC_<NAME> = projects/<project>/topics/<service>-<name>;
+    SUBSCRIPTION_<NAME> = projects/<project>/subscriptions/<service>-<name>; FIRESTORE_DATABASE = <service>.
+    """
+    env = {}
+    for name in spec.needs.buckets:
+        env[f"BUCKET_{variable_name(name)}"] = f"{project_id}-{spec.name}-{name}"
+    for name in spec.needs.topics:
+        env[f"TOPIC_{variable_name(name)}"] = f"projects/{project_id}/topics/{spec.name}-{name}"
+        env[f"SUBSCRIPTION_{variable_name(name)}"] = f"projects/{project_id}/subscriptions/{spec.name}-{name}"
+    if spec.needs.database == "firestore":
+        env["FIRESTORE_DATABASE"] = spec.name
+    return env
+
+
 class Scaling(StrictModel):
     minimum: int = Field(default=0, ge=0, le=1)
     maximum: int = Field(default=2, ge=1, le=5)
@@ -43,6 +86,8 @@ class AppSpec(StrictModel):
     # "none" declares that no automated tests run before a release; every plan then carries a warning.
     tests: Literal["required", "none"] = "required"
     timeout_seconds: int = Field(default=60, ge=1, le=300)
+    # Buckets, topics and a database the platform provisions for the app (docs/SETUP.md 6b); variables are derived.
+    needs: Needs = Field(default_factory=Needs)
     reviewed: bool = False
 
     @model_validator(mode="after")
@@ -63,6 +108,13 @@ class AppSpec(StrictModel):
                 raise ValueError(f"env value for {name} must be a single line of at most 1024 characters")
         if len(set(self.secrets)) != len(self.secrets) or set(self.secrets) & set(self.env):
             raise ValueError("secrets must be unique and must not repeat an env name")
+        derived = needs_env(self, "project")
+        taken = set(self.env) | set(self.secrets)
+        for name in derived:
+            if name in taken:
+                raise ValueError(f"'{name}' is set by the platform for a declared need and cannot be an env or secret name")
+        if len(derived) + len(self.env) > 48:
+            raise ValueError("Too many variables: needs, env and secrets together must stay under 48")
         return self
 
 
@@ -90,7 +142,8 @@ def parse_spec(text: str) -> AppSpec:
 
 
 def spec_hash(spec: AppSpec) -> str:
-    return hashlib.sha256(json.dumps(spec.model_dump(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    # Defaults are left out, so adding an optional field to the schema does not change the hash of a spec that does not use it.
+    return hashlib.sha256(json.dumps(spec.model_dump(exclude_defaults=True), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def enforce(spec: AppSpec, cloud="gcp", environment="staging") -> None:

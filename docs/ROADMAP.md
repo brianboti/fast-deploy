@@ -134,7 +134,7 @@ Cost effect: machine within the free tier; a reserved external address is about 
 
 ## Phase 6: everything an app needs (about eleven days) → versions 1.0 to 1.3
 
-Status: researched on 2026-10-12 after the operator restated the goal: "the whole process of build and deploy fully automatic; any service the app needs, the platform should provide". Item 6.3, the pipeline, shipped the same night as version 1.0.0 (one root per application, plan on pull request, apply on merge, policies, published outputs); the staging state migration and the first pipeline apply await the operator. Items 6.1, 6.2 and 6.4 to 6.8 are not started; today an application is still exactly one Cloud Run service.
+Status: researched on 2026-10-12 after the operator restated the goal: "the whole process of build and deploy fully automatic; any service the app needs, the platform should provide". Item 6.3, the pipeline, shipped as 1.0.0 to 1.0.2 and was exercised live (state migration, foundation apply, plan on pull request, apply on merge). Items 6.1 and 6.2 shipped as 1.1.0 for the first three types: buckets, topics and a Firestore database declared under `needs`, with derived variables, least-privilege grants, policies and cost notes (6.4's variable wiring came with them). Not started: Cloud SQL, jobs and migrations (6.5), the cap stopping databases and per-need spend (6.6), needs in the health view and decommission (6.7).
 
 ### What the research says
 

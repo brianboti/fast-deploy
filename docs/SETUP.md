@@ -190,6 +190,21 @@ printf '%s' 'the new value' | gcloud secrets versions add lab-demo-API_KEY --dat
 - **Request timeout**: `timeout_seconds`, up to 300 in staging (default 60).
 - **Reproducible builds**: a `requirements.txt` without hashes makes the same commit build differently over time. Generate `requirements.lock` with `pip-compile --generate-hashes requirements.txt -o requirements.lock`, install it with `--require-hashes` in the Dockerfile, and commit both; the analyzer and the test step recognise it.
 
+## 6b. Buckets, topics and a database
+
+Declare them under `needs` in `platform.yaml`; the platform creates them, grants the app's runtime identity the narrowest role for each, and sets the variables the code reads:
+
+```yaml
+needs:
+  buckets: [uploads]        # BUCKET_UPLOADS = PROJECT-SERVICE-uploads
+  topics: [events]          # TOPIC_EVENTS = projects/PROJECT/topics/SERVICE-events, SUBSCRIPTION_EVENTS = .../subscriptions/SERVICE-events
+  database: firestore       # FIRESTORE_DATABASE = SERVICE (a named database in Native mode, delete protection on)
+```
+
+Names are short lowercase words; the real resource names follow the conventions in the comments, so nothing has to be copied anywhere. After merging the change, ask Claude for `propose_infrastructure` (or run `python -m labdeploy.cli infra render APP --write`): the pull request on the platform repository shows the bucket, topic, subscription, database and grants the apply will create. A release whose needs have not been applied yet stops before deploying and names them. Removing a bucket or database from `needs` is refused by the plan (data is never destroyed by the pipeline); retire them through `lab-deploy decommission`.
+
+Cost: these cost by use and nothing while idle. Storage is about 2 cents per GiB-month after the account's free 5 GB, messages 40 dollars per TiB after the free 10 GiB each month, and Firestore cents per 100,000 document operations after the free daily quota; `estimate_cost` lists them. Google allows one free Firestore database per project.
+
 ## 7a. Watch it run
 
 - **Status in Claude** shows every workflow step with timing, the release phases from the receipt, the candidate's last log lines when it fails, the recovery run that followed, and a next action. Ask for `get_deployment_status` with `wait_seconds: 45` to wait for a change instead of asking repeatedly.

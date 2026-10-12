@@ -10,7 +10,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from .models import enforce, parse_spec, spec_hash
+from .models import enforce, needs_env, parse_spec, spec_hash
 
 
 def run(args):
@@ -75,6 +75,25 @@ class CloudRun:
     def secret_name(self, name):
         return f"{self.service}-{name}"
 
+    def require_needs(self, spec):
+        """Every bucket, topic and database the spec declares must exist before anything is deployed (the pipeline creates them)."""
+        checks = []
+        for name in spec.needs.buckets:
+            checks.append((f"bucket {self.project}-{spec.name}-{name}", ["gcloud", "storage", "buckets", "describe", f"gs://{self.project}-{spec.name}-{name}", "--format=value(name)"]))
+        for name in spec.needs.topics:
+            checks.append((f"topic {spec.name}-{name}", ["gcloud", "pubsub", "topics", "describe", f"{spec.name}-{name}", "--project", self.project, "--format=value(name)"]))
+            checks.append((f"subscription {spec.name}-{name}", ["gcloud", "pubsub", "subscriptions", "describe", f"{spec.name}-{name}", "--project", self.project, "--format=value(name)"]))
+        if spec.needs.database == "firestore":
+            checks.append((f"Firestore database {spec.name}", ["gcloud", "firestore", "databases", "describe", f"--database={spec.name}", "--project", self.project, "--format=value(name)"]))
+        missing = []
+        for label, command in checks:
+            try:
+                self.run(command)
+            except subprocess.CalledProcessError:
+                missing.append(label)
+        if missing:
+            raise ValueError("Missing needs: " + ", ".join(missing) + ". Ask for propose_infrastructure, merge the pull request and let the pipeline apply it before releasing.")
+
     def require_secrets(self, spec):
         """Every secret the spec references must exist with an enabled version before anything is deployed."""
         missing = []
@@ -104,9 +123,11 @@ class CloudRun:
             # --update-labels merges, so the service keeps the labels Terraform set (lab-deploy-managed, lab-deploy-app)
             extra.append("--update-labels=" + ",".join(f"{key}={value}" for key, value in sorted(labels.items())))
         # The reviewed spec is the whole truth for configuration: values not in it are removed from the revision.
-        if spec.env:
+        # Declared needs add their derived variables (bucket, topic, subscription and database names).
+        values = {**needs_env(spec, self.project), **spec.env}
+        if values:
             env_file = Path("revision-env.yaml")
-            env_file.write_text(json.dumps(dict(spec.env)))  # JSON is valid YAML, and the values stay single-line strings
+            env_file.write_text(json.dumps(values))  # JSON is valid YAML, and the values stay single-line strings
             extra.append(f"--env-vars-file={env_file}")
         else:
             extra.append("--clear-env-vars")
@@ -345,6 +366,9 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
         # A referenced secret that does not exist would fail the candidate at startup; say so before touching anything.
         check = getattr(adapter, "require_secrets", None)
         if callable(check) and spec.secrets:
+            check(spec)
+        check = getattr(adapter, "require_needs", None)
+        if callable(check) and (spec.needs.buckets or spec.needs.topics or spec.needs.database != "none"):
             check(spec)
         # Freeze any LATEST allocation to concrete revisions before creating a new revision.
         adapter.traffic(allocations)

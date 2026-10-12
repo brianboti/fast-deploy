@@ -70,3 +70,16 @@ variable "billing_dataset" {
   description = "BigQuery dataset id holding the billing export the deployer may read; empty disables."
   default     = ""
 }
+variable "needs" {
+  description = "What the application declared under needs in platform.yaml: buckets, topics and a database the platform provisions."
+  type = object({
+    buckets  = optional(list(string), [])
+    topics   = optional(list(string), [])
+    database = optional(string, "none")
+  })
+  default = {}
+  validation {
+    condition     = contains(["none", "firestore"], var.needs.database) && alltrue([for n in concat(var.needs.buckets, var.needs.topics) : can(regex("^[a-z][a-z0-9-]{1,20}$", n))])
+    error_message = "needs: database must be none or firestore; bucket and topic names are lowercase, 2 to 21 characters."
+  }
+}

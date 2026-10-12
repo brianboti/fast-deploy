@@ -61,6 +61,27 @@ OVERHEADS = {
 }
 
 
+NEEDS_PRICING = {
+    # List prices read on 2026-10-12 from the Cloud Storage, Pub/Sub and Firestore pricing pages (docs/SOURCES.md).
+    "bucket": {"storage_usd_per_gib_month": 0.020, "free_gib_months": 5, "note": "Standard storage in us-central1; the Always Free 5 GB is shared by the whole account"},
+    "topic": {"usd_per_tib": 40.0, "free_gib_month": 10, "note": "Message delivery, after the account's free 10 GiB each month"},
+    "firestore": {"usd_per_100k_reads": 0.03, "usd_per_100k_writes": 0.09, "usd_per_100k_deletes": 0.01, "storage_usd_per_gib_month": 0.18,
+                  "free_per_day": {"reads": 50_000, "writes": 20_000, "deletes": 20_000}, "note": "Standard edition; Google allows one free database per project"},
+}
+
+
+def needs_costs(spec, pricing=NEEDS_PRICING):
+    """Every declared need with its list price and a monthly floor of zero: these cost by use, nothing while idle."""
+    items = []
+    for name in spec.needs.buckets:
+        items.append({"need": "bucket", "name": name, "floor_usd_month": 0.0, "pricing": pricing["bucket"]})
+    for name in spec.needs.topics:
+        items.append({"need": "topic", "name": name, "floor_usd_month": 0.0, "pricing": pricing["topic"]})
+    if spec.needs.database == "firestore":
+        items.append({"need": "firestore", "name": spec.name, "floor_usd_month": 0.0, "pricing": pricing["firestore"]})
+    return items
+
+
 def _usd(value):
     return round(float(value), 4)
 
@@ -93,6 +114,7 @@ def estimate(spec, requests_per_month=None, average_request_seconds=None, pricin
         ],
         "excludes": list(EXCLUDED),
         "release_overheads": dict(OVERHEADS),
+        "needs": needs_costs(spec),
         "warnings": [],
     }
     verified = datetime.date.fromisoformat(pricing["verified"])
@@ -156,6 +178,11 @@ def findings(spec, pricing=PRICING):
                   "estimated_monthly_usd": ceiling,
                   "message": f"With at most {spec.scaling.maximum} instance(s), compute cannot exceed about ${ceiling:.2f} per month even if every "
                              "instance is busy all month. Lowering scaling.maximum lowers this bound; it is a bound, not a billing cap."})
+    if spec.needs.buckets or spec.needs.topics or spec.needs.database != "none":
+        items.append({"id": "needs_by_use", "severity": "info", "setting": "needs", "current": spec.needs.model_dump(),
+                      "message": "Buckets, topics and Firestore cost by use and nothing while idle: 2 cents per GiB-month stored after the free 5 GB, "
+                                 "40 dollars per TiB of messages after the free 10 GiB, and cents per 100,000 document operations after the free daily quota. "
+                                 "Keep stored data small and delete what the app no longer needs."})
     items.append({"id": "authenticated_only", "severity": "info", "setting": "exposure", "current": spec.exposure,
                   "message": "Cloud Run requires IAM authentication for this service, so anonymous internet traffic cannot create charges."})
     return items

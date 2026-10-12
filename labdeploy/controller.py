@@ -11,7 +11,7 @@ from .config import Principal
 from .cost import estimate, findings
 from .github import explain
 from .infra import BOOTSTRAP_IMAGE, app_root
-from .models import enforce, parse_spec, spec_hash
+from .models import enforce, needs_env, parse_spec, spec_hash
 from .rightsize import SETTINGS, apply_settings
 from .status import TERMINAL, advice, release_phases, summarize
 from .workflows import TEMPLATES, pinned_commit, render
@@ -423,6 +423,11 @@ class Controller:
             plan["warnings"].append("platform.yaml declares tests: none, so nothing checks this app's behaviour before a release; only the health probe guards it.")
         if spec.secrets:
             plan["warnings"].append("References secrets " + ", ".join(f"{app.service}-{name}" for name in spec.secrets) + "; each must exist in Secret Manager with an enabled version.")
+        derived = needs_env(spec, app.target.project_id)
+        if derived:
+            plan["needs"] = {"buckets": list(spec.needs.buckets), "topics": list(spec.needs.topics), "database": spec.needs.database, "env": derived}
+            plan["warnings"].append("Declares needs (" + ", ".join(sorted(derived)) + "); the release stops before deploying unless the pipeline has applied them "
+                                    "(propose_infrastructure, then merge).")
         # A rolled-back release's image is still the attested image of that commit, so it counts for reuse.
         prior = self.store.latest_success(app_id, sha, include_rolled_back=True)
         image = ((prior or {}).get("receipt") or {}).get("image")
@@ -500,14 +505,15 @@ class Controller:
         app = self.app(principal, app_id, write=True)
         target = app.target
         ids = self.github.repository_ids(app.repository)
-        note = None
+        note, needs = None, None
         try:
-            health_path = self.spec_at(app, self.github.head(app)).health_path
+            spec = self.spec_at(app, self.github.head(app))
+            health_path, needs = spec.health_path, spec.needs.model_dump()
         except ValueError as exc:
             health_path, note = "/health", f"Defaults used until the app has a reviewed platform.yaml: {exc}"
         files = app_root(target.service, project_id=target.project_id, region=target.region, state_bucket=state_bucket or f"{target.project_id}-tfstate",
                          github_repository=app.repository, github_repository_id=ids["repository_id"], github_owner_id=ids["owner_id"],
-                         bootstrap_image=bootstrap_image or BOOTSTRAP_IMAGE, health_path=health_path, settings=settings)
+                         bootstrap_image=bootstrap_image or BOOTSTRAP_IMAGE, health_path=health_path, settings=settings, needs=needs)
         return {"application": app_id, "service": target.service, "directory": f"infra/gcp/apps/{target.service}", "files": files, "note": note}
 
     def propose_infrastructure(self, principal, app_id, allow_writes=False, **render):

@@ -81,3 +81,9 @@ References read for the Phase 6 research, "everything an app needs" (2026-10-12)
 - [Start, stop and restart a Cloud SQL instance](https://docs.cloud.google.com/sql/docs/postgres/start-stop-restart-instance): what a stopped instance still costs
 - [Cloud Run jobs](https://docs.cloud.google.com/run/docs/create-jobs): the migration and worker shape
 - [Cloud Storage volume mounts for Cloud Run](https://docs.cloud.google.com/run/docs/configuring/services/cloud-storage-volume-mounts): the file-storage option and its limits
+
+References read for 1.1.0, buckets, topics and Firestore (2026-10-12):
+
+- [Cloud Storage pricing](https://cloud.google.com/storage/pricing): Standard storage in us-central1 and the Always Free 5 GB in US regions, in `labdeploy/cost.py`
+- [Pub/Sub pricing](https://cloud.google.com/pubsub/pricing): the free 10 GiB a month and the per-TiB delivery rate
+- [Firestore pricing](https://cloud.google.com/firestore/pricing): Standard edition per-operation prices, the daily free quota and the one free database per project

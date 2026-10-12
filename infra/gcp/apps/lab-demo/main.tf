@@ -31,6 +31,7 @@ module "service" {
   error_alert_count            = 5
   latency_alert_ms             = 2000
   instance_alert_count         = 4
+  needs                        = { buckets = [], topics = [], database = "none" }
   project_number               = data.terraform_remote_state.project.outputs.project_number
   image_vulnerability_scanning = data.terraform_remote_state.project.outputs.image_vulnerability_scanning
   tag_manager_role             = data.terraform_remote_state.project.outputs.tag_manager_role

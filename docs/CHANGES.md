@@ -1,3 +1,22 @@
+# 1.1.0: what an app needs, part one (Phase 6, items 6.1 and 6.2)
+
+## Added
+
+1. **`needs` in `platform.yaml`**: `buckets`, `topics` and `database: firestore`. The platform provisions them through the app's Terraform root and the pipeline, and the release sets the derived variables on every revision: `BUCKET_<NAME>` (`<project>-<service>-<name>`), `TOPIC_<NAME>` and `SUBSCRIPTION_<NAME>` (one pull subscription per topic) and `FIRESTORE_DATABASE` (`<service>`). Names follow fixed conventions, so no output travels anywhere and the variables cannot collide with `env` or `secrets`.
+2. **Least privilege per need**: the runtime identity gets object user on its buckets, publisher on its topics, subscriber on its subscriptions and datastore user on its own named database only; the deployer may only look, which the new pre-check uses: a release whose needs do not exist yet stops before deploying and says what to merge first.
+3. **Policies**: buckets use uniform access with enforced public access prevention; databases are created with delete protection; topics and subscriptions carry the managed labels. Buckets and databases cannot be destroyed by a plan.
+4. **Cost**: every plan and estimate lists the declared needs with their list prices and a monthly floor of zero (they cost by use), and the findings explain the free allowances.
+
+## Changed
+
+- The spec hash leaves default values out, so adding an optional field to the schema no longer changes the hash of a spec that does not use it. This change itself changes every hash once.
+- The foundation enables the Pub/Sub and Firestore APIs.
+
+## Upgrade steps
+
+1. The spec hash changed: regenerate the app workflows against this commit **before** deploying and set `platform.minimum_commit` to it; plans created before the upgrade must be created again.
+2. Re-apply the foundation (two APIs) and re-render each application root (one `needs` line); the pipeline applies it.
+
 # 1.0.2: fixes from the live run, part two
 
 ## Fixed
