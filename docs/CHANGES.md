@@ -1,3 +1,9 @@
+# 1.4.2: fix from the live plan
+
+## Fixed
+
+1. **The label policy refused every Cloud SQL instance**: it looked for a top-level `labels` map, and Cloud SQL keeps its labels under `settings.user_labels`. Found by the first plan of a database root, which the policy refused as designed.
+
 # 1.4.1: fix from the live apply
 
 ## Fixed

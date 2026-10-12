@@ -226,7 +226,8 @@ def check_plan(plan, allowed_locations=ALLOWED_LOCATIONS):
         if creating and kind == "google_sql_database_instance" and after.get("deletion_protection") is not True:
             add("protected_database", address, "databases are created with deletion protection on")
         if creating and kind in LABELLED_TYPES:
-            labels = after.get("labels") or {}
+            # Cloud SQL keeps its labels under settings.user_labels; everything else has a top-level labels map.
+            labels = (_nested(after, "settings", "user_labels") if kind == "google_sql_database_instance" else after.get("labels")) or {}
             if not isinstance(labels, dict) or "lab-deploy-app" not in labels:
                 add("labels_present", address, "every managed resource carries the lab-deploy-app label for cost allocation and the spending cap")
     return violations

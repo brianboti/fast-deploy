@@ -100,6 +100,10 @@ def test_root_carries_the_needs_and_policies_guard_them():
                                                {"region": "us-central1", "deletion_protection": False, "labels": {"lab-deploy-app": "demo"},
                                                 "settings": [{"ip_configuration": [{"ipv4_enabled": False}]}]})]}
     assert [v["rule"] for v in check_plan(unprotected)] == ["protected_database"]
+    labelled = {"resource_changes": [change("module.service.google_sql_database_instance.need[0]", "google_sql_database_instance", ["create"],
+                                            {"region": "us-central1", "deletion_protection": True,
+                                             "settings": [{"user_labels": {"lab-deploy-app": "demo"}, "ip_configuration": [{"ipv4_enabled": False}]}]})]}
+    assert check_plan(labelled) == []  # Cloud SQL keeps its labels under settings.user_labels
     good = {"resource_changes": [
         change("module.service.google_storage_bucket.need[\"uploads\"]", "google_storage_bucket", ["create"],
                {"location": "US-CENTRAL1", "labels": {"lab-deploy-app": "demo"}, "uniform_bucket_level_access": True, "public_access_prevention": "enforced"}),
