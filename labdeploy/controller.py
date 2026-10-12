@@ -65,8 +65,10 @@ class Store:
 
     def finish(self, owner, plan, state):
         with self.connect() as db:
+            before = db.execute("SELECT state FROM plans WHERE id=? AND owner=?", (plan["id"], owner)).fetchone()
             db.execute("UPDATE plans SET state=?,payload=? WHERE id=? AND owner=?", (state, json.dumps(plan), plan["id"], owner))
-            db.execute("INSERT INTO audit VALUES (?, ?, ?, ?)", (time.time(), owner, plan["id"], state))
+            if before is None or before[0] != state:  # re-saving a record with more detail is not a new event
+                db.execute("INSERT INTO audit VALUES (?, ?, ?, ?)", (time.time(), owner, plan["id"], state))
 
     def plans(self, owner, limit=100):
         with self.connect() as db:

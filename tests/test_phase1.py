@@ -114,6 +114,7 @@ def test_failed_release_keeps_receipt_and_follows_the_recovery_run(tmp_path):
     assert later["recovery_run"]["conclusion"] == "success" and "no_recovery_needed" in later["next_action"]
     gh.recovery = None
     assert c.status(p, plan["id"])["recovery_run"]["conclusion"] == "success"  # persisted, not re-fetched
+    assert [e["event"] for e in c.status(p, plan["id"])["events"]].count("failed") == 1  # re-saving the record is not a new event
     assert c.applications(p)["demo"]["live_release"] is None and "No release recorded" in c.applications(p)["demo"]["note"]
 
 

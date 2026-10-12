@@ -84,6 +84,31 @@ Local validation date: 2026-10-12 America/Chicago, macOS, Python 3.12.12, hash-l
 Still not performed: a live run of the attestation, verification and scan steps against a real registry (those steps use official actions and gcloud commands but have not executed here), and everything listed as not performed for 0.2.0.
 
 
+## Live exercise of 0.5.0 to 0.6.2 (2026-10-12)
+
+Environment as in the staging trial below, with the app repository pinned to each platform commit through the pull requests opened by the new workflow-update command (merged by the operator's GitHub CLI session). Every call went through the controller's own tool interface, as Claude makes it.
+
+| Scenario | Run | Observed |
+|---|---|---|
+| Healthy release | 38270039237 | `succeeded`; 40 timeline steps with timing; phases preparing, deploying, promoting, succeeded in 27 s; receipt and vulnerability summary stored; revision labelled with plan and commit; `release-<plan>` and `serving-<revision>` tags present; the notify job ran and stayed quiet without a webhook secret. |
+| Traffic rollback | 38271691497 | `rollback_staging` dispatched the recovery workflow with the rollback input; 70 s later traffic was back on the previous revision, the checkpoint said `rolled_back`, Cloud Run agreed, and the rolled-back release stopped counting as live. |
+| Deploy an older commit | 38271915895 | `create_deployment_plan` with `commit_sha` for a commit two behind main: history check passed in the controller and in the workflow; `succeeded`. |
+| Redeploy a released commit | 38272860779 | Build job skipped, provenance verified for the existing digest, release in about 90 s instead of about eight minutes. |
+| Cancel during the build | 38273142134 | `cancelled`; status named the recovery run that followed (`no_recovery_needed`) and said nothing had changed. |
+| Commit that breaks its own tests | 38273468357 | `failed` at "Run unit tests" with the matching next action; traffic untouched. |
+| Candidate that crashes only inside Cloud Run | 38273603111 | `failed` at the release step; receipt `traffic_restored` with the gcloud error line and phases preparing, deploying, traffic_restored in 21 s; service reported not ready with the explanatory note; the recovery run that followed found nothing to do; traffic stayed on the healthy revision. |
+
+Findings that changed the code, each fixed with a regression test and re-verified live:
+
+1. A plan pinned to an older commit failed the workflow identity check, because GitHub reports the run's head as the branch tip (0.6.1).
+2. Image reuse ignored a rolled-back release's image (0.6.1).
+3. Provenance verification failed when the build was skipped, because the registry login lived in the push step (0.6.1).
+4. The deployer's writer role cannot delete stale serving tags; a custom role is added in Terraform and the reconcile reports instead of failing (0.6.1).
+5. A reused image's release was reported as `completed_unverified` (0.6.2).
+6. The audit trail recorded a final outcome twice (0.6.2).
+
+Pending the operator's Terraform apply: candidate logs in the receipt (`roles/logging.viewer`), stale serving-tag removal (custom role), the uptime check, the alert policies and the dashboard. Not performed: a notification delivery (no webhook secret yet) and an alert firing.
+
 ## Live staging trial (2026-10-12)
 
 Environment: a new Google Cloud project `lab-deploy-staging-f29a` linked to billing with a USD 20 monthly budget alert; the platform repository `brianboti/lab-deploy` and the application repository `brianboti/lab-demo-app`, both public; Terraform 1.13.5 in the official container with the pinned Google provider 7.46.1 and a versioned GCS state bucket; a GitHub `staging` environment restricted to `main` holding the eight Terraform outputs; and the controller on a workstation with a fine-grained token (Contents read, Actions write) and `live_dispatch: true`. Every step below ran against the real GitHub and Google Cloud APIs. Google's public Cloud Run sample image, pinned by digest, served as the bootstrap image.

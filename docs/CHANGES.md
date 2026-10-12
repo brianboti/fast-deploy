@@ -1,3 +1,10 @@
+# 0.6.2: two more findings from the live exercise
+
+## Fixed
+
+1. **A reused image's release was reported as `completed_unverified`** because the skipped build job has no test and audit steps. The plan's `passed_in_earlier_release` checks are now kept and count as passed.
+2. **The audit trail recorded a final outcome twice** when the record was re-saved with the recovery run's result. An event is now recorded only when the state actually changes.
+
 # 0.6.1: fixes from the live steering exercise
 
 ## Fixed

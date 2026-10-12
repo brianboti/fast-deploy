@@ -159,6 +159,15 @@ def test_a_commit_released_before_reuses_its_attested_image(tmp_path):
     assert c.store.latest_success("demo") is None or c.store.latest_success("demo")["id"] != first["id"]
 
 
+def test_reused_image_keeps_the_earlier_release_checks():
+    prior = {"config_policy": "passed", "tests": "passed_in_earlier_release", "dependency_scan": "passed_in_earlier_release", "health": "pending_after_deployment"}
+    steps = [{"name": n, "status": "completed", "conclusion": "success"} for n in ("Validate artifact and deployment configuration", "Deploy, probe, promote; restore traffic on failure")]
+    workflow = {"status": "completed", "conclusion": "success", "jobs": [{"name": "deploy", "steps": steps}]}  # the build job was skipped
+    result = summarize(workflow, prior)
+    assert result["state"] == "succeeded" and result["checks"]["tests"] == "passed_in_earlier_release" and result["checks"]["health"] == "passed"
+    assert summarize(workflow, {**prior, "tests": "pending_in_ci"})["state"] == "completed_unverified"  # a real build whose steps vanished is still suspicious
+
+
 def test_dispatch_sends_the_image_digest_only_when_reusing(monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "github_pat_test")
     app = Config.model_validate({"applications": {"demo": {"repository": "lab/demo", "service": "demo", "target": TARGET}}, "principals": []}).applications["demo"]

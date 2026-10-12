@@ -7,6 +7,7 @@ CHECKS = {
     "health": ("deploy", "Deploy, probe, promote; restore traffic on failure"),
     "target": ("deploy", "Validate artifact and deployment configuration"),
 }
+PASSED = {"passed", "passed_in_earlier_release"}  # a reused image skips the build job, whose checks the earlier release already proved
 RELEASE_STEP = CHECKS["health"][1]
 TERMINAL = {"succeeded", "failed", "cancelled", "timed_out", "completed_unverified"}
 # Plain next actions keyed by a substring of the failed step's name, in the order the steps run.
@@ -65,6 +66,8 @@ def summarize(workflow, prior, kind=None):
         job = next((j for j in workflow.get("jobs", []) if j.get("name") == job_name), None)
         step = next((s for s in (job or {}).get("steps", []) if s.get("name") == step_name), None)
         if step is None:
+            if prior.get(name) == "passed_in_earlier_release":
+                continue
             checks[name] = "unconfirmed" if terminal else "pending"
         elif step.get("status") != "completed":
             checks[name] = "interrupted" if terminal else step.get("status", "pending")
@@ -76,7 +79,7 @@ def summarize(workflow, prior, kind=None):
     conclusion = workflow.get("conclusion")
     if terminal:
         result = {"success": "succeeded", "failure": "failed", "cancelled": "cancelled", "timed_out": "timed_out"}.get(conclusion, "completed_unverified")
-        if result == "succeeded" and any(checks.get(k) != "passed" for k in CHECKS):
+        if result == "succeeded" and any(checks.get(k) not in PASSED for k in CHECKS):
             result = "completed_unverified"
     else:
         result = "running" if state == "in_progress" else "queued"

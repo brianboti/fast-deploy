@@ -42,7 +42,7 @@ Requires regeneration of app workflows: yes (0.2).
 
 ## Phase 1: see every step (two days) → version 0.5.0
 
-Status: implemented on 2026-10-12 as version 0.5.0; the live exercise and the Terraform apply are pending the operator's go-ahead.
+Status: implemented on 2026-10-12 as version 0.5.0 and exercised live the same day (see docs/VALIDATION.md); the Terraform apply with the alerts and the two new roles is the operator's command to run.
 
 | Item | Change | Where |
 |---|---|---|
@@ -64,7 +64,7 @@ Cost effect: none; alerts, uptime checks and logs stay within Google's free allo
 
 ## Phase 2: steer after a release (two days) → version 0.6.0
 
-Status: implemented on 2026-10-12 as version 0.6.0; live exercise pending.
+Status: implemented on 2026-10-12 as version 0.6.0 and exercised live the same day; six findings fixed in 0.6.1 and 0.6.2 (see docs/VALIDATION.md).
 
 | Item | Change | Where |
 |---|---|---|
