@@ -32,6 +32,9 @@ applications:
     workflow: deploy-gcp.yml
     # Optional guardrail: refuse plans whose worst-case monthly compute (every allowed instance busy all month) exceeds this.
     cost_ceiling_usd: 150
+    # auto_deploy: true           # release the tip of main on its own; every guardrail still applies
+    # infra:                      # per-app Terraform settings the renderer writes into infra/gcp/apps/<service>
+    #   instance_alert_count: 3   #   (keys of labdeploy.infra.DEFAULT_SETTINGS)
     target:
       project_id: your-staging-project
       region: us-central1

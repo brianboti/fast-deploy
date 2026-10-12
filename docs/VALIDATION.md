@@ -169,6 +169,24 @@ Findings that changed the code, each fixed with a regression test:
 
 Not performed: the apply-on-merge run (awaiting the operator's merge of the test pull request), the automatic publishing of outputs (no `APP_REPOS_TOKEN`), and a release with the merged label flag (awaiting the operator's merge of the demo app's pin). Platform tests: 213 passed; ruff and zizmor clean.
 
+## Live exercise of 1.1.0 and 1.1.1: buckets, topics and Firestore (2026-10-12)
+
+The demo app declared `needs: {buckets: [uploads], topics: [events], database: firestore}` in brianboti/lab-demo-app#10 after its workflows were pinned to 1.1.0 (brianboti/lab-demo-app#9) and the controller restarted on 1.1.0 with `platform.minimum_commit` raised.
+
+| Scenario | Run | Observed |
+|---|---|---|
+| Release before the needs exist | 38295574837 | Auto-deploy released the merged spec on its own; the runner stopped before deploying with `Missing needs: topic lab-demo-events, subscription lab-demo-events, Firestore database lab-demo. Ask for propose_infrastructure, merge the pull request and let the pipeline apply it` (the bucket already existed from a partial apply); traffic was untouched. Fail-closed as designed. |
+| Infrastructure pull request | 38295619710 | brianboti/lab-deploy#5, rendered by `infra render demo`, kept the app's `instance_alert_count: 4` from the controller configuration and added the needs; the plan comment listed 12 to add (bucket, topic, subscription, database and eight grants), `Policy: passed`. |
+| Apply on merge | 38295713744 | Created the bucket, topic, subscription, the bucket grants and the conditional Firestore grants, then failed with two 403s: the apply identity could neither set Pub/Sub IAM policies nor create a Firestore database (finding 12). |
+| Apply after 1.1.1 | 38296059673 | 5 to add, 0 violations, applied: the topic and subscription grants and the database. gcloud confirmed the bucket (uniform access, public access prevention enforced), the subscription (20 s ack deadline, never expiring), the database (Native, regional, delete protection on, no point-in-time recovery) and the runtime's `roles/datastore.user` limited by condition to `projects/lab-deploy-staging-f29a/databases/lab-demo`. |
+| Release with the needs | plan f570dd73 | `deploy_latest` showed the four derived variables and the warning in the plan; the release succeeded in about two and a half minutes and revision `lab-demo-rf570dd737c7846b3` carries `BUCKET_UPLOADS`, `TOPIC_EVENTS`, `SUBSCRIPTION_EVENTS`, `FIRESTORE_DATABASE` and the app's own `GREETING`. The service kept the managed labels beside the new release labels (`--update-labels`). |
+
+Findings that changed the code, each fixed with a regression test or a documented grant:
+
+12. The pipeline's apply identity needs `roles/pubsub.admin` and `roles/datastore.owner` on top of editor to grant on topics and create databases (1.1.1).
+
+Not performed: a read or write by the application itself against the bucket, topic or database (the demo app does not use them yet); removal of a need (refused by design); Cloud SQL, jobs and migrations (roadmap 6.5). Platform tests: 219 passed; ruff and zizmor clean; both roots validate.
+
 ## Live staging trial (2026-10-12)
 
 Environment: a new Google Cloud project `lab-deploy-staging-f29a` linked to billing with a USD 20 monthly budget alert; the platform repository `brianboti/lab-deploy` and the application repository `brianboti/lab-demo-app`, both public; Terraform 1.13.5 in the official container with the pinned Google provider 7.46.1 and a versioned GCS state bucket; a GitHub `staging` environment restricted to `main` holding the eight Terraform outputs; and the controller on a workstation with a fine-grained token (Contents read, Actions write) and `live_dispatch: true`. Every step below ran against the real GitHub and Google Cloud APIs. Google's public Cloud Run sample image, pinned by digest, served as the bootstrap image.
