@@ -251,8 +251,12 @@ class Controller:
                 report["notify_error"] = str(exc)[:200]
         return report
 
-    def backup_tick(self):
-        """A consistent copy of the SQLite database next to it (or in backup_dir); copies older than backup_keep_days go."""
+    def backup_tick(self, config_path=None):
+        """A consistent copy of the SQLite database next to it (or in backup_dir); copies older than backup_keep_days go.
+
+        With `backup_bucket` set, the copy and the configuration file (`config_path`, else the live configuration's path)
+        are uploaded with the operator's own gcloud sign-in.
+        """
         from pathlib import Path
         folder = Path(self.config.backup_dir or f"{self.config.database}.backups")
         folder.mkdir(parents=True, exist_ok=True)
@@ -275,7 +279,7 @@ class Controller:
             # The copy and the configuration (principal hashes, targets, settings; never the raw operator token) go to a
             # private, versioned bucket so a lost laptop loses nothing but its tunnel.
             import subprocess
-            config_path = getattr(self.config, "path", None)
+            config_path = config_path or getattr(self.config, "path", None)
             targets = [(str(destination), f"gs://{bucket}/controller/{destination.name}")]
             if config_path and Path(config_path).is_file():
                 targets.append((str(config_path), f"gs://{bucket}/controller/config.yaml"))

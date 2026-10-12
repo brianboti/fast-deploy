@@ -221,6 +221,10 @@ ALLOWED_ROLES = frozenset({
     "roles/bigquery.jobUser", "roles/iam.serviceAccountUser", "roles/iam.serviceAccountOpenIdTokenCreator", "roles/iam.workloadIdentityUser",
 })
 CUSTOM_ROLE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/roles/labDeploy[A-Za-z]+$")
+# The one grant to a platform identity an application root makes by design: the spending cap may read and update the
+# application's own Cloud Run service through the foundation's cap-operator role, nothing more and nowhere else.
+CAP_OPERATOR_ROLE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/roles/labDeployCapOperator$")
+CAP_IDENTITY = "serviceAccount:lab-deploy-spending-cap@"
 STATE_BUCKET = re.compile(r"-tfstate$")
 
 
@@ -248,7 +252,9 @@ def check_plan(plan, allowed_locations=ALLOWED_LOCATIONS):
         if deleting and kind in DATA_TYPES:
             add("no_data_loss", address, "the pipeline never destroys resources that hold data; retire them through `lab-deploy decommission`")
         texts = list(_strings(after))
-        if touching and any(marker in text for marker in PLATFORM_IDENTITIES for text in texts):
+        cap_grant = (kind == "google_cloud_run_v2_service_iam_member" and CAP_OPERATOR_ROLE.fullmatch(after.get("role") or "") is not None
+                     and (after.get("member") or "").startswith(CAP_IDENTITY))
+        if touching and not cap_grant and any(marker in text for marker in PLATFORM_IDENTITIES for text in texts):
             add("platform_identities_untouched", address, "application roots may not create, grant or reference the platform's own identities")
         if touching and iam:
             if kind.endswith("_iam_policy"):

@@ -196,9 +196,10 @@ def run(parser, args):
         from .config import load_config
         from .controller import Controller, Store
         from .github import GitHub
-        config = load_config(args.config or os.environ.get("LAB_CONFIG", "config.local.yaml"))
+        config_path = args.config or os.environ.get("LAB_CONFIG", "config.local.yaml")
+        config = load_config(config_path)
         controller = Controller(config, GitHub(), Store(config.database))
-        print(json.dumps(controller.watchdog_tick() if args.command == "watchdog" else controller.backup_tick(), indent=2))
+        print(json.dumps(controller.watchdog_tick() if args.command == "watchdog" else controller.backup_tick(config_path=config_path), indent=2))
     elif args.command == "decommission":
         import os
 
