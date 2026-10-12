@@ -97,7 +97,69 @@ class GitHub:
         return response
 
     def head(self, app):
-        return self.request("GET", f"/repos/{app.repository}/commits/{quote(app.branch, safe='')}").json()["sha"]
+        return self.commit(app)["sha"]
+
+    def commit(self, app, ref=None):
+        """The commit at a ref with the facts people recognize it by: first line of the message, author, date."""
+        data = self.request("GET", f"/repos/{app.repository}/commits/{quote(ref or app.branch, safe='')}").json()
+        details = data.get("commit") or {}
+        message = (details.get("message") or "").strip().splitlines()
+        return {"sha": data["sha"], "message": message[0][:200] if message else "", "author": (details.get("author") or {}).get("name"),
+                "date": (details.get("author") or {}).get("date"), "url": data.get("html_url")}
+
+    def compare(self, app, base_sha):
+        """Commits on the branch since base_sha: how far main has moved past the live release."""
+        data = self.request("GET", f"/repos/{app.repository}/compare/{base_sha}...{quote(app.branch, safe='')}").json()
+        commits = [{"sha": c.get("sha"), "message": ((c.get("commit") or {}).get("message") or "").strip().splitlines()[0][:200] if c.get("commit") else ""}
+                   for c in data.get("commits", [])]
+        return {"status": data.get("status"), "ahead_by": data.get("ahead_by", 0), "behind_by": data.get("behind_by", 0), "commits": commits[-10:]}
+
+    def artifact_json(self, app, run_id, name, filenames, limit=1_048_576):
+        """Parsed JSON files from one named artifact of a run, or None when the run has no such artifact."""
+        artifacts = self.request("GET", f"/repos/{app.repository}/actions/runs/{int(run_id)}/artifacts", params={"per_page": 100}).json()["artifacts"]
+        artifact = next((a for a in artifacts if a.get("name") == name and not a.get("expired")), None)
+        if artifact is None:
+            return None
+        if artifact.get("size_in_bytes", 0) > limit:
+            raise ValueError(f"Artifact {name} exceeds 1 MiB")
+        response = self.client.request("GET", f"/repos/{app.repository}/actions/artifacts/{int(artifact['id'])}/zip", headers=self.headers(self.token()))
+        if response.status_code == 302:
+            # The signed download URL belongs to another host; the GitHub credential is not forwarded.
+            response = self.client.get(response.headers["location"])
+        response.raise_for_status()
+        found = {}
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            for filename in filenames:
+                try:
+                    info = archive.getinfo(filename)
+                except KeyError:
+                    continue
+                if info.file_size > limit:
+                    raise ValueError(f"{filename} exceeds 1 MiB")
+                found[filename] = json.loads(archive.read(info))
+        return found
+
+    def release_receipt(self, app, run_id):
+        """The deploy job's receipt and vulnerability summary for a finished run, or None when nothing was uploaded."""
+        files = self.artifact_json(app, run_id, "release-receipt", ("release-receipt.json", "vulnerability-summary.json"))
+        if not files:
+            return None
+        return {"release": files.get("release-receipt.json"), "vulnerabilities": files.get("vulnerability-summary.json")}
+
+    def recovery_after(self, app, run, workflow="recover-gcp.yml"):
+        """The newest recovery run started after a deploy run, with its receipt when uploaded; None while nothing has run yet."""
+        runs = self.request("GET", f"/repos/{app.repository}/actions/workflows/{workflow}/runs", params={"branch": app.branch, "per_page": 10}).json()["workflow_runs"]
+        since = run.get("created_at") or ""
+        candidates = [r for r in runs if (r.get("created_at") or "") >= since and r.get("id") != run.get("id")]
+        if not candidates:
+            return None
+        latest = max(candidates, key=lambda r: r.get("created_at") or "")
+        result = {"run_id": latest.get("id"), "status": latest.get("status"), "conclusion": latest.get("conclusion"), "html_url": latest.get("html_url"),
+                  "created_at": latest.get("created_at"), "receipt": None}
+        if latest.get("status") == "completed":
+            files = self.artifact_json(app, latest["id"], "recovery-receipt", ("recovery-receipt.json",))
+            result["receipt"] = (files or {}).get("recovery-receipt.json")
+        return result
 
     def credential_status(self, now=None):
         """When the server-side credential expires, from GitHub's own response header; App tokens renew themselves."""
@@ -177,29 +239,15 @@ class GitHub:
             if len(batch) < 100:
                 break
             page += 1
-        return {**{key: run.get(key) for key in ("id", "status", "conclusion", "html_url", "head_sha", "run_attempt")}, "jobs": jobs}
+        return {**{key: run.get(key) for key in ("id", "status", "conclusion", "html_url", "head_sha", "run_attempt", "created_at", "run_started_at", "updated_at")}, "jobs": jobs}
 
     def cost_report(self, app, workflow="rightsize-gcp.yml", name="cost-report", limit=1_048_576):
         """The newest cost-report artifact from a successful rightsizing run, or an explicit 'none yet'."""
         runs = self.request("GET", f"/repos/{app.repository}/actions/workflows/{workflow}/runs",
                             params={"status": "success", "branch": app.branch, "per_page": 5}).json()["workflow_runs"]
         for run in runs:
-            artifacts = self.request("GET", f"/repos/{app.repository}/actions/runs/{int(run['id'])}/artifacts", params={"per_page": 100}).json()["artifacts"]
-            artifact = next((a for a in artifacts if a.get("name") == name and not a.get("expired")), None)
-            if artifact is None:
-                continue
-            if artifact.get("size_in_bytes", 0) > limit:
-                raise ValueError("Cost report artifact exceeds 1 MiB")
-            response = self.client.request("GET", f"/repos/{app.repository}/actions/artifacts/{int(artifact['id'])}/zip", headers=self.headers(self.token()))
-            if response.status_code == 302:
-                # The signed download URL belongs to another host; the GitHub credential is not forwarded.
-                response = self.client.get(response.headers["location"])
-            response.raise_for_status()
-            with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-                info = archive.getinfo("cost-report.json")
-                if info.file_size > limit:
-                    raise ValueError("Cost report exceeds 1 MiB")
-                report = json.loads(archive.read(info))
-            return {"workflow_run_id": run["id"], "run_url": run.get("html_url"), "generated_at": run.get("updated_at"), "report": report}
+            files = self.artifact_json(app, run["id"], name, ("cost-report.json",), limit)
+            if files and "cost-report.json" in files:
+                return {"workflow_run_id": run["id"], "run_url": run.get("html_url"), "generated_at": run.get("updated_at"), "report": files["cost-report.json"]}
         return {"report": None, "note": "No successful rightsizing run with a cost-report artifact yet; the workflow runs weekly or on manual dispatch."}
 

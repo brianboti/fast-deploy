@@ -59,7 +59,7 @@ def test_github_failures_are_explained_in_plain_words():
 
 def test_tools_and_rest_report_github_failures_plainly(tmp_path):
     class Rejected(FakeGitHub):
-        def head(self, app):
+        def commit(self, app, ref=None):
             raise failure(401)
     with TestClient(build_app(config(tmp_path), Rejected())) as client:
         result = call(client, "create_deployment_plan", application="demo")

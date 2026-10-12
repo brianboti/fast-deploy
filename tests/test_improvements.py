@@ -41,7 +41,7 @@ def test_list_plans_and_audit_events_are_per_identity(setup):
     c.deploy(p, plan["id"])
     listed = c.plans(p)["plans"]
     assert [x["id"] for x in listed] == [plan["id"]] and listed[0]["state"] == "dispatched"
-    assert [e["event"] for e in c.status(p, plan["id"])["events"]] == ["planned", "dispatching", "dispatched"]
+    assert [e["event"] for e in c.status(p, plan["id"])["events"]] == ["planned", "dispatching", "dispatched", "succeeded"]  # the outcome is recorded too
     assert c.plans(p.model_copy(update={"name": "other"})) == {"plans": []}
 
 

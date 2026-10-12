@@ -8,6 +8,10 @@ import uuid
 from .analyzer import FILES, analyze
 from .cost import estimate, findings
 from .models import enforce, parse_spec, spec_hash
+from .status import TERMINAL, advice, release_phases, summarize
+
+DISPATCHED = {"dispatched", "dispatch_unknown", "dispatching"}
+WAIT_LIMIT = 45  # seconds; keeps a waiting status call inside the client's tool timeout
 
 
 class Store:
@@ -57,8 +61,18 @@ class Store:
         summaries = []
         for state, payload in rows:
             plan = json.loads(payload)
-            summaries.append({"id": plan["id"], "application": plan["application"], "sha": plan["sha"], "expires_at": plan["expires_at"], "state": state})
+            receipt = plan.get("receipt") or {}
+            summaries.append({"id": plan["id"], "application": plan["application"], "sha": plan["sha"], "expires_at": plan["expires_at"], "state": state,
+                              "summary": (plan.get("commit") or {}).get("message"), "completed_at": (plan.get("outcome") or {}).get("completed_at"),
+                              "revision": receipt.get("revision") if state == "succeeded" else None})
         return summaries
+
+    def latest_success(self, application):
+        """The newest plan whose release succeeded for an application, across every operator; the controller's view of what is live."""
+        with self.connect() as db:
+            row = db.execute("SELECT payload FROM plans WHERE state='succeeded' AND json_extract(payload, '$.application')=? ORDER BY rowid DESC LIMIT 1",
+                             (application,)).fetchone()
+        return json.loads(row[0]) if row else None
 
     def events(self, owner, plan_id):
         with self.connect() as db:
@@ -102,9 +116,15 @@ class Controller:
                              "set reviewed: true and merge it through the normal process") from None
         return parse_spec(text)
 
+    def describe_head(self, app):
+        """Commit facts for the branch tip; adapters without commit metadata still give the SHA."""
+        describe = getattr(self.github, "commit", None)
+        return describe(app) if callable(describe) else {"sha": self.github.head(app)}
+
     def plan(self, principal, app_id, cloud="gcp", environment="staging"):
         app = self.app(principal, app_id)
-        sha = self.github.head(app)
+        commit = self.describe_head(app)
+        sha = commit["sha"]
         if not re.fullmatch(r"[a-f0-9]{40}", sha):
             raise ValueError("Expected full Git commit SHA")
         spec = self.spec_at(app, sha)
@@ -114,7 +134,7 @@ class Controller:
         cost = self.cost_policy(app, spec)
         plan = {
             "id": uuid.uuid4().hex, "application": app_id, "repository": app.repository,
-            "branch": app.branch, "sha": sha, "spec_hash": spec_hash(spec),
+            "branch": app.branch, "sha": sha, "commit": commit, "spec_hash": spec_hash(spec),
             "spec": spec.model_dump(), "cloud": cloud, "environment": environment,
             "target": app.target.model_dump(),
             "expires_at": time.time() + 900,
@@ -122,7 +142,7 @@ class Controller:
             "checks": {"config_policy": "passed", "tests": "pending_in_ci", "dependency_scan": "pending_in_ci", "health": "pending_after_deployment"},
         }
         self.store.add(principal.name, plan)
-        return {**plan, "state": "planned", "live_dispatch_enabled": self.config.live_dispatch}
+        return {**plan, "state": "planned", "live_dispatch_enabled": self.config.live_dispatch, "next_action": advice({"state": "planned"})}
 
     def propose_config(self, principal, app_id):
         import httpx
@@ -143,6 +163,26 @@ class Controller:
 
     def plans(self, principal):
         return {"plans": self.store.plans(principal.name)}
+
+    def applications(self, principal):
+        """Registered apps this identity may see, each with the live release this controller recorded and what main holds beyond it."""
+        result = {}
+        for app_id in principal.applications:
+            app = self.config.applications[app_id]
+            entry = app.model_dump()
+            live = self.store.latest_success(app_id)
+            if live is None:
+                entry["live_release"] = None
+                entry["undeployed_commits"] = None
+                entry["note"] = "No release recorded by this controller yet."
+            else:
+                receipt = live.get("receipt") or {}
+                entry["live_release"] = {"plan_id": live["id"], "sha": live["sha"], "commit": live.get("commit"), "revision": receipt.get("revision"),
+                                         "url": receipt.get("url"), "completed_at": (live.get("outcome") or {}).get("completed_at")}
+                compare = getattr(self.github, "compare", None)
+                entry["undeployed_commits"] = compare(app, live["sha"]) if callable(compare) else None
+            result[app_id] = entry
+        return result
 
     def cost_summary(self, app, spec, requests_per_month=None, average_request_seconds=None):
         """Bounds and findings from list prices and the reviewed spec, with the operator's ceiling applied."""
@@ -203,15 +243,57 @@ class Controller:
         self.store.finish(principal.name, plan, "dispatched")
         return self.store.get(principal.name, plan_id)
 
-    def status(self, principal, plan_id):
+    def status(self, principal, plan_id, wait_seconds=0):
+        """Current state of a plan; with wait_seconds it polls until the state changes, the run ends, or the wait is over."""
+        wait = min(max(int(wait_seconds or 0), 0), WAIT_LIMIT)
+        deadline = time.time() + wait
+        first = None
+        while True:
+            plan = self.refresh(principal, plan_id)
+            first = first if first is not None else plan["state"]
+            if plan["state"] in TERMINAL or plan["state"] != first or time.time() >= deadline:
+                return plan
+            time.sleep(min(5, max(0.0, deadline - time.time())))
+
+    def refresh(self, principal, plan_id):
         plan = self.store.get(principal.name, plan_id)
         app = self.app(principal, plan["application"])
-        if plan["state"] in {"dispatched", "dispatch_unknown", "dispatching"}:
-            from .status import summarize
+        if plan["state"] in DISPATCHED:
             workflow = self.github.status(app, plan)
             plan["dispatch_state"] = plan["state"]
             plan["workflow"] = workflow
             plan.update(summarize(workflow, plan["checks"]))
+            if plan["state"] in TERMINAL:
+                self.record_outcome(principal, app, plan, workflow)
+        elif plan["state"] in {"failed", "cancelled", "timed_out"} and not (plan.get("recovery_run") or {}).get("conclusion"):
+            self.record_recovery(principal, app, plan)
+        plan["phases"] = release_phases(plan.get("receipt"))
         plan["events"] = self.store.events(principal.name, plan_id)
+        plan["next_action"] = advice(plan)
         return plan
+
+    def record_outcome(self, principal, app, plan, workflow):
+        """A finished run is stored once with its receipt, so history survives GitHub's artifact retention."""
+        fetch = getattr(self.github, "release_receipt", None)
+        receipts = fetch(app, workflow["id"]) if callable(fetch) and workflow.get("id") else None
+        plan["receipt"] = (receipts or {}).get("release")
+        plan["vulnerabilities"] = (receipts or {}).get("vulnerabilities")
+        plan["outcome"] = {"state": plan["state"], "conclusion": workflow.get("conclusion"), "run_url": workflow.get("html_url"),
+                           "completed_at": workflow.get("updated_at"), "recorded_at": time.time()}
+        plan["workflow"] = {key: workflow.get(key) for key in ("id", "status", "conclusion", "html_url", "head_sha", "run_attempt", "created_at", "updated_at")}
+        if plan["state"] in {"failed", "cancelled", "timed_out"}:
+            self.record_recovery(principal, app, plan, persist=False)
+        self.persist(principal, plan)
+
+    def record_recovery(self, principal, app, plan, persist=True):
+        lookup = getattr(self.github, "recovery_after", None)
+        if not callable(lookup) or not (plan.get("workflow") or {}).get("id"):
+            return
+        plan["recovery_run"] = lookup(app, plan["workflow"])
+        if persist and (plan["recovery_run"] or {}).get("conclusion"):
+            self.persist(principal, plan)
+
+    def persist(self, principal, plan):
+        record = {key: value for key, value in plan.items() if key not in {"events", "phases", "next_action"}}
+        self.store.finish(principal.name, record, plan["state"])
 

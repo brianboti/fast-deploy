@@ -51,6 +51,9 @@ class LocalRepository:
                 digest.update(name.encode() + b"\0" + path.read_bytes() + b"\0")
         return digest.hexdigest()[:40]
 
+    def commit(self, app, ref=None):
+        return {"sha": self.head(app), "message": "Local working copy (demo mode)", "author": None, "date": None, "url": None}
+
     def file(self, app, sha, filename):
         if sha != self.head(app):
             raise ValueError("Demo application changed on disk; create a new plan")

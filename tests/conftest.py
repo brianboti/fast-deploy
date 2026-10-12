@@ -23,8 +23,23 @@ class FakeGitHub:
     fail = False
     spec = {"name": "demo", "reviewed": True}
 
+    receipt = None
+    recovery = None
+
     def head(self, app):
         return self.sha
+
+    def commit(self, app, ref=None):
+        return {"sha": self.sha, "message": "Fix the login bug", "author": "Alice", "date": "2026-10-12T10:00:00Z", "url": "https://github.com/lab/demo/commit/" + self.sha}
+
+    def compare(self, app, base_sha):
+        return {"status": "ahead", "ahead_by": 2, "behind_by": 0, "commits": [{"sha": "b" * 40, "message": "Second change"}, {"sha": "c" * 40, "message": "Third change"}]}
+
+    def release_receipt(self, app, run_id):
+        return self.receipt
+
+    def recovery_after(self, app, run):
+        return self.recovery
 
     def file(self, app, sha, filename):
         return yaml.safe_dump(self.spec)
@@ -41,7 +56,8 @@ class FakeGitHub:
     def status(self, app, plan):
         def steps(*names):
             return [{"name": name, "status": "completed", "conclusion": "success"} for name in names]
-        return {"status": "completed", "conclusion": "success", "jobs": [
+        return {"id": 123, "status": "completed", "conclusion": "success", "html_url": "https://github.com/lab/demo/actions/runs/123",
+                "created_at": "2026-10-12T10:00:00Z", "updated_at": "2026-10-12T10:08:00Z", "jobs": [
             {"name": "build", "steps": steps("Run unit tests", "Audit Python dependencies")},
             {"name": "deploy", "steps": steps("Validate artifact and deployment configuration", "Deploy, probe, promote; restore traffic on failure")},
         ]}

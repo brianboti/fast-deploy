@@ -145,8 +145,8 @@ def build_app(config, github=None):
     @mcp.tool(title="List applications", annotations=READ_ONLY, structured_output=True)
     @plain_errors
     def list_applications() -> dict[str, Any]:
-        """List only applications permitted for the authenticated caller."""
-        return {k: config.applications[k].model_dump() for k in identity.get().applications}
+        """Applications permitted for the caller, each with the live release this controller recorded and the commits main holds beyond it."""
+        return controller.applications(identity.get())
 
     @mcp.tool(title="Analyze repository", annotations=READ_ONLY, structured_output=True)
     @plain_errors
@@ -174,9 +174,9 @@ def build_app(config, github=None):
 
     @mcp.tool(title="Get deployment status", annotations=READ_ONLY, structured_output=True)
     @plain_errors
-    def get_deployment_status(plan_id: str) -> dict[str, Any]:
-        """Read actual GitHub workflow status. Dispatched does not mean deployed."""
-        return controller.status(identity.get(), plan_id)
+    def get_deployment_status(plan_id: str, wait_seconds: int = 0) -> dict[str, Any]:
+        """Actual GitHub workflow status with every step, the release receipt, recovery, and a next action. Dispatched does not mean deployed. wait_seconds (up to 45) waits for a change."""
+        return controller.status(identity.get(), plan_id, wait_seconds)
 
     @mcp.tool(title="List plans", annotations=READ_ONLY, structured_output=True)
     @plain_errors
