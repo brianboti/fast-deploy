@@ -137,6 +137,8 @@ Cost is handled in three honest layers. None of them invents a number.
 2. **Findings from Google's cost checklist.** Warm minimum instances, memory or CPU above the smallest size without measurements, low concurrency, the effect of `scaling.maximum`, and the fact that authentication blocks junk traffic are called out with the dollar effect where it can be computed.
 3. **Measured right-sizing, after real traffic.** `templates/rightsize-gcp.yml` runs weekly on the deployment runner, reads Cloud Monitoring usage for the service (allocated vCPU-seconds and GiB-seconds, requests, p95 CPU and memory utilization, concurrency, instance counts), prices it at list rates, proposes concrete `platform.yaml` changes with estimated monthly savings, and attaches Google's Cloud Run cost recommender output. Proposals are never applied automatically; a reviewer edits `platform.yaml` through the normal process. `get_cost_report` returns the latest report to Claude.
 
+Every estimate also names the per-release overheads outside these figures, such as the image scan fee, Actions minutes on private repositories and registry storage, and warns when the recorded list prices are more than 90 days old.
+
 The platform always deploys the cheapest billing model for bursty traffic (CPU allocated only during requests), scales to zero by default, requires authentication, deploys to a Tier 1 region, and caps instances. Terraform adds image cleanup policies (dry run first), checkpoint-bucket lifecycle rules, and an optional monthly budget alert.
 
 Try the estimator locally:
@@ -149,7 +151,7 @@ python -m labdeploy.cli cost examples/demo-app/platform.yaml --requests 100000 -
 
 Follow [docs/SETUP.md](docs/SETUP.md) for GitHub, GCP bootstrap, Claude remote connection, and the first release. Follow [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for ownership, trust boundaries, and known limitations. Official references read before implementation are in [docs/SOURCES.md](docs/SOURCES.md).
 
-Version 0.4.0 adds the browser sign-in for Claude chat; 0.3.0 added the 2026-practice hardening (rate limits, tool safety hints, startup probes, build provenance, image scanning, CI gates); 0.2.0 added the cost optimizer; 0.1.2 added the local demo mode, plan listing with audit events, and small hardening changes; 0.1.1 fixed the review findings. See [docs/CHANGES.md](docs/CHANGES.md) for details and upgrade steps. Existing configurations must add a cloud target, and both app workflow files must use the new pinned platform commit.
+Version 0.4.1 trims the recovery schedule, names per-release overheads, explains GitHub failures plainly and adds `get_controller_status`; 0.4.0 added the browser sign-in for Claude chat; 0.3.0 added the 2026-practice hardening (rate limits, tool safety hints, startup probes, build provenance, image scanning, CI gates); 0.2.0 added the cost optimizer; 0.1.2 added the local demo mode, plan listing with audit events, and small hardening changes; 0.1.1 fixed the review findings. See [docs/CHANGES.md](docs/CHANGES.md) for details and upgrade steps. Existing configurations must add a cloud target, and both app workflow files must use the new pinned platform commit.
 
 You will need the target GitHub app repository, a repository for this platform code, a GCP staging project, billing enabled for that project, and authority to establish its initial IAM/WIF resources. Platform setup is performed once by an administrator; routine app releases use the restricted workflow identity.
 

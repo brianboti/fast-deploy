@@ -116,7 +116,7 @@ Confirm the bootstrap service is healthy and that no project-level or inherited 
 
 Copy those same values into the application's `target` block in `config.local.yaml` (see `config.example.yaml`). Plans pin that exact destination, and the deployment job compares it to environment settings before cloud authentication. Do not reuse one target service across independently controlled app repositories.
 
-The recovery workflow runs following a completed release workflow and approximately every ten minutes. Configure staging environment protection rules so this recovery identity can run when needed; mandatory manual reviewers will delay recovery. Schedules are not an availability SLA. Ensure both workflows are enabled and monitor recovery failures.
+The recovery workflow runs after every completed release workflow and, as a safety net, every six hours (a tighter schedule costs Actions minutes on private repositories). Configure staging environment protection rules so this recovery identity can run when needed; mandatory manual reviewers will delay recovery. Schedules are not an availability SLA. Ensure both workflows are enabled and monitor recovery failures.
 
 ## 4. GitHub credentials for the controller
 

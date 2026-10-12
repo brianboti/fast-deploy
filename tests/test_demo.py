@@ -73,7 +73,7 @@ def test_demo_server_serves_all_tools_over_mcp(tmp_path):
         assert "dispatched" in init["instructions"]
         names = [t["name"] for t in rpc("tools/list")["tools"]]
         assert names == ["list_applications", "analyze_repository", "create_deployment_plan", "propose_configuration", "deploy_staging",
-                         "get_deployment_status", "list_plans", "estimate_cost", "get_cost_report"]
+                         "get_deployment_status", "list_plans", "estimate_cost", "get_cost_report", "get_controller_status"]
         planned = rpc("tools/call", {"name": "create_deployment_plan", "arguments": {"application": "demo"}})
         assert not planned.get("isError"), planned
         refused = rpc("tools/call", {"name": "create_deployment_plan", "arguments": {"application": "demo", "cloud": "aws"}})

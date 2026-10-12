@@ -189,6 +189,9 @@ def walkthrough(args):
         step("list_plans", "Each operator sees only their own plans.")
         show(tool("list_plans")[1])
 
+        step("get_controller_status", "One answer for the operator: version, switches, registered apps, GitHub credential expiry and pricing freshness.")
+        _, text = tool("get_controller_status")
+        show(text)
         step("estimate_cost", "Cost bounds from Google's list prices and the reviewed configuration: a floor with zero traffic, "
                               "and a worst case if every allowed instance were busy all month.")
         show(tool("estimate_cost", application="demo")[1])

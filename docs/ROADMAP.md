@@ -25,10 +25,12 @@ Effort is one person's focused work, including tests and the staging exercise. C
 
 ## Phase 0: housekeeping and the two cost leaks (half a day)
 
+Status: done on 2026-10-12 as version 0.4.1, except 0.8, which is the operator's GitHub setting.
+
 | Item | Change | Where | Cost effect |
 |---|---|---|---|
 | 0.1 | Commit version 0.4.0 (OAuth sign-in), already tested and live | repository | none |
-| 0.2 | Recovery cron from every 10 minutes to hourly; the deploy-completion trigger already covers the normal case | `templates/recover-gcp.yml`, docs | saves about 30 to 55 per private app repo |
+| 0.2 | Recovery cron from every 10 minutes to every six hours; the deploy-completion trigger already covers the normal case, and a lost runner leaves traffic on the previous revision, so recovery is not urgent | `templates/recover-gcp.yml`, docs | saves about 30 to 55 per private app repo |
 | 0.3 | Cost summary names per-release overheads: image scan fee, Actions minutes on private repos, registry storage while cleanup is in dry run | `labdeploy/cost.py`, plan output, README | honesty only |
 | 0.4 | Warning in every estimate when the recorded list prices are older than 90 days | `labdeploy/cost.py` | none |
 | 0.5 | Plain-language errors for GitHub failures: expired token, missing `platform.yaml`, rate limit, outage; startup warning when the token expires within 14 days (GitHub's expiration header) | `labdeploy/github.py`, `labdeploy/server.py`, launcher | none |

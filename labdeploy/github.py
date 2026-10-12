@@ -1,5 +1,6 @@
 """GitHub App credentials stay server-side. No cloud credentials in this process."""
 import base64
+import datetime
 import io
 import json
 import os
@@ -10,6 +11,55 @@ from urllib.parse import quote
 
 import httpx
 import jwt
+
+TOKEN_WARNING_DAYS = 14
+
+
+def explain(error, repository=None):
+    """A plain sentence for a GitHub failure, or None when the error is not a GitHub transport error."""
+    where = f" for {repository}" if repository else ""
+    if isinstance(error, httpx.HTTPStatusError):
+        status, headers = error.response.status_code, error.response.headers
+        if status == 401:
+            return "GitHub rejected the controller's credential: the token is expired or revoked. Renew it on the controller host and restart."
+        if status == 403 and headers.get("x-ratelimit-remaining") == "0":
+            reset = headers.get("x-ratelimit-reset")
+            when = datetime.datetime.fromtimestamp(int(reset), datetime.UTC).strftime("%H:%M UTC") if reset and reset.isdigit() else "shortly"
+            return f"GitHub API rate limit reached; it resets at {when}. Retry then."
+        if status == 403:
+            return f"GitHub refused access{where}: the credential lacks a required permission (Contents read and Actions write for releases)."
+        if status == 404:
+            return f"GitHub could not find the repository, branch or file{where}; check the registry entry and that the credential can read that repository."
+        if status == 422:
+            try:
+                detail = error.response.json().get("message", "")
+            except ValueError:
+                detail = ""
+            hint = " If this was a workflow dispatch, the app's workflow files may pin an older platform; regenerate them." if "input" in detail.lower() or "workflow" in detail.lower() else ""
+            return f"GitHub refused the request{where}: {detail or 'unprocessable'}.{hint}"
+        if status >= 500:
+            return f"GitHub is unavailable right now (HTTP {status}); retry in a few minutes."
+        return f"GitHub answered HTTP {status}{where}."
+    if isinstance(error, httpx.TimeoutException):
+        return "GitHub did not answer in time; retry in a moment."
+    if isinstance(error, httpx.RequestError):
+        return f"Could not reach GitHub ({type(error).__name__}); check the controller's network connection."
+    return None
+
+
+def parse_expiration(header):
+    """GitHub sends 'YYYY-MM-DD HH:MM:SS UTC' for fine-grained tokens."""
+    text = (header or "").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S %Z", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(text, fmt).replace(tzinfo=datetime.UTC)
+        except ValueError:
+            continue
+    try:
+        parsed = datetime.datetime.fromisoformat(text)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=datetime.UTC)
+    except ValueError:
+        return None
 
 
 class GitHub:
@@ -48,6 +98,21 @@ class GitHub:
 
     def head(self, app):
         return self.request("GET", f"/repos/{app.repository}/commits/{quote(app.branch, safe='')}").json()["sha"]
+
+    def credential_status(self, now=None):
+        """When the server-side credential expires, from GitHub's own response header; App tokens renew themselves."""
+        response = self.request("GET", "/rate_limit")
+        kind = "fine_grained_token" if os.getenv("GITHUB_TOKEN") else "app_installation"
+        expires = parse_expiration(response.headers.get("github-authentication-token-expiration"))
+        if expires is None:
+            return {"kind": kind, "expires_at": None, "days_left": None, "warning": None}
+        days = (expires - (now or datetime.datetime.now(datetime.UTC))).days
+        warning = None
+        if days < 0:
+            warning = "The GitHub credential has expired; every GitHub call will fail until it is renewed."
+        elif days < TOKEN_WARNING_DAYS:
+            warning = f"The GitHub credential expires in {days} day(s); create a new one and update the controller host before then."
+        return {"kind": kind, "expires_at": expires.isoformat(timespec="seconds"), "days_left": days, "warning": warning}
 
     def file(self, app, sha, filename):
         response = self.request("GET", f"/repos/{app.repository}/contents/{quote(filename, safe='/')}", params={"ref": sha})

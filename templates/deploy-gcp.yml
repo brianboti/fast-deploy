@@ -40,12 +40,12 @@ jobs:
           [[ "$PLAN_ID" =~ ^[a-f0-9]{32}$ ]]
           test "$COMMIT_SHA" = "$GITHUB_SHA"
           test "$GITHUB_REF" = "refs/heads/main"
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, verified 2026-10-12
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.commit_sha }}
           persist-credentials: false
           path: app
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: PLATFORM_REPOSITORY
           ref: PLATFORM_COMMIT
@@ -53,7 +53,7 @@ jobs:
           path: platform
           # For a private platform repo: read-only fine-grained token or App token.
           token: ${{ secrets.PLATFORM_READ_TOKEN || github.token }}
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
       - name: Install trusted platform dependencies
@@ -116,14 +116,14 @@ jobs:
       WIF_PROVIDER: ${{ vars.WIF_PROVIDER }}
       RECOVERY_BUCKET: ${{ vars.RECOVERY_BUCKET }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: PLATFORM_REPOSITORY
           ref: PLATFORM_COMMIT
           persist-credentials: false
           path: platform
           token: ${{ secrets.PLATFORM_READ_TOKEN || github.token }}
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
       - run: python -m pip install --require-hashes -r platform/requirements.lock

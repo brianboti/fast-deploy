@@ -252,6 +252,7 @@ These are illustrative identifiers, not configured resources. Replace every valu
 | `list_plans()` | List the caller's own plans, newest first, with their current state |
 | `estimate_cost(application, requests_per_month, average_request_seconds)` | Cost bounds, findings and ceiling verdict for the committed config; optional scenario |
 | `get_cost_report(application)` | Newest measured right-sizing report uploaded by the right-sizing workflow |
+| `get_controller_status()` | Version, dispatch and sign-in switches, registered apps, GitHub credential expiry, pricing freshness, uptime |
 
 There is no generic shell tool, arbitrary repository URL tool, production-promotion tool, AWS deployment tool, or model-facing manual rollback tool in this release.
 

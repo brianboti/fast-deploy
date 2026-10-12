@@ -49,6 +49,16 @@ EXCLUDED = [
     "databases or any service outside this deployment",
 ]
 RECOMMENDER = "google.run.service.CostRecommender"
+PRICE_CHECK_DAYS = 90
+# Charges outside the Cloud Run figures that a release or an idle app still incurs. Described, not added to the bounds.
+OVERHEADS = {
+    "image_scan_usd_per_release": 0.26,
+    "image_scan": "Artifact Analysis charges about USD 0.26 per new image digest while scanning is enabled in Terraform (the default); "
+                  "for a small staging app this is often more than the month's compute.",
+    "actions_minutes": "About 8 runner minutes per release plus about 120 six-hourly recovery checks a month at one to two minutes each. "
+                       "Free for public repositories; private repositories draw on the GitHub plan's monthly allotment.",
+    "registry_storage": "About USD 0.10 per GiB-month for stored images. The cleanup policy keeps the newest releases and deletes nothing while it is in dry run.",
+}
 
 
 def _usd(value):
@@ -61,7 +71,7 @@ def instance_second_usd(spec, pricing=PRICING, idle=False):
     return spec.resources.cpu * rates["vcpu_second"] + spec.resources.memory_mib / 1024 * rates["gib_second"]
 
 
-def estimate(spec, requests_per_month=None, average_request_seconds=None, pricing=PRICING):
+def estimate(spec, requests_per_month=None, average_request_seconds=None, pricing=PRICING, today=None):
     """Bounds from list prices. A scenario (requests and average duration) adds a best/worst range."""
     active = instance_second_usd(spec, pricing)
     idle_floor = spec.scaling.minimum * instance_second_usd(spec, pricing, idle=True) * SECONDS_PER_MONTH
@@ -82,7 +92,13 @@ def estimate(spec, requests_per_month=None, average_request_seconds=None, pricin
             "List prices for Tier 1 regions; committed-use discounts and the shared free tier are not applied.",
         ],
         "excludes": list(EXCLUDED),
+        "release_overheads": dict(OVERHEADS),
+        "warnings": [],
     }
+    verified = datetime.date.fromisoformat(pricing["verified"])
+    age = ((today or datetime.date.today()) - verified).days
+    if age > PRICE_CHECK_DAYS:
+        result["warnings"].append(f"List prices were verified on {verified}, {age} days ago; re-check {pricing['source']} before relying on these figures.")
     if requests_per_month is None and average_request_seconds is None:
         return result
     if requests_per_month is None or average_request_seconds is None:

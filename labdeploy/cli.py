@@ -32,7 +32,37 @@ def build_parser():
     w.add_argument("--platform-sha", required=True)
     w.add_argument("--template", type=Path, default=Path("templates/deploy-gcp.yml"))
     w.add_argument("--output", type=Path, required=True)
+    s = commands.add_parser("sync-pins", help="copy the action commit pins from the platform CI workflow into the templates")
+    s.add_argument("--ci", type=Path, default=Path(".github/workflows/ci.yml"))
+    s.add_argument("--templates", type=Path, default=Path("templates"))
     return parser
+
+
+USES = re.compile(r"^(?P<lead>\s*-?\s*uses:\s*)(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)@(?P<sha>[a-f0-9]{40})(?P<comment>\s*#.*)?\s*$")
+
+
+def sync_pins(ci_path, templates_dir):
+    """Dependabot updates only .github/workflows; this carries each new pin into templates/*.yml. Returns changed lines."""
+    pins = {}
+    for line in ci_path.read_text().splitlines():
+        match = USES.match(line)
+        if match:
+            pins[match["action"]] = (match["sha"], (match["comment"] or "").strip())
+    changed = []
+    for template in sorted(templates_dir.glob("*.yml")):
+        lines = template.read_text().splitlines(keepends=True)
+        for index, line in enumerate(lines):
+            match = USES.match(line.rstrip("\n"))
+            if not match or match["action"] not in pins:
+                continue
+            sha, comment = pins[match["action"]]
+            if sha == match["sha"]:
+                continue
+            tail = (" " + comment) if comment else (match["comment"] or "")
+            lines[index] = f"{match['lead']}{match['action']}@{sha}{tail}\n"
+            changed.append(f"{template.name}: {match['action']} {match['sha'][:12]} -> {sha[:12]}")
+        template.write_text("".join(lines))
+    return changed
 
 
 def run(parser, args):
@@ -58,6 +88,9 @@ def run(parser, args):
     elif args.command == "token":
         token = secrets.token_urlsafe(32)
         print(json.dumps({"token": token, "token_sha256": hashlib.sha256(token.encode()).hexdigest()}, indent=2))
+    elif args.command == "sync-pins":
+        changed = sync_pins(args.ci, args.templates)
+        print("\n".join(changed) if changed else "Templates already match the CI pins")
     else:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.platform_repo) or not re.fullmatch(r"[a-f0-9]{40}", args.platform_sha):
             parser.error("Provide owner/repository and a full 40-character platform commit SHA")

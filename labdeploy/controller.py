@@ -90,12 +90,24 @@ class Controller:
                     raise
         return {"commit_sha": sha, **analyze(files, app.service)}
 
+    def spec_at(self, app, sha):
+        """The reviewed specification at a commit, with a plain explanation when the app has none yet."""
+        import httpx
+        try:
+            text = self.github.file(app, sha, "platform.yaml")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
+            raise ValueError(f"{app.repository} has no platform.yaml on {app.branch}; run propose_configuration to draft one, review it, "
+                             "set reviewed: true and merge it through the normal process") from None
+        return parse_spec(text)
+
     def plan(self, principal, app_id, cloud="gcp", environment="staging"):
         app = self.app(principal, app_id)
         sha = self.github.head(app)
         if not re.fullmatch(r"[a-f0-9]{40}", sha):
             raise ValueError("Expected full Git commit SHA")
-        spec = parse_spec(self.github.file(app, sha, "platform.yaml"))
+        spec = self.spec_at(app, sha)
         enforce(spec, cloud, environment)
         if spec.name != app.service:
             raise ValueError("Spec service name does not match operator registry")
@@ -153,7 +165,7 @@ class Controller:
     def cost(self, principal, app_id, requests_per_month=None, average_request_seconds=None):
         app = self.app(principal, app_id)
         sha = self.github.head(app)
-        spec = parse_spec(self.github.file(app, sha, "platform.yaml"))
+        spec = self.spec_at(app, sha)
         return {"commit_sha": sha, "spec_hash": spec_hash(spec), "reviewed": spec.reviewed,
                 **self.cost_summary(app, spec, requests_per_month, average_request_seconds)}
 
@@ -174,7 +186,7 @@ class Controller:
             raise ValueError("Registry changed; create a new plan")
         if self.github.head(app) != plan["sha"]:
             raise ValueError("Branch moved; create a new plan")
-        spec = parse_spec(self.github.file(app, plan["sha"], "platform.yaml"))
+        spec = self.spec_at(app, plan["sha"])
         enforce(spec, plan["cloud"], plan["environment"])
         if spec_hash(spec) != plan["spec_hash"] or spec.name != app.service:
             raise ValueError("Plan mismatch")

@@ -1,12 +1,16 @@
 import contextlib
 import contextvars
+import datetime
+import functools
 import hashlib
 import hmac
+import logging
 import os
 import threading
 import time
 from typing import Any
 
+import httpx
 from fastapi import FastAPI
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -14,12 +18,27 @@ from mcp.types import ToolAnnotations
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
+from . import __version__
 from .config import load_config
 from .controller import Controller, Store
-from .github import GitHub
+from .cost import PRICING
+from .github import GitHub, explain
 from .oauth import PUBLIC_PATHS, Provider, mount
 
+log = logging.getLogger("labdeploy")
+
 identity = contextvars.ContextVar("identity")
+
+
+def plain_errors(fn):
+    """GitHub transport failures reach Claude as one plain sentence instead of a raw HTTP error."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+            raise ValueError(explain(exc)) from None
+    return wrapper
 
 # Safety hints let the client ask the human before risky calls; every tool acts on a closed, registered set of resources.
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
@@ -116,54 +135,77 @@ class Authenticate:
 
 def build_app(config, github=None):
     store = Store(config.database)
-    controller = Controller(config, github or GitHub(), store)
+    adapter = github or GitHub()
+    controller = Controller(config, adapter, store)
+    started = time.time()
     mcp = FastMCP("Lab Deploy", instructions=INSTRUCTIONS, stateless_http=True, json_response=True,
                   transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=config.allowed_hosts, allowed_origins=[]))
+    mcp._mcp_server.version = __version__  # the handshake reports Lab Deploy's version, not the SDK's
 
     @mcp.tool(title="List applications", annotations=READ_ONLY, structured_output=True)
+    @plain_errors
     def list_applications() -> dict[str, Any]:
         """List only applications permitted for the authenticated caller."""
         return {k: config.applications[k].model_dump() for k in identity.get().applications}
 
     @mcp.tool(title="Analyze repository", annotations=READ_ONLY, structured_output=True)
+    @plain_errors
     def analyze_repository(application: str) -> dict[str, Any]:
         """Inspect approved repository metadata; return a draft with explicit assumptions."""
         return controller.inspect(identity.get(), application)
 
     @mcp.tool(title="Create deployment plan", annotations=CREATES_RECORD, structured_output=True)
+    @plain_errors
     def create_deployment_plan(application: str, cloud: str = "gcp", environment: str = "staging") -> dict[str, Any]:
         """Validate committed platform.yaml and pin an expiring plan to a Git commit."""
         return controller.plan(identity.get(), application, cloud, environment)
 
     @mcp.tool(title="Propose configuration (draft PR)", annotations=CREATES_RECORD, structured_output=True)
+    @plain_errors
     def propose_configuration(application: str) -> dict[str, Any]:
         """Create a draft config PR for a new app. Never merges or replaces existing platform.yaml."""
         return controller.propose_config(identity.get(), application)
 
     @mcp.tool(title="Deploy to staging", annotations=CHANGES_CLOUD, structured_output=True)
+    @plain_errors
     def deploy_staging(plan_id: str) -> dict[str, Any]:
         """Dispatch the approved workflow for an existing plan. Changes cloud resources when enabled."""
         return controller.deploy(identity.get(), plan_id)
 
     @mcp.tool(title="Get deployment status", annotations=READ_ONLY, structured_output=True)
+    @plain_errors
     def get_deployment_status(plan_id: str) -> dict[str, Any]:
         """Read actual GitHub workflow status. Dispatched does not mean deployed."""
         return controller.status(identity.get(), plan_id)
 
     @mcp.tool(title="List plans", annotations=READ_ONLY, structured_output=True)
+    @plain_errors
     def list_plans() -> dict[str, Any]:
         """List this caller's own deployment plans, newest first, with their current state."""
         return controller.plans(identity.get())
 
     @mcp.tool(title="Estimate cost", annotations=READ_ONLY, structured_output=True)
+    @plain_errors
     def estimate_cost(application: str, requests_per_month: int | None = None, average_request_seconds: float | None = None) -> dict[str, Any]:
         """Cost bounds from list prices for the committed platform.yaml, plus findings; optional traffic scenario."""
         return controller.cost(identity.get(), application, requests_per_month, average_request_seconds)
 
     @mcp.tool(title="Get cost report", annotations=READ_ONLY, structured_output=True)
+    @plain_errors
     def get_cost_report(application: str) -> dict[str, Any]:
         """Latest measured right-sizing report from the rightsizing workflow; never estimated."""
         return controller.cost_report(identity.get(), application)
+
+    @mcp.tool(title="Get controller status", annotations=READ_ONLY, structured_output=True)
+    @plain_errors
+    def get_controller_status() -> dict[str, Any]:
+        """Controller version, dispatch and sign-in switches, registered apps, GitHub credential expiry, and pricing freshness."""
+        status = getattr(adapter, "credential_status", None)
+        credential = status() if callable(status) else {"kind": "unknown", "expires_at": None, "days_left": None, "warning": None}
+        return {"version": __version__, "live_dispatch": config.live_dispatch, "oauth_sign_in": config.oauth is not None,
+                "applications": sorted(config.applications), "github_credential": credential,
+                "pricing_verified": PRICING["verified"], "started_at": datetime.datetime.fromtimestamp(started, datetime.UTC).isoformat(timespec="seconds"),
+                "uptime_seconds": int(time.time() - started)}
 
     @contextlib.asynccontextmanager
     async def lifespan(app):
@@ -182,6 +224,14 @@ def build_app(config, github=None):
     @app.exception_handler(ValueError)
     async def bad_request(request, exc):
         return JSONResponse({"error": str(exc)}, status_code=400)
+
+    @app.exception_handler(httpx.HTTPStatusError)
+    async def github_refused(request, exc):
+        return JSONResponse({"error": explain(exc)}, status_code=502)
+
+    @app.exception_handler(httpx.RequestError)
+    async def github_unreachable(request, exc):
+        return JSONResponse({"error": explain(exc)}, status_code=503)
 
     @app.get("/applications")
     def applications():
@@ -218,5 +268,13 @@ def build_app(config, github=None):
 
 
 def create_app():
-    return build_app(load_config(os.environ.get("LAB_CONFIG", "config.local.yaml")))
+    app = build_app(load_config(os.environ.get("LAB_CONFIG", "config.local.yaml")))
+    try:
+        credential = GitHub().credential_status()
+    except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as exc:
+        log.warning("GitHub credential check failed at startup: %s", explain(exc) or exc)
+    else:
+        if credential["warning"]:
+            log.warning("%s", credential["warning"])
+    return app
 
