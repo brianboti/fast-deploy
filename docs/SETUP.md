@@ -168,9 +168,11 @@ oauth:
 
 Then, in Claude (Customize > Connectors > Add custom connector), enter `https://YOUR_HOST/mcp`, choose **Sign in now** and **Register automatically**, and click **Connect**. The browser opens `https://YOUR_HOST/login`; paste your operator token there, never in chat. Claude keeps a one-hour access token and a thirty-day refresh token, both stored hashed in the controller's database. The sign-in page shows which client is asking and where it returns; only `https://claude.ai/api/mcp/auth_callback` and loopback callbacks (Claude Code) can register. Claude's fixed **Request headers** option (beta, limited organizations) also works when your organization has it: choose **No sign-in** and add `authorization` with the value `Bearer <your-operator-token>`.
 
-To end sessions, replace the operator's `token_sha256` and restart (every session signed in with that token ends), or call `POST /revoke` with the refresh token. Lower `oauth.access_token_seconds` or `oauth.refresh_token_days` to shorten lifetimes. Sign-in with the university identity provider is not implemented; the sign-in page is where it would plug in.
+To end sessions, replace the operator's `token_sha256` and restart (every session signed in with that token ends), run `python -m labdeploy.cli sessions --revoke ID`, or call `POST /revoke` with `token`, `client_id` and a `client_secret` field (empty for the public clients the controller registers: the SDK's endpoint requires the field to be present). Lower `oauth.access_token_seconds` or `oauth.refresh_token_days` to shorten lifetimes. Sign-in with the university identity provider is not implemented; the sign-in page is where it would plug in.
 
 Anthropic's connector permission prompts are additional user-interface controls. The server's identity/app allowlists and GitHub/GCP permissions enforce the actual access boundary.
+
+Day-to-day use from the chat, with the prompts and the tools behind them, is in `docs/CLAUDE-CHAT.md`.
 
 ## 6. First release
 

@@ -169,4 +169,4 @@ AWS adapter, production policy/approvals, automatic application of right-sizing 
 
 ## Operations and license
 
-`docs/RUNBOOK.md` says who owns the platform, what to do when the laptop is off, how to restore the controller from the backup bucket, how to lift the spending cap and how to rotate credentials. The code is released under the MIT License (`LICENSE`).
+`docs/CLAUDE-CHAT.md` is the operator's daily reference for driving the platform from Claude chat: what to ask, what each tool does, what a normal release looks like and what the guardrails are. `docs/RUNBOOK.md` says who owns the platform, what to do when the laptop is off, how to restore the controller from the backup bucket, how to lift the spending cap and how to rotate credentials. The code is released under the MIT License (`LICENSE`).

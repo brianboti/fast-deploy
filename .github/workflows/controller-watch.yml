@@ -3,7 +3,7 @@ name: Controller watch
 # the controller is down, and GitHub's failed-workflow email says so. Set the CONTROLLER_HEALTH_URL repository variable.
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '13,43 * * * *' # odd minutes: GitHub delays or drops schedules that land on the hour and half-hour
   workflow_dispatch:
 permissions:
   contents: read

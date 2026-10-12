@@ -190,6 +190,27 @@ Findings that changed the code, each fixed with a regression test or a documente
 
 Not performed: a read or write by the application itself against the bucket, topic or database (the demo app does not use them yet); removal of a need (refused by design); Cloud SQL, jobs and migrations (roadmap 6.5); the spend-by-application query against a real export table (none exists yet; covered by a unit test with a mocked response). Platform tests: 221 passed; ruff and zizmor clean; both roots validate.
 
+## Readiness for Claude chat (2026-10-12)
+
+The last run before daily use from Claude chat, over the public URL, exactly as Claude's connector works: a script registered a client, signed in on the controller's page and drove the tools with the OAuth access token. The demo app served as the test application; nothing new was built for it beyond a one-line README change (brianboti/lab-demo-app#15) so the release was real.
+
+| Step | Observed |
+|---|---|
+| Discovery | `/mcp` without a token answers 401 with `WWW-Authenticate: Bearer resource_metadata=".../.well-known/oauth-protected-resource/mcp"`; the protected-resource and authorization-server documents name the issuer, `S256`, the `authorization_code` and `refresh_token` grants and the registration endpoint. |
+| Registration | A public client with a loopback redirect was registered (`token_endpoint_auth_method: none`, no secret); a registration with a foreign redirect was refused (`invalid_redirect_uri`). |
+| Sign-in | `/authorize` with PKCE and the resource redirected to the sign-in page, which named the client and sent a strict Content-Security-Policy; without the `resource` parameter the request was refused; a wrong operator token answered 401 with the error shown on the page; the right one redirected to the loopback callback with the code and the same `state`. |
+| Tokens | The code exchange returned a one-hour bearer token and a refresh token; the code could not be used twice (`invalid_grant`). |
+| Tools | `tools/list` returned the twenty tools; `get_controller_status` (1.5.0, dispatch live), `list_applications` (demo live at 5eb2680, pin supported), `compare_with_live` (one commit waiting) and `estimate_cost` with a traffic scenario (ceiling policy `within_limit`) answered with the OAuth token. |
+| Release | `deploy_latest` planned and dispatched f937329 (plan c6b14fc5, run 38319196132) with auto-deploy paused for the test; `get_deployment_status` with 45-second waits reported `running`, `queued`, then `succeeded` after 179 seconds: revision `lab-demo-rc6b14fc5abb84e2b` serves all traffic. `get_service_health` showed the service ready on that revision with ingress open; `get_recent_logs` found no error lines; `get_cost_report` returned the weekly report; `list_plans` listed 28 plans and `list_events` the audit trail with the signed-in identity and its address. Auto-deploy was turned back on afterwards. |
+| Token lifecycle | A refresh rotated the refresh token and issued a new access token; reuse of the rotated refresh token was refused (`invalid_grant`) and ended the whole family, so the earlier access token answered 401 afterwards (`token_reuse` in the audit trail). Revocation through `/revoke` works when the request carries `client_id`, `token` and a `client_secret` field, empty for a public client. |
+
+Findings:
+
+30. The SDK's revocation endpoint requires the `client_secret` field to be present even for public clients (`client_secret: Field required`); documented in `docs/SETUP.md`, not changed (the SDK version is pinned).
+31. The controller-watch schedule on the hour and half-hour never ran in five hours (GitHub delays and drops schedules that land on those minutes); moved to 13 and 43 minutes past the hour.
+
+The operator's own Claude session from earlier in the day is revoked in the database (`python -m labdeploy.cli sessions`); the first conversation starts with a fresh sign-in, which this exercise proved.
+
 ## Live exercise of 1.5.0: the review's fixes (2026-10-12)
 
 Every finding of `docs/REVIEW-2026-10-12.md` was implemented in two commits (c3e04fe, 08cc697) plus 1b881df and 69b16e9, with 234 platform tests, ruff and zizmor clean and both Terraform roots validating. The steps below ran against the real GitHub and Google Cloud APIs; the foundation apply is the operator's (the assistant's tooling refuses infrastructure applies).
