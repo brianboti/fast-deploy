@@ -143,6 +143,12 @@ def advice(plan):
     failed = plan.get("failed_step") or {}
     step = failed.get("step") or ""
     if step == RELEASE_STEP or (state in {"cancelled", "timed_out"} and receipt):
+        if receipt.get("state") == "traffic_restored" and receipt.get("cancelled"):
+            phase = receipt.get("failed_phase") or "the release"
+            job = (" The migration job runs on in Google Cloud once started and may still finish; check its execution before "
+                   "releasing again." if phase == "migrating" else "")
+            return (f"The release was cancelled while {phase}; nothing new serves and the previous revision kept serving.{job} "
+                    "Deploy again when ready." + recovered)
         if receipt.get("state") == "traffic_restored" and receipt.get("failed_phase") == "preparing":
             return (f"The release stopped before deploying anything ({receipt.get('error', 'see the receipt')}); the previous revision kept "
                     "serving and nothing changed. Fix that and deploy again." + recovered)

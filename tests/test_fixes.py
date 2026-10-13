@@ -98,7 +98,7 @@ def test_keyboard_interrupt_attempts_immediate_rollback(tmp_path):
     with pytest.raises(KeyboardInterrupt):
         rollout(cloud, IMAGE, AppSpec(name="demo", reviewed=True), PLAN_ID, tmp_path / "receipt", journal, TARGET)
     assert cloud.current == {"demo-old-a": 60, "demo-old-b": 40}
-    assert journal.value["state"] == "traffic_restored" and "KeyboardInterrupt" in journal.value["error"]
+    assert journal.value["state"] == "traffic_restored" and journal.value["cancelled"] is True and journal.value["error"] == "the run was cancelled"
 
 
 def test_disappeared_runner_recovers_from_durable_checkpoint(tmp_path):
