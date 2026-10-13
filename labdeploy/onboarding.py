@@ -263,9 +263,25 @@ class Onboarder:
             step.update(waiting="the infrastructure apply run", run=run and run["url"])
             return
         if run["conclusion"] != "success":
-            raise Blocked(f"The infrastructure apply failed: {run['url']}. Fix the cause and dispatch the apply workflow for this application, then call again.")
+            later = self.later_apply(platform.repository, record["service"], merge_sha)
+            if later is None:
+                raise Blocked(f"The infrastructure apply failed: {run['url']}. Fix the cause and dispatch the apply workflow for this application, then call again.")
+            run = later
         step.update(run=run["url"], waiting=None)
         record["state"] = "environment"
+
+    def later_apply(self, repository, service, merge_sha):
+        """The recovery the blocked message names: the cause was fixed, often by a commit on main, and the apply was dispatched
+        again. A successful apply of this application on any commit that contains the merge counts."""
+        github = self.c.github
+        if not all(hasattr(github, name) for name in ("recent_runs", "job_conclusions", "contains")):
+            return None
+        for run in github.recent_runs(repository, "infra-apply.yml"):
+            if run["conclusion"] != "success" or run["head_sha"] == merge_sha:
+                continue
+            if github.job_conclusions(repository, run["id"]).get(f"apply ({service})") == "success" and github.contains(repository, merge_sha, run["head_sha"]):
+                return run
+        return None
 
     def step_environment(self, record):
         settings = self.settings

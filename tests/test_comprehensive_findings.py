@@ -134,3 +134,43 @@ def test_the_apply_tries_once_more_after_a_minute_under_the_same_policy():
     assert "sleep 60" in retry and retry.count("terraform apply") == 2 and "terraform plan" in retry
     assert 'PYTHONPATH="$GITHUB_WORKSPACE" python3 -m labdeploy.infra check plan.json' in retry
     assert retry.index("labdeploy.infra check") < retry.rindex("terraform apply")
+
+
+def test_onboarding_accepts_the_apply_dispatched_again_after_the_cause_was_fixed(tmp_path):
+    # The first apply of lab-notebook failed; the fix was a commit on main and the apply ran again on that later commit.
+    from test_onboarding import PLATFORM, make
+
+    c, brian, gh = make(tmp_path / "x")
+    gh.recent = []
+    gh.recent_runs = lambda repository, workflow, limit=20: gh.recent
+    gh.job_conclusions = lambda repository, run_id: {"apply (newapp)": "success"} if run_id == 7 else {"apply (newapp)": "failure"}
+    gh.contains = lambda repository, ancestor, ref: (ancestor, ref) == ("9" * 40, "a" * 40)
+    c.onboard(brian, "https://github.com/lab/newapp")
+    gh.runs[(PLATFORM, "infra-plan.yml", "d" * 40)] = [{"id": 1, "status": "completed", "conclusion": "success", "url": "u1", "head_sha": "d" * 40}]
+    gh.comments[(PLATFORM, 10)] = ["<!-- lab-deploy-infra:newapp -->\n**Policy: passed.**"]
+    c.advance_onboarding("newapp")
+    gh.runs[(PLATFORM, "infra-apply.yml", "9" * 40)] = [{"id": 2, "status": "completed", "conclusion": "failure", "url": "u2", "head_sha": "9" * 40}]
+    blocked = c.advance_onboarding("newapp")
+    assert blocked["state"] == "blocked" and "dispatch the apply workflow" in blocked["error"]
+    gh.recent = [{"id": 8, "status": "completed", "conclusion": "success", "url": "u8", "head_sha": "b" * 40},   # another app's apply only
+                 {"id": 7, "status": "completed", "conclusion": "success", "url": "u7", "head_sha": "a" * 40}]   # this app, after the merge
+    resumed = c.onboard(brian, "https://github.com/lab/newapp")
+    assert resumed["state"] in ("environment", "workflows", "merging_workflows") and resumed["steps"]["applying"]["run"] == "u7"
+
+
+def test_a_refused_request_names_the_permission_it_needs():
+    import httpx
+
+    from labdeploy.github import explain
+
+    def refused(method, path):
+        request = httpx.Request(method, "https://api.github.com" + path)
+        return explain(httpx.HTTPStatusError("403", request=request, response=httpx.Response(403, request=request)), "o/app")
+
+    assert "Administration: read and write" in refused("PUT", "/repos/o/app/environments/staging")
+    assert "Environments: read and write" in refused("POST", "/repos/o/app/environments/staging/variables")
+    assert "Workflows: read and write" in refused("PUT", "/repos/o/app/contents/.github/workflows/deploy-gcp.yml")
+    assert "Pull requests: read and write" in refused("PUT", "/repos/o/app/pulls/3/merge")
+    assert "Contents: read and write" in refused("POST", "/repos/o/lab-deploy/git/refs")
+    assert "Actions: read and write" in refused("POST", "/repos/o/app/actions/workflows/deploy-gcp.yml/dispatches")
+    assert "Contents: read" in refused("GET", "/repos/o/app/contents/platform.yaml")
