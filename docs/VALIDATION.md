@@ -289,3 +289,34 @@ Cost tools: `estimate_cost` read the committed `platform.yaml` from the real rep
 Platform tests after the trial fixes: 111 passed; ruff, zizmor and the platform CI on GitHub are clean for every trial commit.
 
 Not performed: an abrupt runner kill (only a graceful cancellation), Binary Authorization enforcement, and anything production-related. The staging project remains available for further exercises and costs nothing while idle.
+
+## Comprehensive test with a complicated application (2026-10-13)
+
+A reference application, [brianboti/lab-notebook](https://github.com/brianboti/lab-notebook), was written for this test:
+FastAPI pages for people and a JSON API, Postgres through the Cloud SQL Python connector with IAM sign-in, Alembic
+migrations as `needs.migrate`, an uploads bucket, an events topic read back on a page, an API key from Secret Manager,
+JSON logs with trace, 26 tests, a hash-locked image running as a non-root user. It was taken from a repository link to
+a running service and through every release path the platform offers. Twenty-six findings were fixed on the way
+(1.7.2 to 1.8.2, pull requests #23 to #27), each with a regression test in `tests/test_comprehensive_findings.py`.
+
+| Scenario | Plan or run | Observed |
+|---|---|---|
+| Offline: analyzer, policy, cost, demo walkthrough | local | 16 walkthrough steps pass once demo mode uses the app's own name; the analyzer sees the lock file and tests and suggests the four needs |
+| One-sentence onboarding | brianboti/lab-deploy#22, lab-notebook#2 | Contract checks pass; the first plan failed (new root without state, then the policy refused the module's own role), the first apply failed (log alert permission, uptime check created four seconds after the service): all fixed, then environment, workflows and first release ran unattended |
+| First release with migrations | 9111fd55 | `preparing, migrating, deploying, promoting, succeeded`; Alembic 0001 and 0002 ran on Postgres 17 as the runtime IAM user (with `cloudsqlsuperuser`) |
+| The app end to end | live_app_test.py | 24 of 24: anonymous caller refused (403), identity seen, Postgres rows, bucket upload and byte-identical download, Pub/Sub events read back, API key enforced, every page |
+| Update with a migration (1.1.0) | f0a3dff4 | Migration 0003 on existing data; earlier rows and files kept; 24 of 24 |
+| Rollback | 106b48b4 | 53 seconds, no build; 1.0.0 serves and writes against the new column (expand first) |
+| Redeploy an earlier commit | edc0ee51 | No build job; tests and audit `passed_in_earlier_release` |
+| Health check failing only on Cloud Run | c97ed438 | Startup probe failed, traffic never moved, candidate's log lines in the receipt |
+| Migration failing only on Postgres | a225036c, 8e1af163 | Stopped before deploying; on 1.8.2 the status names `relation "experiment_typo" does not exist` and the execution |
+| Failing unit test | 65acdc8d | Stopped at the tests in 47 seconds; nothing built |
+| 4 CPUs, public exposure, a missing secret | tool calls, 2b601d56 | Refused at plan time in plain words; the missing secret stopped the release before deploying |
+| Cost ceiling, pause, auto-deploy | application_settings | Ceiling refused a $141.28 worst case over $50; pause refused; auto-deploy released main twice, within five minutes |
+| Cancel during the migration | d5fafac2, 215f609e, 0062147b | On 1.8.0 and 1.8.1 the release went on and promoted (the deploy job used `always()`); on 1.8.2 the job was cancelled, the release restored traffic and the previous revision kept serving |
+| Health, logs, events, cost | tools | The health view shows the database (`RUNNABLE`, `db-f1-micro`, `POSTGRES_17`) and agreement; JSON log lines with severity; 76 audit events; estimate $0 idle plus $8.57 for the database; weekly report run on demand; no rightsizing proposal |
+
+Not performed here: pages for people through Identity-Aware Proxy (needs the one-time console step, docs/SETUP.md 7h),
+a real budget event closing ingress and stopping the instance, and actual spend from the billing export: its newest
+row is from 2026-09-25 although the table is written daily, so the report now says the spend is unknown. Platform tests:
+279 passed; ruff and zizmor clean; Terraform validates.
