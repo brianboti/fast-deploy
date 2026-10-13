@@ -961,6 +961,11 @@ class Controller:
             receipts = fetch(app, workflow["id"]) if callable(fetch) and workflow.get("id") else None
             plan["receipt"] = (receipts or {}).get("release")
             plan["vulnerabilities"] = (receipts or {}).get("vulnerabilities")
+            if plan["state"] in {"failed", "cancelled", "timed_out"} and (plan["receipt"] or {}).get("state") == "succeeded":
+                # The release finished before the run ended (a cancel that came too late, a later step that failed): its
+                # receipt, not the run's conclusion, says what serves traffic, so it is the live release.
+                plan["run_ended"] = plan["state"]
+                plan["state"] = "succeeded"
         plan["outcome"] = {"state": plan["state"], "conclusion": workflow.get("conclusion"), "run_url": workflow.get("html_url"),
                            "completed_at": workflow.get("updated_at"), "recorded_at": time.time()}
         plan["workflow"] = {key: workflow.get(key) for key in ("id", "status", "conclusion", "html_url", "head_sha", "run_attempt", "created_at", "updated_at")}

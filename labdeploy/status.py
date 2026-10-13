@@ -132,6 +132,9 @@ def advice(plan):
     if state in {"awaiting_workflow", "queued", "running"}:
         return "The release is in progress; ask again, or call get_deployment_status with wait_seconds to wait for a change."
     if state == "succeeded":
+        if receipt.get("revision") and plan.get("run_ended"):
+            return (f"Revision {receipt['revision']} serves all traffic at {receipt.get('url', 'the service URL')}: the release completed before "
+                    f"the run ended ({plan['run_ended']}), so this is the live release. Roll back if it should not serve.")
         if receipt.get("revision"):
             return f"Revision {receipt['revision']} serves all traffic at {receipt.get('url', 'the service URL')}. Nothing to do."
         return "The workflow succeeded; the release receipt was not available, so confirm the serving revision in Cloud Run."

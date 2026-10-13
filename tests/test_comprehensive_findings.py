@@ -380,3 +380,30 @@ def test_operator_switches_reach_an_onboarded_application_without_copying_its_en
     assert (app.cost_ceiling_usd, app.auto_deploy, app.paused, app.repository) == (5, True, True, "lab/newapp")
     with pytest.raises(ValueError):
         Config.model_validate({**raw, "application_settings": {"newapp": {"repository": "evil/repo"}}})  # only the switches
+
+
+def test_a_release_that_completed_before_a_late_cancel_is_the_live_release(tmp_path):
+    # Live: a cancel reached the run after the release had promoted; the plan was stored as cancelled, the controller kept
+    # the earlier release as live, and the health view reported traffic changed outside the pipeline.
+    from test_phase2_release import History, make, release
+
+    class LateCancel(History):
+        cancel = False
+
+        def status(self, app, plan):
+            run = super().status(app, plan)
+            if self.cancel:
+                run["conclusion"] = "cancelled"
+            return run
+
+    c, p, gh = make(tmp_path, LateCancel())
+    release(c, p, gh, "1" * 40, "demo-r1")
+    gh.sha = "2" * 40
+    plan = c.plan(p, "demo")
+    c.deploy(p, plan["id"])
+    gh.cancel = True
+    gh.receipt = {"release": {"plan_id": plan["id"], "state": "succeeded", "revision": "demo-r2", "url": "https://demo.run.app",
+                              "previous_traffic": {"demo-r1": 100}}, "vulnerabilities": None}
+    status = c.status(p, plan["id"])
+    assert status["state"] == "succeeded" and "completed before the run ended (cancelled)" in status["next_action"]
+    assert c.applications(p)["demo"]["live_release"]["plan_id"] == plan["id"]
