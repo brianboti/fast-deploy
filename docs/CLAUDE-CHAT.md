@@ -67,6 +67,15 @@ sentence continues from that step once it is fixed. Every merge is a pull reques
 application's own files only, after the policy and the checks passed; set `auto_merge: false` in the configuration to
 keep every merge for a person.
 
+## Pages for people
+
+An app whose `platform.yaml` says `exposure: lab-members` gets a Google sign-in page in front of it. Who may open it is
+the lab's list (`onboarding.default_viewers` in the controller configuration) plus the app's own `viewers` list; both
+are yours to edit. To let someone in: add `user:name@example.edu` to the list, then *"Render APP's infrastructure"* and
+merge the pull request; the grant exists a minute later. *"How is APP doing?"* shows `access`: the exposure, whether the
+proxy is on, and the viewers. A browser opening the service URL without being listed is refused by Google, not by the
+app; programs that must call the app need a token for the proxy's client id (`docs/DEVELOPER-CONTRACT.md`, 6a).
+
 ## A normal release, as Claude reports it
 
 `deploy_latest` returns a plan id and `dispatched`. Asking for the status with a wait of 45 seconds a few times shows the

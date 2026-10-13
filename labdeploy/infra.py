@@ -66,8 +66,12 @@ def _hcl(value):
     return json.dumps(value).replace("${", "$${").replace("%{", "%%{")
 
 
+EXPOSURES = ("authenticated", "lab-members")
+VIEWER = re.compile(r"^(user|group|domain):[A-Za-z0-9._%+-]+(@[A-Za-z0-9.-]+\.[A-Za-z]{2,})?$")
+
+
 def app_root(name, *, project_id, region, state_bucket, github_repository, github_repository_id, github_owner_id,
-             bootstrap_image, health_path="/health", environment="staging", settings=None, needs=None):
+             bootstrap_image, health_path="/health", environment="staging", settings=None, needs=None, exposure="authenticated", viewers=()):
     """The three files of an application's Terraform root, with every input a literal so a reviewer sees the truth."""
     checks = [
         (NAME, name, "application name"), (PROJECT, project_id, "project id"), (BUCKET, state_bucket, "state bucket"),
@@ -80,6 +84,14 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
             raise ValueError(f"Invalid {what}: {value!r}")
     if region not in ALLOWED_LOCATIONS:
         raise ValueError(f"Region {region!r} is outside the platform policy ({', '.join(ALLOWED_LOCATIONS)})")
+    if exposure not in EXPOSURES:
+        raise ValueError(f"exposure must be one of {', '.join(EXPOSURES)}; public access is never an option")
+    viewers = sorted(set(viewers))
+    for viewer in viewers:
+        if not isinstance(viewer, str) or not VIEWER.fullmatch(viewer):
+            raise ValueError(f"Viewer {viewer!r} must be user:EMAIL, group:EMAIL or domain:DOMAIN")
+    if exposure == "lab-members" and not viewers:
+        raise ValueError("exposure: lab-members needs at least one viewer (onboarding.default_viewers or the application's viewers)")
     merged = dict(DEFAULT_SETTINGS)
     for key, value in (settings or {}).items():
         if key not in DEFAULT_SETTINGS:
@@ -128,6 +140,8 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
         "health_path": health_path,
     }
     inputs.update(merged)
+    inputs["exposure"] = exposure
+    inputs["viewers"] = viewers
     width = max(len(key) for key in list(inputs) + ["image_vulnerability_scanning"])
     lines = [f"  {key.ljust(width)} = {_hcl(value)}" for key, value in inputs.items()]
     lines.append(f"  {'needs'.ljust(width)} = {{ buckets = {_hcl(needs['buckets'])}, topics = {_hcl(needs['topics'])}, database = {_hcl(needs['database'])}, migrate = {_hcl(needs['migrate'])} }}")
@@ -135,6 +149,7 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
         "project_number": "project_number", "image_vulnerability_scanning": "image_vulnerability_scanning",
         "tag_manager_role": "tag_manager_role", "alert_channels": "alert_channels", "cap_service_account": "cap_service_account",
         "billing_dataset": "billing_dataset", "network": "network", "subnet": "subnet", "cap_operator_role": "cap_operator_role",
+        "iap_client_id": "iap_client_id",
     }
     lines += [f"  {key.ljust(width)} = data.terraform_remote_state.project.outputs.{output}" for key, output in shared.items()]
     main = header + f'''provider "google" {{
@@ -219,6 +234,7 @@ ALLOWED_ROLES = frozenset({
     "roles/pubsub.viewer", "roles/datastore.user", "roles/datastore.viewer", "roles/cloudsql.client", "roles/cloudsql.instanceUser", "roles/cloudsql.viewer",
     "roles/logging.viewer", "roles/monitoring.viewer", "roles/secretmanager.secretAccessor", "roles/secretmanager.viewer", "roles/bigquery.dataViewer",
     "roles/bigquery.jobUser", "roles/iam.serviceAccountUser", "roles/iam.serviceAccountOpenIdTokenCreator", "roles/iam.workloadIdentityUser",
+    "roles/iap.httpsResourceAccessor",
 })
 CUSTOM_ROLE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/roles/labDeploy[A-Za-z]+$")
 # The one grant to a platform identity an application root makes by design: the spending cap may read and update the

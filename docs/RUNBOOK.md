@@ -86,6 +86,14 @@ and, if any service or instance could not be closed, the alert **Lab Deploy: spe
 | `rollback_failed_manual_recovery_required` | Traffic could not be restored | `gcloud run services describe SERVICE --region us-central1` for the live split, then `gcloud run services update-traffic SERVICE --to-revisions=PREVIOUS=100`. |
 | recovery workflow failing on schedule | The checkpoint names revisions that no longer match live traffic | Investigate the manual change; `rollback_staging` refuses by design; deploy the wanted commit instead. |
 
+## Someone cannot open an app's pages
+
+Google refuses before the app sees the request. Check, in this order: the person signed in with the listed account
+(`get_service_health` shows the viewers); the app's `platform.yaml` says `exposure: lab-members` and `access.iap_enabled`
+is true (otherwise render and merge the infrastructure); the IAP OAuth client still exists in the console (APIs &
+Services, Credentials). To add someone, add `user:name@example.edu` to the app's `viewers` or to
+`onboarding.default_viewers`, render the root, merge.
+
 ## Rotate credentials
 
 - **Operator token**: `python -m labdeploy.cli token`, replace the hash in `config.local.yaml`, restart the controller,

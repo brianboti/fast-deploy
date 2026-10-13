@@ -9,6 +9,7 @@ output "backup_bucket" { value = module.project.backup_bucket }
 output "cap_operator_role" { value = module.project.cap_operator_role }
 output "billing_dataset" { value = module.project.billing_dataset }
 output "image_vulnerability_scanning" { value = var.image_vulnerability_scanning }
+output "iap_client_id" { value = var.iap_client_id }
 output "observer_service_account" { value = module.project.observer_service_account }
 output "pipeline" { value = module.project.pipeline }
 output "network" { value = module.project.network }

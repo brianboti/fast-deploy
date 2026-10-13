@@ -27,10 +27,17 @@ def describe_error(error):
     return chosen[:300]
 
 
+IAP_CLIENT_ID = re.compile(r"^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$")
+IAP_ANNOTATION = "run.googleapis.com/iap-enabled"
+
+
 class CloudRun:
-    def __init__(self, project, region, service, probe_account, runner=run):
+    def __init__(self, project, region, service, probe_account, runner=run, iap_client_id=None):
         self.project, self.region, self.service = project, region, service
         self.probe_account, self.run = probe_account, runner
+        if iap_client_id is not None and not IAP_CLIENT_ID.fullmatch(iap_client_id):
+            raise ValueError("IAP_CLIENT_ID must be an OAuth client id of the form NUMBER-ID.apps.googleusercontent.com")
+        self.iap_client_id = iap_client_id
 
     def command(self, *args):
         return ["gcloud", "run", *args, "--project", self.project, "--region", self.region, "--quiet"]
@@ -46,6 +53,21 @@ class CloudRun:
         annotations = self.describe().get("metadata", {}).get("annotations", {})
         if annotations.get("run.googleapis.com/invoker-iam-disabled") == "true":
             raise ValueError("Cloud Run invoker IAM check must remain enabled")
+
+    def iap_enabled(self):
+        """Whether Identity-Aware Proxy fronts the service, from the service's own description."""
+        annotations = self.describe().get("metadata", {}).get("annotations", {}) or {}
+        return str(annotations.get(IAP_ANNOTATION, "")).lower() == "true"
+
+    def require_exposure(self, spec):
+        """The proxy is the infrastructure's decision (Terraform owns it); a spec that disagrees stops the release before anything changes."""
+        enabled = self.iap_enabled()
+        if spec.exposure == "lab-members" and not enabled:
+            raise ValueError("platform.yaml says exposure: lab-members but Identity-Aware Proxy is not enabled on the service; render and merge the infrastructure first")
+        if spec.exposure == "authenticated" and enabled:
+            raise ValueError("Identity-Aware Proxy is enabled on the service but platform.yaml says exposure: authenticated; render and merge the infrastructure first")
+        if spec.exposure == "lab-members" and not self.iap_client_id:
+            raise ValueError("IAP_CLIENT_ID is not set in the GitHub environment; the probes cannot pass the proxy (docs/SETUP.md, pages for people)")
 
     def traffic(self, allocations):
         if not allocations or sum(allocations.values()) != 100:
@@ -206,6 +228,8 @@ class CloudRun:
         for value in (url, audience):
             if not re.fullmatch(r"https://[a-zA-Z0-9.-]+\.run\.app", value):
                 raise ValueError("Health URL must be an HTTPS Cloud Run URL")
+        if self.iap_client_id:
+            audience = self.iap_client_id  # behind Identity-Aware Proxy the token is for the proxy's OAuth client, not the service
         access = self.run(["gcloud", "auth", "print-access-token"])
         req = urllib.request.Request(
             f"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{self.probe_account}:generateIdToken",
@@ -477,7 +501,7 @@ def main():
         prefix = f"{target.region}-docker.pkg.dev/{target.project_id}/{target.registry}/{target.service}@sha256:"
         if not os.environ["IMAGE_DIGEST"].startswith(prefix):
             raise ValueError("Image does not belong to the reviewed artifact destination")
-    adapter = CloudRun(target.project_id, target.region, target.service, target.probe_service_account)
+    adapter = CloudRun(target.project_id, target.region, target.service, target.probe_service_account, iap_client_id=os.environ.get("IAP_CLIENT_ID") or None)
     adapter.require_private_service()
     journal = GCSJournal(target.recovery_bucket, target.service, lambda: run(["gcloud", "auth", "print-access-token"]))
     image_path = f"{target.region}-docker.pkg.dev/{target.project_id}/{target.registry}/{target.service}"
@@ -492,6 +516,7 @@ def main():
     spec = parse_spec(Path(os.environ["SPEC_FILE"]).read_text())
     if spec_hash(spec) != os.environ["SPEC_HASH"] or spec.name != os.environ["SERVICE"]:
         raise ValueError("Spec differs from reviewed plan or configured service")
+    adapter.require_exposure(spec)  # the proxy is the infrastructure's decision; a spec that disagrees stops here
     def terminate(signum, frame):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         raise SystemExit(128 + signum)

@@ -12,6 +12,9 @@ TOKEN=$(gcloud auth print-access-token)
 # The uptime check signs in as the Monitoring service agent; make sure the agent exists (idempotent).
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   "https://serviceusage.googleapis.com/v1beta1/projects/$PROJECT/services/monitoring.googleapis.com:generateServiceIdentity" > /dev/null
+# Identity-Aware Proxy calls people's pages as its own service agent; make sure it exists too (idempotent).
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  "https://serviceusage.googleapis.com/v1beta1/projects/$PROJECT/services/iap.googleapis.com:generateServiceIdentity" > /dev/null
 run() { docker run --rm -e GOOGLE_OAUTH_ACCESS_TOKEN="$TOKEN" -e USER_PROJECT_OVERRIDE=true -e GOOGLE_BILLING_PROJECT="$PROJECT" -v "$PWD/..":/infra -w /infra/project hashicorp/terraform:1.13.5 "$@"; }
 run init -reconfigure -input=false -backend-config="bucket=$PROJECT-tfstate" -backend-config="prefix=project/$ENVIRONMENT" > /dev/null
 run plan -input=false -no-color -out=project.tfplan | grep -E "^  # |^Plan:|^No changes" || true
