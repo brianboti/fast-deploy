@@ -41,11 +41,31 @@ daily reference; `docs/SETUP.md` covers the one-time setup and `docs/RUNBOOK.md`
 
 | Ask | Tool | Result |
 |---|---|---|
-| "Onboard github.com/ORG/REPO" | `analyze_repository`, `propose_configuration` | A draft `platform.yaml` with review questions, as a pull request on the app repository |
+| "Deploy github.com/ORG/REPO on GCP" | `onboard_application`, `get_onboarding_status` | The whole onboarding, unattended, for a repository that follows the contract (next section) |
+| "Draft a configuration for github.com/ORG/REPO" | `analyze_repository`, `propose_configuration` | A draft `platform.yaml` with review questions, as a pull request on the app repository, for a repository that has none yet |
 | "Give demo a bucket called uploads" | `propose_configuration` with `needs` | The same, for buckets, topics, a database or a migration command |
 | "Render demo's infrastructure" | `propose_infrastructure` | The app's Terraform root as a pull request on the platform repository; the plan and policy verdict appear as a comment, merging applies it |
 | "Re-pin demo to the current platform" | `update_app_workflows` | The three workflow files regenerated against a platform commit, as a pull request |
 | "Apply the right-sizing proposals" | `propose_rightsizing` | A pull request editing `platform.yaml` with the measured recommendations |
+
+## Deploy a repository with one sentence
+
+For a repository that follows `docs/DEVELOPER-CONTRACT.md`, say: *"Deploy https://github.com/ORG/REPO on GCP."*
+Claude calls `onboard_application`, which does everything the five onboarding steps did by hand:
+
+1. Checks the repository against the contract and stops with a checklist if something is missing (nothing is created before the contract holds).
+2. Registers the application with the controller.
+3. Opens the infrastructure pull request on the platform repository, waits for the plan and the policy verdict, merges when it passes, and waits for the apply.
+4. Creates the app's `staging` environment on GitHub, restricted to `main`, with its variables.
+5. Opens and merges the pull request that adds the three platform workflows.
+6. Plans and dispatches the first release.
+
+The first answer comes back within seconds with the step reached; the controller continues on its own every minute,
+about ten minutes in all. *"Where is REPO's onboarding?"* calls `get_onboarding_status`; when it says complete, *"Where is
+my release?"* follows the first deployment. If a step blocks, the status names the reason and the fix, and the same
+sentence continues from that step once it is fixed. Every merge is a pull request the controller opened itself, on the
+application's own files only, after the policy and the checks passed; set `auto_merge: false` in the configuration to
+keep every merge for a person.
 
 ## A normal release, as Claude reports it
 

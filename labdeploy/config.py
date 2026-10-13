@@ -46,8 +46,21 @@ class Application(StrictModel):
 class Principal(StrictModel):
     name: str
     token_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    applications: list[str]
+    applications: list[str]  # application ids, or ["*"] for every application including the ones onboarding registers later
     can_deploy: bool = False
+
+
+class Onboarding(StrictModel):
+    """Where one-sentence onboarding puts a new application and what it may do for it (docs/CLAUDE-CHAT.md, "Deploy a repository")."""
+
+    project_id: str = Field(pattern=r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+    project_number: str = Field(pattern=r"^[0-9]{6,20}$")  # the Workload Identity provider path carries the number, not the id
+    region: str = Field(default="us-central1", pattern=r"^[a-z]+-[a-z]+[0-9]$")
+    state_bucket: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$")  # default: <project_id>-tfstate
+    bootstrap_image: str | None = None  # digest-pinned image for the first revision; default: the platform's reference image
+    environment: str = Field(default="staging", pattern=r"^[a-z][a-z0-9-]{1,30}$")
+    auto_merge: bool = True  # merge the application's own pull requests once the policy and the checks have passed
+    billing_export_table: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9-]{4,28}[a-z0-9]\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+$")
 
 
 # Where Claude's hosted apps and Claude Code return after the browser sign-in. Loopback callbacks match on any port.
@@ -98,6 +111,7 @@ class Config(StrictModel):
     platform: Platform | None = None
     observer: ObserverIdentity | None = None
     oauth: OAuth | None = None
+    onboarding: Onboarding | None = None
     paused: bool = False  # the kill switch: no new plans or dispatches for any app; reads keep working
     auto_deploy_interval_seconds: int = Field(default=300, ge=60, le=3600)
     notify_webhook_url: str | None = None  # Slack or Discord incoming webhook for the daily watchdog's findings
@@ -120,7 +134,7 @@ class Config(StrictModel):
         if len({p.name for p in self.principals}) != len(self.principals):
             raise ValueError("Duplicate principal names")
         for p in self.principals:
-            if set(p.applications) - self.applications.keys():
+            if set(p.applications) - {"*"} - self.applications.keys():
                 raise ValueError("Principal references unknown application")
         for host in self.allowed_hosts:
             # The MCP transport matches Host exactly or as "host:*"; a wildcard entry would silently match nothing.
@@ -149,7 +163,13 @@ class LiveConfig:
 
     def __init__(self, config, path=None):
         self.current, self.path, self.error, self.reloaded_at = config, path, None, None
+        self.registry = {}  # applications registered by onboarding (the controller's database), merged over the file's
         self.mtime = self._mtime()
+
+    @property
+    def applications(self):
+        """The file's applications plus the registered ones; a registered id never hides one the operator wrote by hand."""
+        return {**self.registry, **self.current.applications}
 
     def _mtime(self):
         try:

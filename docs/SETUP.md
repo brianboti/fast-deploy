@@ -286,6 +286,27 @@ How a change flows: `python -m labdeploy.cli infra render APP --pull-request` (o
 
 Retiring an application is the one case the pipeline does not handle: the operator runs `terraform destroy` in the root (section 7d) and removes the directory in a pull request.
 
+## 7g. One sentence: onboarding from a repository link
+
+`onboard_application` turns a repository that follows `docs/DEVELOPER-CONTRACT.md` into a running service without the manual steps of section 3. It needs three things:
+
+1. An `onboarding` block in the controller configuration:
+
+```yaml
+onboarding:
+  project_id: YOUR_STAGING_PROJECT
+  project_number: "123456789012"     # gcloud projects describe YOUR_STAGING_PROJECT --format='value(projectNumber)'
+  region: us-central1
+  # state_bucket: YOUR_STAGING_PROJECT-tfstate   (the default)
+  # billing_export_table: PROJECT.billing_export.gcp_billing_export_v1_XXXXXX   (written to each app's environment when set)
+  # auto_merge: true   (false keeps every merge for a person; the onboarding then waits)
+```
+
+2. The operator's identity with `applications: ["*"]`, so it sees the applications onboarding registers (they live in the controller's database, not in this file).
+3. A GitHub credential that may write. The fine-grained token covers **all repositories** of the account (or the organization's) with these permissions: Contents read and write, Pull requests read and write, Workflows read and write, Actions read and write, Environments read and write, Variables read and write, Administration read and write (environments are created through it), Metadata read. Store it with `scripts/start.sh` as before. A GitHub App with the same permissions is the planned replacement (roadmap, decision D14).
+
+What the tool does, in order: contract check (blocks with a checklist), registration, infrastructure pull request (merged once the plan workflow's policy verdict is `passed` and only when every file sits under `infra/gcp/apps/<service>/`), the apply, the `staging` environment with its variables, the workflows pull request (merged when GitHub reports it mergeable), the first release. Long waits end the call and the scheduler continues every minute; `get_onboarding_status` reports the step, and a blocked onboarding resumes from its step when the same tool is called again.
+
 ## 8. Provenance, scanning and dependency updates
 
 - **Build provenance**: the deployment job signs an attestation for the pushed image digest and verifies it with `gh attestation verify` before release. Nothing to configure. If the verification step fails in the first trial, confirm the runner can read the private registry through `docker-credential-gcloud`; the step fails closed by design.

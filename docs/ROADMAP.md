@@ -167,7 +167,7 @@ Cost effect per resource, monthly, at the defaults: Firestore 0 within the free 
 
 ## Phase 7: one sentence (about four and a half days) → version 1.6
 
-Status: planned on 2026-10-13 after the operator asked for "a repository link with a build file, and one sentence that gives it every Google service it needs". Today that takes the five onboarding steps in `docs/CLAUDE-CHAT.md` (two pull requests on the app repository, one on the platform repository, a configuration edit, eight variables); the platform already does the hard part. Phase 7 makes the sentence `Deploy https://github.com/ORG/REPO on GCP` sufficient for a repository that follows `docs/DEVELOPER-CONTRACT.md`.
+Status: shipped as 1.6.0 on 2026-10-13 except the GitHub App (7.3, a wider fine-grained token stands in) and the live trial (7.5, recorded in `docs/VALIDATION.md` when run). Planned on 2026-10-13 after the operator asked for "a repository link with a build file, and one sentence that gives it every Google service it needs". Today that takes the five onboarding steps in `docs/CLAUDE-CHAT.md` (two pull requests on the app repository, one on the platform repository, a configuration edit, eight variables); the platform already does the hard part. Phase 7 makes the sentence `Deploy https://github.com/ORG/REPO on GCP` sufficient for a repository that follows `docs/DEVELOPER-CONTRACT.md`.
 
 ### Decisions the operator makes before "go"
 
