@@ -1,62 +1,118 @@
-# What a repository must contain to be deployed by Lab Deploy
+# The repository standard: what a service must contain to be deployed by Lab Deploy
 
-Give this page to the developer. A repository that follows it can be deployed to the lab's Google Cloud staging project
-with one request in Claude chat; everything else (identities, registry, buckets, topics, databases, monitoring, cost
-control, rollback) is provided by the platform. Written for version 1.5.0; `examples/demo-app` in the platform
-repository is a complete reference that follows every rule below.
+Give this page to the developer. A repository that follows it is deployed to the lab's Google Cloud staging project
+with one request in Claude chat; the platform provides everything else (identities, registry, buckets, topics,
+databases, monitoring, cost control, signed images, rollback). `examples/demo-app` in the platform repository is a
+complete reference.
 
-## The files
+The standard has three levels:
 
-```
-your-app/
-├── Dockerfile            # builds the service; listens on the port below
-├── platform.yaml         # what the app is and what it needs (reference below)
-├── requirements.txt      # runtime dependencies, pinned
-├── requirements-dev.txt  # test dependencies; must include pytest
-├── requirements.lock     # optional but recommended: pip-compile --generate-hashes
-├── app.py …              # your code, any layout
-└── test_*.py or tests/   # pytest tests (or declare tests: none in platform.yaml)
-```
+- **Required**: the pipeline refuses the release without it.
+- **Required by review**: the lab's rule; `analyze_repository` and the reviewer of `platform.yaml` check it.
+- **Recommended**: what makes a service behave well on Cloud Run and keeps the repository healthy; taken from
+  Google's Cloud Run container contract and development tips, the Twelve-Factor App, Docker's Dockerfile best
+  practices, the OpenSSF Scorecard checks and GitHub's community health files (sources at the end).
 
-Rules the pipeline checks, in the order it checks them:
+## 1. The files, what each is for, and what reads it
 
-1. **Tests.** `python -m pytest` must pass after `pip install -r requirements-dev.txt` (and the lock file with
-   `--require-hashes` when it exists, otherwise `requirements.txt`). An app without tests must say
-   `tests: none` in `platform.yaml`; every release of it then carries a warning.
-2. **Dependency audit.** `pip-audit -r requirements.txt` must report no known vulnerability. A vulnerable pin fails the
-   release until it is bumped.
-3. **Build.** `docker build --platform linux/amd64` from the repository root must succeed without network credentials.
-4. **Health.** `GET <health_path>` (default `/health`) must answer 200 within a few seconds of start. The startup probe,
-   the release probes and the uptime check all use it. Cloud Run's IAM layer authenticates callers; the app itself
-   does not check tokens.
-5. **Port.** The container listens on `0.0.0.0` at the port in `platform.yaml` (default 8080) and `EXPOSE`s it.
+| File | Level | What it is for | What reads it |
+|---|---|---|---|
+| `Dockerfile` | Required | How the service is built. The only build file the platform understands; it must produce a Linux x86_64 image that listens on `$PORT`. | The deploy workflow (`docker build --platform linux/amd64`, no network credentials), then Cloud Run |
+| `platform.yaml` | Required | The contract between the app and the platform: name, port, health path, size, scaling, timeout, env, secret names, needs, tests policy (section 5). | The controller (plans, cost bounds, policy), the runner (deploy flags, environment variables, migration job), the renderer (the app's Terraform root) |
+| `requirements.txt` | Required | Runtime dependencies pinned to exact versions. | The Dockerfile's `pip install`; the audit step (`pip-audit -r requirements.txt`, a known vulnerability fails the release); the analyzer |
+| `requirements-dev.txt` | Required unless `tests: none` | Test and lint tools (pytest, ruff), kept out of the image. | The test step (`pip install -r requirements-dev.txt`, then `python -m pytest`) |
+| `requirements.lock` | Recommended; required by review for anything beyond a demo | A hash-locked, reproducible install (`pip-compile --generate-hashes` or `uv pip compile --generate-hashes`). A version pin alone still trusts whatever the index serves. | The test step installs it with `--require-hashes` when present; the Dockerfile should too |
+| `tests/` or `test_*.py` | Required unless `tests: none` | Prove the app before anything is built; the same tests run in the app's own CI on pull requests. | `python -m pytest` in the deploy workflow and in the app's CI |
+| `.dockerignore` | Recommended | Keeps `.git`, virtual environments, tests, caches and local secrets out of the build context: smaller, faster, safer images. | `docker build` |
+| `pyproject.toml` | Recommended | One place for project metadata and the ruff and pytest configuration; `requirements*.txt` can be generated from it. | Developers and tools |
+| `README.md` | Required by review | What the service is, how to run it locally, its health path, the environment it expects. | People; the analyzer's review questions |
+| `LICENSE` | Required by review | The lab's license (MIT unless told otherwise); a public repository without one cannot be reused. | People; the OpenSSF License check |
+| `SECURITY.md` | Recommended | How to report a vulnerability privately. | People; the OpenSSF Security-Policy check |
+| `.github/CODEOWNERS` | Recommended | Who reviews what; branch protection can require their review. | GitHub |
+| `.github/dependabot.yml` | Recommended | Keeps pins current through reviewable pull requests for `pip`, `docker` and `github-actions`. | GitHub; the OpenSSF Dependency-Update-Tool check |
+| `.github/workflows/ci.yml` | Recommended | Runs the tests and lint on every pull request so `main` stays releasable; make it a required status check. Set `permissions: contents: read` at the top. | GitHub; the OpenSSF CI-Tests and Token-Permissions checks |
+| `.github/workflows/deploy-gcp.yml`, `recover-gcp.yml`, `rightsize-gcp.yml` | Added by the platform | The release, recovery and right-sizing jobs, pinned to a platform commit. Never edited by hand; "re-pin APP" regenerates them. | GitHub Actions and the controller |
+| `.pre-commit-config.yaml` | Recommended | Lint, format and secret-scan before a push (ruff, gitleaks). | Developers |
+| `CHANGELOG.md` | Optional | What changed per release, for people; the platform records every release by commit and digest regardless. | People |
 
-## The Dockerfile
+## 2. The container: Cloud Run's contract and Docker's rules
 
-```dockerfile
-FROM python:3.12-slim@sha256:<digest>      # pin the base image by digest; refresh it deliberately
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY app.py .
-USER 65532:65532                           # never run as root
-EXPOSE 8080
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
-```
+Required:
 
-No secrets in the image, no build steps that need credentials, nothing written to the container's disk that must
-survive a restart (instances come and go).
+- Listen on `0.0.0.0` at the port in `platform.yaml` (default 8080), which Cloud Run also passes as `PORT`. Nothing
+  else may be assumed about the network; Cloud Run terminates TLS, the container speaks plain HTTP/1.
+- Start fast and answer the health path as soon as the app can serve. The platform's startup probe hits that path;
+  Cloud Run's hard limit is four minutes, the lab's expectation is a few seconds. Do heavy initialization once in
+  global scope or lazily, never per request.
+- Run as a non-root user with an explicit UID (`USER 65532:65532`); Cloud Run runs the container as root when the
+  user does not exist. No `sudo`, no setuid binaries.
+- Exec-form `CMD ["uvicorn", ...]` so the server is PID 1 and receives signals. On shutdown Cloud Run sends `SIGTERM`
+  and, ten seconds later, `SIGKILL`: finish in-flight requests, flush logs and close connections within about eight
+  seconds. uvicorn and gunicorn do this on their own when they are PID 1; a shell wrapper must `exec` them.
+- Treat the filesystem as memory: it is in-memory, counts against the memory limit and disappears with the instance.
+  Persist through the declared buckets and databases; delete temporary files.
+- Stateless: no in-process sessions, no expectation that the next request reaches the same instance.
+- No work after the response. The platform deploys with CPU allocated only during requests, so background threads
+  are throttled and may resume unexpectedly during a later request. Batch work belongs in `needs.migrate` or a job.
+- Handle every exception; a crash restarts the instance and slows startup for everyone queued behind it.
 
-## platform.yaml
+Recommended:
+
+- Pin the base image by digest (`python:3.12-slim@sha256:...`) and let Dependabot propose refreshes; rebuild regularly
+  so security fixes land. Prefer `python:*-slim`; use a multi-stage build when build tools are needed; `--no-cache-dir`;
+  no extra system packages.
+- `ENV PYTHONUNBUFFERED=1` so log lines appear immediately.
+- Size the server to `platform.yaml`: uvicorn for an ASGI app, or gunicorn with roughly one worker per CPU and a few
+  threads (`--workers 1 --threads 8 --timeout 0`); too many workers lengthen cold starts and use memory.
+- Keep the image small and the dependency list short; import heavy modules lazily.
+
+## 3. Behaviour: the twelve factors on Cloud Run
+
+- **Config in the environment, only.** Values come from `platform.yaml` `env`, secrets arrive as environment variables
+  of the same name, and every declared need arrives as `BUCKET_<NAME>`, `TOPIC_<NAME>`, `SUBSCRIPTION_<NAME>`,
+  `FIRESTORE_DATABASE` or `DATABASE_INSTANCE`, `DATABASE_NAME`, `DATABASE_USER`, `DATABASE_IP_TYPE`. Nothing is read
+  from committed files or baked into the image.
+- **Backing services as attached resources.** Use Google's client libraries with default credentials: the service
+  runs as its own least-privilege identity that may reach only its declared resources. No keys, no passwords;
+  Postgres signs in with IAM (the identity is the user) over a private address, through the Cloud SQL Python connector
+  or psycopg.
+- **The health endpoint is a readiness check.** `GET health_path` answers 200 only when the app can serve, cheaply, with
+  no external call that could fail or cost; it is HTTP/1 and reachable from outside. The startup probe, the release
+  probes and the uptime check (every minute) all use it.
+- **Logs are event streams.** Write one JSON object per line to stdout or stderr with `severity` and `message`; add
+  `logging.googleapis.com/trace` built from the `X-Cloud-Trace-Context` header to nest lines under their request log.
+  Never log secrets, tokens or personal data. The platform's error alert counts `ERROR` lines, and a failed candidate's
+  last lines appear in the release status.
+- **Concurrency is the app's promise.** `concurrency` requests (default 80) are served by one instance at once: no
+  mutable global state without a lock, and memory per request times concurrency within `memory_mib`.
+- **Admin tasks as one-off processes.** `needs.migrate` runs as a Cloud Run job from the same image before traffic
+  moves; migrations are idempotent, compatible with the previous revision (expand first, contract later, so a
+  rollback stays safe) and finish within nine minutes.
+- **Disposability.** Fast startup, graceful shutdown, scale to zero.
+
+## 4. The repository and its process
+
+- `main` is protected: changes arrive by pull request, the CI check is required, force pushes are refused. Releases
+  only ever come from `main`.
+- Dependencies are pinned everywhere: exact versions in `requirements.txt`, hashes in `requirements.lock`, the base
+  image by digest, GitHub Actions by commit SHA. Dependabot keeps them moving.
+- No binaries and no secrets in Git. Secret values are created once by the operator with
+  `gcloud secrets create <service>-NAME --data-file=-`; the repository only names them.
+- `README.md`, `LICENSE` and `SECURITY.md` exist and are current.
+- What the platform supplies so the repository does not have to: signed build provenance verified before release,
+  vulnerability scanning of every image, least-privilege workflow tokens in the three generated workflows, deploy by
+  digest, recovery after runner loss, measured cost reports.
+
+## 5. platform.yaml reference
 
 ```yaml
 api_version: lab/v1
-name: my-service          # 3 to 21 characters: a letter, then lowercase letters, digits, dashes; this is the Cloud Run service name
+name: my-service          # 3 to 21 characters: a letter, then lowercase letters, digits, dashes; the Cloud Run service name
 runtime: python-http      # the only runtime today
 port: 8080
 health_path: /health
 resources: { cpu: 1, memory_mib: 512 }   # cpu 1 to 4, memory 512 to 4096; the lab's policy refuses more than 2 CPUs, 2048 MiB today
-scaling: { minimum: 0, maximum: 2 }      # minimum 0 or 1 (1 keeps an instance warm and costs money all month); maximum up to 3 under the lab's policy
+scaling: { minimum: 0, maximum: 2 }      # minimum 0 or 1 (1 keeps an instance warm all month); maximum up to 3 under the lab's policy
 concurrency: 80           # requests one instance serves at once; higher is cheaper when the app can take it
 timeout_seconds: 60       # per request, up to 300
 exposure: authenticated   # the only option: callers present a Google identity token
@@ -64,43 +120,44 @@ state: stateless
 env:                      # plain configuration values
   LOG_LEVEL: info
 secrets: [API_KEY]        # names only; the value lives in Secret Manager as my-service-API_KEY and arrives as the env var API_KEY
-tests: required           # or none, knowingly
+tests: required           # or none, knowingly: every release then carries a warning
 needs:
-  buckets: [uploads]      # env BUCKET_UPLOADS = the bucket's name
+  buckets: [uploads]      # env BUCKET_UPLOADS
   topics: [events]        # env TOPIC_EVENTS and SUBSCRIPTION_EVENTS
-  database: none          # none | firestore | postgres
-  migrate: []             # e.g. [alembic, upgrade, head]: runs as a job from the same image before traffic moves
+  database: none          # none | firestore | postgres (about 9 dollars a month from the moment it exists)
+  migrate: []             # e.g. [alembic, upgrade, head]: a job from the same image, before traffic moves
 reviewed: true            # set by the person who reviewed the file
 ```
 
-What the app receives at run time: `PORT`, the `env` values, each secret as an environment variable of the same name,
-`BUCKET_<NAME>` per bucket, `TOPIC_<NAME>` and `SUBSCRIPTION_<NAME>` per topic, `FIRESTORE_DATABASE` for Firestore,
-and `DATABASE_INSTANCE`, `DATABASE_NAME`, `DATABASE_USER`, `DATABASE_IP_TYPE` for Postgres. Use Google's client
-libraries with default credentials: the service runs as its own least-privilege identity that may only reach its
-declared resources. Postgres has IAM sign-in only (the identity is the user; there is no password) and a private
-address; connect with the Cloud SQL Python connector or psycopg over the private IP.
+Costs the developer controls: `scaling.minimum: 0` costs nothing idle, `1` about 9 dollars a month per warm
+instance; Cloud SQL about 9 a month; Firestore, buckets and topics nothing at rest within the free tiers. Every plan
+shows the floor and the worst case before anything is deployed; start small and raise with the weekly report.
 
-Secrets: the developer names them; the operator creates the values once with
-`gcloud secrets create my-service-API_KEY --data-file=-`. Values never pass through Claude or Git.
+## 6. Checklist for the pull request that onboards a service
 
-Migrations: idempotent, compatible with the previous revision (expand first, contract later, so a rollback stays safe),
-finished within nine minutes. A failing migration stops the release with traffic untouched.
+- [ ] `Dockerfile` builds locally with `docker build --platform linux/amd64 .`, runs as non-root, listens on 8080
+- [ ] `python -m pytest` passes after installing `requirements-dev.txt`; `pip-audit -r requirements.txt` is clean
+- [ ] `GET /health` answers 200 within seconds of start
+- [ ] `platform.yaml` reviewed: size, scaling, timeout, env, secret names, needs; `reviewed: true`
+- [ ] Logs are JSON lines with `severity` and `message`; nothing sensitive is logged
+- [ ] No work after the response; nothing persisted on the container's disk
+- [ ] `requirements.lock` with hashes, base image pinned by digest, Dependabot enabled
+- [ ] `README.md`, `LICENSE`, `SECURITY.md`; `main` protected with the CI check required
+- [ ] Secret values created by the operator with `gcloud`; none in Git
 
-## Costs the developer controls
-
-- `scaling.minimum: 0` costs nothing while idle; `1` costs about 9 dollars a month per warm instance.
-- Cloud SQL costs about 9 dollars a month from the moment it exists; Firestore, buckets and topics cost nothing at
-  rest within the free tiers. Every plan shows the floor and the worst case before anything is deployed.
-- Memory and CPU set the per-request price; start small, read the weekly right-sizing report, then raise.
-
-## What the platform does for you
-
-Builds on every release, audits and tests, signs the image and verifies the signature before deploying, scans it for
-vulnerabilities, deploys a candidate without traffic, probes it, moves traffic only when it answers, restores the
-previous revision when it does not, keeps a durable checkpoint so a lost runner is recovered, records every step,
-watches errors, latency, saturation and memory, and reports measured cost every week.
-
-## What is not supported
+## 7. What is not supported
 
 Public endpoints, GPUs, runtimes other than Python HTTP services, stateful containers, a branch other than `main`,
-production environments, and editing the three workflow files the platform adds under `.github/workflows/`.
+production environments, and editing the three workflow files the platform adds.
+
+## Sources
+
+- [Cloud Run container runtime contract](https://docs.cloud.google.com/run/docs/container-contract): port and `PORT`, `0.0.0.0`, the four-minute startup limit, `SIGTERM` then `SIGKILL` after ten seconds, the in-memory filesystem, x86_64, root when the user is missing, no TLS in the container
+- [Cloud Run general development tips](https://docs.cloud.google.com/run/docs/tips/general): no background work with request-based billing, delete temporary files, handle every exception, global and lazy initialization, concurrency defaults, non-root images, pinned deterministic builds
+- [Optimize Python applications for Cloud Run](https://docs.cloud.google.com/run/docs/tips/python): server and worker settings, `--timeout 0`, `PYTHONUNBUFFERED`, slim images, lazy loading
+- [Cloud Run health checks](https://docs.cloud.google.com/run/docs/configuring/healthchecks): startup and liveness probes, HTTP/1 endpoints, make the startup probe a readiness check
+- [Cloud Run logging](https://docs.cloud.google.com/run/docs/logging): JSON lines on stdout, `severity`, `message`, `logging.googleapis.com/trace` from `X-Cloud-Trace-Context`
+- [The Twelve-Factor App](https://12factor.net/): config, backing services, processes, port binding, disposability, logs, admin processes
+- [Docker: building best practices](https://docs.docker.com/build/building/best-practices/): multi-stage builds, `.dockerignore`, pinned base images by digest, exec-form `CMD`, non-root `USER`, rebuild often
+- [OpenSSF Scorecard checks](https://github.com/ossf/scorecard/blob/main/docs/checks.md): Branch-Protection, CI-Tests, Code-Review, Dependency-Update-Tool, License, Pinned-Dependencies, Security-Policy, Token-Permissions, Vulnerabilities, Binary-Artifacts
+- [GitHub community health files](https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/creating-a-default-community-health-file): `SECURITY.md`, `CONTRIBUTING.md`, `SUPPORT.md`, and the per-repository `LICENSE`
