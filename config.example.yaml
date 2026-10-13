@@ -58,3 +58,11 @@ principals:
 #   region: us-central1
 #   default_viewers: ["user:you@example.edu"]       # who may open lab-members apps; plus `viewers` per application
 #   iap_client_id: 123-abc.apps.googleusercontent.com   # after the console step in docs/SETUP.md 7h
+
+# The operator's switches for applications onboarding registered (their entries live in the database, not here):
+# application_settings:
+#   my-app:
+#     cost_ceiling_usd: 60       # refuse plans whose worst case is higher
+#     auto_deploy: true          # release new commits on main by itself
+#     paused: false              # true refuses new plans and dispatches for this app
+#     viewers: ["user:someone@example.edu"]   # lab-members apps: who may open the pages, on top of default_viewers

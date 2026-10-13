@@ -1,3 +1,37 @@
+# 1.8.0: what the first complicated application found after its onboarding
+
+`lab-notebook` was onboarded with one sentence, released (Postgres migrations through the app's own IAM identity), used
+end to end (24 live checks), updated, rolled back, redeployed from its image, and taken through a failing health check,
+a failing migration, a failing test, a cancel, policy refusals and a missing secret. Each finding has a regression test in
+`tests/test_comprehensive_findings.py`.
+
+## Added
+
+1. **`application_settings`** in the configuration: the operator's switches (`cost_ceiling_usd`, `auto_deploy`, `paused`,
+   `viewers`, `infra`) for an application onboarding registered, laid over its database entry without copying it.
+2. **The health view shows the Postgres database**: state, tier, version and whether it runs (the spending cap stops it);
+   the observer gets `roles/cloudsql.viewer`. A refusal for one need is a note instead of hiding the others.
+
+## Fixed
+
+1. **A cancel did not stop a running release.** The release ran behind a waiting bash, which never passed GitHub's SIGINT
+   and SIGTERM on: a cancel during the migration let the release promote two minutes later. The step now execs the
+   release, which restores traffic and ignores further signals while it does.
+2. **A failed migration was reported as a failed candidate** with gcloud's cut-off tail. The receipt now keeps the
+   execution's own last log lines and the real error (`relation "..." does not exist`), names the failed phase, and the
+   status says the migration failed and nothing new was deployed. A pre-check stop (a missing secret) says the same.
+3. **Onboarding stayed blocked after the recovery it recommends**: a successful apply on a later commit of main now counts.
+4. **A refused GitHub request blamed the wrong permission**; it now names the one the request needs (Administration for
+   environments, Workflows for workflow files, ...).
+5. **A recovery check still running read "concluded 'None'"**; it now says it is still running, with its link.
+6. **An invalid `platform.yaml` came back as pydantic's raw error**; it now names the field and what it must be.
+
+## Upgrade steps
+
+1. Re-apply the foundation (`roles/cloudsql.viewer` for the observer; 1 to add).
+2. Restart the controller.
+3. Re-pin every application's workflows to this commit (`update_app_workflows`, merge): the release step changed.
+
 # 1.7.3: the first apply of a new application
 
 Found by the first apply of `lab-notebook`'s root (run 38440870710), each with a regression test.
