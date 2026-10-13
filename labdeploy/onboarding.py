@@ -8,9 +8,11 @@ the policy and the checks have passed, and only when the configuration allows it
 import re
 import time
 
+import httpx
 import yaml
 
 from .config import Application, Principal
+from .github import explain
 from .models import AppSpec
 
 STEPS = ("validating", "registering", "infrastructure", "planning", "applying", "environment", "workflows", "merging_workflows", "releasing", "complete")
@@ -33,6 +35,18 @@ WHAT_NEXT = {
 
 class Blocked(Exception):
     """The onboarding cannot continue until a person changes something; the message says what."""
+
+
+def plain(error):
+    """A GitHub failure as a sentence that names the repository and, for a refused write, the permissions onboarding needs."""
+    repository = None
+    if isinstance(error, httpx.HTTPStatusError):
+        match = re.search(r"/repos/([^/]+/[^/]+)", str(error.request.url.path))
+        repository = match.group(1) if match else None
+    text = explain(error, repository) or f"{type(error).__name__}: {str(error)[:500]}"
+    if isinstance(error, httpx.HTTPStatusError) and error.response.status_code in (403, 404):
+        text += " Onboarding writes to the application and the platform repositories: the credential needs the permissions in docs/SETUP.md, section 7g."
+    return text
 
 
 def normalize_repository(text):
@@ -117,7 +131,7 @@ class Onboarder:
             except Blocked as exc:
                 record["blocked_at"], record["state"], record["error"] = state, "blocked", str(exc)[:600]
             except Exception as exc:  # noqa: BLE001 - a GitHub or cloud error is reported the same way, and the next call retries the step
-                record["blocked_at"], record["state"], record["error"] = state, "blocked", f"{type(exc).__name__}: {str(exc)[:500]}"
+                record["blocked_at"], record["state"], record["error"] = state, "blocked", plain(exc)[:600]
             self.c.store.save_onboarding(record["application"], record)
             if record["state"] != state:
                 self.c.store.record_event("onboarding", name=record["application"], application=record["application"], outcome=record["state"],
