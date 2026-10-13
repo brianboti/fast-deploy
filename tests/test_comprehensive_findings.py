@@ -362,3 +362,21 @@ def test_a_release_stopped_by_a_pre_check_says_nothing_was_deployed(tmp_path, mo
     assert receipt["failed_phase"] == "preparing" and "candidate_logs" not in receipt
     text = advice({"state": "failed", "failed_step": {"step": RELEASE_STEP}, "receipt": receipt})
     assert text.startswith("The release stopped before deploying anything (") and "Missing secrets: demo-MAIL_PASSWORD" in text
+
+
+def test_operator_switches_reach_an_onboarded_application_without_copying_its_entry(tmp_path):
+    # Live: lab-notebook's entry lives in the database; a ceiling, a pause or auto-deploy needed the whole entry copied.
+    from test_onboarding import make
+
+    c, brian, gh = make(tmp_path / "x")
+    c.onboard(brian, "https://github.com/lab/newapp")
+    assert c.config.applications["newapp"].cost_ceiling_usd is None
+    raw = c.config.current.model_dump()
+    raw["application_settings"] = {"newapp": {"cost_ceiling_usd": 5, "auto_deploy": True, "paused": True}}
+    from labdeploy.config import Config
+
+    c.config.current = Config.model_validate(raw)
+    app = c.config.applications["newapp"]
+    assert (app.cost_ceiling_usd, app.auto_deploy, app.paused, app.repository) == (5, True, True, "lab/newapp")
+    with pytest.raises(ValueError):
+        Config.model_validate({**raw, "application_settings": {"newapp": {"repository": "evil/repo"}}})  # only the switches

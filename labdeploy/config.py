@@ -128,9 +128,20 @@ class ObserverIdentity(StrictModel):
     cache_seconds: int = Field(default=2700, ge=60, le=3500)
 
 
+class ApplicationSettings(StrictModel):
+    """The operator's switches for an application registered by onboarding (whose entry lives in the database): the same
+    fields as an Application's, laid over the registered entry, so nothing has to be copied into the file."""
+    cost_ceiling_usd: float | int | None = None
+    paused: bool | None = None
+    auto_deploy: bool | None = None
+    infra: dict[str, int | bool] | None = None
+    viewers: list[str] | None = None
+
+
 class Config(StrictModel):
     applications: dict[str, Application]
     principals: list[Principal]
+    application_settings: dict[str, ApplicationSettings] = Field(default_factory=dict)
     platform: Platform | None = None
     observer: ObserverIdentity | None = None
     oauth: OAuth | None = None
@@ -191,8 +202,15 @@ class LiveConfig:
 
     @property
     def applications(self):
-        """The file's applications plus the registered ones; a registered id never hides one the operator wrote by hand."""
-        return {**self.registry, **self.current.applications}
+        """The file's applications plus the registered ones; a registered id never hides one the operator wrote by hand.
+        `application_settings` lays the operator's switches over a registered entry (validated like a whole entry)."""
+        registered = {}
+        for app_id, application in self.registry.items():
+            settings = self.current.application_settings.get(app_id)
+            if settings is not None:
+                application = Application.model_validate({**application.model_dump(), **settings.model_dump(exclude_none=True)})
+            registered[app_id] = application
+        return {**registered, **self.current.applications}
 
     def _mtime(self):
         try:
