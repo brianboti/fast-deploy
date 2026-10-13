@@ -237,6 +237,8 @@ ALLOWED_ROLES = frozenset({
     "roles/logging.viewer", "roles/monitoring.viewer", "roles/secretmanager.secretAccessor", "roles/secretmanager.viewer", "roles/bigquery.dataViewer",
     "roles/bigquery.jobUser", "roles/iam.serviceAccountUser", "roles/iam.serviceAccountOpenIdTokenCreator", "roles/iam.workloadIdentityUser",
     "roles/iap.httpsResourceAccessor",
+    # The release reads its image's vulnerability findings (the scan summary); the service module grants it to the deployer.
+    "roles/containeranalysis.occurrences.viewer",
 })
 CUSTOM_ROLE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/roles/labDeploy[A-Za-z]+$")
 # The one grant to a platform identity an application root makes by design: the spending cap may read and update the

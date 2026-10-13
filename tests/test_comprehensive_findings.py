@@ -97,3 +97,22 @@ def test_app_roots_plan_against_a_foundation_without_the_iap_output():
     main = files["main.tf"]
     assert re.search(r'iap_client_id\s+= try\(data\.terraform_remote_state\.project\.outputs\.iap_client_id, ""\)', main)
     assert re.search(r"network\s+= data\.terraform_remote_state\.project\.outputs\.network\n", main)
+
+
+def test_every_role_the_service_module_grants_is_one_the_policy_allows():
+    # The policy refused the module's own vulnerability-reader grant, so every new application was blocked;
+    # existing ones never noticed because only changes are judged.
+    from labdeploy.infra import ALLOWED_ROLES
+
+    text = "".join(path.read_text() for path in Path("infra/gcp/modules/service").glob("*.tf"))
+    roles = set(re.findall(r'"(roles/[A-Za-z.]+)"', text))
+    assert roles and not roles - ALLOWED_ROLES, roles - ALLOWED_ROLES
+
+
+def test_a_new_application_is_planned_against_an_empty_state():
+    # The gcs backend creates a missing state (and its lock) even with -lock=false; the read-only plan identity may not.
+    step = Path(".github/workflows/infra-plan.yml").read_text()
+    step = step[step.index("- name: Plan without taking the state lock"):step.index("- name: Check the plan")]
+    assert 'gcloud storage objects describe "gs://$bucket/$prefix/default.tfstate"' in step
+    assert "backend_override.tf" in step and 'grep -qiE "not found|404|No URLs matched"' in step
+    assert step.index("backend_override.tf") < step.index("terraform init") and "exit 1" in step

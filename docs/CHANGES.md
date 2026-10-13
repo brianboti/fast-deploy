@@ -1,3 +1,35 @@
+# 1.7.2: fixes from the comprehensive test with a complicated application
+
+A new reference application, `brianboti/lab-notebook` (pages for people, a JSON API, Postgres with Alembic migrations,
+an uploads bucket, an events topic read back on a page, an API key in Secret Manager), was taken through the platform
+from a repository link. It found these, each with a regression test (`tests/test_comprehensive_findings.py`):
+
+## Fixed
+
+1. **New applications could not be planned** (blocker). The gcs backend creates a missing state, and its lock, even with
+   `-lock=false`; the read-only plan identity may not, so the first plan of every new application root failed with a
+   403. `infra-plan.yml` now plans a root with no state yet against an empty local state; any other answer stops.
+2. **The policy refused the platform's own module** (blocker). The service module grants the deployer
+   `roles/containeranalysis.occurrences.viewer` for the scan summary; the role was missing from the allow-list, so
+   every new application's plan was `Policy: blocked`. Existing roots never noticed: only changes are judged.
+3. **A real migration could not create a table.** Since PostgreSQL 15 an ordinary user may not create objects in
+   `public`, and Cloud SQL gives a new IAM user no privileges beyond connecting. The runtime identity now gets
+   `database_roles = ["cloudsqlsuperuser"]` on its own instance. The 1.4 trial ran a migration that only printed.
+4. **Every new application failed to plan before the foundation was re-applied for 1.7.0**: the renderer read
+   `outputs.iap_client_id`, which an older foundation state does not have. It now falls back to `""` (no IAP client).
+5. `scripts/start.sh` aborted under zsh (`status` is reserved) exactly when the Keychain had no working token, so the
+   prompt for a new one never appeared; the prompt now lists the 7g permissions.
+6. The analyzer read only `requirements.txt` and printed false advice for a reproducible repository (lock file ignored)
+   and asked for tests that existed. It now reads the repository's file list, and suggests needs (bucket, topic,
+   database, migration) in the review questions instead of putting database libraries in the legacy `dependencies`
+   field, whose policy message still said databases are not implemented (decision D16).
+7. Demo mode registered every directory as `lab-demo`, so any other application's plan was refused; it now uses the
+   name in the application's `platform.yaml`, and the walkthrough stops with a plain message on a refusal.
+
+## Upgrade steps
+
+1. Restart the controller. No runner or template change: application workflows keep their pin.
+
 # 1.7.1: a playbook for Claude chat
 
 ## Added
