@@ -118,6 +118,21 @@ resource "google_project_iam_member" "infra_apply_buckets" {
   role    = google_project_iam_custom_role.bucket_manager[0].name
   member  = "serviceAccount:${google_service_account.infra_apply[0].email}"
 }
+# A log-based alert policy (the service module's `log_errors`) is stored as a Cloud Logging notification rule, which
+# monitoring.admin does not cover. Only those five permissions: no sinks, views or exclusions (roles/logging.configWriter).
+resource "google_project_iam_custom_role" "log_alert_writer" {
+  count       = local.pipeline_enabled ? 1 : 0
+  role_id     = "labDeployLogAlertWriter"
+  title       = "Lab Deploy log alert writer"
+  description = "Creates and maintains the notification rules behind log-based alert policies"
+  permissions = ["logging.notificationRules.create", "logging.notificationRules.delete", "logging.notificationRules.get", "logging.notificationRules.list", "logging.notificationRules.update"]
+}
+resource "google_project_iam_member" "infra_apply_log_alerts" {
+  count   = local.pipeline_enabled ? 1 : 0
+  project = var.project_id
+  role    = google_project_iam_custom_role.log_alert_writer[0].name
+  member  = "serviceAccount:${google_service_account.infra_apply[0].email}"
+}
 resource "google_storage_bucket_iam_member" "infra_apply_state" {
   count  = local.pipeline_enabled ? 1 : 0
   bucket = var.state_bucket

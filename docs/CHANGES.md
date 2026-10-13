@@ -1,3 +1,23 @@
+# 1.7.3: the first apply of a new application
+
+Found by the first apply of `lab-notebook`'s root (run 38440870710), each with a regression test.
+
+## Fixed
+
+1. **The apply identity could not create the log-error alert.** A log-based alert policy is stored as a Cloud Logging
+   notification rule, which `roles/monitoring.admin` does not cover. The foundation adds the custom role
+   `labDeployLogAlertWriter` (the five `logging.notificationRules.*` permissions, nothing wider such as sinks) for the
+   apply identity. The demo's alert had been created by the operator before the pipeline existed.
+2. **The first apply of a new application failed on the uptime check** ("404 Requested entity was not found"): it was
+   created four seconds after the brand-new Cloud Run service, which Monitoring did not see yet; the same apply a
+   minute later succeeded. The apply step now plans again after a minute, re-checks the policy and applies once more
+   when an apply fails; a real problem still fails twice.
+
+## Upgrade steps
+
+1. Re-apply the foundation (`scripts/apply-foundation.sh PROJECT`): the plan adds the role, its grant, and the IAP API
+   from 1.7.0 (3 to add, 0 to change, 0 to destroy on staging).
+
 # 1.7.2: fixes from the comprehensive test with a complicated application
 
 A new reference application, `brianboti/lab-notebook` (pages for people, a JSON API, Postgres with Alembic migrations,
