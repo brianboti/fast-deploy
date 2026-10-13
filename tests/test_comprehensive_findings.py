@@ -185,3 +185,75 @@ def test_a_recovery_check_still_running_is_not_reported_as_concluded_none():
     assert "concluded 'None'" not in text and "still in_progress: https://github.com/o/a/actions/runs/1" in text
     failed["recovery_run"].update(status="completed", conclusion="success")
     assert "The recovery run that followed concluded 'success'" in advice(failed)
+
+
+def test_a_failed_migration_reports_its_own_error_line_and_log(tmp_path, monkeypatch):
+    # Live: the receipt said only "The execution failed" (gcloud's tail, the execution name cut off) and looked for logs
+    # of a candidate that was never created. The cause was in the job's log: relation "experiment_typo" does not exist.
+    import json
+    import subprocess
+
+    from labdeploy.release import CloudRun, MigrationFailed
+
+    monkeypatch.chdir(tmp_path)
+    error = 'sqlalchemy.exc.DatabaseError: relation "experiment_typo" does not exist'
+
+    def runner(command):
+        if "execute" in command:
+            stderr = "ERROR: (gcloud.run.jobs.execute) The execution failed.\nView details about this execution by running:\ngcloud run jobs executions describe "
+            raise subprocess.CalledProcessError(1, command, stderr=stderr)
+        if "executions" in command and "list" in command:
+            return "demo-migrate-x1z2\n"
+        if command[:3] == ["gcloud", "logging", "read"]:
+            assert 'labels."run.googleapis.com/execution_name"="demo-migrate-x1z2"' in command[3]
+            return json.dumps([{"severity": "ERROR", "textPayload": error, "timestamp": "t2"},
+                               {"severity": "INFO", "textPayload": "Running upgrade 0003 -> 0004", "timestamp": "t1"}])
+        return ""
+
+    adapter = CloudRun("test-project", "us-central1", "demo", "demo-probe@test-project.iam.gserviceaccount.com", runner=runner)
+    with pytest.raises(MigrationFailed) as failure:
+        adapter.migrate("img@sha256:" + "b" * 64, AppSpec(name="demo", needs={"database": "postgres", "migrate": ["alembic", "upgrade", "head"]}))
+    assert str(failure.value) == f"Migration job demo-migrate failed (execution demo-migrate-x1z2): {error}"
+    assert [line["message"] for line in failure.value.logs] == ["Running upgrade 0003 -> 0004", error]
+
+
+def test_a_failed_migration_is_explained_as_one_and_keeps_its_log(tmp_path, monkeypatch):
+    import json
+
+    from labdeploy.release import MigrationFailed, rollout
+    from labdeploy.status import RELEASE_STEP, advice
+
+    monkeypatch.chdir(tmp_path)
+
+    class Cloud:
+        service = "demo"
+
+        def __init__(self):
+            self.calls = []
+
+        def describe(self):
+            return {"status": {"url": "https://demo.run.app", "traffic": [{"revisionName": "demo-rold", "percent": 100}]}}
+
+        def traffic(self, allocations):
+            self.calls.append("traffic")
+
+        def require_needs(self, spec):
+            pass
+
+        def migrate(self, image, spec):
+            raise MigrationFailed("Migration job demo-migrate failed (execution e9): relation does not exist", [{"severity": "ERROR", "message": "relation does not exist"}])
+
+        def revision_logs(self, revision, limit=50):
+            raise AssertionError("no candidate exists after a failed migration")
+
+        def run(self, args):
+            return ""
+
+    spec = AppSpec(name="demo", reviewed=True, needs={"database": "postgres", "migrate": ["alembic", "upgrade", "head"]})
+    with pytest.raises(RuntimeError, match="Release failed"):
+        rollout(Cloud(), "us-central1-docker.pkg.dev/test-project/demo/demo@sha256:" + "a" * 64, spec, "1" * 32, "receipt.json")
+    receipt = json.loads(Path("receipt.json").read_text())
+    assert receipt["state"] == "traffic_restored" and receipt["failed_phase"] == "migrating" and "candidate_logs" not in receipt
+    assert receipt["migration_logs"][0]["message"] == "relation does not exist" and receipt["error"].endswith("relation does not exist")
+    text = advice({"state": "failed", "failed_step": {"step": RELEASE_STEP}, "receipt": receipt})
+    assert text.startswith("The database migration failed, so nothing new was deployed") and "relation does not exist" in text

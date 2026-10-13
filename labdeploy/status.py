@@ -140,6 +140,10 @@ def advice(plan):
     failed = plan.get("failed_step") or {}
     step = failed.get("step") or ""
     if step == RELEASE_STEP or (state in {"cancelled", "timed_out"} and receipt):
+        if receipt.get("state") == "traffic_restored" and receipt.get("failed_phase") == "migrating":
+            return (f"The database migration failed, so nothing new was deployed and the previous revision kept serving ({receipt.get('error', 'see the receipt')}). "
+                    "Fix the migration and deploy again; check its log lines in the receipt first, since a tool that does not run the "
+                    "migration in one transaction may have applied part of it." + recovered)
         if receipt.get("state") == "traffic_restored":
             return (f"The candidate failed ({receipt.get('error', 'see the receipt')}); traffic was restored and the previous revision kept serving. "
                     "Fix the application and deploy again." + (" The candidate's last log lines are in the receipt." if receipt.get("candidate_logs") else "") + recovered)
