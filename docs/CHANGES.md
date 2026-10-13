@@ -1,3 +1,20 @@
+# 1.6.0: one sentence (Phase 7, items 7.1, 7.2, 7.4 and 7.6)
+
+## Added
+
+1. **`onboard_application`**: from a repository link to a running service, for a repository that follows `docs/DEVELOPER-CONTRACT.md`. The tool checks the contract (the files, a valid and reviewed `platform.yaml`, tests, the exposed port) and stops with a checklist when something is missing; registers the application; renders its Terraform root and opens the pull request on the platform repository; merges it once the plan workflow has run and the policy says passed (and only when every file is under the application's own root); waits for the apply; creates the app's `staging` environment restricted to `main` and writes its eight variables (plus `BILLING_EXPORT_TABLE` when configured); opens and merges the pull request that adds the three workflows; then plans and dispatches the first release. Steps that wait on GitHub or the pipeline end the call; the scheduler continues every minute, and `get_onboarding_status` says where it stands. Calling again resumes, also after a fix.
+2. **Applications registered in the database** (decision D13): onboarding writes the application entry to the controller's database and the live configuration shows it next to the file's entries; the file keeps principals and settings. An identity with `applications: ["*"]` sees every application, including the ones registered later.
+3. **`onboarding` block** in the configuration: `project_id`, `project_number`, `region`, optional `state_bucket`, `bootstrap_image`, `environment`, `billing_export_table`, and `auto_merge` (default true; false leaves every merge to a person, the tool then waits).
+
+## Changed
+
+- The scheduler runs the onboarding tick every minute; `get_controller_status` shows it with the other jobs.
+- The GitHub credential needs more than reading: see `docs/SETUP.md`, "One sentence", for the fine-grained token's permissions (all repositories; contents, pull requests, workflows, actions, environments, variables and administration). A GitHub App (decision D14) stays planned.
+
+## Upgrade steps
+
+1. Restart the controller, add the `onboarding` block and `applications: ["*"]` for the operator, and replace the GitHub token with one that covers every repository and the permissions above (`scripts/start.sh` stores it). No runner change: application workflows keep their pin.
+
 # 1.5.0: the review's fixes
 
 Every finding of the strict review of 2026-10-12 (`docs/REVIEW-2026-10-12.md`), in its order, with a regression test where code changed.

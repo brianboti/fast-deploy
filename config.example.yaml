@@ -51,3 +51,8 @@ principals:
     applications: [demo]
     can_deploy: true
 
+# One-sentence onboarding (docs/SETUP.md 7g): where new applications go. Needs an identity with applications: ["*"].
+# onboarding:
+#   project_id: your-staging-project
+#   project_number: "123456789012"
+#   region: us-central1

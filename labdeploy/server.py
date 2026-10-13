@@ -108,7 +108,11 @@ INSTRUCTIONS = (
     "and never describe a check as passed unless its value is 'passed'. Requests for other clouds, production, databases, "
     "GPUs or larger resources are refused by policy; relay the refusal instead of working around it. "
     "Use estimate_cost to explain cost bounds and findings before deploying, and get_cost_report for measured right-sizing; "
-    "present bounds as bounds, never as a bill forecast, and say which costs are excluded."
+    "present bounds as bounds, never as a bill forecast, and say which costs are excluded. "
+    "To deploy a repository that is not registered yet, call onboard_application with its link: it validates the repository against "
+    "the contract, registers it, opens and merges its pull requests when the policy passes, prepares its GitHub environment and "
+    "releases the first commit, continuing on its own in the background; report the step and what it waits for, use "
+    "get_onboarding_status to follow it, and get_deployment_status with the plan id it returns when complete."
 )
 
 
@@ -250,6 +254,21 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
     def propose_infrastructure(application: str) -> dict[str, Any]:
         """Render the app's Terraform root (service, registry, identities, trust, alerts) and open a pull request on the platform repository; the pipeline applies it on merge. Never merges."""
         return controller.propose_infrastructure(identity.get(), application)
+
+    @mcp.tool(title="Onboard a repository (one sentence)", annotations=CHANGES_CLOUD, structured_output=True)
+    @plain_errors
+    def onboard_application(repository: str, application: str | None = None, auto_deploy: bool = False) -> dict[str, Any]:
+        """From a repository link to a running service, for a repository that follows docs/DEVELOPER-CONTRACT.md: validate it, register it,
+        open and (when the policy and checks pass) merge its infrastructure and workflow pull requests, wait for the pipeline, create the
+        GitHub environment with its variables, and release the first commit. Resumable: call again to continue, or after fixing what
+        blocked it. Changes cloud resources."""
+        return controller.onboard(identity.get(), repository, application, auto_deploy)
+
+    @mcp.tool(title="Get onboarding status", annotations=READ_ONLY, structured_output=True)
+    @plain_errors
+    def get_onboarding_status(application: str) -> dict[str, Any]:
+        """Where a repository's onboarding stands: the step in progress, what it waits for, or what blocked it and how to fix it."""
+        return controller.onboarding_status(identity.get(), application)
 
     @mcp.tool(title="Deploy to staging", annotations=CHANGES_CLOUD, structured_output=True)
     @plain_errors

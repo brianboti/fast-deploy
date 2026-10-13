@@ -3,11 +3,12 @@ import datetime
 import json
 import re
 import sqlite3
+import threading
 import time
 import uuid
 
 from .analyzer import FILES, analyze
-from .config import Principal
+from .config import Application, Principal
 from .cost import estimate, findings
 from .github import explain
 from .infra import BOOTSTRAP_IMAGE, app_root
@@ -29,7 +30,36 @@ class Store:
             db.execute("CREATE TABLE IF NOT EXISTS events (at REAL NOT NULL, identity TEXT, client TEXT, kind TEXT NOT NULL, name TEXT, application TEXT, "
                        "outcome TEXT, duration_ms INTEGER, detail TEXT)")
             db.execute("CREATE INDEX IF NOT EXISTS events_at ON events (at)")
+            db.execute("CREATE TABLE IF NOT EXISTS applications (id TEXT PRIMARY KEY, created REAL NOT NULL, payload TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS onboardings (id TEXT PRIMARY KEY, updated REAL NOT NULL, payload TEXT NOT NULL)")
             db.execute("PRAGMA journal_mode=WAL")  # readers never block the scheduler's and the request handlers' writes
+
+    # ---- applications registered by onboarding, and the onboarding records themselves
+    def register_application(self, app_id, entry):
+        with self.connect() as db:
+            db.execute("INSERT OR REPLACE INTO applications VALUES (?, ?, ?)", (app_id, time.time(), json.dumps(entry)))
+
+    def unregister_application(self, app_id):
+        with self.connect() as db:
+            db.execute("DELETE FROM applications WHERE id=?", (app_id,))
+
+    def registered_applications(self):
+        with self.connect() as db:
+            return {row[0]: json.loads(row[1]) for row in db.execute("SELECT id, payload FROM applications ORDER BY created").fetchall()}
+
+    def onboarding(self, app_id):
+        with self.connect() as db:
+            row = db.execute("SELECT payload FROM onboardings WHERE id=?", (app_id,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_onboarding(self, app_id, record):
+        record["updated_at"] = time.time()
+        with self.connect() as db:
+            db.execute("INSERT OR REPLACE INTO onboardings VALUES (?, ?, ?)", (app_id, record["updated_at"], json.dumps(record)))
+
+    def onboardings(self):
+        with self.connect() as db:
+            return [json.loads(row[0]) for row in db.execute("SELECT payload FROM onboardings ORDER BY updated").fetchall()]
 
     @contextlib.contextmanager
     def connect(self):
@@ -161,7 +191,55 @@ class Store:
 class Controller:
     def __init__(self, config, github, store, observer=None):
         self._cache = {}
+        self._onboarding_lock = threading.Lock()
         self.config, self.github, self.store, self.observer = config, github, store, observer
+        self.refresh_registry()
+
+    def refresh_registry(self):
+        """Applications onboarding registered live in the database; the live configuration shows them next to the file's."""
+        if hasattr(self.config, "registry"):
+            self.config.registry = {app_id: Application.model_validate(entry) for app_id, entry in self.store.registered_applications().items()}
+
+    def visible_apps(self, principal):
+        """The application ids this identity may see: its list, or every registered application for a `*` identity."""
+        if "*" in principal.applications:
+            return list(self.config.applications)
+        return [app_id for app_id in principal.applications if app_id in self.config.applications]
+
+    # ---- one sentence: a repository that follows the contract becomes a running service
+    def onboard(self, principal, repository, app_id=None, auto_deploy=False):
+        from .onboarding import Onboarder
+        with self._onboarding_lock:
+            return Onboarder(self).start(principal, repository, app_id, auto_deploy)
+
+    def advance_onboarding(self, app_id):
+        from .onboarding import Onboarder
+        with self._onboarding_lock:
+            record = self.store.onboarding(app_id)
+            if record is None:
+                raise ValueError("No onboarding record for this application")
+            return Onboarder(self).advance(record)
+
+    def onboarding_tick(self):
+        """One pass over every onboarding that waits on GitHub or the pipeline; the scheduler calls it every minute."""
+        from .onboarding import ACTIVE
+        results = {}
+        for record in self.store.onboardings():
+            if record.get("state") in ACTIVE:
+                try:
+                    results[record["application"]] = self.advance_onboarding(record["application"])["state"]
+                except Exception as exc:  # noqa: BLE001 - one stuck onboarding must not stop the others
+                    results[record["application"]] = f"error: {str(exc)[:120]}"
+        return results
+
+    def onboarding_status(self, principal, app_id):
+        from .onboarding import describe
+        record = self.store.onboarding(app_id)
+        if record is None:
+            raise ValueError("No onboarding record for this application; call onboard_application with the repository link")
+        if "*" not in principal.applications and app_id not in principal.applications:
+            raise ValueError("Application is not authorized for this identity")
+        return describe(record)
 
     AUTO_DEPLOY_IDENTITY = "auto-deploy"
 
@@ -335,7 +413,7 @@ class Controller:
         return {"application": app_id, "minutes": minutes, "severity": severity, "count": len(lines), "lines": lines}
 
     def app(self, principal, app_id, write=False):
-        if app_id not in principal.applications or app_id not in self.config.applications:
+        if app_id not in self.visible_apps(principal):
             raise ValueError("Application is not authorized for this identity")
         if write and not principal.can_deploy:
             raise ValueError("Identity has read-only access")
@@ -511,14 +589,14 @@ class Controller:
     def plans(self, principal):
         """Deployers see every plan of their applications, including auto-deploy's; read-only identities see their own."""
         if principal.can_deploy:
-            return {"plans": self.store.plans(applications=list(principal.applications))}
+            return {"plans": self.store.plans(applications=self.visible_apps(principal))}
         return {"plans": self.store.plans(principal.name)}
 
     def load(self, principal, plan_id):
         """A plan this identity may see, with the identity that created it: deployers may see any plan of their applications."""
         if principal.can_deploy:
             found = self.store.fetch(plan_id)
-            if found is None or found[1].get("application") not in principal.applications:
+            if found is None or found[1].get("application") not in self.visible_apps(principal):
                 raise ValueError("Plan not found for this identity")
             return found
         return principal.name, self.store.get(principal.name, plan_id)
@@ -589,7 +667,7 @@ class Controller:
     def applications(self, principal):
         """Registered apps this identity may see, each with the live release this controller recorded and what main holds beyond it."""
         result = {}
-        for app_id in principal.applications:
+        for app_id in self.visible_apps(principal):
             app = self.config.applications[app_id]
             entry = app.model_dump()
             entry["paused"] = bool(self.config.paused or app.paused)

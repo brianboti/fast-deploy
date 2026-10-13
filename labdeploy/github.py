@@ -222,6 +222,69 @@ class GitHub:
             raise ValueError("Repository input exceeds 64 KiB")
         return {"sha": data.get("sha"), "text": base64.b64decode(data["content"], validate=False).decode("utf-8")}
 
+    # ---- onboarding: read a repository's shape, follow its pull requests and runs, prepare its environment
+    def repository(self, repository):
+        data = self.request("GET", f"/repos/{repository}").json()
+        return {"repository_id": str(data["id"]), "owner_id": str(data["owner"]["id"]), "default_branch": data.get("default_branch"),
+                "private": bool(data.get("private")), "url": data.get("html_url")}
+
+    def tree(self, repository, ref):
+        """Every path in the repository at a ref (files and directories), for the contract's checks."""
+        data = self.request("GET", f"/repos/{repository}/git/trees/{quote(ref, safe='')}", params={"recursive": "1"}).json()
+        return [item["path"] for item in data.get("tree", []) if item.get("type") in ("blob", "tree")]
+
+    def pull_request(self, repository, number):
+        data = self.request("GET", f"/repos/{repository}/pulls/{number}").json()
+        return {"number": number, "state": data["state"], "merged": bool(data.get("merged")), "mergeable_state": data.get("mergeable_state"),
+                "head_sha": data["head"]["sha"], "merge_commit_sha": data.get("merge_commit_sha"), "url": data["html_url"]}
+
+    def pull_request_files(self, repository, number):
+        return [item["filename"] for item in self.request("GET", f"/repos/{repository}/pulls/{number}/files", params={"per_page": 100}).json()]
+
+    def merge_pull_request(self, repository, number, title):
+        """Squash-merge; a refusal (checks pending, protection, conflicts) is reported, never forced."""
+        try:
+            data = self.request("PUT", f"/repos/{repository}/pulls/{number}/merge", json={"merge_method": "squash", "commit_title": title}).json()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (405, 409, 422):
+                try:
+                    reason = exc.response.json().get("message", "")
+                except ValueError:
+                    reason = exc.response.text[:200]
+                return {"merged": False, "sha": None, "reason": reason}
+            raise
+        return {"merged": bool(data.get("merged")), "sha": data.get("sha"), "reason": data.get("message")}
+
+    def issue_comments(self, repository, number):
+        return [item.get("body", "") for item in self.request("GET", f"/repos/{repository}/issues/{number}/comments", params={"per_page": 100}).json()]
+
+    def workflow_runs(self, repository, workflow, head_sha=None, limit=5):
+        params = {"per_page": limit}
+        if head_sha:
+            params["head_sha"] = head_sha
+        runs = self.request("GET", f"/repos/{repository}/actions/workflows/{workflow}/runs", params=params).json().get("workflow_runs", [])
+        return [{"id": run["id"], "status": run["status"], "conclusion": run.get("conclusion"), "url": run["html_url"], "head_sha": run["head_sha"]} for run in runs]
+
+    def ensure_environment(self, repository, name, branch):
+        """The deployment environment the workflows run in, restricted to one branch; idempotent."""
+        path = f"/repos/{repository}/environments/{quote(name, safe='')}"
+        self.request("PUT", path, json={"deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": True}})
+        try:
+            self.request("POST", path + "/deployment-branch-policies", json={"name": branch, "type": "branch"})
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 422:  # 422: the policy for this branch already exists
+                raise
+
+    def set_environment_variables(self, repository, name, variables):
+        path = f"/repos/{repository}/environments/{quote(name, safe='')}/variables"
+        for key, value in variables.items():
+            try:
+                self.request("POST", path, json={"name": key, "value": value})
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 409:
+                    raise
+                self.request("PATCH", f"{path}/{key}", json={"name": key, "value": value})
+
     def repository_ids(self, repository):
         """The immutable numeric ids GitHub's OIDC tokens carry; Workload Identity Federation trusts these, not names."""
         data = self.request("GET", f"/repos/{repository}").json()

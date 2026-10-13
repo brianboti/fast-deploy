@@ -24,6 +24,7 @@ class Scheduler(threading.Thread):
             "auto_deploy": (controller.auto_deploy_tick, lambda: config.auto_deploy_interval_seconds, 60),
             "watchdog": (controller.watchdog_tick, lambda: 86_400, 120),
             "backup": (controller.backup_tick, lambda: 86_400, 300),
+            "onboarding": (controller.onboarding_tick, lambda: 60, 30),
         }
         self.state = {name: {"next_run": started + first, "last_run": None, "last_result": None, "last_error": None} for name, (_, _, first) in self.jobs.items()}
 
