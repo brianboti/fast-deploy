@@ -326,3 +326,39 @@ def test_an_invalid_platform_yaml_is_explained_in_plain_words():
     text = plain_validation(failure.value)
     assert text.startswith("platform.yaml is not valid: ") and "exposure: Input should be 'authenticated' or 'lab-members'" in text
     assert "resources.cpu" in text and "pydantic.dev" not in text
+
+
+def test_a_release_stopped_by_a_pre_check_says_nothing_was_deployed(tmp_path, monkeypatch):
+    # Live: a missing secret stopped the release in its first phase, and the status said "The candidate failed".
+    import json
+
+    from labdeploy.release import rollout
+    from labdeploy.status import RELEASE_STEP, advice
+
+    monkeypatch.chdir(tmp_path)
+
+    class Cloud:
+        service = "demo"
+
+        def describe(self):
+            return {"status": {"url": "https://demo.run.app", "traffic": [{"revisionName": "demo-rold", "percent": 100}]}}
+
+        def traffic(self, allocations):
+            pass
+
+        def require_secrets(self, spec):
+            raise ValueError("Missing secrets: demo-MAIL_PASSWORD")
+
+        def revision_logs(self, revision, limit=50):
+            raise AssertionError("no candidate exists before deploying")
+
+        def run(self, args):
+            return ""
+
+    spec = AppSpec(name="demo", reviewed=True, secrets=["MAIL_PASSWORD"])
+    with pytest.raises(RuntimeError, match="Release failed"):
+        rollout(Cloud(), "us-central1-docker.pkg.dev/test-project/demo/demo@sha256:" + "a" * 64, spec, "1" * 32, "receipt.json")
+    receipt = json.loads(Path("receipt.json").read_text())
+    assert receipt["failed_phase"] == "preparing" and "candidate_logs" not in receipt
+    text = advice({"state": "failed", "failed_step": {"step": RELEASE_STEP}, "receipt": receipt})
+    assert text.startswith("The release stopped before deploying anything (") and "Missing secrets: demo-MAIL_PASSWORD" in text
