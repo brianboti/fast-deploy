@@ -194,6 +194,36 @@ Order: 7.1 and 7.2 first (they stand alone and remove the configuration edit), t
 
 Cost effect: none at idle; each onboarded application adds only what it declares (compute at zero when idle, a few cents of registry storage, Cloud SQL about 9 a month when chosen).
 
+## Phase 8: pages for people (about two and a half days) → version 1.7
+
+Status: planned on 2026-10-13 after the operator said every lab application is a Python backend with UI pages connected to it. Today every service is deployed as `authenticated`: callers must present a Google identity token, which a person's browser cannot do, so the pages answer 403 to people. The backend and the served pages are already built and deployed correctly; what is missing is a sign-in for people in front of the service.
+
+The design is Google's Identity-Aware Proxy (IAP) enabled directly on the Cloud Run service (no load balancer, no extra monthly cost): a Google sign-in page in front of the app, only the lab's listed accounts allowed, the app unchanged. Sources: [IAP on Cloud Run](https://docs.cloud.google.com/run/docs/securing/identity-aware-proxy-cloud-run) (`--iap`, Terraform `iap_enabled`, `roles/iap.httpsResourceAccessor` per service, the IAP service agent as invoker, a custom OAuth client for a project without an organization, first enablement in the console) and [Enabling IAP for Cloud Run](https://docs.cloud.google.com/iap/docs/enabling-cloud-run).
+
+### Decisions the operator makes before "go"
+
+| # | Decision | Default if nothing is said |
+|---|---|---|
+| D17 | Who may open an app's pages: a list per app, a lab-wide list, or both | Both: `onboarding.default_viewers` (the lab's Google accounts) applied to every onboarded app, plus `viewers` per app in the controller's registry; the operator edits them, developers cannot grant themselves |
+| D18 | Which accounts: personal Google accounts, a Google group, or a Workspace domain | Any Google account listed by email (`user:`), groups when the lab has one (`group:`); the project has no organization, so a custom OAuth client with an External brand is created once in the console (the only manual step) |
+| D19 | Exposure values in `platform.yaml` | `authenticated` (programs only, today's default) and `lab-members` (people through IAP); `public` stays refused |
+| D20 | Probes and the uptime check behind IAP | The probe identity gets the IAP accessor role and presents IAP-aware tokens; the uptime check keeps its service-agent authentication only if IAP accepts it in the trial, otherwise it moves to a synthetic check through IAP |
+
+### Items
+
+| # | Item | Where |
+|---|---|---|
+| 8.1 | One-time enablement in the console (operator): IAP API, the custom OAuth client with "Auto generate credentials" on the demo service, recorded in `docs/SETUP.md` | docs |
+| 8.2 | Terraform in the service module: `iap_enabled` from a variable, the IAP service agent as invoker, `google_iap_web_cloud_run_service_iam_member` per viewer; the renderer passes `exposure` and the viewer list; policy: `lab-members` requires a non-empty viewer list, `public` refused | `infra/gcp/modules/service`, `labdeploy/infra.py` |
+| 8.3 | The runner: `--iap` on deploy when `exposure: lab-members`, the candidate and final probes through IAP with the probe identity (D20), the receipt names the sign-in | `labdeploy/release.py` |
+| 8.4 | The model and the health view: `exposure: lab-members`, `viewers` in the registry and the configuration, `get_service_health` shows who may open the pages | `labdeploy/models.py`, `labdeploy/config.py`, `labdeploy/controller.py` |
+| 8.5 | A live trial on `lab-demo-two` with a page: a listed account opens it after Google sign-in, an unlisted one is refused, programs still reach the API with tokens | docs |
+| 8.6 | Documents: the contract (what the app must and must not do about sign-in: trust the `X-Goog-Authenticated-User-Email` header IAP adds, never roll its own login), the chat guide, the runbook | docs |
+
+Order: 8.1 by the operator, then 8.2 and 8.4 (one apply per app through the pipeline), 8.3, the trial, the documents. What stays human: the console enablement once, and the viewer lists.
+
+Cost effect: IAP on Cloud Run has no charge of its own; no load balancer is created.
+
 ## Totals
 
 | Phase | Effort | Workflows regenerated | Terraform apply |
@@ -206,5 +236,6 @@ Cost effect: none at idle; each onboarded application adds only what it declares
 | 5 | two days | no | yes |
 | 6 | about eleven days | yes | by the pipeline from then on |
 | 7 | about four and a half days | yes (the trial repository) | by the pipeline |
+| 8 | about two and a half days | yes | by the pipeline |
 
 About nine and a half days of work for Phases 0 to 5, plus the live exercises, which take an hour or two per phase. Phase 6 adds about eleven days and a trial per resource type.
