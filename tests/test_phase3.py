@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+import time
 from pathlib import Path
 
 import httpx
@@ -30,8 +31,11 @@ def test_billing_actuals_queries_the_export_and_sums_net_cost():
     captured = {}
 
     def handler(request):
-        captured["body"] = json.loads(request.content)
+        body = json.loads(request.content)
         assert request.url.path == "/bigquery/v2/projects/test-project/queries" and request.headers["Authorization"] == "Bearer t"
+        if "MAX(usage_end_time)" in body["query"]:  # the export is fresh
+            return httpx.Response(200, json={"jobComplete": True, "rows": [{"f": [{"v": str(int(time.time()) - 3600)}]}]})
+        captured["body"] = body
         return httpx.Response(200, json={"jobComplete": True, "rows": [{"f": [{"v": "Cloud Run"}, {"v": "demo"}, {"v": "1.5"}]}, {"f": [{"v": "Artifact Registry"}, {"v": "demo"}, {"v": "0.25"}]},
                                                                       {"f": [{"v": "Cloud Run"}, {"v": None}, {"v": "0.5"}]}]})
     result = billing_actuals("test-project.billing_export.gcp_billing_export_v1_ABC", "test-project", "t", client=httpx.Client(transport=httpx.MockTransport(handler)), app="demo")

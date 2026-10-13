@@ -407,3 +407,27 @@ def test_a_release_that_completed_before_a_late_cancel_is_the_live_release(tmp_p
     status = c.status(p, plan["id"])
     assert status["state"] == "succeeded" and "completed before the run ended (cancelled)" in status["next_action"]
     assert c.applications(p)["demo"]["live_release"]["plan_id"] == plan["id"]
+
+
+def test_a_billing_export_without_recent_data_makes_spend_unknown_not_zero():
+    # Live: the export's newest row was 18 days old and the cost report said "total net cost $0".
+    import json
+    import time
+
+    import httpx
+
+    from labdeploy.cost import billing_actuals, issue_body, summary_lines
+
+    asked = []
+
+    def handler(request):
+        asked.append(json.loads(request.content)["query"])
+        return httpx.Response(200, json={"jobComplete": True, "rows": [{"f": [{"v": str(int(time.time()) - 18 * 86400)}]}]})
+
+    result = billing_actuals("p-12345.billing_export.gcp_billing_export_v1_ABC", "p-12345", "t", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert len(asked) == 1 and "MAX(usage_end_time)" in asked[0]  # the full query is not even run
+    assert result["total_net_cost_usd"] is None and result["by_service"] is None and "actual spend is unknown, not zero" in result["warning"]
+    report = {"service": "demo", "window_days": 14, "estimate": {"compute_ceiling_usd_month": 10.0, "idle_floor_usd_month": 0.0},
+              "rightsizing": {"observed": None, "recommendations": []}, "actual_spend": result}
+    assert any("Actual spend unavailable: The billing export has no data after" in line for line in summary_lines(report))
+    assert "unknown, not zero" in issue_body(report, "https://run")

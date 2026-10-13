@@ -21,6 +21,7 @@ import math
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from .models import AppSpec
@@ -345,6 +346,8 @@ def summary_lines(report):
         lines.append(f"Actual project spend, last {actual['window_days']} days, net of credits: ${actual['total_net_cost_usd']:.2f} ({top or 'nothing billed'})")
         if actual.get("app"):
             lines.append(f"Of which labelled {actual['app']['name']}: ${actual['app']['net_cost_usd']:.2f}")
+    elif actual.get("warning"):
+        lines.append(f"Actual spend unavailable: {actual['warning']}")
     if observed:
         lines.append(f"Observed usage priced at list rates: ${observed['usd_month_at_list_price']:.2f}/month ({observed['requests']} requests)")
     else:
@@ -388,27 +391,45 @@ ORDER BY net_cost_usd DESC
 """
 
 
-def billing_actuals(table, project_id, token, days=30, client=None, app=None):
-    """Actual net spend from the Cloud Billing export in BigQuery, by Google service and by the lab-deploy-app label: the bill, not an estimate."""
+FRESHNESS_QUERY = "SELECT UNIX_SECONDS(MAX(usage_end_time)) AS latest FROM `{table}`"
+STALE_AFTER_SECONDS = 2 * 86400  # the export is up to a day behind; two days without data means it is not arriving
+
+
+def billing_actuals(table, project_id, token, days=30, client=None, app=None, now=None):
+    """Actual net spend from the Cloud Billing export in BigQuery, by Google service and by the lab-deploy-app label: the bill, not an estimate.
+    An export without recent data makes the spend unknown, never zero."""
     import httpx
     if not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+", table):
         raise ValueError("BILLING_EXPORT_TABLE must be project.dataset.table")
-    body = {"query": BILLING_QUERY.format(table=table), "useLegacySql": False, "parameterMode": "NAMED", "timeoutMs": 30000, "maxResults": 100,
-            "queryParameters": [{"name": "project", "parameterType": {"type": "STRING"}, "parameterValue": {"value": project_id}},
-                                {"name": "days", "parameterType": {"type": "INT64"}, "parameterValue": {"value": str(days)}}]}
-    response = (client or httpx).post(f"https://bigquery.googleapis.com/bigquery/v2/projects/{project_id}/queries", json=body,
-                                      headers={"Authorization": "Bearer " + token}, timeout=45)
-    response.raise_for_status()
-    data = response.json()
-    if not data.get("jobComplete", True):
-        raise ValueError("BigQuery did not finish the billing query in time")
-    cells = [{"service": row["f"][0]["v"], "app": row["f"][1]["v"] or "", "net_cost_usd": float(row["f"][2]["v"])} for row in data.get("rows", [])]
+
+    def query(text, parameters=()):
+        body = {"query": text, "useLegacySql": False, "parameterMode": "NAMED", "timeoutMs": 30000, "maxResults": 100, "queryParameters": list(parameters)}
+        response = (client or httpx).post(f"https://bigquery.googleapis.com/bigquery/v2/projects/{project_id}/queries", json=body,
+                                          headers={"Authorization": "Bearer " + token}, timeout=45)
+        response.raise_for_status()
+        data = response.json()
+        if not data.get("jobComplete", True):
+            raise ValueError("BigQuery did not finish the billing query in time")
+        return data.get("rows", [])
+
+    rows = query(FRESHNESS_QUERY.format(table=table))
+    latest = rows[0]["f"][0]["v"] if rows else None
+    latest = float(latest) if latest is not None else None
+    data_through = datetime.datetime.fromtimestamp(latest, datetime.UTC).isoformat(timespec="minutes") if latest is not None else None
+    if latest is None or (now or time.time()) - latest > STALE_AFTER_SECONDS:
+        return {"window_days": days, "table": table, "data_through": data_through, "total_net_cost_usd": None, "by_service": None, "by_app": None,
+                "warning": (f"The billing export has no data after {data_through[:10]}" if data_through else "The billing export is empty")
+                + "; actual spend is unknown, not zero. An export starts within a day of being enabled; if this lasts, check Billing → "
+                  "Billing export in the console (the dataset and the standard usage cost export)."}
+    cells = [{"service": row["f"][0]["v"], "app": row["f"][1]["v"] or "", "net_cost_usd": float(row["f"][2]["v"])} for row in query(
+        BILLING_QUERY.format(table=table), [{"name": "project", "parameterType": {"type": "STRING"}, "parameterValue": {"value": project_id}},
+                                            {"name": "days", "parameterType": {"type": "INT64"}, "parameterValue": {"value": str(days)}}])]
     by_service, by_app = {}, {}
     for cell in cells:
         by_service[cell["service"]] = round(by_service.get(cell["service"], 0.0) + cell["net_cost_usd"], 4)
         label = cell["app"] or "(unlabelled)"
         by_app[label] = round(by_app.get(label, 0.0) + cell["net_cost_usd"], 4)
-    result = {"window_days": days, "table": table, "total_net_cost_usd": round(sum(c["net_cost_usd"] for c in cells), 4),
+    result = {"window_days": days, "table": table, "data_through": data_through, "total_net_cost_usd": round(sum(c["net_cost_usd"] for c in cells), 4),
               "by_service": [{"service": s, "net_cost_usd": v} for s, v in sorted(by_service.items(), key=lambda kv: -kv[1])],
               "by_app": [{"app": a, "net_cost_usd": v} for a, v in sorted(by_app.items(), key=lambda kv: -kv[1])],
               "note": "Net of credits, from Google's billing export; up to a day behind. Resources carry the lab-deploy-app label; "
