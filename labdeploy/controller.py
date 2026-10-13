@@ -40,8 +40,11 @@ class Store:
             db.execute("INSERT OR REPLACE INTO applications VALUES (?, ?, ?)", (app_id, time.time(), json.dumps(entry)))
 
     def unregister_application(self, app_id):
+        """Forget an onboarded application and its onboarding record; its plans and audit events stay as history."""
         with self.connect() as db:
-            db.execute("DELETE FROM applications WHERE id=?", (app_id,))
+            removed = db.execute("DELETE FROM applications WHERE id=?", (app_id,)).rowcount
+            db.execute("DELETE FROM onboardings WHERE id=?", (app_id,))
+        return bool(removed)
 
     def registered_applications(self):
         with self.connect() as db:
@@ -306,6 +309,12 @@ class Controller:
             except Exception as exc:  # noqa: BLE001
                 problems.append(f"GitHub credential check failed: {explain(exc) or exc}")
         for app_id, app in self.config.applications.items():
+            onboarding = self.store.onboarding(app_id)
+            if onboarding and onboarding.get("state") != "complete":
+                # Its workflows may not exist yet, so the other checks would only fail; say what is actually wrong.
+                problems.append(f"{app_id}: onboarding is not finished ({onboarding.get('state')} at {onboarding.get('blocked_at') or onboarding.get('state')}); "
+                                f"call onboard_application again, or remove it with `lab-deploy unregister {app_id}`")
+                continue
             try:
                 for workflow, health in (self.schedule_health(app) or {}).items():
                     problems.extend(f"{app_id}: {workflow}: {problem}" for problem in health.get("problems", []))

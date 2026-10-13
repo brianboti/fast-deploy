@@ -431,3 +431,23 @@ def test_a_billing_export_without_recent_data_makes_spend_unknown_not_zero():
               "rightsizing": {"observed": None, "recommendations": []}, "actual_spend": result}
     assert any("Actual spend unavailable: The billing export has no data after" in line for line in summary_lines(report))
     assert "unknown, not zero" in issue_body(report, "https://run")
+
+
+def test_an_onboarded_application_can_be_retired_and_unregistered(tmp_path):
+    # Live: `decommission lab-notebook` said "Unknown application" (it read only the file), listed no Cloud SQL step, and
+    # nothing could remove an abandoned onboarding (lab-demo-two), which the watchdog then reported every day.
+    from test_onboarding import make
+
+    from labdeploy.cli import decommission_steps
+
+    c, brian, gh = make(tmp_path / "x")
+    c.onboard(brian, "https://github.com/lab/newapp")
+    app = c.config.applications["newapp"]
+    steps = "\n".join(decommission_steps("newapp", app, {"buckets": [], "topics": [], "database": "postgres", "migrate": ["alembic", "upgrade", "head"]},
+                                         registered=True))
+    assert "gcloud sql instances patch newapp --no-deletion-protection" in steps and "gcloud sql instances delete newapp" in steps
+    assert "gcloud run jobs delete newapp-migrate" in steps and "under application_settings.newapp" in steps and "lab-deploy unregister newapp" in steps
+    problems = c.watchdog_tick()["problems"]
+    assert any(p.startswith("newapp: onboarding is not finished (planning") and "lab-deploy unregister newapp" in p for p in problems)
+    assert c.store.unregister_application("newapp") is True and c.store.onboarding("newapp") is None
+    assert "newapp" not in c.store.registered_applications() and c.store.unregister_application("newapp") is False
