@@ -277,3 +277,39 @@ def test_a_cancelled_run_signals_the_release_itself_which_holds_its_restore():
     assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN and signal.getsignal(signal.SIGTERM) is signal.SIG_IGN
     release_signals(held)
     assert signal.getsignal(signal.SIGINT) is before
+
+
+def test_the_health_view_shows_whether_the_postgres_database_runs(tmp_path):
+    # Live: lab-notebook's health view listed its bucket, topic and subscription, but not its Cloud SQL instance.
+    import time
+
+    import httpx
+    from conftest import TARGET
+
+    from labdeploy.cloud import Observer
+    from labdeploy.config import Config
+
+    answers = {"policy": "ALWAYS", "status": 200}
+
+    def handler(request):
+        if request.url.path.endswith("/instances/demo"):
+            if answers["status"] != 200:
+                return httpx.Response(answers["status"], json={"error": {"message": "denied"}})
+            return httpx.Response(200, json={"state": "RUNNABLE", "databaseVersion": "POSTGRES_17",
+                                             "settings": {"tier": "db-f1-micro", "activationPolicy": answers["policy"]}})
+        raise AssertionError(str(request.url))
+
+    cfg = Config.model_validate({"live_dispatch": False, "database": str(tmp_path / "db"), "applications": {"demo": {"repository": "lab/demo", "service": "demo", "target": TARGET}},
+                                 "principals": [], "observer": {"service_account": "lab-deploy-observer@test-project.iam.gserviceaccount.com"}})
+    observer = Observer(cfg, client=httpx.Client(transport=httpx.MockTransport(handler)), runner=lambda args: "t")
+    observer.until, observer.cached = time.time() + 999, "t"
+    target = cfg.applications["demo"].target
+    (item,) = observer.needs(target, {"buckets": [], "topics": [], "database": "postgres"})
+    assert item == {"need": "postgres", "name": "demo", "exists": True, "state": "RUNNABLE", "running": True, "tier": "db-f1-micro", "version": "POSTGRES_17"}
+    answers["policy"] = "NEVER"  # what the spending cap sets
+    assert observer.needs(target, {"database": "postgres"})[0]["running"] is False
+    answers["status"] = 403  # before the foundation grants roles/cloudsql.viewer: reported, not fatal
+    (unreadable,) = observer.needs(target, {"database": "postgres"})
+    assert unreadable["exists"] is None and "not allowed" in unreadable["unreadable"]
+    roles = Path("infra/gcp/modules/project/main.tf").read_text()
+    assert '"roles/cloudsql.viewer"' in roles[roles.index('resource "google_project_iam_member" "observer_roles"'):][:600]

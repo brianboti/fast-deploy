@@ -114,6 +114,21 @@ class Observer:
         if needs.get("database") == "firestore":
             probe("firestore", service, f"https://firestore.googleapis.com/v1/projects/{project}/databases/{service}",
                   {"location": "locationId", "delete_protection": "deleteProtectionState"})
+        if needs.get("database") == "postgres":
+            # Whether it runs matters most: the spending cap stops instances by setting the activation policy to NEVER.
+            try:
+                data = self.get(f"https://sqladmin.googleapis.com/v1/projects/{project}/instances/{service}")
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 404:
+                    raise
+                items.append({"need": "postgres", "name": service, "exists": False})
+            except ValueError as exc:  # the observer may not read Cloud SQL yet; the other needs are still shown
+                items.append({"need": "postgres", "name": service, "exists": None, "unreadable": str(exc)[:160]})
+            else:
+                settings = data.get("settings") or {}
+                items.append({"need": "postgres", "name": service, "exists": True, "state": data.get("state"),
+                              "running": data.get("state") == "RUNNABLE" and settings.get("activationPolicy") == "ALWAYS",
+                              "tier": settings.get("tier"), "version": data.get("databaseVersion")})
         return items
 
     def metrics(self, target, minutes=60):
