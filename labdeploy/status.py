@@ -116,7 +116,13 @@ def advice(plan):
         if state in {"dispatched", "queued", "running", "awaiting_workflow"}:
             return "The rollback is running; traffic moves back within about a minute. Ask again shortly."
     recovery = plan.get("recovery_run") or {}
-    recovered = f" The recovery run that followed concluded '{recovery.get('conclusion')}'" + (f": {recovery['receipt'].get('state')}." if recovery.get("receipt") else ".") if recovery else ""
+    if not recovery:
+        recovered = ""
+    elif recovery.get("conclusion") is None:  # it starts after every failed release; asked too early, it has no result yet
+        link = f": {recovery['html_url']}" if recovery.get("html_url") else ""
+        recovered = f" The recovery check that started after it is still {recovery.get('status') or 'running'}{link}."
+    else:
+        recovered = f" The recovery run that followed concluded '{recovery.get('conclusion')}'" + (f": {recovery['receipt'].get('state')}." if recovery.get("receipt") else ".")
     if state == "planned":
         return "Call deploy_staging with this plan id within 15 minutes of planning, or create a new plan."
     if state in {"dispatching", "dispatch_unknown"}:

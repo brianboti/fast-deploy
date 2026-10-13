@@ -174,3 +174,14 @@ def test_a_refused_request_names_the_permission_it_needs():
     assert "Contents: read and write" in refused("POST", "/repos/o/lab-deploy/git/refs")
     assert "Actions: read and write" in refused("POST", "/repos/o/app/actions/workflows/deploy-gcp.yml/dispatches")
     assert "Contents: read" in refused("GET", "/repos/o/app/contents/platform.yaml")
+
+
+def test_a_recovery_check_still_running_is_not_reported_as_concluded_none():
+    from labdeploy.status import RELEASE_STEP, advice
+
+    failed = {"state": "failed", "failed_step": {"step": RELEASE_STEP}, "receipt": {"state": "traffic_restored", "error": "probe failed"},
+              "recovery_run": {"run_id": 1, "status": "in_progress", "conclusion": None, "html_url": "https://github.com/o/a/actions/runs/1"}}
+    text = advice(failed)
+    assert "concluded 'None'" not in text and "still in_progress: https://github.com/o/a/actions/runs/1" in text
+    failed["recovery_run"].update(status="completed", conclusion="success")
+    assert "The recovery run that followed concluded 'success'" in advice(failed)
