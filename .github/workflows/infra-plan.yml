@@ -77,6 +77,20 @@ jobs:
       - name: Plan without taking the state lock
         run: |
           cd "infra/gcp/apps/$APP"
+          # A new application has no state yet. The gcs backend would create it, and its lock, even with -lock=false,
+          # which the read-only identity may not do; a plan for something that does not exist yet is a plan against an
+          # empty state. Any other answer (a refusal, a network error) stops here rather than planning against nothing.
+          bucket=$(sed -n 's/^ *bucket *= *"\(.*\)"/\1/p' backend.tf)
+          prefix=$(sed -n 's/^ *prefix *= *"\(.*\)"/\1/p' backend.tf)
+          if ! answer=$(gcloud storage objects describe "gs://$bucket/$prefix/default.tfstate" --format="value(name)" 2>&1); then
+            if grep -qiE "not found|404|No URLs matched" <<< "$answer"; then
+              printf 'terraform {\n  backend "local" {}\n}\n' > backend_override.tf
+              echo "No state yet for $APP: planning against an empty state."
+            else
+              echo "$answer"
+              exit 1
+            fi
+          fi
           terraform init -input=false -no-color
           terraform plan -input=false -lock=false -no-color -out=tfplan
           terraform show -json tfplan > plan.json

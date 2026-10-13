@@ -39,17 +39,18 @@ sys.exit(0 if r.status_code == 200 else 1)
 PY
 }
 until check_token; do
-  status=$?
+  rc=$?  # not "status": zsh reserves that name, and assigning it aborts the script
   if [[ ! -t 0 ]]; then
     echo "No working GitHub token in the Keychain and no terminal to ask in; run scripts/start.sh once by hand."
     exit 1
   fi
-  if [[ $status -eq 1 ]]; then
+  if [[ $rc -eq 1 ]]; then
     security delete-generic-password -s lab-deploy-github-token >/dev/null 2>&1 || true
     echo "That token cannot read the application repository (expired or wrong permissions). Make a new one."
   fi
-  echo "Paste the fine-grained GitHub token (Contents: read, Actions: read and write on the application repositories)"
-  echo "at the Keychain prompt below; it is typed hidden and stored only in your login Keychain."
+  echo "Paste the fine-grained GitHub token at the Keychain prompt below; it is typed hidden and stored only in your login"
+  echo "Keychain. Permissions (docs/SETUP.md 7g): all repositories; Contents, Pull requests, Workflows, Actions,"
+  echo "Environments, Variables and Administration read and write; Metadata read."
   security add-generic-password -s lab-deploy-github-token -a "$USER" -U -w
 done
 export GITHUB_TOKEN="$(security find-generic-password -s lab-deploy-github-token -w)" LAB_CONFIG=config.local.yaml

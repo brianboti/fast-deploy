@@ -21,16 +21,33 @@ from pathlib import Path
 
 import httpx
 
-from .analyzer import FILES
+from .analyzer import FILES, local_paths
 from .config import Config
 
-DEMO_TARGET = {
-    "project_id": "demo-staging-project", "region": "us-central1", "service": "lab-demo", "registry": "lab-demo",
-    "deploy_service_account": "lab-demo-deploy@demo-staging-project.iam.gserviceaccount.com",
-    "probe_service_account": "lab-demo-probe@demo-staging-project.iam.gserviceaccount.com",
-    "wif_provider": "projects/000000000000/locations/global/workloadIdentityPools/lab-demo-gh/providers/github",
-    "recovery_bucket": "demo-staging-project-lab-demo-recovery",
-}
+
+def demo_target(service="lab-demo"):
+    return {
+        "project_id": "demo-staging-project", "region": "us-central1", "service": service, "registry": service,
+        "deploy_service_account": f"{service}-deploy@demo-staging-project.iam.gserviceaccount.com",
+        "probe_service_account": f"{service}-probe@demo-staging-project.iam.gserviceaccount.com",
+        "wif_provider": f"projects/000000000000/locations/global/workloadIdentityPools/{service}-gh/providers/github",
+        "recovery_bucket": f"demo-staging-project-{service}-recovery",
+    }
+
+
+DEMO_TARGET = demo_target()
+
+
+def service_name(root):
+    """The service name the application's own platform.yaml declares, so any application directory works."""
+    import yaml
+
+    spec = Path(root) / "platform.yaml"
+    if spec.is_file():
+        name = (yaml.safe_load(spec.read_text()) or {}).get("name")
+        if isinstance(name, str) and name:
+            return name
+    return "lab-demo"
 
 
 class LocalRepository:
@@ -53,6 +70,9 @@ class LocalRepository:
 
     def commit(self, app, ref=None):
         return {"sha": self.head(app), "message": "Local working copy (demo mode)", "author": None, "date": None, "url": None}
+
+    def tree(self, repository, ref):
+        return local_paths(self.root)
 
     def file(self, app, sha, filename):
         if sha != self.head(app):
@@ -79,12 +99,12 @@ class LocalRepository:
         raise ValueError("Demo mode has no telemetry; the rightsizing workflow produces measured cost reports in a real project")
 
 
-def demo_config(database, token_sha256):
+def demo_config(database, token_sha256, service="lab-demo"):
     return Config.model_validate({
         "live_dispatch": False,
         "database": database,
         "allowed_hosts": ["127.0.0.1:*", "localhost:*", "testserver"],
-        "applications": {"demo": {"repository": "local/lab-demo", "service": "lab-demo", "target": DEMO_TARGET}},
+        "applications": {"demo": {"repository": f"local/{service}", "service": service, "target": demo_target(service)}},
         "principals": [{"name": "demo-operator", "token_sha256": token_sha256, "applications": ["demo"], "can_deploy": True}],
     })
 
@@ -97,13 +117,14 @@ def serve(args):
     repository = LocalRepository(args.path)
     token = secrets.token_urlsafe(32)
     database = args.database or str(Path(tempfile.mkdtemp(prefix="lab-deploy-demo-")) / "demo.db")
-    app = build_app(demo_config(database, hashlib.sha256(token.encode()).hexdigest()), repository)
+    service = service_name(repository.root)
+    app = build_app(demo_config(database, hashlib.sha256(token.encode()).hexdigest(), service), repository)
     url = f"http://127.0.0.1:{args.port}"
     line = "=" * 76
     print(f"""{line}
  Lab Deploy DEMO MODE: local files, no GitHub, no cloud, dispatch disabled
 {line}
- Application 'demo' is read from: {repository.root}
+ Application 'demo' ({service}) is read from: {repository.root}
  Plans database:                  {database}
 
  Demo operator token (valid only while this process runs). In another terminal:
@@ -181,6 +202,8 @@ def walkthrough(args):
         step("create_deployment_plan", "Validates the committed platform.yaml and pins a plan to one commit and one cloud target.")
         failed, text = tool("create_deployment_plan", application="demo")
         show(text)
+        if failed:
+            sys.exit(f"\nThe plan was refused, so the walkthrough stops here: {text}")
         plan_id = json.loads(text)["id"]
 
         step("deploy_staging", "In demo mode dispatch is disabled, so the plan stays planned and nothing leaves this machine.")

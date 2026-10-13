@@ -498,7 +498,11 @@ class Controller:
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code != 404:
                     raise
-        return {"commit_sha": sha, **analyze(files, app.service)}
+        try:  # the file list lets the analyzer see tests and a lock file; without it the advice is only more cautious
+            paths = self.github.tree(app.repository, sha) if hasattr(self.github, "tree") else None
+        except Exception:  # noqa: BLE001
+            paths = None
+        return {"commit_sha": sha, **analyze(files, app.service, paths)}
 
     def spec_at(self, app, sha):
         """The reviewed specification at a commit, with a plain explanation when the app has none yet."""
