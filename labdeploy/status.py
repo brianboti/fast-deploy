@@ -116,7 +116,13 @@ def advice(plan):
         if state in {"dispatched", "queued", "running", "awaiting_workflow"}:
             return "The rollback is running; traffic moves back within about a minute. Ask again shortly."
     recovery = plan.get("recovery_run") or {}
-    recovered = f" The recovery run that followed concluded '{recovery.get('conclusion')}'" + (f": {recovery['receipt'].get('state')}." if recovery.get("receipt") else ".") if recovery else ""
+    if not recovery:
+        recovered = ""
+    elif recovery.get("conclusion") is None:  # it starts after every failed release; asked too early, it has no result yet
+        link = f": {recovery['html_url']}" if recovery.get("html_url") else ""
+        recovered = f" The recovery check that started after it is still {recovery.get('status') or 'running'}{link}."
+    else:
+        recovered = f" The recovery run that followed concluded '{recovery.get('conclusion')}'" + (f": {recovery['receipt'].get('state')}." if recovery.get("receipt") else ".")
     if state == "planned":
         return "Call deploy_staging with this plan id within 15 minutes of planning, or create a new plan."
     if state in {"dispatching", "dispatch_unknown"}:
@@ -134,6 +140,13 @@ def advice(plan):
     failed = plan.get("failed_step") or {}
     step = failed.get("step") or ""
     if step == RELEASE_STEP or (state in {"cancelled", "timed_out"} and receipt):
+        if receipt.get("state") == "traffic_restored" and receipt.get("failed_phase") == "preparing":
+            return (f"The release stopped before deploying anything ({receipt.get('error', 'see the receipt')}); the previous revision kept "
+                    "serving and nothing changed. Fix that and deploy again." + recovered)
+        if receipt.get("state") == "traffic_restored" and receipt.get("failed_phase") == "migrating":
+            return (f"The database migration failed, so nothing new was deployed and the previous revision kept serving ({receipt.get('error', 'see the receipt')}). "
+                    "Fix the migration and deploy again; check its log lines in the receipt first, since a tool that does not run the "
+                    "migration in one transaction may have applied part of it." + recovered)
         if receipt.get("state") == "traffic_restored":
             return (f"The candidate failed ({receipt.get('error', 'see the receipt')}); traffic was restored and the previous revision kept serving. "
                     "Fix the application and deploy again." + (" The candidate's last log lines are in the receipt." if receipt.get("candidate_logs") else "") + recovered)

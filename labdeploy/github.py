@@ -16,6 +16,26 @@ import jwt
 TOKEN_WARNING_DAYS = 14
 
 
+def needed_permission(request):
+    """The fine-grained token permission a refused request needs, read from its method and path."""
+    method, path = request.method, request.url.path
+    if "/environments/" in path and "/variables" in path:
+        return "Environments: read and write"
+    if "/environments/" in path:
+        return "Administration: read and write (it creates the deployment environment)"
+    if "/actions/variables" in path:
+        return "Variables: read and write"
+    if path.endswith("/dispatches") or ("/actions/runs/" in path and method != "GET"):
+        return "Actions: read and write"
+    if "/contents/.github/workflows/" in path and method != "GET":
+        return "Workflows: read and write"
+    if "/pulls" in path and method != "GET":
+        return "Pull requests: read and write"
+    if method != "GET" and ("/contents/" in path or "/git/" in path):
+        return "Contents: read and write"
+    return "Contents: read and Actions: read"
+
+
 def explain(error, repository=None):
     """A plain sentence for a GitHub failure, or None when the error is not a GitHub transport error."""
     where = f" for {repository}" if repository else ""
@@ -28,7 +48,7 @@ def explain(error, repository=None):
             when = datetime.datetime.fromtimestamp(int(reset), datetime.UTC).strftime("%H:%M UTC") if reset and reset.isdigit() else "shortly"
             return f"GitHub API rate limit reached; it resets at {when}. Retry then."
         if status == 403:
-            return f"GitHub refused access{where}: the credential lacks a required permission (Contents read and Actions write for releases)."
+            return f"GitHub refused access{where}: the credential needs the permission {needed_permission(error.request)} for this request."
         if status == 404:
             return f"GitHub could not find the repository, branch or file{where}; check the registry entry and that the credential can read that repository."
         if status == 422:
@@ -257,6 +277,22 @@ class GitHub:
 
     def issue_comments(self, repository, number):
         return [item.get("body", "") for item in self.request("GET", f"/repos/{repository}/issues/{number}/comments", params={"per_page": 100}).json()]
+
+    def recent_runs(self, repository, workflow, limit=20):
+        """The newest completed runs of a workflow, on any commit."""
+        params = {"per_page": limit, "status": "completed"}
+        runs = self.request("GET", f"/repos/{repository}/actions/workflows/{workflow}/runs", params=params).json().get("workflow_runs", [])
+        return [{"id": run["id"], "status": run["status"], "conclusion": run.get("conclusion"), "url": run["html_url"], "head_sha": run["head_sha"]} for run in runs]
+
+    def job_conclusions(self, repository, run_id):
+        """Each job of a run's latest attempt by name, with its conclusion."""
+        jobs = self.request("GET", f"/repos/{repository}/actions/runs/{int(run_id)}/jobs", params={"per_page": 100}).json().get("jobs", [])
+        return {job["name"]: job.get("conclusion") for job in jobs}
+
+    def contains(self, repository, ancestor, ref):
+        """Whether `ref` already contains commit `ancestor` (the same commit, or one after it)."""
+        data = self.request("GET", f"/repos/{repository}/compare/{quote(ancestor, safe='')}...{quote(ref, safe='')}").json()
+        return data.get("status") in ("ahead", "identical")
 
     def workflow_runs(self, repository, workflow, head_sha=None, limit=5):
         params = {"per_page": limit}

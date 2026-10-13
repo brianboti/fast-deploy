@@ -401,8 +401,13 @@ class Controller:
         except ValueError as exc:  # no reviewed spec yet, or the observer may not look: say so instead of hiding the view
             notes.append(f"Needs not checked: {str(exc)[:160]}")
         for item in needs:
-            if not item["exists"]:
+            if item["exists"] is None:
+                notes.append(f"Need {item['need']} {item['name']} not checked: {item.get('unreadable', 'not readable')}")
+            elif not item["exists"]:
                 notes.append(f"Declared need {item['need']} {item['name']} does not exist; ask for propose_infrastructure and merge the pull request")
+            elif item.get("running") is False:
+                notes.append(f"Database {item['name']} is not running ({item.get('state')}): the spending cap stops databases at the budget line; "
+                             "docs/RUNBOOK.md says how to lift it")
         access = {"exposure": None, "iap_enabled": service.get("iap_enabled"), "viewers": self.viewers(app)}
         try:
             access["exposure"] = self.spec_at(app, (live or {}).get("sha") or self.github.head(app)).exposure

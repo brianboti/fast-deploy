@@ -307,6 +307,8 @@ onboarding:
 
 What the tool does, in order: contract check (blocks with a checklist), registration, infrastructure pull request (merged once the plan workflow's policy verdict is `passed` and only when every file sits under `infra/gcp/apps/<service>/`), the apply, the `staging` environment with its variables, the workflows pull request (merged when GitHub reports it mergeable), the first release. Long waits end the call and the scheduler continues every minute; `get_onboarding_status` reports the step, and a blocked onboarding resumes from its step when the same tool is called again.
 
+The operator's switches for an onboarded application (a cost ceiling, auto-deploy, a pause, viewers, infrastructure settings) go under `application_settings: <app id>:` in `config.local.yaml`; they are laid over the registered entry on the next request, with no restart and nothing copied (`config.example.yaml` shows the shape).
+
 ## 7h. Pages for people (Identity-Aware Proxy)
 
 Applications with `exposure: lab-members` get Google's Identity-Aware Proxy directly on their Cloud Run service. One
