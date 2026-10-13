@@ -1,3 +1,29 @@
+# 1.7.1: a playbook for Claude chat
+
+## Added
+
+1. **`skills/lab-deploy-operator`**, a skill for Claude chat: the operator's playbook as instructions Claude reads whenever a
+   request is about deploying, releasing, rolling back, health, logs, cost or access. It sorts the 22 tools into look,
+   record and act; says when to ask before acting (and that `onboard_application` goes all the way when a repository
+   passes); walks through the seven daily jobs; explains every release state in plain words; lists the hard limits; and
+   turns a failed repository check into a message the operator can paste to the developer. `references/developer-contract.md`
+   is a short copy of the standard for checking a repository by hand. Upload once under Customize → Skills
+   (`docs/CLAUDE-CHAT.md`, step 4); its description stays within claude.ai's 200-character limit.
+
+## Fixed
+
+1. The instructions the controller sends to Claude at connection said databases are refused by policy; they have been
+   supported since 1.4.0. They now name what is refused (other clouds, production, public access, GPUs, sizes above the
+   lab's limits), how databases, buckets, topics and migrations are added, and the health, logs and rollback path.
+2. `docs/CLAUDE-CHAT.md` sent "give demo a bucket" to `propose_configuration`, which refuses an app that already has a
+   `platform.yaml`; the row now describes the reviewed `needs` change followed by `propose_infrastructure`.
+3. A test keeps the playbook's tool table, the server's instructions and the registered tools in step.
+
+## Upgrade steps
+
+1. Restart the controller for the new instructions (no runner or template change; app workflows keep their pin).
+2. Build the zip and upload the skill in Claude (`docs/CLAUDE-CHAT.md`, "Before the first conversation", step 4).
+
 # 1.7.0: pages for people (Phase 8, items 8.2 to 8.4 and 8.6)
 
 ## Added

@@ -12,6 +12,11 @@ daily reference; `docs/SETUP.md` covers the one-time setup and `docs/RUNBOOK.md`
    never into the chat. The sign-in lasts thirty days; when Claude says the connector needs attention, sign in again.
 3. Ask: *"What is the controller status?"* Claude calls `get_controller_status` and reports the version, whether
    dispatch is live, what is paused, the GitHub credential's expiry and the last backup.
+4. Once, install the playbook skill so Claude chat follows the same rules every time: build the zip with
+   `cd skills && zip -r ~/Downloads/lab-deploy-operator.zip lab-deploy-operator`, then in Claude: Customize → Skills →
+   upload it and switch it on (code execution must be enabled). Re-upload it after a platform release that changes
+   `skills/`. It tells Claude when to ask before acting, how to read each status, what costs to show, and how to write
+   a "what is missing" message for a developer.
 
 ## What you can ask for
 
@@ -43,7 +48,7 @@ daily reference; `docs/SETUP.md` covers the one-time setup and `docs/RUNBOOK.md`
 |---|---|---|
 | "Deploy github.com/ORG/REPO on GCP" | `onboard_application`, `get_onboarding_status` | The whole onboarding, unattended, for a repository that follows the contract (next section) |
 | "Draft a configuration for github.com/ORG/REPO" | `analyze_repository`, `propose_configuration` | A draft `platform.yaml` with review questions, as a pull request on the app repository, for a repository that has none yet |
-| "Give demo a bucket called uploads" | `propose_configuration` with `needs` | The same, for buckets, topics, a database or a migration command |
+| "Give demo a bucket called uploads" | A reviewed `needs` change, then `propose_infrastructure` | The developer (or you) adds it to `platform.yaml` in a pull request on the app repository; after that merge, the infrastructure pull request provisions it and the next release uses it. The same for topics, a database or a migration command. `propose_configuration` refuses an app that already has a `platform.yaml` |
 | "Render demo's infrastructure" | `propose_infrastructure` | The app's Terraform root as a pull request on the platform repository; the plan and policy verdict appear as a comment, merging applies it |
 | "Re-pin demo to the current platform" | `update_app_workflows` | The three workflow files regenerated against a platform commit, as a pull request |
 | "Apply the right-sizing proposals" | `propose_rightsizing` | A pull request editing `platform.yaml` with the measured recommendations |
