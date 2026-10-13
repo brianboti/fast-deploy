@@ -130,7 +130,9 @@ jobs:
           if-no-files-found: error
   deploy:
     needs: build
-    if: always() && needs.build.result != 'failure' && needs.build.result != 'cancelled'
+    # !cancelled(), not always(): it still runs when build is skipped (a reused image), but a cancelled run cancels it.
+    # With always() GitHub kept the job running after a cancel, and the release went on to promote (live, 2026-10-13).
+    if: ${{ !cancelled() && needs.build.result != 'failure' && needs.build.result != 'cancelled' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     # GitHub records a deployment for this environment job; the URL below makes it show the released service.
