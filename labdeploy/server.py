@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 import httpx
+import pydantic
 from fastapi import FastAPI
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -38,6 +39,13 @@ class UpstreamError(ValueError):
     """GitHub could not serve the request; explained in plain words and reported as a gateway failure on REST."""
 
 
+def plain_validation(error):
+    """A validation failure as one sentence a person can act on: which field, and what it must be."""
+    problems = [f"{'.'.join(str(part) for part in item.get('loc', ())) or 'the file'}: {item.get('msg')}" for item in error.errors()]
+    what = "platform.yaml" if error.title == "AppSpec" else error.title
+    return f"{what} is not valid: {'; '.join(problems)}"
+
+
 def invoke(store, kind, name, fn, subject=None, record=True):
     """Run one operation for the authenticated identity: plain GitHub errors, and one audit event with outcome and duration."""
     started = time.monotonic()
@@ -54,6 +62,10 @@ def invoke(store, kind, name, fn, subject=None, record=True):
         message = explain(exc)
         note("error", message)
         raise UpstreamError(message) from None
+    except pydantic.ValidationError as exc:
+        message = plain_validation(exc)
+        note("error", message)
+        raise ValueError(message) from None
     except Exception as exc:
         note("error", str(exc))
         raise

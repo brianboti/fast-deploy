@@ -313,3 +313,16 @@ def test_the_health_view_shows_whether_the_postgres_database_runs(tmp_path):
     assert unreadable["exists"] is None and "not allowed" in unreadable["unreadable"]
     roles = Path("infra/gcp/modules/project/main.tf").read_text()
     assert '"roles/cloudsql.viewer"' in roles[roles.index('resource "google_project_iam_member" "observer_roles"'):][:600]
+
+
+def test_an_invalid_platform_yaml_is_explained_in_plain_words():
+    # Live: exposure: public came back as pydantic's "1 validation error for AppSpec ... errors.pydantic.dev".
+    import pydantic
+
+    from labdeploy.server import plain_validation
+
+    with pytest.raises(pydantic.ValidationError) as failure:
+        AppSpec.model_validate({"name": "lab-notebook", "exposure": "public", "resources": {"cpu": 9}})
+    text = plain_validation(failure.value)
+    assert text.startswith("platform.yaml is not valid: ") and "exposure: Input should be 'authenticated' or 'lab-members'" in text
+    assert "resources.cpu" in text and "pydantic.dev" not in text
