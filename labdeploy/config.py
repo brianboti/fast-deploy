@@ -23,6 +23,9 @@ class Application(StrictModel):
     # Per-app infrastructure settings the renderer writes into the app's Terraform root (alert thresholds, image retention);
     # keys and ranges are those of labdeploy.infra.DEFAULT_SETTINGS. The generated root is never the source of truth.
     infra: dict[str, int | bool] = Field(default_factory=dict)
+    # Google accounts that may open the app's pages when platform.yaml says exposure: lab-members (user:, group: or domain:),
+    # on top of onboarding.default_viewers. The operator edits this; developers cannot grant themselves.
+    viewers: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def workflow_fixed(self):
@@ -34,6 +37,7 @@ class Application(StrictModel):
             raise ValueError("Only the reviewed deploy-gcp.yml workflow is supported")
         if self.cost_ceiling_usd is not None and self.cost_ceiling_usd <= 0:
             raise ValueError("cost_ceiling_usd must be a positive amount")
+        check_viewers(self.viewers)
         from .infra import DEFAULT_SETTINGS, SETTING_RANGES
         for key, value in self.infra.items():
             if key not in DEFAULT_SETTINGS or type(value) is not type(DEFAULT_SETTINGS[key]):
@@ -50,6 +54,16 @@ class Principal(StrictModel):
     can_deploy: bool = False
 
 
+VIEWER = re.compile(r"^(user|group|domain):[A-Za-z0-9._%+-]+(@[A-Za-z0-9.-]+\.[A-Za-z]{2,})?$")
+
+
+def check_viewers(viewers):
+    for viewer in viewers:
+        if not VIEWER.fullmatch(viewer):
+            raise ValueError(f"Viewer {viewer!r} must be user:EMAIL, group:EMAIL or domain:DOMAIN")
+    return viewers
+
+
 class Onboarding(StrictModel):
     """Where one-sentence onboarding puts a new application and what it may do for it (docs/CLAUDE-CHAT.md, "Deploy a repository")."""
 
@@ -61,6 +75,15 @@ class Onboarding(StrictModel):
     environment: str = Field(default="staging", pattern=r"^[a-z][a-z0-9-]{1,30}$")
     auto_merge: bool = True  # merge the application's own pull requests once the policy and the checks have passed
     billing_export_table: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9-]{4,28}[a-z0-9]\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+$")
+    # Pages for people (docs/ROADMAP.md Phase 8): the lab's accounts that may open every lab-members app, and the project's
+    # IAP OAuth client id (not secret), which the release probes use as their token audience behind the proxy.
+    default_viewers: list[str] = Field(default_factory=list)
+    iap_client_id: str | None = Field(default=None, pattern=r"^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$")
+
+    @model_validator(mode="after")
+    def viewers_well_formed(self):
+        check_viewers(self.default_viewers)
+        return self
 
 
 # Where Claude's hosted apps and Claude Code return after the browser sign-in. Loopback callbacks match on any port.

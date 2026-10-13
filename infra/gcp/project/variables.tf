@@ -83,3 +83,8 @@ variable "pipeline" {
   default     = null
   description = "The platform repository (owner/name with its numeric repository and owner ids) whose Actions may plan and apply application roots, and the GitHub environment that applies."
 }
+variable "iap_client_id" {
+  type        = string
+  default     = ""
+  description = "The project's IAP OAuth client id (not the secret), created once in the console for pages for people; empty until then."
+}

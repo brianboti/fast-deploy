@@ -141,12 +141,18 @@ resource "google_bigquery_dataset_iam_member" "billing_reader" {
   member     = "serviceAccount:${google_service_account.deployer.email}"
 }
 
+locals {
+  pages_for_people = var.exposure == "lab-members"
+}
 resource "google_cloud_run_v2_service" "app" {
   name                = var.service
   location            = var.region
   deletion_protection = true
   ingress             = "INGRESS_TRAFFIC_ALL"
-  labels              = local.labels # releases merge their own labels in (--update-labels), so these survive
+  # Pages for people: Identity-Aware Proxy in front of the service, the listed viewers only; Terraform owns this switch
+  # and the runner refuses a release whose platform.yaml disagrees with it.
+  iap_enabled = local.pages_for_people
+  labels      = local.labels # releases merge their own labels in (--update-labels), so these survive
   template {
     service_account = google_service_account.runtime.email
     scaling {
@@ -179,6 +185,30 @@ resource "google_cloud_run_v2_service_iam_member" "probe" {
   name     = google_cloud_run_v2_service.app.name
   role     = "roles/run.invoker"
   member   = "serviceAccount:${google_service_account.probe.email}"
+}
+# Identity-Aware Proxy calls the service on the viewer's behalf; the viewers and the release probe pass the proxy.
+resource "google_cloud_run_v2_service_iam_member" "iap_agent" {
+  count    = local.pages_for_people ? 1 : 0
+  location = var.region
+  name     = google_cloud_run_v2_service.app.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:service-${var.project_number}@gcp-sa-iap.iam.gserviceaccount.com"
+}
+resource "google_iap_web_cloud_run_service_iam_member" "viewer" {
+  for_each               = local.pages_for_people ? toset(var.viewers) : toset([])
+  project                = var.project_id
+  location               = var.region
+  cloud_run_service_name = google_cloud_run_v2_service.app.name
+  role                   = "roles/iap.httpsResourceAccessor"
+  member                 = each.value
+}
+resource "google_iap_web_cloud_run_service_iam_member" "probe" {
+  count                  = local.pages_for_people ? 1 : 0
+  project                = var.project_id
+  location               = var.region
+  cloud_run_service_name = google_cloud_run_v2_service.app.name
+  role                   = "roles/iap.httpsResourceAccessor"
+  member                 = "serviceAccount:${google_service_account.probe.email}"
 }
 # The spending-cap workflow closes this service's ingress when the budget line is crossed.
 resource "google_cloud_run_v2_service_iam_member" "cap" {
@@ -271,8 +301,20 @@ resource "google_monitoring_uptime_check_config" "health" {
     port           = 443
     use_ssl        = true # certificate validation (validate_ssl) is only offered for plain-URL checks, not Cloud Run targets
     request_method = "GET"
-    service_agent_authentication {
-      type = "OIDC_TOKEN"
+    # Programs: the Monitoring service agent signs in with an identity token. People's pages: the proxy answers the
+    # unauthenticated check with a redirect to Google sign-in, which proves the front door is up; the release probes
+    # prove the page itself at every release.
+    dynamic "service_agent_authentication" {
+      for_each = local.pages_for_people ? [] : [1]
+      content {
+        type = "OIDC_TOKEN"
+      }
+    }
+    dynamic "accepted_response_status_codes" {
+      for_each = local.pages_for_people ? [1] : []
+      content {
+        status_class = "STATUS_CLASS_3XX"
+      }
     }
   }
   # Service-agent (OIDC) authentication is only offered for Cloud Run targets, not arbitrary URLs: the check must name

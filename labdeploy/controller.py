@@ -403,8 +403,17 @@ class Controller:
         for item in needs:
             if not item["exists"]:
                 notes.append(f"Declared need {item['need']} {item['name']} does not exist; ask for propose_infrastructure and merge the pull request")
+        access = {"exposure": None, "iap_enabled": service.get("iap_enabled"), "viewers": self.viewers(app)}
+        try:
+            access["exposure"] = self.spec_at(app, (live or {}).get("sha") or self.github.head(app)).exposure
+        except ValueError:
+            pass
+        if access["exposure"] == "lab-members" and not access["iap_enabled"]:
+            notes.append("platform.yaml says lab-members but Identity-Aware Proxy is not enabled on the service; render and merge the infrastructure")
+        if access["exposure"] == "authenticated" and access["iap_enabled"]:
+            notes.append("Identity-Aware Proxy is enabled although platform.yaml says authenticated; render and merge the infrastructure")
         return {"application": app_id, "service": service, "metrics": metrics, "recorded_live_release": live and {"plan_id": live["id"], "sha": live["sha"], "revision": recorded},
-                "agreement": agreement, "needs": needs, "notes": notes,
+                "agreement": agreement, "needs": needs, "access": access, "notes": notes,
                 "console_url": f"https://console.cloud.google.com/run/detail/{app.target.region}/{app.target.service}/metrics?project={app.target.project_id}"}
 
     def recent_logs(self, principal, app_id, minutes=30, severity="ERROR", limit=50):
@@ -633,16 +642,22 @@ class Controller:
         app = self.app(principal, app_id, write=True)
         target = app.target
         ids = self.github.repository_ids(app.repository)
-        note, needs = None, None
+        note, needs, exposure = None, None, "authenticated"
         try:
             spec = self.spec_at(app, self.github.head(app))
-            health_path, needs = spec.health_path, spec.needs.model_dump()
+            health_path, needs, exposure = spec.health_path, spec.needs.model_dump(), spec.exposure
         except ValueError as exc:
             health_path, note = "/health", f"Defaults used until the app has a reviewed platform.yaml: {exc}"
         files = app_root(target.service, project_id=target.project_id, region=target.region, state_bucket=state_bucket or f"{target.project_id}-tfstate",
                          github_repository=app.repository, github_repository_id=ids["repository_id"], github_owner_id=ids["owner_id"],
-                         bootstrap_image=bootstrap_image or BOOTSTRAP_IMAGE, health_path=health_path, settings={**app.infra, **(settings or {})}, needs=needs)
+                         bootstrap_image=bootstrap_image or BOOTSTRAP_IMAGE, health_path=health_path, settings={**app.infra, **(settings or {})}, needs=needs,
+                         exposure=exposure, viewers=self.viewers(app))
         return {"application": app_id, "service": target.service, "directory": f"infra/gcp/apps/{target.service}", "files": files, "note": note}
+
+    def viewers(self, app):
+        """Who may open the app's pages: the lab-wide list plus the app's own, as the root grants them."""
+        onboarding = self.config.onboarding
+        return sorted(set((onboarding.default_viewers if onboarding else []) + list(app.viewers)))
 
     def propose_infrastructure(self, principal, app_id, allow_writes=False, **render):
         """Open the pull request that adds or updates the app's root on the platform repository; the pipeline does the rest."""

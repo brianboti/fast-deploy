@@ -93,7 +93,9 @@ class AppSpec(StrictModel):
     resources: Resources = Field(default_factory=Resources)
     scaling: Scaling = Field(default_factory=Scaling)
     concurrency: int = Field(default=80, ge=1, le=1000)
-    exposure: Literal["authenticated"] = "authenticated"
+    # authenticated: programs with a Google identity token. lab-members: people through Identity-Aware Proxy, the listed
+    # Google accounts only (the operator keeps the list). Public is never an option.
+    exposure: Literal["authenticated", "lab-members"] = "authenticated"
     state: Literal["stateless"] = "stateless"
     dependencies: list[str] = Field(default_factory=list)
     gpu: bool = False

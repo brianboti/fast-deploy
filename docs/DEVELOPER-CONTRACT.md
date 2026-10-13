@@ -115,7 +115,7 @@ resources: { cpu: 1, memory_mib: 512 }   # cpu 1 to 4, memory 512 to 4096; the l
 scaling: { minimum: 0, maximum: 2 }      # minimum 0 or 1 (1 keeps an instance warm all month); maximum up to 3 under the lab's policy
 concurrency: 80           # requests one instance serves at once; higher is cheaper when the app can take it
 timeout_seconds: 60       # per request, up to 300
-exposure: authenticated   # the only option: callers present a Google identity token
+exposure: authenticated   # programs with a Google identity token; or lab-members: people, after a Google sign-in, listed accounts only
 state: stateless
 env:                      # plain configuration values
   LOG_LEVEL: info
@@ -145,10 +145,24 @@ shows the floor and the worst case before anything is deployed; start small and 
 - [ ] `README.md`, `LICENSE`, `SECURITY.md`; `main` protected with the CI check required
 - [ ] Secret values created by the operator with `gcloud`; none in Git
 
+## 6a. Pages for people
+
+An app with pages for people says `exposure: lab-members`. The platform then puts Google's Identity-Aware Proxy in front
+of the service: a person opening the URL signs in with a Google account, and only the accounts the operator lists get
+through (the lab's list plus the app's own list; developers ask the operator to add someone). Rules for the app:
+
+- Never build your own login. The proxy has already authenticated the person; read who it is from the request header
+  `X-Goog-Authenticated-User-Email` (the value looks like `accounts.google.com:name@example.edu`) and, when you need to
+  verify it, from the signed `X-Goog-IAP-JWT-Assertion` header.
+- Programs calling the app's API need a Google identity token minted for the proxy's OAuth client, not for the service
+  URL; the platform's own release probes do this. Ask the operator for the client id when a program must call the app.
+- Everything else (port, health path, logs, statelessness) is unchanged. The health path is reachable to the proxy's
+  probe identity; a browser reaching it sees the sign-in page first.
+
 ## 7. What is not supported
 
-Public endpoints, GPUs, runtimes other than Python HTTP services, stateful containers, a branch other than `main`,
-production environments, and editing the three workflow files the platform adds.
+Public endpoints (anyone without a sign-in), GPUs, runtimes other than Python HTTP services, stateful containers, a branch
+other than `main`, production environments, and editing the three workflow files the platform adds.
 
 ## Sources
 

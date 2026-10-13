@@ -99,3 +99,22 @@ variable "subnet" {
   default     = ""
   description = "The foundation's subnet id for Cloud Run egress into that network."
 }
+variable "exposure" {
+  type        = string
+  default     = "authenticated"
+  description = "authenticated: programs with identity tokens. lab-members: people through Identity-Aware Proxy, the listed viewers only."
+  validation {
+    condition     = contains(["authenticated", "lab-members"], var.exposure)
+    error_message = "exposure must be authenticated or lab-members; public access is never an option."
+  }
+}
+variable "viewers" {
+  type        = list(string)
+  default     = []
+  description = "Google accounts (user:, group: or domain:) that may open the pages when exposure is lab-members."
+}
+variable "iap_client_id" {
+  type        = string
+  default     = ""
+  description = "The project's IAP OAuth client id, published to the app's environment so the release probes can pass the proxy."
+}

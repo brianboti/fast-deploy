@@ -307,6 +307,27 @@ onboarding:
 
 What the tool does, in order: contract check (blocks with a checklist), registration, infrastructure pull request (merged once the plan workflow's policy verdict is `passed` and only when every file sits under `infra/gcp/apps/<service>/`), the apply, the `staging` environment with its variables, the workflows pull request (merged when GitHub reports it mergeable), the first release. Long waits end the call and the scheduler continues every minute; `get_onboarding_status` reports the step, and a blocked onboarding resumes from its step when the same tool is called again.
 
+## 7h. Pages for people (Identity-Aware Proxy)
+
+Applications with `exposure: lab-members` get Google's Identity-Aware Proxy directly on their Cloud Run service. One
+step is manual because a project without an organization cannot create the proxy's OAuth client programmatically:
+
+1. In the console, open any Cloud Run service of the project (the demo), **Security**, choose **Require authentication**
+   and **Identity-Aware Proxy (IAP)**, then **Auto generate credentials** and deploy the change. This creates the
+   project's OAuth brand (External) and client and applies them to IAP at the project level. Then switch that service back
+   (`gcloud run services update SERVICE --region REGION --no-iap`) unless its `platform.yaml` says `lab-members`.
+2. Read the client id (APIs & Services, Credentials; the id ends in `.apps.googleusercontent.com`; the secret stays where
+   it is) and put it in the foundation's `terraform.tfvars` as `iap_client_id` and in the controller configuration under
+   `onboarding.iap_client_id`; list the lab's accounts under `onboarding.default_viewers` (`user:name@example.edu`).
+3. Apply the foundation (`scripts/apply-foundation.sh`): it enables the IAP API, creates the IAP service agent and
+   publishes the client id to every application root through the remote state.
+4. For an existing application: set `IAP_CLIENT_ID` in its `staging` environment (onboarding does this for new ones),
+   render its root again and merge; the pipeline switches the proxy on, grants the viewers and the release probe, and
+   changes the uptime check to accept the sign-in redirect. The next release's probes sign in through the proxy.
+
+What the runner enforces: a release whose `platform.yaml` disagrees with the service's proxy state stops before anything
+changes ("render and merge the infrastructure first"), so the switch is only ever flipped by the pipeline.
+
 ## 8. Provenance, scanning and dependency updates
 
 - **Build provenance**: the deployment job signs an attestation for the pushed image digest and verifies it with `gh attestation verify` before release. Nothing to configure. If the verification step fails in the first trial, confirm the runner can read the private registry through `docker-credential-gcloud`; the step fails closed by design.

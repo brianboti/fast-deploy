@@ -276,6 +276,8 @@ class Onboarder:
                      "RECOVERY_BUCKET": target.recovery_bucket}
         if settings.billing_export_table:
             variables["BILLING_EXPORT_TABLE"] = settings.billing_export_table
+        if settings.iap_client_id:
+            variables["IAP_CLIENT_ID"] = settings.iap_client_id
         self.c.github.ensure_environment(app.repository, settings.environment, app.branch)
         self.c.github.set_environment_variables(app.repository, settings.environment, variables)
         record["steps"]["environment"] = {"environment": settings.environment, "variables": sorted(variables)}

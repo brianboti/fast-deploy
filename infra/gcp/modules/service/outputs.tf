@@ -8,6 +8,7 @@ output "github_environment_variables" {
     DEPLOY_SERVICE_ACCOUNT = google_service_account.deployer.email
     PROBE_SERVICE_ACCOUNT  = google_service_account.probe.email
     RECOVERY_BUCKET        = google_storage_bucket.recovery.name
+    IAP_CLIENT_ID          = var.iap_client_id
   }
 }
 output "service_url" { value = google_cloud_run_v2_service.app.uri }

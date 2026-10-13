@@ -1,3 +1,18 @@
+# 1.7.0: pages for people (Phase 8, items 8.2 to 8.4 and 8.6)
+
+## Added
+
+1. **`exposure: lab-members`** in `platform.yaml`: the service gets Google's Identity-Aware Proxy in front of it, directly on Cloud Run (no load balancer, no charge). People open the pages after a Google sign-in; only the listed accounts get through. `authenticated` (programs with identity tokens) stays the default; `public` is still refused by the model and the policy.
+2. **Viewers**: `onboarding.default_viewers` (the lab's accounts, applied to every `lab-members` app) and `viewers` per application in the controller's configuration or registry (`user:`, `group:` or `domain:`). The renderer writes them into the app's Terraform root as `roles/iap.httpsResourceAccessor` grants; the operator edits the lists, developers cannot grant themselves. A `lab-members` root without a viewer is refused at render time.
+3. **Terraform** (service module): `iap_enabled` on the service, the IAP service agent as invoker, one grant per viewer, the release probe identity as a viewer, and an uptime check that, behind the proxy, accepts the sign-in redirect as "the front door is up" (the release probes prove the page itself). The foundation enables `iap.googleapis.com` and publishes `iap_client_id` (a variable the operator sets after the one-time console step; the id is not a secret). The apply script creates the IAP service agent.
+4. **The runner**: a pre-check that refuses a release whose `platform.yaml` disagrees with the service's proxy state (Terraform owns the switch), and probes that mint their identity token for the proxy's OAuth client (`IAP_CLIENT_ID` in the app's GitHub environment, written by onboarding when configured) instead of the service URL.
+5. **The health view** shows `access`: the exposure, whether the proxy is on, and who may open the pages; a mismatch between the two is a note.
+
+## Upgrade steps
+
+1. Once, in the console (`docs/SETUP.md`, "Pages for people"): create the project's IAP OAuth client with "Auto generate credentials" on any service, then put its client id in the foundation's `terraform.tfvars` (`iap_client_id`) and in `onboarding.iap_client_id`; add the lab's accounts to `onboarding.default_viewers`.
+2. Re-apply the foundation (the IAP API, the service agent, the new output); re-render every application root (two new inputs). Runner and template changed: regenerate the app workflows against this commit and raise `platform.minimum_commit`; set `IAP_CLIENT_ID` in existing apps' `staging` environments.
+
 # 1.6.0: one sentence (Phase 7, items 7.1, 7.2, 7.4 and 7.6)
 
 ## Added

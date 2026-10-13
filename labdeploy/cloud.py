@@ -86,7 +86,8 @@ class Observer:
                 entry["commit"] = labels.get("lab-deploy-commit")
             traffic.append(entry)
         return {"url": data.get("uri"), "ready": ready.get("state") == "CONDITION_SUCCEEDED", "ready_message": ready.get("message"),
-                "ingress": data.get("ingress"), "latest_ready_revision": (data.get("latestReadyRevision") or "").rsplit("/", 1)[-1] or None,
+                "ingress": data.get("ingress"), "iap_enabled": bool(data.get("iapEnabled")),
+                "latest_ready_revision": (data.get("latestReadyRevision") or "").rsplit("/", 1)[-1] or None,
                 "updated_at": data.get("updateTime"), "traffic": traffic}
 
     def needs(self, target, needs):
