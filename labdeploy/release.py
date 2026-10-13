@@ -28,6 +28,23 @@ class MigrationFailed(RuntimeError):
         self.logs = list(logs)
 
 
+def hold_signals():
+    """Ignore further SIGINT and SIGTERM while traffic is restored; only the runner's final SIGKILL can stop it then.
+    Returns the previous handlers for release_signals()."""
+    held = {}
+    try:
+        for number in (signal.SIGINT, signal.SIGTERM):
+            held[number] = signal.signal(number, signal.SIG_IGN)
+    except ValueError:  # not the main thread; nothing to hold
+        pass
+    return held
+
+
+def release_signals(held):
+    for number, handler in held.items():
+        signal.signal(number, handler)
+
+
 def describe_error(error):
     """Short, log-safe description of a failure: a command's ERROR line when there is one, else its last stderr line."""
     lines = [line.strip() for line in (getattr(error, "stderr", "") or "").splitlines() if line.strip()]
@@ -485,6 +502,7 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
     except (Exception, KeyboardInterrupt, SystemExit) as error:
         # Graceful termination gets an immediate recovery attempt. A killed runner is
         # handled by the durable journal and separate recovery workflow instead.
+        held = hold_signals()  # a cancel sends SIGINT, then SIGTERM: neither may cut the restore short
         receipt["error"] = str(error)[:400] if isinstance(error, MigrationFailed) else describe_error(error)
         failed_phase = receipt["state"]
         if failed_phase == "migrating":
@@ -512,6 +530,7 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
             save()
         except Exception:
             Path(receipt_path).write_text(json.dumps({**receipt, "journal_warning": "Recovery checkpoint update failed"}, indent=2))
+        release_signals(held)
         if isinstance(error, (KeyboardInterrupt, SystemExit)):
             raise
         raise RuntimeError(f"Release failed: {receipt['state']}; inspect the receipt and Cloud Run") from None

@@ -257,3 +257,23 @@ def test_a_failed_migration_is_explained_as_one_and_keeps_its_log(tmp_path, monk
     assert receipt["migration_logs"][0]["message"] == "relation does not exist" and receipt["error"].endswith("relation does not exist")
     text = advice({"state": "failed", "failed_step": {"step": RELEASE_STEP}, "receipt": receipt})
     assert text.startswith("The database migration failed, so nothing new was deployed") and "relation does not exist" in text
+
+
+def test_a_cancelled_run_signals_the_release_itself_which_holds_its_restore():
+    # Live: a cancel during the migration did not stop the release (the signal reached only the waiting shell) and it promoted.
+    import signal
+
+    import yaml
+
+    from labdeploy.release import hold_signals, release_signals
+
+    steps = yaml.safe_load(Path("templates/deploy-gcp.yml").read_text())["jobs"]["deploy"]["steps"]
+    release = next(step for step in steps if step.get("id") == "release")
+    assert release["run"].strip() == "exec python -m labdeploy.release"
+    following = steps[steps.index(release) + 1]
+    assert following["id"] == "url" and "GITHUB_OUTPUT" in following["run"]
+    before = signal.getsignal(signal.SIGINT)
+    held = hold_signals()
+    assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN and signal.getsignal(signal.SIGTERM) is signal.SIG_IGN
+    release_signals(held)
+    assert signal.getsignal(signal.SIGINT) is before

@@ -136,7 +136,7 @@ jobs:
     # GitHub records a deployment for this environment job; the URL below makes it show the released service.
     environment:
       name: staging
-      url: ${{ steps.release.outputs.url }}
+      url: ${{ steps.url.outputs.url }}
     permissions:
       contents: read
       id-token: write
@@ -273,10 +273,13 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/platform
           SPEC_FILE: bundle/platform.yaml
         shell: bash
-        run: |
-          set -euo pipefail
-          python -m labdeploy.release
-          echo "url=$(python -c 'import json; print(json.load(open("release-receipt.json")).get("url", ""))')" >> "$GITHUB_OUTPUT"
+        # exec: the release becomes the step's own process, so a cancelled run's SIGINT and SIGTERM reach it and it restores
+        # traffic itself. Behind a waiting shell they never did: a cancel requested mid-migration let the release promote.
+        run: exec python -m labdeploy.release
+      - name: Record the service URL
+        id: url
+        shell: bash
+        run: echo "url=$(python -c 'import json; print(json.load(open("release-receipt.json")).get("url", ""))')" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
