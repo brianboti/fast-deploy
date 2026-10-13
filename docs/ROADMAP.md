@@ -165,6 +165,35 @@ Order: 6.3 first, because it also removes the manual apply that cost four runs t
 
 Cost effect per resource, monthly, at the defaults: Firestore 0 within the free tier; a bucket about 0.02 per gigabyte; Pub/Sub 0 within the free tier; a job pays per second it runs; Cloud SQL smallest about 8 plus storage, and only storage while stopped; domain mapping 0; a load balancer about 18 fixed. The pipeline itself runs on GitHub's minutes. Out of scope for this phase: Kubernetes, virtual machines, GPUs, several regions, and production releases, which keep their own phase.
 
+## Phase 7: one sentence (about four and a half days) → version 1.6
+
+Status: planned on 2026-10-13 after the operator asked for "a repository link with a build file, and one sentence that gives it every Google service it needs". Today that takes the five onboarding steps in `docs/CLAUDE-CHAT.md` (two pull requests on the app repository, one on the platform repository, a configuration edit, eight variables); the platform already does the hard part. Phase 7 makes the sentence `Deploy https://github.com/ORG/REPO on GCP` sufficient for a repository that follows `docs/DEVELOPER-CONTRACT.md`.
+
+### Decisions the operator makes before "go"
+
+| # | Decision | Default if nothing is said |
+|---|---|---|
+| D12 | Merge gates: the configuration and infrastructure pull requests merge on their own when the policy passes and no review question is open, or a person merges them | Automatic for an application's own files (its `platform.yaml`, its root under `infra/gcp/apps/`, its three workflows); the foundation stays manual; every automatic merge is audited and reversible |
+| D13 | Where registered applications live: the operator's `config.local.yaml` (today) or the controller's database managed by tools | The database (`register_application`, `unregister_application`), with the same validation; the file keeps principals and settings |
+| D14 | GitHub access for the controller: one fine-grained token per repository (today) or a GitHub App installed once on the lab's account | A GitHub App: new repositories need no new token, and the controller can create the `staging` environment, write its variables, open and merge pull requests, with permissions limited to what onboarding needs |
+| D15 | Defaults when the developer says nothing | Smallest size, scale to zero, authenticated, staging, tests required, no needs; onboarding asks only what it cannot infer (a health path that is not `/health`, missing tests) |
+| D16 | Needs inference: suggest buckets, topics or a database from the code's imports | Suggest in the review questions, never add silently |
+
+### Items
+
+| # | Item | Where |
+|---|---|---|
+| 7.1 | The developer contract and a validator: `lab-deploy check-repo URL` and `analyze_repository` report the contract's checklist with every missing item, before anything is created | `docs/DEVELOPER-CONTRACT.md`, `labdeploy/analyzer.py`, `labdeploy/cli.py` |
+| 7.2 | Applications registry in the database (D13): register and unregister tools with the configuration model's validation, the demo entry migrated, `list_applications` unchanged for Claude | `labdeploy/config.py`, `labdeploy/controller.py`, `labdeploy/server.py` |
+| 7.3 | GitHub App authentication (D14): installation tokens per repository, permissions contents, pull requests, actions, environments and variables, metadata; the private key in the Keychain; the fine-grained token remains the fallback | `labdeploy/github.py`, `scripts/start.sh`, `docs/SETUP.md` |
+| 7.4 | `onboard_application(repository_url)`: validate against the contract; open the configuration pull request; register the app; render and open the infrastructure pull request; merge per D12 when the policy passes; wait for the apply; create the `staging` environment restricted to `main` and write its variables; open and merge the workflows pull request; dispatch the first release; report a timeline. Resumable: every step checks what exists and continues, so a second call finishes an interrupted first one | `labdeploy/onboarding.py`, `labdeploy/server.py` |
+| 7.5 | A live trial from one sentence on a second test repository created from the contract (`lab-demo-two`, with a bucket and a topic declared), recorded in `docs/VALIDATION.md`; then its decommission | docs, the test repository |
+| 7.6 | Documents: "Deploy a repository" in `docs/CLAUDE-CHAT.md`, setup for the GitHub App, the handoff | docs |
+
+Order: 7.1 and 7.2 first (they stand alone and remove the configuration edit), then 7.3 (it removes the token-per-repository step), then 7.4 and the trial. What stays human whatever the decisions: secret values, the budget and the cap, the foundation applies, and production, which this platform does not do.
+
+Cost effect: none at idle; each onboarded application adds only what it declares (compute at zero when idle, a few cents of registry storage, Cloud SQL about 9 a month when chosen).
+
 ## Totals
 
 | Phase | Effort | Workflows regenerated | Terraform apply |
@@ -176,5 +205,6 @@ Cost effect per resource, monthly, at the defaults: Firestore 0 within the free 
 | 4 | one and a half days | yes | yes |
 | 5 | two days | no | yes |
 | 6 | about eleven days | yes | by the pipeline from then on |
+| 7 | about four and a half days | yes (the trial repository) | by the pipeline |
 
 About nine and a half days of work for Phases 0 to 5, plus the live exercises, which take an hour or two per phase. Phase 6 adds about eleven days and a trial per resource type.
