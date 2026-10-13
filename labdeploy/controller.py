@@ -224,8 +224,10 @@ class Controller:
             return Onboarder(self).advance(record)
 
     def onboarding_tick(self):
-        """One pass over every onboarding that waits on GitHub or the pipeline; the scheduler calls it every minute."""
+        """One pass over every onboarding that waits on GitHub or the pipeline; the scheduler calls it every minute. It also
+        re-reads the registered applications, so `lab-deploy unregister` reaches a running controller within a minute."""
         from .onboarding import ACTIVE
+        self.refresh_registry()
         results = {}
         for record in self.store.onboardings():
             if record.get("state") in ACTIVE:

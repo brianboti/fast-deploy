@@ -451,3 +451,15 @@ def test_an_onboarded_application_can_be_retired_and_unregistered(tmp_path):
     assert any(p.startswith("newapp: onboarding is not finished (planning") and "lab-deploy unregister newapp" in p for p in problems)
     assert c.store.unregister_application("newapp") is True and c.store.onboarding("newapp") is None
     assert "newapp" not in c.store.registered_applications() and c.store.unregister_application("newapp") is False
+
+
+def test_an_unregistered_application_leaves_a_running_controller_within_a_minute(tmp_path):
+    # Live: `lab-deploy unregister lab-demo-two` changed the database, but the running controller kept listing the app.
+    from test_onboarding import make
+
+    c, brian, gh = make(tmp_path / "x")
+    c.onboard(brian, "https://github.com/lab/newapp")
+    assert "newapp" in c.config.applications
+    c.store.unregister_application("newapp")  # what the CLI does, from another process
+    c.onboarding_tick()  # the scheduler's minute
+    assert "newapp" not in c.config.applications
