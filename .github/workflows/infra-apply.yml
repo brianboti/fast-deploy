@@ -93,7 +93,17 @@ jobs:
       - name: Apply exactly that plan
         run: |
           cd "infra/gcp/apps/$APP"
-          terraform apply -input=false -no-color tfplan
+          if ! terraform apply -input=false -no-color tfplan; then
+            # Google's APIs are eventually consistent: a service created seconds earlier is "not found" to the uptime
+            # check (seen on the first apply of a new application), a fresh grant takes a while to reach every API.
+            # Plan again after a minute, under the same policy, and apply once more; a real problem fails twice.
+            echo "::warning::The apply failed; planning again in 60 seconds and applying once more."
+            sleep 60
+            terraform plan -input=false -no-color -out=tfplan
+            terraform show -json tfplan > plan.json
+            PYTHONPATH="$GITHUB_WORKSPACE" python3 -m labdeploy.infra check plan.json
+            terraform apply -input=false -no-color tfplan
+          fi
           terraform output -json > outputs.json
       - name: Publish the outputs to the application's GitHub environment
         env:
