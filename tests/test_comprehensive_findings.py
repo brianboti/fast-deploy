@@ -472,3 +472,38 @@ def test_a_cancelled_run_cancels_the_release_job():
 
     deploy = yaml.safe_load(Path("templates/deploy-gcp.yml").read_text())["jobs"]["deploy"]
     assert "always()" not in deploy["if"] and "!cancelled()" in deploy["if"] and "needs.build.result != 'failure'" in deploy["if"]
+
+
+def test_a_failed_migration_waits_for_its_late_traceback_and_names_its_last_line(tmp_path, monkeypatch):
+    # Live on 1.8.1: the first read found only "Running upgrade 0003 -> 0004"; the 76-line traceback became searchable
+    # seconds later, and its cause is its last line, beyond the first 500 characters.
+    import json
+    import subprocess
+
+    import labdeploy.release as release
+    from labdeploy.release import CloudRun, MigrationFailed
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(release, "LOG_WAIT_SECONDS", 0)
+    traceback = "Traceback (most recent call last):\n" + "  File \"x.py\", line 1, in <module>\n" * 70 + \
+        "sqlalchemy.exc.DatabaseError: relation \"experiment_typo\" does not exist"
+    reads = []
+
+    def runner(command):
+        if "execute" in command:
+            raise subprocess.CalledProcessError(1, command, stderr="ERROR: (gcloud.run.jobs.execute) The execution failed.")
+        if "executions" in command and "list" in command:
+            return "demo-migrate-q1\n"
+        if command[:3] == ["gcloud", "logging", "read"]:
+            reads.append(1)
+            entries = [{"severity": None, "textPayload": "INFO Running upgrade 0003 -> 0004", "timestamp": "t1"}]
+            if len(reads) >= 3:  # searchable only on the third read
+                entries.insert(0, {"severity": "ERROR", "textPayload": traceback, "timestamp": "t2"})
+            return json.dumps(entries)
+        return ""
+
+    adapter = CloudRun("test-project", "us-central1", "demo", "demo-probe@test-project.iam.gserviceaccount.com", runner=runner)
+    with pytest.raises(MigrationFailed) as failure:
+        adapter.migrate("img@sha256:" + "b" * 64, AppSpec(name="demo", needs={"database": "postgres", "migrate": ["alembic", "upgrade", "head"]}))
+    assert len(reads) == 3 and str(failure.value).endswith('relation "experiment_typo" does not exist')
+    assert failure.value.logs[-1]["message"].endswith('does not exist') and len(failure.value.logs[-1]["message"]) == 500

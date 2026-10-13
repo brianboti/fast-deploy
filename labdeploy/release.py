@@ -20,6 +20,9 @@ def run(args):
     return subprocess.run(args, check=True, capture_output=True, text=True, timeout=COMMAND_TIMEOUT).stdout.strip()
 
 
+LOG_ATTEMPTS, LOG_WAIT_SECONDS = 6, 5  # up to half a minute for a failed job's log lines to become searchable
+
+
 class MigrationFailed(RuntimeError):
     """The migration job failed before anything was deployed; `logs` holds the job's own last lines."""
 
@@ -158,10 +161,15 @@ class CloudRun:
             try:
                 name = self.run(["gcloud", "run", "jobs", "executions", "list", "--job", job, "--project", self.project, "--region", self.region,
                                  "--sort-by=~createTime", "--limit=1", "--format=value(name)"]).strip().rsplit("/", 1)[-1] or None
-                logs = self.job_logs(job, name) if name else []
+                # A line is searchable some seconds after it is written: the traceback arrived after the first read (live).
+                for _ in range(LOG_ATTEMPTS):
+                    logs = self.job_logs(job, name) if name else []
+                    if not name or any(line.get("severity") in ("ERROR", "CRITICAL") for line in logs):
+                        break
+                    time.sleep(LOG_WAIT_SECONDS)
             except Exception as log_error:  # noqa: BLE001 - the failure itself is what matters; its details are best effort
                 print(f"Migration logs unavailable: {describe_error(log_error)}", file=sys.stderr)
-            errors = [line["message"] for line in logs if line.get("severity") in ("ERROR", "CRITICAL") and line.get("message")]
+            errors = [line["last_line"] for line in logs if line.get("severity") in ("ERROR", "CRITICAL") and line.get("last_line")]
             cause = errors[-1] if errors else describe_error(exc)
             raise MigrationFailed(f"Migration job {job} failed{f' (execution {name})' if name else ''}: {cause[:300]}", logs) from None
         except subprocess.TimeoutExpired:
@@ -261,9 +269,13 @@ class CloudRun:
         query = (f'resource.type="cloud_run_job" AND resource.labels.job_name="{job}" '
                  f'AND labels."run.googleapis.com/execution_name"="{execution}"')
         raw = self.run(["gcloud", "logging", "read", query, "--project", self.project, "--limit", str(limit), "--freshness=2h", "--order=desc", "--format=json"])
-        return [{"at": entry.get("timestamp"), "severity": entry.get("severity"),
-                 "message": str(entry.get("textPayload") or (entry.get("jsonPayload") or {}).get("message") or "")[:500]}
-                for entry in reversed(json.loads(raw or "[]"))]
+        lines = []
+        for entry in reversed(json.loads(raw or "[]")):
+            text = str(entry.get("textPayload") or (entry.get("jsonPayload") or {}).get("message") or "")
+            last = next((part.strip() for part in reversed(text.splitlines()) if part.strip()), "")
+            # A traceback is one entry of many lines with the cause last: keep its end, and that last line on its own.
+            lines.append({"at": entry.get("timestamp"), "severity": entry.get("severity"), "message": text[-500:], "last_line": last[:300]})
+        return lines
 
     def revision_image(self, revision):
         return self.run(self.command("revisions", "describe", revision, "--format=value(status.imageDigest)"))

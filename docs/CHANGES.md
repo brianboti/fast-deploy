@@ -9,6 +9,9 @@
    release with `exec`, as 1.8.0 does, stays: the signal now reaches the release directly when GitHub sends it.
 2. A running controller re-reads the registered applications every minute, so `lab-deploy unregister` reaches it
    without a restart.
+3. **A failed migration's cause was still missing on 1.8.1** (re-tested live): the job's traceback became searchable
+   seconds after the first read, and as one 76-line entry its cause is the last line, beyond the 500 characters kept. The
+   runner now waits up to half a minute for an error line, keeps the end of each entry, and names its last line.
 
 ## Upgrade steps
 
