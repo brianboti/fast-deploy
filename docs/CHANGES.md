@@ -1,3 +1,19 @@
+# 1.8.2: a cancel really cancels the release
+
+## Fixed
+
+1. **A cancelled run kept releasing.** Re-tested on 1.8.1, a cancel during the migration again let the release promote.
+   The cause was the deploy job's condition, `if: always() && ...`: GitHub does not cancel a job whose condition uses
+   `always()`. It is now `!cancelled() && ...`, which still runs the job when the build was skipped (a reused image).
+   Correction to 1.8.0: its note blamed the shell for not passing the signal on; that was not the cause. Running the
+   release with `exec`, as 1.8.0 does, stays: the signal now reaches the release directly when GitHub sends it.
+2. A running controller re-reads the registered applications every minute, so `lab-deploy unregister` reaches it
+   without a restart.
+
+## Upgrade steps
+
+1. Restart the controller, and re-pin every application's workflows to this commit (the deploy job changed).
+
 # 1.8.1: after the late cancel, the billing export and an abandoned onboarding
 
 ## Fixed

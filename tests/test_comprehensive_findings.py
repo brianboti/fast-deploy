@@ -463,3 +463,12 @@ def test_an_unregistered_application_leaves_a_running_controller_within_a_minute
     c.store.unregister_application("newapp")  # what the CLI does, from another process
     c.onboarding_tick()  # the scheduler's minute
     assert "newapp" not in c.config.applications
+
+
+def test_a_cancelled_run_cancels_the_release_job():
+    # Live, twice: the deploy job's `if: always() && ...` kept it running after the run was cancelled (GitHub does not
+    # cancel jobs whose condition uses always()), so the release promoted minutes after the cancel.
+    import yaml
+
+    deploy = yaml.safe_load(Path("templates/deploy-gcp.yml").read_text())["jobs"]["deploy"]
+    assert "always()" not in deploy["if"] and "!cancelled()" in deploy["if"] and "needs.build.result != 'failure'" in deploy["if"]
