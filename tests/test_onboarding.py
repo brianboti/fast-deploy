@@ -190,3 +190,16 @@ def test_onboarding_needs_the_block_and_a_star_identity(tmp_path):
     assert c.visible_apps(narrow) == ["demo"]
     with pytest.raises(ValueError):
         Config.model_validate({"applications": {}, "principals": [{"name": "x", "token_sha256": "0" * 64, "applications": ["ghost"]}]})
+
+
+def test_a_refused_write_is_explained_in_plain_words(tmp_path):
+    import httpx
+    c, brian, gh = make(tmp_path)
+
+    def refused(*args, **kwargs):
+        request = httpx.Request("POST", "https://api.github.com/repos/lab/platform/git/refs")
+        raise httpx.HTTPStatusError("403", request=request, response=httpx.Response(403, request=request))
+    gh.open_platform_pull_request = refused
+    result = c.onboard(brian, "lab/newapp")
+    assert result["state"] == "blocked" and result["blocked_at"] == "infrastructure"
+    assert "GitHub refused access for lab/platform" in result["error"] and "section 7g" in result["error"]
