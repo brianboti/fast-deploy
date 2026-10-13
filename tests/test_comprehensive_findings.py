@@ -380,3 +380,74 @@ def test_operator_switches_reach_an_onboarded_application_without_copying_its_en
     assert (app.cost_ceiling_usd, app.auto_deploy, app.paused, app.repository) == (5, True, True, "lab/newapp")
     with pytest.raises(ValueError):
         Config.model_validate({**raw, "application_settings": {"newapp": {"repository": "evil/repo"}}})  # only the switches
+
+
+def test_a_release_that_completed_before_a_late_cancel_is_the_live_release(tmp_path):
+    # Live: a cancel reached the run after the release had promoted; the plan was stored as cancelled, the controller kept
+    # the earlier release as live, and the health view reported traffic changed outside the pipeline.
+    from test_phase2_release import History, make, release
+
+    class LateCancel(History):
+        cancel = False
+
+        def status(self, app, plan):
+            run = super().status(app, plan)
+            if self.cancel:
+                run["conclusion"] = "cancelled"
+            return run
+
+    c, p, gh = make(tmp_path, LateCancel())
+    release(c, p, gh, "1" * 40, "demo-r1")
+    gh.sha = "2" * 40
+    plan = c.plan(p, "demo")
+    c.deploy(p, plan["id"])
+    gh.cancel = True
+    gh.receipt = {"release": {"plan_id": plan["id"], "state": "succeeded", "revision": "demo-r2", "url": "https://demo.run.app",
+                              "previous_traffic": {"demo-r1": 100}}, "vulnerabilities": None}
+    status = c.status(p, plan["id"])
+    assert status["state"] == "succeeded" and "completed before the run ended (cancelled)" in status["next_action"]
+    assert c.applications(p)["demo"]["live_release"]["plan_id"] == plan["id"]
+
+
+def test_a_billing_export_without_recent_data_makes_spend_unknown_not_zero():
+    # Live: the export's newest row was 18 days old and the cost report said "total net cost $0".
+    import json
+    import time
+
+    import httpx
+
+    from labdeploy.cost import billing_actuals, issue_body, summary_lines
+
+    asked = []
+
+    def handler(request):
+        asked.append(json.loads(request.content)["query"])
+        return httpx.Response(200, json={"jobComplete": True, "rows": [{"f": [{"v": str(int(time.time()) - 18 * 86400)}]}]})
+
+    result = billing_actuals("p-12345.billing_export.gcp_billing_export_v1_ABC", "p-12345", "t", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert len(asked) == 1 and "MAX(usage_end_time)" in asked[0]  # the full query is not even run
+    assert result["total_net_cost_usd"] is None and result["by_service"] is None and "actual spend is unknown, not zero" in result["warning"]
+    report = {"service": "demo", "window_days": 14, "estimate": {"compute_ceiling_usd_month": 10.0, "idle_floor_usd_month": 0.0},
+              "rightsizing": {"observed": None, "recommendations": []}, "actual_spend": result}
+    assert any("Actual spend unavailable: The billing export has no data after" in line for line in summary_lines(report))
+    assert "unknown, not zero" in issue_body(report, "https://run")
+
+
+def test_an_onboarded_application_can_be_retired_and_unregistered(tmp_path):
+    # Live: `decommission lab-notebook` said "Unknown application" (it read only the file), listed no Cloud SQL step, and
+    # nothing could remove an abandoned onboarding (lab-demo-two), which the watchdog then reported every day.
+    from test_onboarding import make
+
+    from labdeploy.cli import decommission_steps
+
+    c, brian, gh = make(tmp_path / "x")
+    c.onboard(brian, "https://github.com/lab/newapp")
+    app = c.config.applications["newapp"]
+    steps = "\n".join(decommission_steps("newapp", app, {"buckets": [], "topics": [], "database": "postgres", "migrate": ["alembic", "upgrade", "head"]},
+                                         registered=True))
+    assert "gcloud sql instances patch newapp --no-deletion-protection" in steps and "gcloud sql instances delete newapp" in steps
+    assert "gcloud run jobs delete newapp-migrate" in steps and "under application_settings.newapp" in steps and "lab-deploy unregister newapp" in steps
+    problems = c.watchdog_tick()["problems"]
+    assert any(p.startswith("newapp: onboarding is not finished (planning") and "lab-deploy unregister newapp" in p for p in problems)
+    assert c.store.unregister_application("newapp") is True and c.store.onboarding("newapp") is None
+    assert "newapp" not in c.store.registered_applications() and c.store.unregister_application("newapp") is False

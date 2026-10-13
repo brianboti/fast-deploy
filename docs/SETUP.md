@@ -269,7 +269,7 @@ A state written by versions up to 0.9.x holds both kinds in one object. Run `scr
 
 ## 7d. Retire an application
 
-`python -m labdeploy.cli decommission APP` prints the ordered checklist with the app's own names: pause it, warn its owners, delete the service, empty and delete the recovery bucket, delete the images and secrets, delete the data of each declared need deliberately (buckets and the database are never destroyed by a plan), run `terraform state rm` for those and `terraform destroy` in the app's root as the operator, delete the root directory in a pull request (the pipeline never destroys), remove it from the controller configuration, and disable its workflows and credential access. Plans stay in the database as history.
+`python -m labdeploy.cli decommission APP` prints the ordered checklist with the app's own names: pause it, warn its owners, delete the service, empty and delete the recovery bucket, delete the images and secrets, delete the data of each declared need deliberately (buckets and the database are never destroyed by a plan), run `terraform state rm` for those and `terraform destroy` in the app's root as the operator, delete the root directory in a pull request (the pipeline never destroys), remove it from the controller configuration (an onboarded application: `python -m labdeploy.cli unregister APP`, which also drops its onboarding record), and disable its workflows and credential access. Plans stay in the database as history. For a Postgres need the checklist turns deletion protection off and deletes the instance (its name stays reserved for about a week) and deletes the migration job.
 
 ## 7f. Infrastructure as pull requests
 

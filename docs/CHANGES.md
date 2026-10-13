@@ -1,3 +1,22 @@
+# 1.8.1: after the late cancel, the billing export and an abandoned onboarding
+
+## Fixed
+
+1. **A release that completed before a late cancel stayed unrecorded.** The plan was stored as `cancelled` from the run's
+   conclusion, the controller kept the earlier release as live, and the health view reported traffic changed outside the
+   pipeline. The receipt now decides: a run that ended cancelled, failed or timed out after the release succeeded is the
+   live release, and its status says how the run ended.
+2. **Actual spend read $0 when the billing export had no recent data** (its newest row was 18 days old). A freshness
+   query runs first; with nothing in the last two days the report says the spend is unknown, not zero, and how to check.
+3. **An onboarded application could not be retired.** `decommission` read only the configuration file ("Unknown
+   application"), had no Cloud SQL or migration-job step, and nothing removed an abandoned onboarding, which the
+   watchdog reported daily. `decommission` now reads the registry, the checklist covers Postgres, `lab-deploy unregister
+   APP` forgets an onboarded application, and the watchdog names an unfinished onboarding as such.
+
+## Upgrade steps
+
+1. Restart the controller. Re-pin application workflows for the billing-export change in the weekly report.
+
 # 1.8.0: what the first complicated application found after its onboarding
 
 `lab-notebook` was onboarded with one sentence, released (Postgres migrations through the app's own IAM identity), used

@@ -45,6 +45,9 @@ def build_parser():
     d = commands.add_parser("decommission", help="print the checklist that retires one application cleanly")
     d.add_argument("app")
     d.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
+    g = commands.add_parser("unregister", help="forget an onboarded application (its entry and onboarding record); plans stay as history")
+    g.add_argument("app")
+    g.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
     u = commands.add_parser("update-workflows", help="open pull requests that pin registered apps' workflows to a platform commit")
     u.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
     u.add_argument("--all", action="store_true", help="every registered application")
@@ -68,8 +71,9 @@ def build_parser():
     return parser
 
 
-def decommission_steps(app_id, app, needs=None, note=None):
-    """The order that retires an app without leaving a bill or a dangling trust: drain, delete, then let Terraform forget it."""
+def decommission_steps(app_id, app, needs=None, note=None, registered=False):
+    """The order that retires an app without leaving a bill or a dangling trust: drain, delete, then let Terraform forget it.
+    `registered`: the app was onboarded, so its entry lives in the controller's database rather than the configuration file."""
     t = app.target
     needs = needs or {}
     extra = []
@@ -79,13 +83,22 @@ def decommission_steps(app_id, app, needs=None, note=None):
     for name in needs.get("topics") or []:
         extra.append(f"Delete the subscription and topic: gcloud pubsub subscriptions delete {t.service}-{name} --project {t.project_id} && "
                      f"gcloud pubsub topics delete {t.service}-{name} --project {t.project_id}")
+    if needs.get("database") == "postgres":
+        extra.append(f"Turn deletion protection off and delete the Cloud SQL instance {t.service} (its data is gone for good; export it first if it matters, "
+                     f"and the name stays reserved for about a week): gcloud sql instances patch {t.service} --no-deletion-protection --project {t.project_id} "
+                     f"&& gcloud sql instances delete {t.service} --project {t.project_id}")
+    if needs.get("migrate"):
+        extra.append(f"Delete the migration job: gcloud run jobs delete {t.service}-migrate --region {t.region} --project {t.project_id}")
     if needs.get("database") == "firestore":
         extra.append(f"Turn delete protection off and delete the database {t.service} (its data is gone for good): gcloud firestore databases update --database={t.service} "
                      f"--no-delete-protection --project {t.project_id} && gcloud firestore databases delete --database={t.service} --project {t.project_id}")
     if note:
         extra.append(note)
+    where = f"application_settings.{app_id}" if registered else f"applications.{app_id}"
+    forget = (f"Unregister it: `lab-deploy unregister {app_id}` removes its entry and onboarding record from the controller's database; its plans stay as history."
+              if registered else f"Remove applications.{app_id} from the controller configuration; its plans stay in the database as history.")
     return [
-        f"Pause it: add `paused: true` under applications.{app_id} in the controller configuration (applies without a restart).",
+        f"Pause it: add `paused: true` under {where} in the controller configuration (applies without a restart).",
         f"Tell its owners; a rollback target no longer exists once the service is gone. Last chance for `gcloud run services describe {t.service} --region {t.region} --project {t.project_id}`.",
         f"Delete the service: gcloud run services delete {t.service} --region {t.region} --project {t.project_id}",
         f"Empty and delete the recovery bucket: gcloud storage rm -r gs://{t.recovery_bucket}/** && gcloud storage buckets delete gs://{t.recovery_bucket}",
@@ -94,7 +107,7 @@ def decommission_steps(app_id, app, needs=None, note=None):
         *extra,
         f"As the operator, run `terraform state rm` for each need deleted above, then `terraform destroy` in infra/gcp/apps/{t.service} (the pipeline never destroys), "
         "and delete that directory in a pull request; Terraform drops the identities, trust and alerts it still owns.",
-        f"Remove applications.{app_id} from the controller configuration; its plans stay in the database as history.",
+        forget,
         f"In {app.repository}: disable or delete the three workflows and the staging environment, and revoke the platform credential's access to the repository.",
     ]
 
@@ -203,21 +216,37 @@ def run(parser, args):
     elif args.command == "decommission":
         import os
 
-        from .config import load_config
+        from .config import Application, load_config
+        from .controller import Store
         config = load_config(args.config or os.environ.get("LAB_CONFIG", "config.local.yaml"))
-        if args.app not in config.applications:
+        registered = {app_id: Application.model_validate(entry) for app_id, entry in Store(config.database).registered_applications().items()}
+        applications = {**registered, **config.applications}
+        if args.app not in applications:
             parser.error(f"Unknown application: {args.app}")
         needs, note = None, None
         try:
-            from .controller import Controller, Store
+            from .controller import Controller
             from .github import GitHub
-            app = config.applications[args.app]
+            app = applications[args.app]
             controller = Controller(config, GitHub(), Store(config.database))
             needs = controller.spec_at(app, controller.github.head(app)).needs.model_dump()
         except Exception as exc:  # noqa: BLE001 - the checklist is still useful without the spec; say what could not be read
             note = f"The app's platform.yaml could not be read ({str(exc)[:100]}); check it for buckets, topics and a database and delete their data deliberately."
-        for number, step in enumerate(decommission_steps(args.app, config.applications[args.app], needs, note), 1):
+        steps = decommission_steps(args.app, applications[args.app], needs, note, registered=args.app not in config.applications)
+        for number, step in enumerate(steps, 1):
             print(f"{number}. {step}")
+    elif args.command == "unregister":
+        import os
+
+        from .config import load_config
+        from .controller import Store
+        config = load_config(args.config or os.environ.get("LAB_CONFIG", "config.local.yaml"))
+        if args.app in config.applications:
+            parser.error(f"{args.app} is written in the configuration file; remove it there instead")
+        if not Store(config.database).unregister_application(args.app):
+            parser.error(f"No onboarded application called {args.app}")
+        print(f"Unregistered {args.app}: its entry and onboarding record are gone; its plans and audit events stay as history. "
+              "Its cloud resources are untouched: `lab-deploy decommission` lists them first.")
     elif args.command == "infra":
         from .infra import main as infra_main
         if args.infra_command == "check":
