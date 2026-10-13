@@ -1,3 +1,17 @@
+# 1.8.3: a cancel reads as a cancel
+
+## Fixed
+
+1. Re-tested live on 1.8.2, the cancel worked (the deploy job was cancelled, the release restored traffic, the previous
+   revision kept serving), but the status read "The database migration failed ... (KeyboardInterrupt: )". The receipt
+   now marks a cancelled release, and the status says it was cancelled and in which phase; during a migration it adds
+   that the started job runs on in Google Cloud and may still finish.
+2. `docs/VALIDATION.md` records the comprehensive test with `brianboti/lab-notebook`.
+
+## Upgrade steps
+
+1. Restart the controller and re-pin application workflows (the runner's receipt changed).
+
 # 1.8.2: a cancel really cancels the release
 
 ## Fixed
