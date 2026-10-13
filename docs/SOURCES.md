@@ -109,3 +109,10 @@ References read for the strict review and its fixes, 1.5.0 (2026-10-12):
 - [GitHub branch protection](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches), [deployment environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments) and [CODEOWNERS](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners): the review gate the pipeline's apply identity relies on
 - [Dependabot `directories`](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference#directories-or-directory--) and [scheduled workflows](https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#schedule): the Terraform roots watched and the weekly audit
 
+References read for the repository standard, `docs/DEVELOPER-CONTRACT.md` (2026-10-13):
+
+- [Cloud Run container runtime contract](https://docs.cloud.google.com/run/docs/container-contract), [general development tips](https://docs.cloud.google.com/run/docs/tips/general), [Python tips](https://docs.cloud.google.com/run/docs/tips/python), [health checks](https://docs.cloud.google.com/run/docs/configuring/healthchecks) and [logging](https://docs.cloud.google.com/run/docs/logging): what a container must do on Cloud Run
+- [The Twelve-Factor App](https://12factor.net/): the behavioural rules behind sections 2 and 3 of the standard
+- [Docker: building best practices](https://docs.docker.com/build/building/best-practices/) and [OpenSSF Scorecard checks](https://github.com/ossf/scorecard/blob/main/docs/checks.md): the repository and image hygiene the standard requires or recommends
+- [GitHub community health files](https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/creating-a-default-community-health-file): the files a repository should carry for people
+
