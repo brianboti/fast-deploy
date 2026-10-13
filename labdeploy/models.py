@@ -170,8 +170,11 @@ def enforce(spec: AppSpec, cloud="gcp", environment="staging") -> None:
         raise ValueError("MVP supports GCP staging only")
     if not spec.reviewed:
         raise ValueError("Review assumptions and merge reviewed: true in platform.yaml first")
-    if spec.dependencies or spec.gpu:
-        raise ValueError("Database/dependency provisioning and GPUs are not implemented")
+    if spec.dependencies:
+        raise ValueError(f"The platform does not provide {', '.join(spec.dependencies)}; declare databases, buckets and topics "
+                         "under needs (database: postgres or firestore) and remove `dependencies`")
+    if spec.gpu:
+        raise ValueError("GPUs are not supported")
     if spec.resources.cpu > 2 or spec.resources.memory_mib > 2048 or spec.scaling.maximum > 3:
         raise ValueError("Staging policy: maximum 2 CPUs, 2048 MiB, 3 instances")
 

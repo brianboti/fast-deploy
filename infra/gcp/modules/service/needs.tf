@@ -153,12 +153,16 @@ resource "google_sql_database" "app" {
   name     = "app"
   instance = google_sql_database_instance.need[0].name
 }
-# The runtime identity signs in as itself: no password exists anywhere.
+# The runtime identity signs in as itself: no password exists anywhere. Since PostgreSQL 15 an ordinary user may not
+# create tables in the `public` schema, and Cloud SQL gives a new IAM user no privileges beyond connecting, so the
+# migration job could not create a single table. The instance belongs to this application alone, so its identity gets
+# Cloud SQL's administrative role (`cloudsqlsuperuser`, not a true superuser) and owns what it creates.
 resource "google_sql_user" "runtime" {
-  count    = var.needs.database == "postgres" ? 1 : 0
-  name     = trimsuffix(google_service_account.runtime.email, ".gserviceaccount.com")
-  instance = google_sql_database_instance.need[0].name
-  type     = "CLOUD_IAM_SERVICE_ACCOUNT"
+  count          = var.needs.database == "postgres" ? 1 : 0
+  name           = trimsuffix(google_service_account.runtime.email, ".gserviceaccount.com")
+  instance       = google_sql_database_instance.need[0].name
+  type           = "CLOUD_IAM_SERVICE_ACCOUNT"
+  database_roles = ["cloudsqlsuperuser"]
 }
 resource "google_project_iam_member" "need_sql_runtime" {
   for_each = var.needs.database == "postgres" ? toset(["roles/cloudsql.client", "roles/cloudsql.instanceUser"]) : toset([])

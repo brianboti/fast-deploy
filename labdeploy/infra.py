@@ -149,9 +149,11 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
         "project_number": "project_number", "image_vulnerability_scanning": "image_vulnerability_scanning",
         "tag_manager_role": "tag_manager_role", "alert_channels": "alert_channels", "cap_service_account": "cap_service_account",
         "billing_dataset": "billing_dataset", "network": "network", "subnet": "subnet", "cap_operator_role": "cap_operator_role",
-        "iap_client_id": "iap_client_id",
     }
     lines += [f"  {key.ljust(width)} = data.terraform_remote_state.project.outputs.{output}" for key, output in shared.items()]
+    # Added in 1.7.0: a foundation applied before then has no such output, and an empty id means "no IAP client yet",
+    # so an application that is not `lab-members` plans cleanly before the operator re-applies the foundation.
+    lines.append(f"  {'iap_client_id'.ljust(width)} = try(data.terraform_remote_state.project.outputs.iap_client_id, \"\")")
     main = header + f'''provider "google" {{
   project = {_hcl(project_id)}
   region  = {_hcl(region)}
@@ -235,6 +237,8 @@ ALLOWED_ROLES = frozenset({
     "roles/logging.viewer", "roles/monitoring.viewer", "roles/secretmanager.secretAccessor", "roles/secretmanager.viewer", "roles/bigquery.dataViewer",
     "roles/bigquery.jobUser", "roles/iam.serviceAccountUser", "roles/iam.serviceAccountOpenIdTokenCreator", "roles/iam.workloadIdentityUser",
     "roles/iap.httpsResourceAccessor",
+    # The release reads its image's vulnerability findings (the scan summary); the service module grants it to the deployer.
+    "roles/containeranalysis.occurrences.viewer",
 })
 CUSTOM_ROLE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/roles/labDeploy[A-Za-z]+$")
 # The one grant to a platform identity an application root makes by design: the spending cap may read and update the

@@ -11,6 +11,7 @@ import time
 import httpx
 import yaml
 
+from .analyzer import TEST_PATH
 from .config import Application, Principal
 from .github import explain
 from .models import AppSpec
@@ -19,7 +20,6 @@ STEPS = ("validating", "registering", "infrastructure", "planning", "applying", 
 WAITING = {"planning", "applying", "merging_workflows"}
 ACTIVE = set(STEPS) - {"complete"}
 REQUIRED_FILES = (("Dockerfile", "the build recipe"), ("platform.yaml", "the application's contract"), ("requirements.txt", "pinned runtime dependencies"))
-TEST_PATH = re.compile(r"(^|/)tests?(/|$)|(^|/)test_[^/]+\.py$|_test\.py$")
 WHAT_NEXT = {
     "validating": "checking the repository against the contract",
     "registering": "registering the application with the controller",
