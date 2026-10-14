@@ -37,7 +37,8 @@ jobs:
     # Skipped when the plan reuses an image this workflow already built and attested for the same commit.
     if: inputs.image_digest == ''
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # A real application's suite takes minutes on its own (Sophia's 913 tests: about nine on a laptop), before the build.
+    timeout-minutes: 45
     steps:
       - name: Validate dispatch inputs
         env:
@@ -94,13 +95,25 @@ jobs:
           TESTS=$(python -c 'from pathlib import Path; from labdeploy.models import parse_spec; print(parse_spec(Path("app/platform.yaml").read_text()).tests)')
           [[ "$TESTS" =~ ^(required|none)$ ]]
           echo "tests=$TESTS" >> "$GITHUB_OUTPUT"
+          PYTHON=$(python -c 'from pathlib import Path; from labdeploy.models import parse_spec; print(parse_spec(Path("app/platform.yaml").read_text()).python)')
+          [[ "$PYTHON" =~ ^3\.(11|12|13)$ ]]
+          echo "python=$PYTHON" >> "$GITHUB_OUTPUT"
           [ "$TESTS" = "required" ] || echo "::warning::platform.yaml declares tests: none; no automated tests guard this release"
+      # The application's own Python for its tests (platform.yaml `python`); the platform's steps keep theirs on PATH.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: app-python
+        if: steps.policy.outputs.tests == 'required'
+        with:
+          python-version: ${{ steps.policy.outputs.python }}
+          update-environment: false
       - name: Run unit tests
         if: steps.policy.outputs.tests == 'required'
         working-directory: app
+        env:
+          APP_PYTHON: ${{ steps.app-python.outputs.python-path }}
         run: |
           set -euo pipefail
-          python -m venv .test-venv
+          "$APP_PYTHON" -m venv .test-venv
           if [ -f requirements.lock ]; then
             .test-venv/bin/pip install --require-hashes -r requirements.lock
           else

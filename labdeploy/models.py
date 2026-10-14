@@ -104,6 +104,9 @@ class AppSpec(StrictModel):
     secrets: list[str] = Field(default_factory=list)
     # "none" declares that no automated tests run before a release; every plan then carries a warning.
     tests: Literal["required", "none"] = "required"
+    # The Python the tests run on; match the Dockerfile's base image. A lock compiled for one version can omit packages
+    # another needs (live: SQLAlchemy needs greenlet below 3.13, so a 3.13 lock failed to install on 3.12).
+    python: Literal["3.11", "3.12", "3.13"] = "3.12"
     timeout_seconds: int = Field(default=60, ge=1, le=300)
     # Buckets, topics and a database the platform provisions for the app (docs/SETUP.md 6b); variables are derived.
     needs: Needs = Field(default_factory=Needs)

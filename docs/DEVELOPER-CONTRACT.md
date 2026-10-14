@@ -121,6 +121,7 @@ env:                      # plain configuration values
   LOG_LEVEL: info
 secrets: [API_KEY]        # names only; the value lives in Secret Manager as my-service-API_KEY and arrives as the env var API_KEY
 tests: required           # or none, knowingly: every release then carries a warning
+python: "3.12"            # the Python the tests run on: 3.11, 3.12 or 3.13; match the Dockerfile's base image
 needs:
   buckets: [uploads]      # env BUCKET_UPLOADS
   topics: [events]        # env TOPIC_EVENTS and SUBSCRIPTION_EVENTS

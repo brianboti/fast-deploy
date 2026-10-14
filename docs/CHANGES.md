@@ -1,3 +1,23 @@
+# 1.8.5: a real lab project's Python and test suite
+
+Found by deploying a private copy of the lab's Sophia backend (a FastAPI app on Python 3.13 with 913 tests).
+
+## Added
+
+1. **`python:` in `platform.yaml`** (3.11, 3.12 or 3.13; default 3.12, so existing specs keep their hash): the release's
+   tests run on that version. The platform's own steps keep Python 3.12 (`update-environment: false`). Live, a lock
+   compiled for 3.13 omitted greenlet, which SQLAlchemy needs below 3.13 on Linux x86_64, so `pip install
+   --require-hashes` failed on the platform's 3.12 (reproduced in python:3.12-slim and 3.13-slim containers).
+2. The analyzer notices a Dockerfile on another Python and suggests the `python:` line.
+
+## Changed
+
+1. The build job may run 45 minutes instead of 20: a real suite takes minutes before the image is built.
+
+## Upgrade steps
+
+1. Restart the controller, re-pin application workflows (the template changed), then add `python:` where it differs.
+
 # 1.8.4: a second infrastructure change for the same application
 
 ## Fixed

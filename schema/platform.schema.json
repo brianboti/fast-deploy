@@ -91,7 +91,7 @@
       "type": "string"
     },
     "name": {
-      "pattern": "^[a-z][a-z0-9-]{0,29}$",
+      "pattern": "^[a-z][a-z0-9-]{1,19}[a-z0-9]$",
       "title": "Name",
       "type": "string"
     },
@@ -128,8 +128,11 @@
       "type": "integer"
     },
     "exposure": {
-      "const": "authenticated",
       "default": "authenticated",
+      "enum": [
+        "authenticated",
+        "lab-members"
+      ],
       "title": "Exposure",
       "type": "string"
     },
@@ -172,6 +175,16 @@
         "none"
       ],
       "title": "Tests",
+      "type": "string"
+    },
+    "python": {
+      "default": "3.12",
+      "enum": [
+        "3.11",
+        "3.12",
+        "3.13"
+      ],
+      "title": "Python",
       "type": "string"
     },
     "timeout_seconds": {
