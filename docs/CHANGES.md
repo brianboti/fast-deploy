@@ -1,3 +1,33 @@
+# 1.8.8: applications on Python 3.11 to 3.15, audited on their own Python; conda, Poetry and uv
+
+Asked after the Sophia test: people bring different Pythons and package managers. Three gaps, all in the build job; no
+cloud change and no cost.
+
+## Added
+
+1. **Python 3.14 and 3.15** for `platform.yaml` `python` (now 3.11 to 3.15; default still 3.12, so existing specs keep
+   their hash). Both are on GitHub's Ubuntu 24.04 runners (3.14.8, 3.15.0). 3.10 and older stay unsupported: 3.10's
+   security support ends this month.
+2. **The analyzer drafts `python` from the Dockerfile's base image** instead of only suggesting it, and says plainly when
+   that image is on a Python the platform does not test (3.10 and older).
+3. **conda, Poetry and uv**: `docs/DEVELOPER-CONTRACT.md` section 1a gives the exact export commands for the three pip
+   files the platform reads, and the analyzer points there when it finds `environment.yml`, `poetry.lock` or `uv.lock`
+   without a `requirements.txt`. The uv flow was run end to end on Python 3.14 (hash-locked install and a clean audit).
+
+## Fixed
+
+1. **The dependency audit ran on the platform's Python 3.12 whatever the application used.** Checked on 2026-10-14:
+   `numpy==1.24.4`, an ordinary pin for a Python 3.11 project, has no 3.12 build, so the audit failed to install it and
+   would have stopped the release; and pip-audit judges version markers for the Python it runs on, so on 3.12 it skipped
+   packages only a 3.14 application installs. The audit now runs on the application's own Python (the same
+   `setup-python` step as the tests, now also when `tests: none`). With a `requirements.lock` it reads every locked
+   package at its exact version without installing or building anything (`--disable-pip`); without one it resolves
+   `requirements.txt` as before. The audit tool installs from wheels only, checked on Python 3.11, 3.13, 3.14 and 3.15.
+
+## Upgrade steps
+
+1. Restart the controller and re-pin application workflows (the template changed).
+
 # 1.8.7: an image released under the provenance exception is never reused
 
 ## Fixed

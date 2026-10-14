@@ -611,5 +611,5 @@ def test_an_application_tests_on_its_own_python_version():
 
 def test_the_analyzer_notices_a_dockerfile_on_another_python():
     result = analyze({"requirements.txt": "fastapi==0.1\n", "Dockerfile": "FROM python:3.13.5-slim-bookworm@sha256:abc\nEXPOSE 8000\n"}, "sophia", [])
-    assert any('set python: "3.13" in platform.yaml' in line for line in result["evidence"])
+    assert any('the draft sets python: "3.13"' in line for line in result["evidence"]) and result["draft_spec"]["python"] == "3.13"
     assert not any("python:" in line for line in analyze({"requirements.txt": "x==1\n", "Dockerfile": "FROM python:3.12-slim\n"}, "notebook", [])["evidence"])
