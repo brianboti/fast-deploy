@@ -351,3 +351,19 @@ mobile front-ends or its own sign-in to reach an `authenticated` service (public
 the project itself: four tests need the gitignored MedCPT models, so they fail on any clean checkout; the 66 advisories
 above (the upgrades pass every test); its own CI's security audit and ask-sophia typecheck were already failing. Platform
 tests: 294 passed; ruff and zizmor clean; Terraform validates.
+
+## Live exercise of 1.8.8: other Pythons (2026-10-14)
+
+Before the change, checked in containers: `numpy==1.24.4`, an ordinary pin for a Python 3.11 project, failed the old
+audit on the platform's 3.12 (no 3.12 build, so pip-audit could not install it) and passes the new step on 3.11;
+pip-audit judged a `python_version >= "3.14"` marker for its own interpreter (skipped on 3.12, audited on 3.14); the
+audit tool installs from wheels only on 3.11, 3.13, 3.14 and 3.15; the documented uv export flow installs with
+`--require-hashes` and audits clean on 3.14.
+
+| Scenario | Plan or run | Observed |
+|---|---|---|
+| Public app moved to Python 3.15 (lab-demo-app#16, with the workflows pin) | 9c4f02f6, auto-deploy | Tests on CPython 3.15.0; audit on 3.15 reading `requirements.lock` with `--disable-pip`, clean; image `python:3.15-slim` by digest, hash-locked install; provenance path `github`, attested and verified; 175 seconds; the service answers `"python": "3.15.0"`, anonymous callers get 403 |
+| Private app on Python 3.13 with a lock (sophia#10, workflows pin) | c71f828d | Tests on CPython 3.13.16 (892 passed, 21 skipped, 4 deselected); the audit, now reading `requirements.lock`, stopped the release: 10 known advisories in aiohttp 3.14.1, multidict 6.7.1 and urllib3 2.7.0, pinned only in the lock (they arrive through other packages). The old audit resolved `requirements.txt` to the newest versions and never saw what the image installs, so the image released earlier the same day carried them |
+| The same app after the upgrade (sophia#11) | ed87c7e4 | aiohttp 3.14.3, multidict 6.9.1, urllib3 2.8.0 (only those changed, recompiled in the image's Python); tests pass again, audit clean, provenance `cosign-kms` signed and verified, released; 10 of 10 |
+
+Platform tests: 299 passed; ruff and zizmor clean.
