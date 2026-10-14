@@ -265,3 +265,28 @@ def test_a_failed_provenance_step_is_explained_by_its_own_advice():
     assert "signed with the application's key" in advice("Verify build provenance with Cloud KMS")
     assert "docker-credential-gcloud" in advice("Verify build provenance")  # GitHub's path keeps its own
     assert "checksum" in advice("Install Cosign") and "reused image" in advice("Choose the provenance path")
+
+
+def test_an_image_released_under_the_exception_is_never_reused(tmp_path):
+    # Thought through before exercising the exception live: once the operator removed it, the next plan for the same commit
+    # reused the unsigned image, and the reuse path's verification stopped the release.
+    c, p, gh = make(tmp_path)
+    unsigned, signed = IMAGE, IMAGE.replace("b" * 64, "c" * 64)
+
+    def exception_release(sha):
+        c.config.applications["demo"].provenance = "unavailable"
+        gh.sha = sha
+        plan = c.plan(p, "demo")
+        c.deploy(p, plan["id"])
+        gh.receipt = {"release": {"plan_id": plan["id"], "state": "succeeded", "revision": "demo-rx", "image": unsigned, "previous_traffic": {"demo-r0": 100},
+                                  "provenance": "unavailable"}, "vulnerabilities": None}
+        assert c.status(p, plan["id"])["state"] == "succeeded"
+        c.config.applications["demo"].provenance = "required"
+
+    exception_release("1" * 40)
+    again = c.plan(p, "demo")
+    assert "reuse_image" not in again and again["checks"]["tests"] == "pending_in_ci"  # built, tested and signed fresh
+    # A commit with a signed image from before the exception reuses that one.
+    release(c, p, gh, "2" * 40, "demo-r2", image=signed)
+    exception_release("2" * 40)
+    assert c.plan(p, "demo")["reuse_image"] == signed

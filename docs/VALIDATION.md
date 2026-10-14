@@ -320,3 +320,34 @@ Not performed here: pages for people through Identity-Aware Proxy (needs the one
 a real budget event closing ingress and stopping the instance, and actual spend from the billing export: its newest
 row is from 2026-09-25 although the table is written daily, so the report now says the spend is unknown. Platform tests:
 279 passed; ruff and zizmor clean; Terraform validates.
+
+## A real lab project: Sophia's backend (2026-10-13 and 2026-10-14)
+
+A private copy, [brianboti/sophia](https://github.com/brianboti/sophia), of the lab's Sophia (UTHealthScribe) clinical
+documentation project; the original folder and repository were not changed. Only the FastAPI backend is deployed, in
+the project's own no-PHI demo mode (`DEMO_NO_PHI_ACK=true`, a throwaway SQLite database inside the container, the
+project's published demo accounts, no patients), with three secrets in Secret Manager. The copy gained only platform
+files: a root Dockerfile (the backend's, with `backend/` paths), an allow-list `.dockerignore`, a root `pytest.ini`
+(the backend's options; four tests that need the gitignored MedCPT models deselected, with the reason), `platform.yaml`
+(`python: "3.13"`) and the requirement files. The project's suite is 917 tests; 913 run.
+
+| Scenario | Plan or run | Observed |
+|---|---|---|
+| Onboarding | brianboti/lab-deploy#32, sophia#7 | Root, environment, workflows: no new finding |
+| First release | fd7ea104 | Stopped at the tests: the lock was compiled on Python 3.13, where SQLAlchemy needs no greenlet; the platform tested on 3.12 (reproduced in python:3.12-slim and 3.13-slim). Fixed in 1.8.5 (`python:` in platform.yaml) with a 45-minute build job |
+| Dependency audit | ae00a166 | 66 known advisories in cryptography, PyJWT and pypdf; upgraded in the copy (cryptography 50.0.0, PyJWT 2.15.0, pypdf 6.20.1), lock recompiled in the image's own Python, every test passes, pip-audit clean |
+| Build provenance | b4559ff3 | Stopped at *Attest build provenance*: GitHub attests private repositories only on Enterprise Cloud. Fixed in 1.8.6: Cosign with the application's own Cloud KMS key |
+| Release with Cosign and Cloud KMS | 030d25c7 | Tests, audit, build; path `cosign-kms`; signed with `sophia-provenance`, verified (signature, then digest, repository, commit and workflow), deployed; 936 seconds; receipt `provenance: cosign-kms`; the signature stored as `sha256-<digest>.att` |
+| The app end to end | sophia_live_test.py | 10 of 10: anonymous caller refused (403), health and readiness through `X-Serverless-Authorization`, wrong password refused, clinician and admin sign in, the admin API refuses a clinician, demo users listed, no patients |
+| The stored signature attacked | local Cosign | The key's public half verifies it; another key: `no matching attestations`; a wrong commit or repository: refused by the statement check |
+| Redeploy the same commit | 57705946 | No build, push or signing; the reused image's signature verified again; 150 seconds |
+| The operator's exception | c874d314 | `provenance: unavailable` under `application_settings.sophia` for one dispatch, then removed: the plan warned and built fresh although a signed image of the commit existed; the run shows *Provenance path: unavailable* and the *Provenance not recorded* warning; every signing step skipped, no signature stored; receipt `provenance: unavailable`; 10 of 10 |
+| After the exception | c992ed1d | Before 1.8.7 the next plan for the commit would have reused the unsigned image and stopped at verification; on 1.8.7 it reused the earlier signed image (from 57705946), verified it and released it in 136 seconds; 10 of 10, the signed digest serving all traffic |
+
+What the platform does not offer yet, found with this project: an application in a subfolder (the repository root is
+the build context; the copy needed a root Dockerfile, and the onboarding checklist does not say so), a Postgres reached
+with a password `DATABASE_URL` (only IAM sign-in through the connector), Redis, and a way for the project's web and
+mobile front-ends or its own sign-in to reach an `authenticated` service (public exposure is refused by design). For
+the project itself: four tests need the gitignored MedCPT models, so they fail on any clean checkout; the 66 advisories
+above (the upgrades pass every test); its own CI's security audit and ask-sophia typecheck were already failing. Platform
+tests: 294 passed; ruff and zizmor clean; Terraform validates.

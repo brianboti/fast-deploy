@@ -149,12 +149,15 @@ class Store:
             row = db.execute(query + " ORDER BY rowid DESC LIMIT 1", params).fetchone()
         return {**json.loads(row[1]), "state": row[0]} if row else None
 
-    def latest_success(self, application, sha=None, include_rolled_back=False):
-        """The newest release that succeeded for an application, by default excluding ones rolled back since (optionally for one commit)."""
+    def latest_success(self, application, sha=None, include_rolled_back=False, signed=False):
+        """The newest release that succeeded for an application, by default excluding ones rolled back since (optionally for one commit).
+        `signed`: only releases whose image carries signed provenance, so not one released under the operator's exception."""
         query = "SELECT payload FROM plans WHERE state='succeeded' AND json_extract(payload, '$.application')=? AND json_extract(payload, '$.kind') IS NULL"
         params = [application]
         if not include_rolled_back:
             query += " AND json_extract(payload, '$.rolled_back') IS NULL"
+        if signed:
+            query += " AND COALESCE(json_extract(payload, '$.receipt.provenance'), '') != 'unavailable'"
         if sha:
             query += " AND json_extract(payload, '$.sha')=?"
             params.append(sha)
@@ -587,8 +590,11 @@ class Controller:
             plan["warnings"].append("Declares needs (" + ", ".join(sorted(derived)) + "); the release stops before deploying unless the pipeline has applied them "
                                     "(propose_infrastructure, then merge).")
         # A rolled-back release's image is still the attested image of that commit, so it counts for reuse.
-        prior = self.store.latest_success(app_id, sha, include_rolled_back=True)
-        image = ((prior or {}).get("receipt") or {}).get("image")
+        # An image released under the provenance exception carries no signed provenance, so it is never reused (the reuse
+        # path verifies the reused image's provenance again and would stop); an earlier signed image of the commit still is.
+        prior = self.store.latest_success(app_id, sha, include_rolled_back=True, signed=True)
+        receipt = (prior or {}).get("receipt") or {}
+        image = receipt.get("image") if receipt.get("provenance") != "unavailable" else None
         prefix = f"{app.target.region}-docker.pkg.dev/{app.target.project_id}/{app.target.registry}/{app.target.service}@sha256:"
         if app.provenance == "unavailable":
             plan["warnings"].append("The operator's exception provenance: unavailable is set for this application: the image is built fresh and released "
