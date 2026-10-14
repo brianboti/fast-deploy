@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 
 from .models import PLATFORM_NETWORK, PLATFORM_SUBNET, enforce, needs_env, parse_spec, spec_hash
+from .provenance import MODES as PROVENANCE_MODES
 
 COMMAND_TIMEOUT = 600  # seconds for any one gcloud call; the migration job is given less, so its wait always ends first
 MIGRATION_TIMEOUT = COMMAND_TIMEOUT - 60
@@ -459,7 +460,7 @@ def retire_candidate(adapter, record):
                           "not ready until the next successful release; requests are served by the previous revision.")
 
 
-def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=None, labels=None, image_path=None, attempt=1):
+def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=None, labels=None, image_path=None, attempt=1, provenance=None):
     if not re.fullmatch(r"[a-f0-9]{32}", plan_id):
         raise ValueError("Invalid plan ID")
     if not IMAGE_DIGEST.fullmatch(image):
@@ -472,6 +473,8 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
     suffix = "r" + plan_id[:16] + (f"a{int(attempt)}" if int(attempt) > 1 else "")
     revision = f"{adapter.service}-{suffix}"
     receipt = {"plan_id": plan_id, "image": image, "previous_traffic": allocations, "state": "preparing", "target": target, "phases": [], "candidate": revision}
+    if provenance:
+        receipt["provenance"] = provenance  # github, cosign-kms, or unavailable when the operator's exception was set
     def save():
         # Each state change is timestamped so the controller can show how long every phase took.
         if not receipt["phases"] or receipt["phases"][-1]["state"] != receipt["state"]:
@@ -569,6 +572,8 @@ def main():
         prefix = f"{target.region}-docker.pkg.dev/{target.project_id}/{target.registry}/{target.service}@sha256:"
         if not os.environ["IMAGE_DIGEST"].startswith(prefix):
             raise ValueError("Image does not belong to the reviewed artifact destination")
+        if os.environ.get("PROVENANCE_MODE") not in PROVENANCE_MODES:
+            raise ValueError("No provenance decision for this image; the deploy job verifies provenance before the release step")
     adapter = CloudRun(target.project_id, target.region, target.service, target.probe_service_account, iap_client_id=os.environ.get("IAP_CLIENT_ID") or None)
     adapter.require_private_service()
     journal = GCSJournal(target.recovery_bucket, target.service, lambda: run(["gcloud", "auth", "print-access-token"]))
@@ -594,7 +599,7 @@ def main():
         labels["lab-deploy-commit"] = os.environ["COMMIT_SHA"]
     attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "1")
     rollout(adapter, os.environ["IMAGE_DIGEST"], spec, os.environ["PLAN_ID"], "release-receipt.json", journal, target.model_dump(), labels, image_path,
-            attempt=int(attempt) if attempt.isdigit() else 1)
+            attempt=int(attempt) if attempt.isdigit() else 1, provenance=os.environ["PROVENANCE_MODE"])
 
 
 if __name__ == "__main__":

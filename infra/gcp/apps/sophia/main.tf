@@ -44,4 +44,5 @@ module "service" {
   subnet                       = data.terraform_remote_state.project.outputs.subnet
   cap_operator_role            = data.terraform_remote_state.project.outputs.cap_operator_role
   iap_client_id                = try(data.terraform_remote_state.project.outputs.iap_client_id, "")
+  kms_key_ring                 = try(data.terraform_remote_state.project.outputs.kms_key_ring, "")
 }

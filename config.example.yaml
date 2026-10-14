@@ -33,6 +33,7 @@ applications:
     # Optional guardrail: refuse plans whose worst-case monthly compute (every allowed instance busy all month) exceeds this.
     cost_ceiling_usd: 150
     # auto_deploy: true           # release the tip of main on its own; every guardrail still applies
+    # provenance: unavailable     # operator's exception, staging or an emergency only: release without signed provenance
     # infra:                      # per-app Terraform settings the renderer writes into infra/gcp/apps/<service>
     #   instance_alert_count: 3   #   (keys of labdeploy.infra.DEFAULT_SETTINGS)
     target:
@@ -66,3 +67,4 @@ principals:
 #     auto_deploy: true          # release new commits on main by itself
 #     paused: false              # true refuses new plans and dispatches for this app
 #     viewers: ["user:someone@example.edu"]   # lab-members apps: who may open the pages, on top of default_viewers
+#     provenance: unavailable    # exception only: skip signed provenance (fresh builds; a reused image is refused)

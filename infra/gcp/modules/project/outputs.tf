@@ -18,3 +18,4 @@ output "pipeline" {
 }
 output "network" { value = google_compute_network.lab.id }
 output "subnet" { value = google_compute_subnetwork.run.id }
+output "kms_key_ring" { value = google_kms_key_ring.provenance.id }

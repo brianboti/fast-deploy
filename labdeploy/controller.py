@@ -573,6 +573,7 @@ class Controller:
             "cost": cost,
             "checks": {"config_policy": "passed", "tests": "pending_in_ci", "dependency_scan": "pending_in_ci", "health": "pending_after_deployment"},
             "pinned_commit": bool(commit_sha), "behind_branch_by": behind,
+            "provenance": app.provenance,
             "warnings": [],
         }
         if spec.tests == "none":
@@ -589,7 +590,10 @@ class Controller:
         prior = self.store.latest_success(app_id, sha, include_rolled_back=True)
         image = ((prior or {}).get("receipt") or {}).get("image")
         prefix = f"{app.target.region}-docker.pkg.dev/{app.target.project_id}/{app.target.registry}/{app.target.service}@sha256:"
-        if image and image.startswith(prefix):
+        if app.provenance == "unavailable":
+            plan["warnings"].append("The operator's exception provenance: unavailable is set for this application: the image is built fresh and released "
+                                    "without signed provenance. Remove it from the controller configuration once the cause is fixed.")
+        elif image and image.startswith(prefix):
             # The same commit was released before: reuse its attested image instead of building and testing again.
             plan["reuse_image"] = image
             plan["reused_from_plan"] = prior["id"]
@@ -818,6 +822,8 @@ class Controller:
             raise ValueError("Plan expired; create a new plan")
         if plan["repository"] != app.repository or plan["branch"] != app.branch or plan.get("target") != app.target.model_dump():
             raise ValueError("Registry changed; create a new plan")
+        if plan.get("provenance", "required") != app.provenance:
+            raise ValueError("The application's provenance setting changed since this plan; create a new plan")
         if plan.get("pinned_commit"):
             self.ancestor_of_branch(app, plan["sha"])
         elif self.github.head(app) != plan["sha"]:

@@ -106,7 +106,8 @@ def decommission_steps(app_id, app, needs=None, note=None, registered=False):
         f"Delete its secrets, if any: gcloud secrets list --filter='name:{t.service}-' --project {t.project_id}",
         *extra,
         f"As the operator, run `terraform state rm` for each need deleted above, then `terraform destroy` in infra/gcp/apps/{t.service} (the pipeline never destroys), "
-        "and delete that directory in a pull request; Terraform drops the identities, trust and alerts it still owns.",
+        "and delete that directory in a pull request; Terraform drops the identities, trust and alerts it still owns, and schedules its provenance "
+        "key's versions for destruction (Cloud KMS keeps the key's name, so a later app of the same name imports it rather than creating it).",
         forget,
         f"In {app.repository}: disable or delete the three workflows and the staging environment, and revoke the platform credential's access to the repository.",
     ]

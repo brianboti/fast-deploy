@@ -1,3 +1,43 @@
+# 1.8.6: signed provenance for private repositories
+
+Found by deploying the private copy of the lab's Sophia backend: GitHub's artifact attestations cover public repositories
+(private ones only on GitHub Enterprise Cloud), so `actions/attest-build-provenance` refused the image and nothing was
+deployed. Provenance stays required; the platform now signs with its own trusted path when GitHub cannot.
+
+## Added
+
+1. **Cosign with Cloud KMS for private repositories.** The deploy job picks the path from the repository's visibility:
+   public uses GitHub's attestation as before; otherwise Cosign v3.1.3 (downloaded by version and SHA-256) signs a SLSA v1
+   statement for the pushed digest with the application's own key, `<service>-provenance` in the foundation's
+   `lab-deploy` key ring (EC P-256, software, about USD 0.06 a month per application). Only the application's deployer
+   may use the key (`roles/cloudkms.signerVerifier` and `roles/cloudkms.viewer` on that key alone), and the deployer is
+   reachable only from its deploy workflows on `main` in `staging`. The signature is stored as the image's
+   `sha256-<digest>.att` tag and never sent to a public transparency log, which would publish a private repository's
+   name and commits. Before release, Cosign checks the signature with the key and `labdeploy/provenance.py` checks that
+   the statement names this image digest, repository, commit and workflow; a reused image is checked the same way.
+2. **The operator's exception, `provenance: unavailable`**, under `applications.<id>` or `application_settings.<id>` in the
+   controller configuration, for staging or an emergency only: the plan warns, the run shows a warning, the image is
+   always built fresh (the workflow refuses the exception with a reused image), and the receipt records it. A plan made
+   before the setting changed is refused at dispatch. `platform.yaml` has no such field.
+3. Every release receipt records its provenance path (`github`, `cosign-kms` or `unavailable`), and the release step
+   refuses to run without one.
+
+## Changed
+
+1. Foundation: Cloud KMS API and the `lab-deploy` key ring (free; Cloud KMS never deletes a ring), administered within
+   that ring only by the apply identity and readable by the plan identity; neither can sign. Output `kms_key_ring`.
+2. Service module: the key and its two grants, created once the foundation has the ring (application roots read it with
+   `try()`, so they plan cleanly before); a registry KEEP rule for `sha256-` tags. The policy check treats a
+   `google_kms_crypto_key` as data (never destroyed or replaced by the pipeline), holds its key ring to the allowed
+   region and requires its labels.
+
+## Upgrade steps
+
+1. Merge, then apply the foundation (`scripts/apply-foundation.sh PROJECT`): it enables Cloud KMS and creates the ring.
+2. Apply each application root again (dispatch the infrastructure apply, or merge its next infrastructure change): this
+   creates the application's key. The roots in this release already read the ring.
+3. Restart the controller and re-pin application workflows (the template changed).
+
 # 1.8.5: a real lab project's Python and test suite
 
 Found by deploying a private copy of the lab's Sophia backend (a FastAPI app on Python 3.13 with 913 tests).

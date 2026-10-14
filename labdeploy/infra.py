@@ -44,12 +44,15 @@ SETTING_RANGES = {
     "instance_alert_count": (1, 1000),
 }
 ALLOWED_LOCATIONS = ("us-central1",)
+# A provenance key counts as data: its versions are what every stored signature verifies against, and Cloud KMS never frees
+# the name, so a replaced key could not even be created again.
 DATA_TYPES = (
     "google_storage_bucket", "google_sql_database_instance", "google_bigquery_dataset", "google_firestore_database",
-    "google_secret_manager_secret", "google_artifact_registry_repository",
+    "google_secret_manager_secret", "google_artifact_registry_repository", "google_kms_crypto_key",
 )
 LABELLED_TYPES = ("google_cloud_run_v2_service", "google_storage_bucket", "google_artifact_registry_repository",
-                  "google_sql_database_instance", "google_bigquery_dataset", "google_pubsub_topic", "google_pubsub_subscription")
+                  "google_sql_database_instance", "google_bigquery_dataset", "google_pubsub_topic", "google_pubsub_subscription",
+                  "google_kms_crypto_key")
 PLATFORM_IDENTITIES = ("lab-deploy-infra-", "lab-deploy-observer", "lab-deploy-spending-cap")
 BROAD_ROLES = ("roles/owner", "roles/editor")
 GITHUB_API = "https://api.github.com"
@@ -154,6 +157,9 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
     # Added in 1.7.0: a foundation applied before then has no such output, and an empty id means "no IAP client yet",
     # so an application that is not `lab-members` plans cleanly before the operator re-applies the foundation.
     lines.append(f"  {'iap_client_id'.ljust(width)} = try(data.terraform_remote_state.project.outputs.iap_client_id, \"\")")
+    # Added in 1.8.6, read the same way: until the foundation has its key ring the app has no signing key, and a private
+    # repository's release says so when it tries to sign.
+    lines.append(f"  {'kms_key_ring'.ljust(width)} = try(data.terraform_remote_state.project.outputs.kms_key_ring, \"\")")
     main = header + f'''provider "google" {{
   project = {_hcl(project_id)}
   region  = {_hcl(region)}
@@ -239,6 +245,8 @@ ALLOWED_ROLES = frozenset({
     "roles/iap.httpsResourceAccessor",
     # The release reads its image's vulnerability findings (the scan summary); the service module grants it to the deployer.
     "roles/containeranalysis.occurrences.viewer",
+    # The deployer signs and checks its own application's build provenance; the service module grants both on that one key.
+    "roles/cloudkms.signerVerifier", "roles/cloudkms.viewer",
 })
 CUSTOM_ROLE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/roles/labDeploy[A-Za-z]+$")
 # The one grant to a platform identity an application root makes by design: the spending cap may read and update the
@@ -300,6 +308,10 @@ def check_plan(plan, allowed_locations=ALLOWED_LOCATIONS):
                 value = after.get(field)
                 if isinstance(value, str) and value.lower() not in allowed_locations:
                     add("region_policy", address, f"{field} {value!r} is outside {', '.join(allowed_locations)}")
+            if kind == "google_kms_crypto_key":
+                ring = re.fullmatch(r"projects/[^/]+/locations/([^/]+)/keyRings/[^/]+", after.get("key_ring") or "")
+                if _unknown(change, "key_ring") or ring is None or ring.group(1).lower() not in allowed_locations:
+                    add("region_policy", address, f"key_ring {after.get('key_ring')!r} is outside {', '.join(allowed_locations)}")
             if kind == "google_sql_database_instance":
                 if _nested(after, "settings", "ip_configuration", "ipv4_enabled") is not False or _unknown(change, "settings", "ip_configuration", "ipv4_enabled"):
                     add("private_database", address, "databases get a private address only: settings.ip_configuration.ipv4_enabled must be false")

@@ -49,7 +49,7 @@ The MCP analyzer returns structured evidence and a draft. The onboarding tool ca
 4. Workflow parameters are passed through environment variables and validated; they are not interpolated as executable shell code.
 5. Test/build runs without cloud OIDC permission. The deployment job executes the pinned platform code, does not install app dependencies, and does not run the application container locally with credentials.
 6. The deployment job independently validates the spec and service against environment settings before obtaining GCP access.
-7. Image deployment uses an Artifact Registry digest carrying signed SLSA build provenance that the deployment job verifies before release. A bundle checksum additionally catches accidental modification during artifact handling.
+7. Image deployment uses an Artifact Registry digest carrying signed SLSA build provenance that the deployment job verifies before release: GitHub's attestation for a public repository, Cosign with the application's own Cloud KMS key for a private one (`labdeploy/provenance.py`). A bundle checksum additionally catches accidental modification during artifact handling.
 8. Cloud Run requires IAM authentication. The probe identity can invoke only the target service. The deployer can generate a probe token without distributing a private key.
 9. Promotion failure attempts to restore the exact previous traffic split. Receipt state distinguishes success, traffic restoration and rollback failure.
 10. Cloud Run gates traffic on an HTTP startup probe at the reviewed health path, so an instance that never becomes ready is never promoted by the platform's own probes.
@@ -132,7 +132,7 @@ An architecture review against the MCP specification, the OWASP agentic and MCP 
 | The MCP specification requires servers to rate limit tool invocations | Fixed-window budgets per identity and per client address for failed logins, returning 429 with `Retry-After` |
 | Tools carried no safety hints | Every tool declares `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`, a title and an output schema; results include `structuredContent` |
 | No Cloud Run startup probe | `--startup-probe` from the reviewed `health_path` and port, with 60 seconds of startup grace |
-| No build provenance or image scanning | `actions/attest-build-provenance` signs the pushed digest, `gh attestation verify` checks it before release, and `labdeploy/scan.py` summarizes Artifact Analysis findings with optional blocking |
+| No build provenance or image scanning | `actions/attest-build-provenance` signs the pushed digest of a public repository and `gh attestation verify` checks it before release; a private repository's digest is signed and verified with Cosign and its Cloud KMS key; and `labdeploy/scan.py` summarizes Artifact Analysis findings with optional blocking |
 | Thin repository hygiene | ruff and zizmor in CI, pip-audit of the platform lock, a Terraform validation job, Dependabot for actions and providers, CODEOWNERS, SECURITY.md, pre-commit hooks, and a test that template pins match the platform's own pins |
 
 Deliberately not changed: the probe-and-switch rollout, static operator tokens, the single SQLite instance, and the absence of OpenTelemetry. Those are the production milestone (metric-based canary with bake time, identity-provider sign-in, Binary Authorization enforcement, streaming SQLite backup, structured telemetry and service objectives) and are not needed for the staging trial.

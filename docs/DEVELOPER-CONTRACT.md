@@ -99,7 +99,8 @@ Recommended:
 - No binaries and no secrets in Git. Secret values are created once by the operator with
   `gcloud secrets create <service>-NAME --data-file=-`; the repository only names them.
 - `README.md`, `LICENSE` and `SECURITY.md` exist and are current.
-- What the platform supplies so the repository does not have to: signed build provenance verified before release,
+- What the platform supplies so the repository does not have to: signed build provenance verified before release (GitHub's
+  for a public repository, Cosign with the application's own Cloud KMS key for a private one),
   vulnerability scanning of every image, least-privilege workflow tokens in the three generated workflows, deploy by
   digest, recovery after runner loss, measured cost reports.
 

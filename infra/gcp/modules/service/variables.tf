@@ -118,3 +118,12 @@ variable "iap_client_id" {
   default     = ""
   description = "The project's IAP OAuth client id, published to the app's environment so the release probes can pass the proxy."
 }
+variable "kms_key_ring" {
+  type        = string
+  default     = ""
+  description = "The foundation's provenance key ring; empty until the foundation has one, which leaves the app without a signing key."
+  validation {
+    condition     = var.kms_key_ring == "" || can(regex("^projects/[a-z][a-z0-9-]+/locations/[a-z0-9-]+/keyRings/[A-Za-z0-9_-]+$", var.kms_key_ring))
+    error_message = "kms_key_ring must be a key ring id (projects/P/locations/L/keyRings/K) or empty."
+  }
+}
