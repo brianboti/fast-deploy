@@ -44,6 +44,10 @@ def analyze(files: dict[str, str], name: str, paths: list[str] | None = None) ->
         else:
             evidence.append("requirements.txt pins without hashes: builds are not reproducible. Add a requirements.lock from "
                             "'pip-compile --generate-hashes' and install it with --require-hashes in the Dockerfile.")
+    base = re.search(r"^\s*FROM\s+(?:docker\.io/)?(?:library/)?python:(3\.\d+)", dockerfile, re.M | re.I)
+    if base and base.group(1) != "3.12":
+        evidence.append(f"The Dockerfile builds on Python {base.group(1)}; set python: \"{base.group(1)}\" in platform.yaml so the "
+                        "tests run on the same version (supported: 3.11, 3.12, 3.13)")
     tests = [path for path in paths or () if TEST_PATH.search(path) and path.endswith(".py")]
     if tests:
         evidence.append(f"{len(tests)} test file{'' if len(tests) == 1 else 's'} found; they run before every build")

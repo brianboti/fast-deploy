@@ -586,3 +586,30 @@ def test_a_second_infrastructure_change_does_not_reuse_a_branch_a_squash_merge_l
     result = gh.open_platform_pull_request("o/lab-deploy", "main", "lab-deploy/infra-app", {"infra/gcp/apps/app/main.tf": "x"}, "t", "b", "m")
     assert result["branch"] == "lab-deploy/infra-app-bbbbbbb" and result["number"] == 30
     assert not any(method in ("DELETE", "PATCH") for method, _ in calls)  # nothing deleted or force-pushed
+
+
+def test_an_application_tests_on_its_own_python_version():
+    # Live (Sophia, a real lab project): its lock was compiled for Python 3.13, where SQLAlchemy needs no greenlet; the
+    # platform's test step ran 3.12, where it does, and `pip install --require-hashes` refused the unpinned greenlet.
+    import yaml
+
+    from labdeploy.models import spec_hash
+
+    assert AppSpec(name="sophia").python == "3.12" and AppSpec(name="sophia", python="3.13").python == "3.13"
+    with pytest.raises(ValueError):
+        AppSpec(name="sophia", python="3.10")
+    assert spec_hash(AppSpec(name="sophia", python="3.12")) == spec_hash(AppSpec(name="sophia"))  # existing apps keep their hash
+    build = yaml.safe_load(Path("templates/deploy-gcp.yml").read_text())["jobs"]["build"]
+    assert build["timeout-minutes"] >= 45  # a real suite takes minutes before the build starts
+    steps = build["steps"]
+    setup = next(step for step in steps if step.get("id") == "app-python")
+    assert setup["with"] == {"python-version": "${{ steps.policy.outputs.python }}", "update-environment": False}
+    tests = next(step for step in steps if step.get("name") == "Run unit tests")
+    assert tests["env"]["APP_PYTHON"] == "${{ steps.app-python.outputs.python-path }}" and '"$APP_PYTHON" -m venv .test-venv' in tests["run"]
+    assert steps.index(setup) < steps.index(tests)
+
+
+def test_the_analyzer_notices_a_dockerfile_on_another_python():
+    result = analyze({"requirements.txt": "fastapi==0.1\n", "Dockerfile": "FROM python:3.13.5-slim-bookworm@sha256:abc\nEXPOSE 8000\n"}, "sophia", [])
+    assert any('set python: "3.13" in platform.yaml' in line for line in result["evidence"])
+    assert not any("python:" in line for line in analyze({"requirements.txt": "x==1\n", "Dockerfile": "FROM python:3.12-slim\n"}, "notebook", [])["evidence"])
