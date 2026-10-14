@@ -2,6 +2,7 @@
 
 Written 2026-10-12 from three reviews of version 0.4.0: general gaps, versioning and redeploys, and monitoring.
 Every item below was a gap found in those reviews when this was written; the status lines under each phase say what has shipped since (Phases 0 to 6 by 2026-10-12, with the always-on machine of 5.1 deferred).
+Phases 9 to 12 were added on 2026-10-14 from the research review `docs/RESEARCH-2026-10-14.md`; their decisions are D21 to D30.
 
 Order of phases is by value per effort with cost first, then control, then scope, then the always-on move.
 Each phase ships as one platform version with tests, lint, `docs/CHANGES.md`, and a live staging exercise.
@@ -224,6 +225,101 @@ Order: 8.1 by the operator, then 8.2 and 8.4 (one apply per app through the pipe
 
 Cost effect: IAP on Cloud Run has no charge of its own; no load balancer is created.
 
+## Decisions the operator makes before Phases 9 to 12
+
+Planned on 2026-10-14 from the research review `docs/RESEARCH-2026-10-14.md` (its section 7 ranks the items). The
+order is the roadmap's rule: value per effort, cost first; Phase 9 is the cheapest and protects the budget, Phase 10
+removes the gaps the real lab application exposed, Phase 11 makes onboarding easy, Phase 12 makes approvals legible
+and the platform survivable without its one operator. Item 12.1 can be pulled into Phase 9 if trust is more urgent
+than ease. What stays human whatever the decisions: the console step for the native cap, secret values, the foundation
+applies, naming the second operator, and merging the checker's pull requests on application repositories.
+
+| # | Decision | Needed by | Default if nothing is said |
+|---|---|---|---|
+| D21 | The native budget spend cap: its amount and who creates it | Phase 9 | The operator creates it once in the Billing console for the staging project and Cloud Run, at the same amount as the budget; the platform's own cap keeps closing ingress and stopping databases, which the native cap does not do; both layers are named in the runbook |
+| D22 | The bake after a release: how long the new revision is watched after traffic moves, and what makes it fail | Phase 9 | Five minutes; fail on a crash or restart of the new revision, on 5xx answers to more than five percent of at least twenty requests, or on p95 latency above three times the previous revision's over the same window when both saw twenty requests; no traffic is inconclusive and passes with a note; a failure restores the previous traffic automatically and the receipt says `restored_after_bake` |
+| D23 | Where a service lives in a repository | Phase 10 | `path` per application (the repository root when absent); the Dockerfile, `platform.yaml`, requirement files and tests live at that path; the build context is that path unless `platform.yaml` says `build: {context: repository}` for shared code |
+| D24 | Workflow files when a repository holds several services | Phase 10 | One set of the three workflows per service, named `deploy-gcp-<service>.yml`, `recover-gcp-<service>.yml` and `rightsize-gcp-<service>.yml`, with a concurrency group per service; a single-service repository keeps today's names |
+| D25 | Front-ends | Phase 10 | One mode, `served`: the API container serves its static files behind the same sign-in; Firebase Hosting for public front-ends stays out because public exposure is refused by design |
+| D26 | What the repository checker may write for a developer | Phase 11 | A draft pull request on a branch of the application repository with the files the contract requires and the repository lacks (`Dockerfile`, `.dockerignore`, `requirements-dev.txt`, `requirements.lock`, a health test, `platform.yaml` with `reviewed: false`, `.github/workflows/ci.yml`, `SECURITY.md`, `.github/dependabot.yml`); never a file that already exists; never merged by the platform |
+| D27 | Where the lock file is compiled | Phase 11 | In a container of the application's own Python on the controller's machine (Docker is present there); when it is not, the pull request carries the exact command instead of the file |
+| D28 | Building without a Dockerfile | Phase 11 | Google's buildpacks builder, pinned by digest, in the same build job; a Dockerfile wins when present; the trial decides whether no-Dockerfile becomes the contract's default |
+| D29 | Who approves what a person asked for, once a second operator exists | Phase 12 | GitHub's required review with CODEOWNERS on the platform repository; the application's `auto_merge` switch turns off for pull requests the controller opened on that person's behalf |
+| D30 | Drift: how often it is looked for and where it is reported | Phase 9 | A weekly read-only `terraform plan` of every application root by the plan identity, differences posted to the living cost-report issue; a drift in IAM, networking or exposure also raises the watchdog notification |
+
+## Phase 9: cost and safety layers that cost nothing (about three days) → version 1.9.0
+
+Status: planned on 2026-10-14 (research items 1, 7, 8 and 12). Every item has zero idle cost.
+
+| Item | Change | Where |
+|---|---|---|
+| 9.1 | Native spend cap (D21): the console step in SETUP; the runbook's entry for the day it trips (services answer 5xx, recovery takes up to an hour, the budget cannot be edited while enforced); `onboarding.native_spend_cap: true` in the configuration once it exists, so the cost report and `get_controller_status` name both layers and `estimate_cost` warns while it is missing | docs/SETUP.md, docs/RUNBOOK.md, labdeploy/config.py, labdeploy/cost.py, labdeploy/server.py |
+| 9.2 | Bake after promotion (D22): a release phase `baking` between `promoting` and `succeeded`; the runner reads the new revision's request logs and container logs through the Logging API (the deployer already holds the logging viewer role) and the Monitoring API for the window, applies the rules, and on failure restores the previous traffic through the existing restore path; the receipt and the status show the window's numbers; the deploy job's timeout grows from 20 to 30 minutes | labdeploy/release.py, labdeploy/status.py, labdeploy/telemetry.py, templates/deploy-gcp.yml, docs/CLAUDE-CHAT.md |
+| 9.3 | hadolint in the build job, downloaded by version and checksum like Cosign: warnings in this version, errors blocking one version later; the contract's Dockerfile section gains the dependencies-first layer order | templates/deploy-gcp.yml, docs/DEVELOPER-CONTRACT.md |
+| 9.4 | Policy checker: the data-protection rules the research found most neglected (public-access prevention and uniform access on every bucket, versioning on the recovery and backup buckets, backups and SSL on Cloud SQL, deletion protection on every data resource), each with a planted-violation plan file as a negative test; a test that no rendered root can put a secret value into state or plan output; plan artifacts kept three days | labdeploy/infra.py, tests/, .github/workflows/infra-plan.yml |
+| 9.5 | Drift (D30): a weekly schedule in infra-plan.yml running `terraform plan -detailed-exitcode -lock=false` per root with the plan identity; the foundation's plan provider accepts the `schedule` event as well as `pull_request` (apply stays pinned to its workflow, branch and environment); differences posted to the living issue and, for IAM, networking and exposure, to the watchdog | .github/workflows/infra-plan.yml, infra/gcp/modules/project/pipeline.tf, labdeploy/scheduler.py |
+| 9.6 | Per-event cost tolls in the weekly report: the month's releases times the scan fee, Actions minutes used on private repositories, billing-export query bytes; the README and the cost documents say that Cloud Run's recommender covers only the billing mode, so the measured report is the sizing signal, memory first | labdeploy/cost.py, templates/rightsize-gcp.yml, README.md |
+
+Live exercise: a release whose candidate answers 500 to a fifth of requests after promotion (restored by the bake), a healthy release with no traffic (inconclusive, passes with a note), a planted public bucket refused by the plan, a console edit to a service reported by the weekly drift, the native cap tripped with a tiny budget and lifted.
+Requires regeneration of app workflows: yes (9.2, 9.3). Terraform apply: yes (9.5, foundation, by the operator).
+Cost effect: none; the bake reads logs and metrics within the free allotment.
+
+## Phase 10: one repository, several services (about four and a half days) → version 1.10.0
+
+Status: planned on 2026-10-14 (research items 2 and 3, and the gaps the Sophia copy exposed). This phase removes the root-Dockerfile requirement Sophia's copy needed and gives the contract its answer for front-ends, caches, queues and workers.
+
+| Item | Change | Where |
+|---|---|---|
+| 10.1 | `path` per application (D23): the registry, `onboard_application(url, path=)`, the analyzer reading files at the path, plans binding the path, the build job's context and working directories, the test and audit steps at the path, `list_applications` showing it | labdeploy/config.py, labdeploy/onboarding.py, labdeploy/analyzer.py, labdeploy/controller.py, labdeploy/github.py, templates/deploy-gcp.yml |
+| 10.2 | Several services per repository (D24): per-service workflow names and concurrency groups, `update_app_workflows` and the onboarding `workflows` step rendering one set per service and touching only that service's files, one Terraform root per service as today | labdeploy/workflows.py, templates/*.yml, labdeploy/onboarding.py, labdeploy/controller.py |
+| 10.3 | `build: {context: repository}` for shared code in a monorepo, with the `.dockerignore` rule for it in the contract | labdeploy/models.py, templates/deploy-gcp.yml, docs/DEVELOPER-CONTRACT.md |
+| 10.4 | The component rule in the contract (the table in the research review, section 4.1): each HTTP component its own service, data under `needs`, no cache by default, workers through Pub/Sub push or a Cloud Run job, front-ends served by the API container (D25), proxies and telemetry as sidecars later; the analyzer's hints say what to do when it sees redis, celery, rq, a worker entry point or a `package.json` | docs/DEVELOPER-CONTRACT.md, labdeploy/analyzer.py, skills/lab-deploy-operator |
+| 10.5 | Compose import: `analyze_repository` reads `compose.yaml` when present and drafts one `platform.yaml` per HTTP service with review questions mapping databases to `needs`, caches to the rule and volumes to buckets; never a deployment unit | labdeploy/analyzer.py, labdeploy/server.py |
+| 10.6 | Postgres by password (the Sophia gap): `needs.database_auth: password` adds a built-in database user whose generated password is written once to Secret Manager through a write-only argument so it never enters state, and reaches the service as `DATABASE_URL`; IAM sign-in stays the default and the contract says why | infra/gcp/modules/service/needs.tf, labdeploy/infra.py, labdeploy/models.py, labdeploy/release.py |
+| 10.7 | Documents and the skill: the repository standard's section on monorepos, CLAUDE-CHAT's onboarding sentence with a path, the handoff | docs/, skills/lab-deploy-operator |
+
+Live exercise: a test repository with an API in `services/api` and a second service in `services/admin`, each onboarded with one sentence; the Sophia copy re-onboarded from `backend/` without the root Dockerfile; an application with `database_auth: password` connecting through `DATABASE_URL`; a Compose file turned into two drafts.
+Requires regeneration of app workflows: yes. Terraform apply: by the pipeline (10.6 adds the Secret Manager write-only path; the provider's write-only argument is verified in the trial).
+Cost effect: none at idle; a second service in a repository is another scale-to-zero service.
+
+## Phase 11: easy, the platform writes the boilerplate (about five days) → version 1.11.0
+
+Status: planned on 2026-10-14 (research items 5, 6 and 11).
+
+| Item | Change | Where |
+|---|---|---|
+| 11.1 | `check_repository(url, path)`: the contract's checklist with each missing item and whether the platform can write it; the same check runs first in `onboard_application` and stops with the list | labdeploy/analyzer.py, labdeploy/server.py, labdeploy/onboarding.py |
+| 11.2 | The checker writes (D26): `propose_configuration` gains the missing files from templates, detecting the server (uvicorn, gunicorn, Flask), the Python version and the health path; the lock compiled per D27; the pull request explains each file in one line and carries `reviewed: false` | templates/repo/, labdeploy/analyzer.py, labdeploy/github.py, labdeploy/controller.py |
+| 11.3 | Buildpack trial (D28): when the path has no Dockerfile, the build job runs `pack build` with Google's builder pinned by digest and `--platform linux/amd64`, with a `Procfile` the checker writes; the same `docker save`, push, provenance, scan and deploy follow; measured against the Dockerfile path on the demo app for build time, image size and cold start | templates/deploy-gcp.yml, labdeploy/analyzer.py, docs/VALIDATION.md |
+| 11.4 | The contract page opens with the three things a developer must do (a service that listens on `$PORT` and answers its health path, pinned requirements, tests) and moves everything else under "the platform writes these for you" | docs/DEVELOPER-CONTRACT.md, skills/lab-deploy-operator/references |
+| 11.5 | Measures: the registry records when onboarding started and finished and how many steps blocked and were resolved by the operator; `list_applications` and the weekly issue show onboarding time and interventions per application | labdeploy/onboarding.py, labdeploy/controller.py, templates/rightsize-gcp.yml |
+
+Live exercise: a repository with only `app.py`, `requirements.txt` and a test, onboarded by one sentence after merging the checker's pull request; the same repository without a Dockerfile released through the buildpack path; the demo app on both paths compared.
+Requires regeneration of app workflows: yes (11.3). Terraform apply: no.
+Cost effect: none; the builder image pull adds Actions minutes on private repositories (about two per build, measured in the trial).
+
+## Phase 12: legible approvals and the operator's succession (about three days) → version 1.12.0
+
+Status: planned on 2026-10-14 (research items 4, 9 and 10, and the trust gaps in the review's section 4.4).
+
+| Item | Change | Where |
+|---|---|---|
+| 12.1 | Code-rendered approvals: the infrastructure pull-request comment and the `create_deployment_plan` output carry a fixed block rendered from the plan, never from Claude: resources added, changed and destroyed by type, the monthly floor before and after, any exposure change, a reversibility tier (reversible, data-bearing, identity), and the chain of identifiers (onboarding, plan, run, pull request) | labdeploy/infra.py, labdeploy/controller.py, labdeploy/cost.py, .github/workflows/infra-plan.yml |
+| 12.2 | Requester and approver (D29): `auto_merge` per application and per principal; CODEOWNERS on `infra/gcp/apps/**` with required review, documented for the day a second operator exists | labdeploy/config.py, labdeploy/onboarding.py, .github/CODEOWNERS, docs/SETUP.md |
+| 12.3 | Tool descriptions pinned: a checksum of every tool's name, description and schema checked in CI, so a change is a deliberate commit; every tool failure returns a structured error with a plain next action (an audit of server.py) | tests/, labdeploy/server.py |
+| 12.4 | The exit procedure: a runbook section "Leaving Google Cloud" and `scripts/export-app.sh` (pull the live image by digest, `terraform state pull`, copy each bucket, export Postgres, export Firestore) with a dry run on the demo recorded in VALIDATION; `tofu validate` next to `terraform validate` in CI so OpenTofu stays a drop-in | docs/RUNBOOK.md, scripts/, .github/workflows/ci.yml |
+| 12.5 | Succession: a second principal named by the operator, the runbook rehearsed by that person, a quarterly restore drill the watchdog reminds about, the handoff refreshed | config.local.yaml, docs/RUNBOOK.md, labdeploy/scheduler.py, PROJECT_HANDOFF.md |
+
+Live exercise: an infrastructure pull request whose comment shows the rendered block for a bucket added and a database retired; a tool-description change caught by CI; the exit dry run on the demo; the restore drill from the backup bucket by the second person.
+Requires regeneration of app workflows: no. Terraform apply: no.
+Cost effect: none.
+
+## Later, unscheduled (research item 13)
+
+`cache: valkey` behind operator approval with its floor in every plan (two days plus a trial; Memorystore never scales to zero); `gpu: l4` with one instance, zonal redundancy off, weights on a read-only bucket volume and the cap able to stop it (three days plus a trial; instance-based billing); the container-only runtime for the first non-Python application (two days); Firebase Hosting for a public front-end only if the lab ever allows public exposure.
+
+Not planned, because the evidence is against it for this lab: a second cloud or a cloud-agnostic layer; Score, Radius, the Open Application Model, Dapr, Crossplane or TOSCA; Compose as a deployment unit; multi-architecture image builds; worker pools or Memorystore by default; Kubernetes; model-written Terraform; autonomous remediation; and, for now, metric canary analysis, SBOMs, Binary Authorization and OpenTelemetry.
+
 ## Totals
 
 | Phase | Effort | Workflows regenerated | Terraform apply |
@@ -237,5 +333,9 @@ Cost effect: IAP on Cloud Run has no charge of its own; no load balancer is crea
 | 6 | about eleven days | yes | by the pipeline from then on |
 | 7 | about four and a half days | yes (the trial repository) | by the pipeline |
 | 8 | about two and a half days | yes | by the pipeline |
+| 9 | about three days | yes | yes (foundation, by the operator) |
+| 10 | about four and a half days | yes | by the pipeline |
+| 11 | about five days | yes | no |
+| 12 | about three days | no | no |
 
-About nine and a half days of work for Phases 0 to 5, plus the live exercises, which take an hour or two per phase. Phase 6 adds about eleven days and a trial per resource type.
+About nine and a half days of work for Phases 0 to 5, plus the live exercises, which take an hour or two per phase. Phase 6 adds about eleven days and a trial per resource type. Phases 9 to 12 add about fifteen and a half days, planned on 2026-10-14 from `docs/RESEARCH-2026-10-14.md`.
