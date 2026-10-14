@@ -389,6 +389,9 @@ class GitHub:
         inputs = {"commit_sha": plan["sha"], "spec_hash": plan["spec_hash"], "plan_id": plan["id"], "target_json": json.dumps(plan["target"], sort_keys=True)}
         if plan.get("reuse_image"):
             inputs["image_digest"] = plan["reuse_image"]
+        if plan.get("provenance") == "unavailable":
+            # Sent only for the exception: a workflow pinned before 1.8.6 has no such input and GitHub refuses unknown ones.
+            inputs["provenance"] = "unavailable"
         response = self.request("POST", f"/repos/{app.repository}/actions/workflows/{app.workflow}/dispatches", json={"ref": app.branch, "inputs": inputs})
         # Current API returns 200 with run ID; older deployments may still return 204.
         return response.json() if response.content else {}

@@ -20,6 +20,12 @@ on:
         required: false
         default: ''
         type: string
+      provenance:
+        description: required, or unavailable for the operator's exception (staging or an emergency; refused with image_digest)
+        required: false
+        default: required
+        type: choice
+        options: [required, unavailable]
 permissions:
   contents: read
 concurrency:
@@ -32,6 +38,7 @@ env:
   PLAN_ID: ${{ inputs.plan_id }}
   TARGET_JSON: ${{ inputs.target_json }}
   IMAGE_DIGEST_INPUT: ${{ inputs.image_digest }}
+  PROVENANCE_INPUT: ${{ inputs.provenance }}
 jobs:
   build:
     # Skipped when the plan reuses an image this workflow already built and attested for the same commit.
@@ -233,6 +240,31 @@ jobs:
               with open('bundle/image.tar', 'rb') as f:
                   assert hashlib.file_digest(f, 'sha256').hexdigest() == Path('bundle/image.sha256').read_text().strip()
           PY
+      # Provenance links this exact digest to this commit and workflow run; the release deploys only a verified digest.
+      # A public repository uses GitHub's attestation. A private one, which GitHub attests only on Enterprise Cloud, signs
+      # with the application's own Cloud KMS key through Cosign. Skipping it is the operator's exception, for a fresh build only.
+      - name: Choose the provenance path
+        id: provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$PROVENANCE_INPUT" = "unavailable" ]; then
+            if [ -n "$IMAGE_DIGEST_INPUT" ]; then
+              echo "::error title=Provenance::the provenance exception is refused for a reused image: only its provenance shows this pipeline built it"
+              exit 1
+            fi
+            MODE=unavailable
+            echo "::warning title=Provenance not recorded::the operator's exception (provenance: unavailable) is set for this application, so this image is deployed without signed provenance"
+          elif [ "$(gh api "repos/$GITHUB_REPOSITORY" --jq .visibility)" = "public" ]; then
+            MODE=github
+          else
+            MODE=cosign-kms
+          fi
+          echo "Provenance path: $MODE"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "PROVENANCE_MODE=$MODE" >> "$GITHUB_ENV"
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
@@ -263,20 +295,59 @@ jobs:
           echo "IMAGE_DIGEST=$IMAGE@$DIGEST" >> "$GITHUB_ENV"
           echo "IMAGE_NAME=$IMAGE" >> "$GITHUB_ENV"
           echo "IMAGE_SHA256=$DIGEST" >> "$GITHUB_ENV"
-      # Signed SLSA provenance links this exact digest to this commit and workflow run; stored by GitHub, never a long-lived key.
+      # GitHub's path: signed SLSA provenance stored by GitHub, never a long-lived key.
       - name: Attest build provenance
-        if: inputs.image_digest == ''
+        if: inputs.image_digest == '' && steps.provenance.outputs.mode == 'github'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE_NAME }}
           subject-digest: ${{ env.IMAGE_SHA256 }}
       - name: Verify build provenance
+        if: steps.provenance.outputs.mode == 'github'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           gh attestation verify "oci://$IMAGE_DIGEST" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/deploy-gcp.yml"
+      # The Cloud KMS path: only this application's deployer may sign with its key, and the deployer is reachable only from
+      # these workflows on main in the staging environment.
+      - name: Install Cosign
+        if: steps.provenance.outputs.mode == 'cosign-kms'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/cosign" https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-amd64
+          echo "4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71  $RUNNER_TEMP/cosign" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/cosign"
+          echo "COSIGN=$RUNNER_TEMP/cosign" >> "$GITHUB_ENV"
+          echo "PROVENANCE_KEY=$(python -m labdeploy.provenance key)" >> "$GITHUB_ENV"
+      # Stored next to the image as its sha256-<digest>.att tag, which the registry keeps. No transparency log: a public log
+      # would publish a private repository's name and commits.
+      - name: Sign build provenance with Cloud KMS
+        if: inputs.image_digest == '' && steps.provenance.outputs.mode == 'cosign-kms'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m labdeploy.provenance predicate > "$RUNNER_TEMP/provenance.json"
+          if ! "$COSIGN" attest --yes --key "$PROVENANCE_KEY" --type slsaprovenance1 --predicate "$RUNNER_TEMP/provenance.json" \
+              --new-bundle-format=false --use-signing-config=false --tlog-upload=false "$IMAGE_DIGEST"; then
+            echo "::error title=Provenance::signing with $PROVENANCE_KEY failed. A missing key means the foundation (scripts/apply-foundation.sh) and then this application's infrastructure need applying"
+            exit 1
+          fi
+      - name: Verify build provenance with Cloud KMS
+        if: steps.provenance.outputs.mode == 'cosign-kms'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$COSIGN" verify-attestation --key "$PROVENANCE_KEY" --type slsaprovenance1 --insecure-ignore-tlog=true "$IMAGE_DIGEST" > "$RUNNER_TEMP/verified.jsonl"
+          python -m labdeploy.provenance verify "$RUNNER_TEMP/verified.jsonl"
       - name: Summarize image vulnerabilities
         env:
           PYTHONPATH: ${{ github.workspace }}/platform

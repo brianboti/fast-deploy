@@ -1,6 +1,7 @@
 import re
 import time
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
 
 import yaml
@@ -26,6 +27,9 @@ class Application(StrictModel):
     # Google accounts that may open the app's pages when platform.yaml says exposure: lab-members (user:, group: or domain:),
     # on top of onboarding.default_viewers. The operator edits this; developers cannot grant themselves.
     viewers: list[str] = Field(default_factory=list)
+    # required: every release carries signed provenance (GitHub's for a public repository, Cosign with the app's Cloud KMS
+    # key otherwise). unavailable: the operator's exception for staging or an emergency; a fresh build only, never a reuse.
+    provenance: Literal["required", "unavailable"] = "required"
 
     @model_validator(mode="after")
     def workflow_fixed(self):
@@ -136,6 +140,7 @@ class ApplicationSettings(StrictModel):
     auto_deploy: bool | None = None
     infra: dict[str, int | bool] | None = None
     viewers: list[str] | None = None
+    provenance: Literal["required", "unavailable"] | None = None
 
 
 class Config(StrictModel):

@@ -41,6 +41,16 @@ resource "google_artifact_registry_repository" "images" {
       tag_prefixes = ["serving-"]
     }
   }
+  # A private repository's signed provenance lives next to its image as the sha256-<digest>.att tag; a few kilobytes
+  # each, kept so every image that survives stays verifiable.
+  cleanup_policies {
+    id     = "keep-provenance"
+    action = "KEEP"
+    condition {
+      tag_state    = "TAGGED"
+      tag_prefixes = ["sha256-"]
+    }
+  }
   cleanup_policies {
     id     = "delete-untagged"
     action = "DELETE"

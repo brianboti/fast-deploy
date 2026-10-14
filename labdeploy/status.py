@@ -21,6 +21,13 @@ STEP_ADVICE = [
     ("google-github-actions/auth", "Cloud sign-in failed; check the staging environment's variables and the identity federation in Terraform."),
     ("Recover any interrupted previous release", "A previous release left an unresolved checkpoint; run the recovery workflow and inspect the checkpoint before releasing again."),
     ("Push image and resolve immutable digest", "Pushing the image failed; check the deployer's Artifact Registry permission and the registry name."),
+    ("Choose the provenance path", "The provenance path was not chosen: the exception provenance: unavailable came with a reused image (refused; a plan "
+     "made with the exception builds fresh), or GitHub's API did not answer (run the deployment again)."),
+    ("Install Cosign", "Downloading Cosign failed or its checksum did not match; run the deployment again, and if the checksum still differs, stop and investigate."),
+    ("Sign build provenance with Cloud KMS", "Signing with the application's Cloud KMS key failed; if the key does not exist yet, apply the foundation and then the "
+     "application's infrastructure (docs/SETUP.md, Build provenance)."),
+    ("Verify build provenance with Cloud KMS", "Provenance verification failed closed: no statement signed with the application's key names this image, "
+     "commit and workflow, so nothing was deployed. The job log says which part differed."),
     ("Attest build provenance", "Signing the image's provenance failed; check the workflow's attestations permission."),
     ("Verify build provenance", "Provenance verification failed closed; confirm the runner can read the registry through docker-credential-gcloud."),
     ("Summarize image vulnerabilities", "The vulnerability policy blocked the release; see vulnerability-summary.json, fix or accept the findings, then deploy again."),
