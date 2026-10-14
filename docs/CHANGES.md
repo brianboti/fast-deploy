@@ -1,3 +1,17 @@
+# 1.8.4: a second infrastructure change for the same application
+
+## Fixed
+
+1. **The second infrastructure pull request of an application conflicted.** The controller reused the branch
+   `lab-deploy/infra-<app>` when no pull request was open on it; after a squash merge that branch's history no longer
+   matches main, so the new pull request conflicted and GitHub ran no plan workflow for it (live: brianboti/lab-deploy#29,
+   retiring lab-notebook's database). An existing branch is now reused only when it is exactly the base commit; otherwise
+   the pull request uses a new branch named after the base commit. Nothing is deleted or force-pushed.
+
+## Upgrade steps
+
+1. Restart the controller. Optionally turn on "Automatically delete head branches" in the platform repository's settings.
+
 # 1.8.3: a cancel reads as a cancel
 
 ## Fixed

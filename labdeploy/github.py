@@ -339,11 +339,14 @@ class GitHub:
         open_prs = self.request("GET", f"/repos/{app.repository}/pulls", params={"head": f"{owner}:{branch}", "state": "open"}).json()
         if open_prs:
             return {"number": open_prs[0]["number"], "url": open_prs[0]["html_url"], "branch": branch, "changed": [], "note": "A pull request on this branch is already open."}
-        try:
-            self.request("POST", f"/repos/{app.repository}/git/refs", json={"ref": f"refs/heads/{branch}", "sha": self.head(app)})
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code != 422:  # 422: the branch already exists from an earlier, closed attempt; reuse it
-                raise
+        base = self.head(app)
+        if not self.fresh_branch(app.repository, branch, base):
+            # The branch is left over from an earlier pull request (after a squash merge its history no longer matches the
+            # base): a pull request from it would conflict, and GitHub runs no workflow for a conflicting one. Use a new
+            # branch named after the base commit; nothing is deleted or force-pushed.
+            branch = f"{branch}-{base[:7]}"
+            if not self.fresh_branch(app.repository, branch, base):
+                raise ValueError(f"Branches {branch} already exist and differ from {app.branch}; delete the old ones and try again")
         changed = []
         for path, text in files.items():
             current = self.contents(app.repository, branch, path)
@@ -358,6 +361,16 @@ class GitHub:
             return {"number": None, "url": None, "branch": branch, "changed": [], "note": "The files already have this content."}
         response = self.request("POST", f"/repos/{app.repository}/pulls", json={"title": title, "base": app.branch, "head": branch, "draft": False, "body": body})
         return {"number": response.json()["number"], "url": response.json()["html_url"], "branch": branch, "changed": changed}
+
+    def fresh_branch(self, repository, branch, base):
+        """Create the branch at `base`, or accept an existing one only when it is exactly `base`; False when it has drifted."""
+        try:
+            self.request("POST", f"/repos/{repository}/git/refs", json={"ref": f"refs/heads/{branch}", "sha": base})
+            return True
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 422:  # 422: the branch already exists
+                raise
+        return self.compare_repository(repository, base, branch)["status"] == "identical"
 
     def update_workflows(self, app, platform_sha, files):
         """Open the pull request that pins the app's workflow files to a platform commit; never merges, never force-pushes."""
