@@ -1,3 +1,17 @@
+# 1.8.7: an image released under the provenance exception is never reused
+
+## Fixed
+
+1. Found while preparing the exception's live test with Sophia: once the operator removed `provenance: unavailable`, the
+   next plan for the same commit reused the image released under the exception. That image has no signed provenance,
+   so the reuse path's verification would have stopped the release (safely, but for no reason the operator could see).
+   A plan now reuses only an image whose release receipt does not say `provenance: unavailable`: an earlier signed image
+   of the same commit if there is one, otherwise the commit is built, tested and signed fresh.
+
+## Upgrade steps
+
+1. Restart the controller.
+
 # 1.8.6: signed provenance for private repositories
 
 Found by deploying the private copy of the lab's Sophia backend: GitHub's artifact attestations cover public repositories
