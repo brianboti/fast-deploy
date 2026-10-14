@@ -78,5 +78,5 @@ def test_conda_poetry_and_uv_projects_are_told_how_to_export():
     for command in ("uv export --format requirements.txt --no-dev --no-emit-project -o requirements.lock",
                     "poetry export -f requirements.txt --output requirements.lock",
                     "python -m pip list --format=freeze --exclude-editable > requirements.txt",
-                    "uv pip compile requirements.txt --universal --generate-hashes -o requirements.lock"):
+                    "uv pip compile requirements.txt --universal --python-version 3.12 --generate-hashes -o requirements.lock"):
         assert command in section, command

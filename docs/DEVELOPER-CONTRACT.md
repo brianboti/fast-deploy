@@ -21,7 +21,7 @@ The standard has three levels:
 | `platform.yaml` | Required | The contract between the app and the platform: name, port, health path, size, scaling, timeout, env, secret names, needs, tests policy (section 5). | The controller (plans, cost bounds, policy), the runner (deploy flags, environment variables, migration job), the renderer (the app's Terraform root) |
 | `requirements.txt` | Required | Runtime dependencies pinned to exact versions. | The Dockerfile's `pip install`; the audit step when there is no lock (`pip-audit -r requirements.txt` on the app's Python, a known vulnerability fails the release); the analyzer |
 | `requirements-dev.txt` | Required unless `tests: none` | Test and lint tools (pytest, ruff), kept out of the image. | The test step (`pip install -r requirements-dev.txt`, then `python -m pytest`) |
-| `requirements.lock` | Recommended; required by review for anything beyond a demo | A hash-locked, reproducible install (`uv pip compile --universal --generate-hashes`, or `pip-compile --generate-hashes` run on the app's Python). A version pin alone still trusts whatever the index serves. | The test step installs it with `--require-hashes` when present; the audit step reads every package in it at its exact version, on the app's Python, without installing anything; the Dockerfile should install it too |
+| `requirements.lock` | Recommended; required by review for anything beyond a demo | A hash-locked, reproducible install (`uv pip compile --universal --python-version X.Y --generate-hashes`, or `pip-compile --generate-hashes` run on the app's Python). A version pin alone still trusts whatever the index serves. | The test step installs it with `--require-hashes` when present; the audit step reads every package in it at its exact version, on the app's Python, without installing anything; the Dockerfile should install it too |
 | `tests/` or `test_*.py` | Required unless `tests: none` | Prove the app before anything is built; the same tests run in the app's own CI on pull requests. | `python -m pytest` in the deploy workflow and in the app's CI |
 | `.dockerignore` | Recommended | Keeps `.git`, virtual environments, tests, caches and local secrets out of the build context: smaller, faster, safer images. | `docker build` |
 | `pyproject.toml` | Recommended | One place for project metadata and the ruff and pytest configuration; `requirements*.txt` can be generated from it. | Developers and tools |
@@ -44,11 +44,12 @@ every compiled dependency publishes 3.15 wheels, or the install falls back to bu
 older are not supported (3.10's security support ends in October 2026).
 
 **Lock files.** A lock compiled on one Python can leave out packages another one needs (live: SQLAlchemy needs greenlet
-below 3.13, so a lock compiled on 3.13 failed to install on 3.12). Compile it for every version at once with markers,
-or on the exact Python in `platform.yaml`:
+below 3.13, so a lock compiled on 3.13 failed to install on 3.12). Compile it for every version from the one in
+`platform.yaml` up, with markers (`--python-version` is that version; without it uv starts from the Python on your
+machine):
 
 ```bash
-uv pip compile requirements.txt --universal --generate-hashes -o requirements.lock
+uv pip compile requirements.txt --universal --python-version 3.12 --generate-hashes -o requirements.lock
 ```
 
 **conda, Poetry and uv.** The platform installs with pip from three files: `requirements.txt` (exact pins),
@@ -79,7 +80,7 @@ and export these files whenever the dependencies change; commit them with the ch
 
   ```bash
   python -m pip list --format=freeze --exclude-editable > requirements.txt
-  uv pip compile requirements.txt --universal --generate-hashes -o requirements.lock
+  uv pip compile requirements.txt --universal --python-version 3.12 --generate-hashes -o requirements.lock
   ```
 
   and list pytest and the other test tools in `requirements-dev.txt`. The Dockerfile then uses a `python:*-slim` base
