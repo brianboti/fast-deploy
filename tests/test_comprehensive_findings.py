@@ -545,3 +545,44 @@ def test_a_cancel_is_reported_as_a_cancel_not_as_a_failed_migration(tmp_path, mo
     text = advice({"state": "cancelled", "failed_step": {"step": RELEASE_STEP}, "receipt": receipt})
     assert text.startswith("The release was cancelled while migrating; nothing new serves") and "may still finish" in text
     assert "migration failed" not in text and "KeyboardInterrupt" not in text
+
+
+def test_a_second_infrastructure_change_does_not_reuse_a_branch_a_squash_merge_left_behind(monkeypatch):
+    # Live: #29 reused lab-deploy/infra-lab-notebook, left over from #22's squash merge; the pull request conflicted and
+    # GitHub ran no plan workflow for it, so the change would have waited forever.
+    import json
+
+    import httpx
+
+    from labdeploy.github import GitHub
+
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    base = "b" * 40
+    calls = []
+
+    def handler(request):
+        path, method = request.url.path, request.method
+        calls.append((method, path))
+        if method == "GET" and path.endswith("/pulls"):
+            return httpx.Response(200, json=[])
+        if method == "GET" and path.endswith("/commits/main"):
+            return httpx.Response(200, json={"sha": base})
+        if method == "POST" and path.endswith("/git/refs"):
+            ref = json.loads(request.content)["ref"]
+            return httpx.Response(422 if ref == "refs/heads/lab-deploy/infra-app" else 201, json={})
+        if "/compare/" in path:
+            return httpx.Response(200, json={"status": "diverged", "ahead_by": 3, "behind_by": 5, "commits": [], "files": []})
+        if method == "GET" and "/contents/" in path:
+            return httpx.Response(404, json={})
+        if method == "PUT" and "/contents/" in path:
+            assert json.loads(request.content)["branch"] == "lab-deploy/infra-app-bbbbbbb"
+            return httpx.Response(201, json={})
+        if method == "POST" and path.endswith("/pulls"):
+            assert json.loads(request.content)["head"] == "lab-deploy/infra-app-bbbbbbb"
+            return httpx.Response(201, json={"number": 30, "html_url": "https://github.com/o/lab-deploy/pull/30"})
+        raise AssertionError((method, path))
+
+    gh = GitHub(httpx.Client(base_url="https://api.github.com", transport=httpx.MockTransport(handler)))
+    result = gh.open_platform_pull_request("o/lab-deploy", "main", "lab-deploy/infra-app", {"infra/gcp/apps/app/main.tf": "x"}, "t", "b", "m")
+    assert result["branch"] == "lab-deploy/infra-app-bbbbbbb" and result["number"] == 30
+    assert not any(method in ("DELETE", "PATCH") for method, _ in calls)  # nothing deleted or force-pushed
