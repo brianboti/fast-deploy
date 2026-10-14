@@ -26,6 +26,11 @@ on:
         default: required
         type: choice
         options: [required, unavailable]
+      bake_seconds:
+        description: Seconds to watch the promoted revision's logs before the release counts as done (0 to 900; a crash or 5xx answers restore the previous traffic)
+        required: false
+        default: '300'
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -39,6 +44,7 @@ env:
   TARGET_JSON: ${{ inputs.target_json }}
   IMAGE_DIGEST_INPUT: ${{ inputs.image_digest }}
   PROVENANCE_INPUT: ${{ inputs.provenance }}
+  BAKE_SECONDS: ${{ inputs.bake_seconds }}
 jobs:
   build:
     # Skipped when the plan reuses an image this workflow already built and attested for the same commit.
@@ -56,6 +62,7 @@ jobs:
           [[ "$COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$SPEC_HASH" =~ ^[a-f0-9]{64}$ ]]
           [[ "$PLAN_ID" =~ ^[a-f0-9]{32}$ ]]
+          [[ "$BAKE_SECONDS" =~ ^[0-9]{1,3}$ ]] && [ "$BAKE_SECONDS" -le 900 ]
           test "$GITHUB_REF" = "refs/heads/main"
           # The commit must be the tip of main or already part of its history: never an unmerged branch.
           if [ "$COMMIT_SHA" != "$GITHUB_SHA" ]; then
@@ -144,6 +151,40 @@ jobs:
           else
             "$RUNNER_TEMP/audit-venv/bin/python" -m pip_audit -r requirements.txt
           fi
+      # hadolint checks the Dockerfile against Docker's best practices. Its findings become annotations on this run and travel
+      # with the release receipt; they stop a release only when the repository variable HADOLINT_BLOCKING is 'true', and then
+      # only for error-level findings (the default from 1.10.0). Downloaded by version and checked against its SHA-256.
+      - name: Lint the Dockerfile
+        env:
+          HADOLINT_BLOCKING: ${{ vars.HADOLINT_BLOCKING || 'false' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/hadolint" https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-linux-x86_64
+          echo "c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507  $RUNNER_TEMP/hadolint" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/hadolint"
+          mkdir -p bundle
+          "$RUNNER_TEMP/hadolint" --no-fail --format json app/Dockerfile > bundle/hadolint.json
+          python3 - <<'PY'
+          import json, os
+          def escape(text, property=False):
+              text = str(text).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              return text.replace(":", "%3A").replace(",", "%2C") if property else text
+          findings = json.load(open("bundle/hadolint.json"))
+          command = {"error": "error", "warning": "warning"}
+          for f in findings:
+              kind = command.get(f.get("level"), "notice")
+              print(f"::{kind} file=Dockerfile,line={int(f.get('line') or 1)},title={escape('hadolint ' + str(f.get('code')), True)}::{escape(f.get('message', ''))}")
+          counts = {}
+          for f in findings:
+              counts[str(f.get("level"))] = counts.get(str(f.get("level")), 0) + 1
+          line = "Dockerfile lint (hadolint 2.15.1): " + (", ".join(f"{n} {level}" for level, n in sorted(counts.items())) or "no findings")
+          print(line)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write(line + "\n")
+          if counts.get("error") and os.environ["HADOLINT_BLOCKING"] == "true":
+              raise SystemExit("hadolint found error-level problems and HADOLINT_BLOCKING is true for this repository")
+          PY
       - name: Build without cloud credentials
         run: |
           set -euo pipefail
@@ -164,7 +205,8 @@ jobs:
     # With always() GitHub kept the job running after a cancel, and the release went on to promote (live, 2026-10-13).
     if: ${{ !cancelled() && needs.build.result != 'failure' && needs.build.result != 'cancelled' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Twenty minutes for the release and its migration, plus up to fifteen for the bake (bake_seconds is at most 900).
+    timeout-minutes: 35
     # GitHub records a deployment for this environment job; the URL below makes it show the released service.
     environment:
       name: staging
@@ -217,6 +259,7 @@ jobs:
           [[ "$COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$SPEC_HASH" =~ ^[a-f0-9]{64}$ ]]
           [[ "$PLAN_ID" =~ ^[a-f0-9]{32}$ ]]
+          [[ "$BAKE_SECONDS" =~ ^[0-9]{1,3}$ ]] && [ "$BAKE_SECONDS" -le 900 ]
           test "$GITHUB_REF" = "refs/heads/main"
           if [ "$COMMIT_SHA" != "$GITHUB_SHA" ]; then
             STATUS=$(gh api "repos/$GITHUB_REPOSITORY/compare/$COMMIT_SHA...$GITHUB_SHA" --jq .status)
@@ -422,8 +465,13 @@ jobs:
               pass
           plan, commit = os.environ["PLAN_ID"], os.environ["COMMIT_SHA"][:12]
           build, deploy = os.environ["BUILD_RESULT"], os.environ["DEPLOY_RESULT"]
+          bake = receipt.get("bake") or {}
           if deploy == "success" and receipt.get("state") == "succeeded":
               line = f"SUCCEEDED: revision {receipt.get('revision')} serves all traffic at {receipt.get('url')}"
+              if bake.get("result") in ("inconclusive", "unobserved", "skipped"):
+                  line += f" (bake {bake['result']}: nothing more than the probes vouches for it)"
+          elif receipt.get("state") == "traffic_restored" and receipt.get("failed_phase") == "baking" and not receipt.get("cancelled"):
+              line = f"FAILED AFTER PROMOTION: the new revision served traffic but failed its bake ({receipt.get('error')}); the previous traffic was restored"
           elif build not in ("success", "skipped"):
               line = f"FAILED in the build job ({build}): tests, dependency audit or image build"
           elif receipt.get("state") == "traffic_restored":

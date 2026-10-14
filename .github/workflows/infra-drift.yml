@@ -1,0 +1,152 @@
+# The weekly drift check (docs/ROADMAP.md, Phase 9, decision D30). Plans every application root against the live
+# infrastructure with the read-only plan identity, without the state lock, and reports what differs from the code on main:
+# an edit made outside the pipeline, or an apply that did not finish. It never applies anything. The result is a living
+# issue on this repository and the `drift-report` artifact, which the controller's daily watchdog reads; a difference in
+# IAM, networking or exposure becomes a watchdog notification. The plan identity accepts this workflow only from main
+# (infra/gcp/modules/project/pipeline.tf), so the foundation must be applied with 1.9.0 before the first run.
+name: Infrastructure drift
+on:
+  schedule:
+    - cron: "37 7 * * 1"
+  workflow_dispatch:
+permissions: {}
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: infra-drift
+  cancel-in-progress: false
+jobs:
+  roots:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      apps: ${{ steps.list.outputs.apps }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: List every application root
+        id: list
+        run: python3 -m labdeploy.infra roots-all infra/gcp/apps | tee -a "$GITHUB_OUTPUT"
+  plan:
+    needs: roots
+    # Dormant until the operator sets the INFRA_* repository variables from the foundation root's outputs.
+    if: needs.roots.outputs.apps != '[]' && vars.INFRA_PLAN_WIF_PROVIDER != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJSON(needs.roots.outputs.apps) }}
+    env:
+      APP: ${{ matrix.app }}
+      TF_IN_AUTOMATION: "1"
+      TF_INPUT: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.INFRA_PLAN_WIF_PROVIDER }}
+          service_account: ${{ vars.INFRA_PLAN_SERVICE_ACCOUNT }}
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.13.5
+          terraform_wrapper: false
+      - name: Plan against the live infrastructure without taking the state lock
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/drift"
+          cd "infra/gcp/apps/$APP"
+          bucket=$(sed -n 's/^ *bucket *= *"\(.*\)"/\1/p' backend.tf)
+          prefix=$(sed -n 's/^ *prefix *= *"\(.*\)"/\1/p' backend.tf)
+          if ! answer=$(gcloud storage objects describe "gs://$bucket/$prefix/default.tfstate" --format="value(name)" 2>&1); then
+            if grep -qiE "not found|404|No URLs matched" <<< "$answer"; then
+              # A root that was never applied has nothing to drift from; the report says so instead of planning it.
+              printf '{"app": "%s", "state": "none", "drifted": false, "changes": [], "categories": [], "serious": []}\n' "$APP" > "$RUNNER_TEMP/drift/$APP.json"
+              echo "No state yet for $APP: never applied, nothing to compare."
+              exit 0
+            fi
+            echo "$answer"
+            exit 1
+          fi
+          terraform init -input=false -no-color
+          set +e
+          terraform plan -input=false -lock=false -no-color -detailed-exitcode -out=tfplan
+          code=$?
+          set -e
+          # 0: no differences, 2: differences, anything else: the plan itself failed and the report lists the root as failed.
+          [ "$code" -eq 0 ] || [ "$code" -eq 2 ]
+          terraform show -json tfplan > plan.json
+          PYTHONPATH="$GITHUB_WORKSPACE" python3 -m labdeploy.infra drift plan.json "$APP" > "$RUNNER_TEMP/drift/$APP.json"
+          rm -f plan.json tfplan
+      # Addresses, resource types and categories only: never an attribute value, so nothing secret can travel in it.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: drift-${{ matrix.app }}
+          path: ${{ runner.temp }}/drift/${{ matrix.app }}.json
+          retention-days: 3
+          if-no-files-found: error
+  report:
+    needs: [roots, plan]
+    if: always() && needs.roots.result == 'success' && needs.roots.outputs.apps != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        continue-on-error: true
+        with:
+          pattern: drift-*
+          path: records
+          merge-multiple: true
+      - name: Combine the records
+        env:
+          APPS: ${{ needs.roots.outputs.apps }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 -m labdeploy.infra drift-report records "$APPS" "$RUN_URL" > drift-report.json
+          python3 -m labdeploy.infra drift-issue drift-report.json > drift-issue.md
+          cat drift-issue.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: drift-report
+          path: drift-report.json
+          retention-days: 30
+          if-no-files-found: error
+      # One living issue: opened or updated while something differs, closed with the clean report when nothing does.
+      - name: Update the drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TITLE="Lab Deploy: infrastructure drift"
+          NUMBER=$(gh issue list --repo "$REPOSITORY" --state open --search "\"$TITLE\" in:title" --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)
+          DIFFERS=$(python3 -c 'import json; r = json.load(open("drift-report.json")); print("yes" if r["drifted"] or r["failed"] else "no")')
+          if [ "$DIFFERS" = "yes" ]; then
+            if [ -n "$NUMBER" ]; then
+              gh issue edit "$NUMBER" --repo "$REPOSITORY" --body-file drift-issue.md > /dev/null && echo "updated issue #$NUMBER"
+            else
+              gh issue create --repo "$REPOSITORY" --title "$TITLE" --body-file drift-issue.md > /dev/null && echo "opened the drift issue"
+            fi
+          elif [ -n "$NUMBER" ]; then
+            gh issue edit "$NUMBER" --repo "$REPOSITORY" --body-file drift-issue.md > /dev/null
+            gh issue close "$NUMBER" --repo "$REPOSITORY" --reason completed > /dev/null && echo "closed issue #$NUMBER: no drift"
+          else
+            echo "No drift and no open issue."
+          fi

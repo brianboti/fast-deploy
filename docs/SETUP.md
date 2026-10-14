@@ -262,6 +262,8 @@ A state written by versions up to 0.9.x holds both kinds in one object. Run `scr
 - **After the first week of traffic**, the right-sizing workflow (weekly, or `workflow_dispatch` with a `window_days` input) uploads `cost-report.json`. Ask Claude for `get_cost_report`. Apply accepted proposals by editing `platform.yaml` through a reviewed pull request; nothing changes on its own.
 - **Image cleanup** starts in dry-run mode. Review the Artifact Registry audit logs for what would be deleted, then set `registry_cleanup_dry_run: false` under `applications.<app>.infra` in the controller configuration and render the root again (a pull request the pipeline applies). The newest `image_versions_to_keep` versions are always kept as rollback targets.
 - **Spending cap**: with a budget set, `spending_cap` (default `{ enabled = true, threshold = 1.0 }`) makes every budget notification run a Cloud Workflow that closes ingress on every platform service once spend reaches the threshold of the budget. Requests then fail and compute stops; stored data and images are untouched; managed Cloud SQL instances are stopped as well. Each service and instance is handled on its own with retries, and an execution that could not close everything fails and raises the alert `Lab Deploy: spending-cap workflow failed`. Notifications repeat all month, so a service a release reopened is closed again at the next one unless it carries the lift label: `gcloud run services update SERVICE --region REGION --ingress=all --update-labels lab-deploy-cap-lifted=true` (for an instance, `gcloud sql instances patch NAME --activation-policy=ALWAYS --update-labels lab-deploy-cap-lifted=true`); remove the label when the new month starts. The ratio is computed from the notification's amounts, so `threshold` and `detach_threshold` may be any value. `detach_billing = true` with `detach_threshold` also detaches billing from the project at a higher line, which stops everything including the export, so keep it off unless the project is disposable. The budget notification itself still emails billing administrators.
+- **Native spend cap**: Google's own cap for Cloud Run is the second layer under the spending cap above, and the one that
+  needs nothing of this platform to work; set it up once per project as section 7i says.
 - **Actual spend**: set `billing_export_dataset` (for example `billing_export`) and apply, then enable the Cloud Billing export to BigQuery into that dataset in the Billing console (Billing export, standard usage cost). Once the table exists, set the repository variable `BILLING_EXPORT_TABLE` to `PROJECT.DATASET.TABLE`; the weekly report, the issue and `get_cost_report` then show net spend by Google service.
 - **Weekly issue and proposals**: the right-sizing workflow keeps one issue per repository up to date. Ask Claude for `propose_rightsizing` to turn the concrete proposals into a pull request against `platform.yaml`.
 - **Budget alert**: set `monthly_budget_usd` and `billing_account` (and optionally `budget_alert_email`) in `terraform.tfvars`. The administrator identity needs Billing Account Costs Manager or equivalent on that billing account. If `terraform apply` answers 403 for the budget, add `user_project_override = true` and `billing_project = var.project_id` to the provider block so the Billing Budgets API is called with a quota project. Budgets notify at 50%, 90% and 100% of actual spend and at 100% forecast spend; they do not stop spending.
@@ -330,6 +332,58 @@ step is manual because a project without an organization cannot create the proxy
 What the runner enforces: a release whose `platform.yaml` disagrees with the service's proxy state stops before anything
 changes ("render and merge the infrastructure first"), so the switch is only ever flipped by the pipeline.
 
+## 7i. Google's native spend cap for Cloud Run
+
+Since 2026-10-12 Cloud Billing can cap a budget instead of only alerting: a monthly budget scoped to one project and one
+eligible service (Cloud Run is one) that, once the month's gross estimated cost passes the amount, pauses every Cloud Run
+workload in the project. Services answer 5xx, jobs stop, in-flight requests finish; nothing is deleted. It does not stop
+Cloud SQL, buckets or topics ("persistent resources keep running"), which is why the platform's own spending cap stays; the
+native cap is the layer that still works if the controller, the workflow or the budget notification does not. It acts on
+estimates within hours, not instantly; overage is billed. It lifts by itself on the first of the next month, or by hand
+in Cloud Billing (up to an hour to recover); while it is enforced the budget cannot be edited.
+
+1. Pick the amount: the same as `monthly_budget_usd` is the default (decision D21).
+2. Create it, either with the script, which shows the request and waits for a typed `yes`, from an account that may manage
+   budgets on the project's billing account (Billing Account Administrator, or Costs Manager with Editor on the project):
+
+   ```bash
+   scripts/spend-cap.sh create PROJECT 20
+   ```
+
+   or in the console: Billing, Budgets & alerts, Create budget, **Spend cap enforcement**, the project, the Cloud Run
+   service, the amount, Finish. Terraform cannot do it yet: the Google provider has no spend-cap argument.
+3. Check it: `scripts/spend-cap.sh check PROJECT` lists the caps on the project's Cloud Run.
+4. Record it in the controller configuration so plans, `estimate_cost`, `get_cost_report` and `get_controller_status`
+   name it (until then they carry the warning `no_native_spend_cap`):
+
+   ```yaml
+   cloud_run_spend_caps:
+     PROJECT: 20
+   ```
+
+## 7j. The bake after promotion
+
+Every release watches the new revision's own Cloud Run logs for five minutes after traffic moves to it, and restores the
+previous traffic split on a crash, on more than 5% 5xx answers among at least 20 requests, or on a p95 latency more than
+three times the previous revisions' (decision D22; `labdeploy/bake.py`). The health path is not counted. The deployer's
+Logging viewer role, which every application root grants, is all it needs. Per application, the operator sets
+`bake_seconds` (0 to 900) under `applications.<id>` or `application_settings.<id>`; 0 turns it off, which every plan then
+says. A staging app with no users sees no traffic in five minutes, so its bake is `inconclusive` and passes; to judge a
+release, send it traffic during the bake.
+
+## 7k. The weekly drift check
+
+`.github/workflows/infra-drift.yml` plans every application root against the live infrastructure on Mondays at 07:37 UTC
+with the read-only plan identity, without the state lock, and reports each difference from the code on `main`: an edit
+made outside the pipeline, or an apply that did not finish. It needs only the foundation applied with 1.9.0 (the plan
+identity admits the drift workflow from `main`); the `INFRA_*` variables of section 7f already exist. It keeps one issue
+on the platform repository, **Lab Deploy: infrastructure drift**, open while something differs, and uploads the
+`drift-report` artifact the controller reads: `get_controller_status` shows it, and the daily watchdog notifies on drift in
+IAM, networking or exposure, on a root whose plan failed, and when the report is more than eight days old. To put the
+code's version back, merge any change to the root or dispatch **Infrastructure apply** with the root's name. Run it by
+hand from the Actions tab (Run workflow, on `main`). A grant someone adds next to the platform's own is invisible to it:
+Terraform's member resources check only their own members.
+
 ## 8. Provenance, scanning and dependency updates
 
 - **Build provenance**: the deployment job signs SLSA provenance for the pushed image digest and verifies it before release; the release deploys only that verified digest, and a reused image is verified again. Which signer depends on the repository:
@@ -337,6 +391,10 @@ changes ("render and merge the infrastructure first"), so the switch is only eve
   - **Private repository** (GitHub attests these only on Enterprise Cloud): Cosign signs with the application's own Cloud KMS key, `<service>-provenance` in the foundation's `lab-deploy` key ring (EC P-256, software protection, about USD 0.06 a month per application). Only the application's deployer may use the key, and the deployer is reachable only from its deploy workflows on `main` in the `staging` environment. The signature is stored next to the image as its `sha256-<digest>.att` tag, which the registry keeps; nothing goes to a public transparency log, which would publish the private repository's name and commits. Verification checks the signature with the key, then that the statement names this image digest, repository, commit and workflow. Setup: apply the foundation once (it enables Cloud KMS and creates the key ring), then let the pipeline apply each application's root (it creates the key). Until then a private repository's release stops at signing and says so.
   - **The operator's exception**: `provenance: unavailable` under `applications.<id>` or `application_settings.<id>` in the controller configuration releases without signed provenance, for staging or an emergency only. The plan warns, the run shows a warning, the receipt records `provenance: unavailable`, the image is always built fresh, and the workflow refuses the exception together with a reused image. Developers cannot set it: `platform.yaml` has no such field. Remove it once the cause is fixed.
   - If a verification step fails, it fails closed by design: confirm the runner can read the private registry through `docker-credential-gcloud`, and for a private repository that the key exists (`gcloud kms keys list --keyring lab-deploy --location us-central1 --project PROJECT`).
+- **Dockerfile lint**: hadolint 2.15.1 checks each application's Dockerfile in the build job before the image is built.
+  Findings are annotations on the run, a line in its summary and `dockerfile_lint` in the release receipt; they stop a
+  release only when the application repository's variable `HADOLINT_BLOCKING` is `true`, and then only for error-level
+  findings. 1.10.0 makes blocking on errors the default.
 - **Image scanning**: Terraform enables Artifact Analysis (`image_vulnerability_scanning`, about USD 0.26 per new image digest), often more than a small staging app's compute for the month; it is a per-project cost choice, and the estimate names it. The deployment job writes `vulnerability-summary.json` into the release receipt and the job summary. To block releases with critical findings, set the repository variable `BLOCK_ON_CRITICAL_VULNERABILITIES` to `true`; an unfinished scan then also blocks.
 - **Platform dependencies** are hash-locked. Refresh them deliberately, review the diff, and let CI's pip-audit and tests judge the result:
 
@@ -357,6 +415,9 @@ uv pip compile --generate-hashes --upgrade pyproject.toml --extra dev -o require
 - **Build/test/audit failure:** fix the app before retrying; the deployment job will not receive credentials.
 - **Cloud permission failure:** compare the concrete permission with Terraform; do not substitute Owner or Editor roles.
 - **Failed candidate:** a candidate that never becomes ready stays as the service's newest revision with no traffic, because Cloud Run does not allow deleting the newest revision. The console shows the service as not ready until the next successful release while the previous revision keeps serving; the receipt says so (`service_ready: false`). Fix the app and release again.
+- **Failed bake:** the new revision served all traffic, then crashed or answered too many requests with 5xx (or became
+  much slower), so the release restored the previous traffic split. The status and the receipt carry the bake's numbers
+  and the new revision's last log lines; fix the application and release again.
 - **Rollback failure or terminated runner:** inspect the independent recovery workflow and the GCS checkpoint. The next recovery run attempts to restore the previous traffic map. If the API is unavailable, the target changed, or outside traffic changes are detected, recovery fails visibly for operator review. Use an administrator-approved recovery command if necessary.
 - **Controller restart while dispatching:** status lookup locates the run by its unique title; a record still `dispatching` or `dispatch_unknown` two minutes later with no visible run becomes `dispatch_lost`, a final state whose advice is to create a new plan. Auto-deploy retries a lost or errored attempt after thirty minutes. This MVP does not implement an exactly-once distributed job queue.
 

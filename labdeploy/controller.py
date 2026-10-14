@@ -331,6 +331,16 @@ class Controller:
                     problems.append(f"{app_id}: the newest release attempt is '{newest['state']}' (plan {newest['id'][:8]}); nothing newer has succeeded")
             except Exception as exc:  # noqa: BLE001
                 problems.append(f"{app_id}: check failed: {explain(exc) or exc}")
+        drift = self.drift_status()
+        if drift.get("status") in ("drift", "clean"):
+            for app_id in drift.get("serious", []):
+                problems.append(f"{app_id}: infrastructure drift in {', '.join(drift['drifted'].get(app_id, []))}: something changed outside the pipeline; "
+                                f"see {drift.get('run_url')} and merge or re-apply the root to put the code's version back")
+            for app_id in drift.get("failed", []):
+                problems.append(f"{app_id}: the weekly drift plan did not finish; see {drift.get('run_url')}")
+            if drift.get("stale"):
+                problems.append(f"the weekly drift check last reported {drift.get('checked_at')}; its schedule may have stopped (GitHub pauses schedules "
+                                "after sixty days without activity)")
         report = {"checked_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"), "problems": problems, "notified": False}
         self.store.record_event("watchdog", outcome="problems" if problems else "ok", detail="; ".join(problems) or None)
         if problems and self.config.notify_webhook_url:
@@ -342,6 +352,32 @@ class Controller:
             except Exception as exc:  # noqa: BLE001
                 report["notify_error"] = str(exc)[:200]
         return report
+
+    DRIFT_STALE_DAYS = 8  # the drift check runs weekly; a report older than this means the schedule stopped
+
+    def drift_status(self):
+        """The weekly drift check's newest result for the platform repository (remembered for an hour), or why there is none."""
+        platform = getattr(self.config, "platform", None)
+        reader = getattr(self.github, "drift_report", None)
+        if platform is None or not callable(reader):
+            return {"status": "not_configured", "note": "platform.repository is not set in the controller configuration, so the drift report cannot be read"}
+        try:
+            found = self.cached(("drift", platform.repository), 3600, lambda: reader(platform.repository))
+        except Exception as exc:  # noqa: BLE001 - the drift view is informative; its absence is reported, never fatal
+            return {"status": "unavailable", "note": explain(exc) or str(exc)[:200]}
+        if not found:
+            return {"status": "not_run", "note": "The weekly drift check (.github/workflows/infra-drift.yml) has produced no report yet; it needs the "
+                                                 "foundation applied with the 1.9.0 plan identity, and runs on Mondays or on demand."}
+        report = found.get("report") or {}
+        try:
+            checked = datetime.datetime.fromisoformat(str(report.get("checked_at")).replace("Z", "+00:00"))
+            age_days = round((datetime.datetime.now(datetime.UTC) - checked).total_seconds() / 86400, 1)
+        except ValueError:
+            age_days = None
+        details = {record["app"]: record.get("categories", []) for record in report.get("applications", []) if record.get("drifted")}
+        return {"status": "drift" if report.get("drifted") else "clean", "checked_at": report.get("checked_at"), "age_days": age_days,
+                "stale": age_days is None or age_days > self.DRIFT_STALE_DAYS, "run_url": found.get("run_url"),
+                "drifted": details, "serious": report.get("serious", []), "failed": report.get("failed", [])}
 
     def backup_tick(self, config_path=None):
         """A consistent copy of the SQLite database next to it (or in backup_dir); copies older than backup_keep_days go.
@@ -577,8 +613,11 @@ class Controller:
             "checks": {"config_policy": "passed", "tests": "pending_in_ci", "dependency_scan": "pending_in_ci", "health": "pending_after_deployment"},
             "pinned_commit": bool(commit_sha), "behind_branch_by": behind,
             "provenance": app.provenance,
+            "bake_seconds": app.bake_seconds,
             "warnings": [],
         }
+        if not app.bake_seconds:
+            plan["warnings"].append("bake_seconds is 0 for this application: nothing watches the new revision after its final probe.")
         if spec.tests == "none":
             plan["checks"]["tests"] = "skipped_by_config"
             plan["warnings"].append("platform.yaml declares tests: none, so nothing checks this app's behaviour before a release; only the health probe guards it.")
@@ -738,10 +777,31 @@ class Controller:
             result[app_id] = entry
         return result
 
+    def spending_guards(self, app):
+        """The layers that stop spending in this application's project, as the operator recorded them (docs/SETUP.md 7i)."""
+        project = app.target.project_id
+        amount = (getattr(self.config, "cloud_run_spend_caps", None) or {}).get(project)
+        if amount:
+            native = {"status": "recorded", "amount_usd_month": amount,
+                      "covers": "Cloud Run only: every service in the project, counted on gross estimated cost before credits",
+                      "when_reached": "every Cloud Run service in the project answers 5xx until the cap is lifted in Cloud Billing (up to an hour to "
+                                      "recover) or the month ends; Cloud SQL, buckets and topics keep running and billing"}
+        else:
+            native = {"status": "not_recorded",
+                      "advice": f"No native Cloud Run spend cap is recorded for project {project}. Create one in Cloud Billing (docs/SETUP.md 7i) and "
+                                "record it under cloud_run_spend_caps in the controller configuration; it is the backstop that needs nothing of this platform to work."}
+        return {"project_id": project, "cloud_run_spend_cap": native,
+                "platform_cap": "Once the foundation's budget and cap workflow are applied, the budget's notifications close ingress on every managed "
+                                "service and stop every managed Cloud SQL instance at the budget line (docs/RUNBOOK.md, spending cap)"}
+
     def cost_summary(self, app, spec, requests_per_month=None, average_request_seconds=None):
         """Bounds and findings from list prices and the reviewed spec, with the operator's ceiling applied."""
         summary = estimate(spec, requests_per_month, average_request_seconds)
         summary["findings"] = findings(spec)
+        summary["spending_guards"] = self.spending_guards(app)
+        if summary["spending_guards"]["cloud_run_spend_cap"]["status"] == "not_recorded":
+            summary["findings"].insert(0, {"id": "no_native_spend_cap", "severity": "warning", "setting": "cloud_run_spend_caps (controller configuration)",
+                                           "current": None, "message": summary["spending_guards"]["cloud_run_spend_cap"]["advice"]})
         limit = app.cost_ceiling_usd
         compared = round(summary["compute_ceiling_usd_month"] + summary["needs_floor_usd_month"], 2)
         over = limit is not None and compared > limit
@@ -768,7 +828,10 @@ class Controller:
 
     def cost_report(self, principal, app_id):
         app = self.app(principal, app_id)
-        return self.github.cost_report(app)
+        result = self.github.cost_report(app)
+        if isinstance(result, dict):
+            result["spending_guards"] = self.spending_guards(app)
+        return result
 
     def propose_rightsizing(self, principal, app_id):
         """Turn the latest measured proposals into a pull request against platform.yaml; review and merge stay human."""

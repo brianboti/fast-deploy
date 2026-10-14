@@ -13,6 +13,10 @@ from labdeploy.infra import app_root, check_plan
 from labdeploy.models import AppSpec, needs_env, parse_spec, spec_hash
 from labdeploy.release import CloudRun
 
+# What the service module sets on a Cloud SQL instance (infra/gcp/modules/service/needs.tf); the policy requires each of these.
+PROTECTED_SETTINGS = {"user_labels": {"lab-deploy-app": "demo"}, "deletion_protection_enabled": True, "backup_configuration": [{"enabled": True}],
+                      "ip_configuration": [{"ipv4_enabled": False, "ssl_mode": "ENCRYPTED_ONLY"}]}
+
 ROOT = dict(project_id="test-project", region="us-central1", state_bucket="test-project-tfstate", github_repository="lab/demo",
             github_repository_id="123", github_owner_id="45", bootstrap_image="us-docker.pkg.dev/cloudrun/container/hello@sha256:" + "a" * 64)
 
@@ -98,11 +102,11 @@ def test_root_carries_the_needs_and_policies_guard_them():
     assert sorted(v["rule"] for v in check_plan(plan)) == ["labels_present", "private_bucket", "protected_database"]
     unprotected = {"resource_changes": [change("module.service.google_sql_database_instance.need[0]", "google_sql_database_instance", ["create"],
                                                {"region": "us-central1", "deletion_protection": False,
-                                                "settings": [{"user_labels": {"lab-deploy-app": "demo"}, "ip_configuration": [{"ipv4_enabled": False}]}]})]}
+                                                "settings": [PROTECTED_SETTINGS]})]}
     assert [v["rule"] for v in check_plan(unprotected)] == ["protected_database"]
     labelled = {"resource_changes": [change("module.service.google_sql_database_instance.need[0]", "google_sql_database_instance", ["create"],
                                             {"region": "us-central1", "deletion_protection": True,
-                                             "settings": [{"user_labels": {"lab-deploy-app": "demo"}, "ip_configuration": [{"ipv4_enabled": False}]}]})]}
+                                             "settings": [PROTECTED_SETTINGS]})]}
     assert check_plan(labelled) == []  # Cloud SQL keeps its labels under settings.user_labels
     good = {"resource_changes": [
         change("module.service.google_storage_bucket.need[\"uploads\"]", "google_storage_bucket", ["create"],

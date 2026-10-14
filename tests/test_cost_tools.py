@@ -111,7 +111,8 @@ def test_rest_and_mcp_cost_endpoints(tmp_path):
 def test_rightsize_workflow_is_read_only_and_pinned():
     workflow = yaml.safe_load(Path("templates/rightsize-gcp.yml").read_text())
     job = workflow["jobs"]["rightsize"]
-    assert workflow["permissions"] == {"contents": "read"} and job["permissions"] == {"contents": "read", "id-token": "write", "issues": "write"}  # issues: the living report
+    # issues: the living report; actions: read, the month's runs and jobs for the billable-minutes line (1.9.0)
+    assert workflow["permissions"] == {"contents": "read"} and job["permissions"] == {"contents": "read", "id-token": "write", "issues": "write", "actions": "read"}
     assert workflow["concurrency"]["group"] != "gcp-staging" and "schedule" in workflow[True]
     checkouts = [step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@")]
     assert checkouts and all(step["with"]["repository"] == "PLATFORM_REPOSITORY" and step["with"]["ref"] == "PLATFORM_COMMIT" for step in checkouts)

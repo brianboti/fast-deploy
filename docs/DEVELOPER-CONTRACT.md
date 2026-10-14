@@ -116,6 +116,12 @@ Recommended:
 - Size the server to `platform.yaml`: uvicorn for an ASGI app, or gunicorn with roughly one worker per CPU and a few
   threads (`--workers 1 --threads 8 --timeout 0`); too many workers lengthen cold starts and use memory.
 - Keep the image small and the dependency list short; import heavy modules lazily.
+- Order the Dockerfile so what changes least comes first: the base image, then system packages, then
+  `COPY requirements.lock` and the install, and only then `COPY` the code. A code change then rebuilds one layer instead of
+  reinstalling every dependency.
+- Keep it clean for hadolint, which the build job runs on every release (version 2.15.1, the same rules as
+  `hadolint Dockerfile` on your machine or `docker run --rm -i hadolint/hadolint:v2.15.1 < Dockerfile`). Findings are
+  annotations on the run today; from platform 1.10.0 error-level findings stop the release.
 
 ## 3. Behaviour: the twelve factors on Cloud Run
 
@@ -140,6 +146,10 @@ Recommended:
   moves; migrations are idempotent, compatible with the previous revision (expand first, contract later, so a
   rollback stays safe) and finish within nine minutes.
 - **Disposability.** Fast startup, graceful shutdown, scale to zero.
+- **5xx means the server failed.** After a release takes over, the platform watches its real requests for five minutes
+  (the bake) and brings the previous version back if it crashes, if more than 5% of at least twenty requests answer 5xx,
+  or if it is more than three times slower than the version before. Answer a client's mistake with a 4xx, never a 5xx,
+  or a release can be taken back for a bad request. Requests to the health path are not counted.
 
 ## 4. The repository and its process
 
@@ -193,6 +203,7 @@ shows the floor and the worst case before anything is deployed; start small and 
 - [ ] `GET /health` answers 200 within seconds of start
 - [ ] `platform.yaml` reviewed: size, scaling, timeout, env, secret names, needs; `reviewed: true`
 - [ ] Logs are JSON lines with `severity` and `message`; nothing sensitive is logged
+- [ ] `hadolint Dockerfile` reports no errors; client mistakes answer 4xx, never 5xx
 - [ ] No work after the response; nothing persisted on the container's disk
 - [ ] `requirements.lock` with hashes, base image pinned by digest, Dependabot enabled
 - [ ] `README.md`, `LICENSE`, `SECURITY.md`; `main` protected with the CI check required

@@ -164,6 +164,9 @@ def test_finish_records_an_outcome_once_under_concurrent_writers(tmp_path):
 
 # ---- findings 2, 15: the policy fails closed; rendered values are literals
 
+WITHOUT_IP_CONFIGURATION = {"user_labels": {"lab-deploy-app": "demo"}, "deletion_protection_enabled": True, "backup_configuration": [{"enabled": True}]}
+
+
 def test_policy_refuses_public_members_powerful_roles_platform_identities_and_unknown_values():
     plan = {"resource_changes": [
         change("a", "google_storage_bucket_iam_member", ["create"], {"bucket": "x", "role": "roles/storage.objectViewer", "member": "allUsers"}),
@@ -174,7 +177,7 @@ def test_policy_refuses_public_members_powerful_roles_platform_identities_and_un
         change("e", "google_storage_bucket_iam_member", ["create"], {"bucket": "test-project-tfstate", "role": "roles/storage.objectViewer", "member": "serviceAccount:a@p"}),
         change("f", "google_iam_workload_identity_pool_provider", ["create"], {"attribute_condition": "assertion.repository_owner_id == '45'"}),
         change("g", "google_firestore_database", ["create"], {"location_id": "europe-west1", "delete_protection_state": "DELETE_PROTECTION_ENABLED"}),
-        change("h", "google_sql_database_instance", ["update"], {"deletion_protection": True, "settings": [{"user_labels": {"lab-deploy-app": "demo"}}]}),
+        change("h", "google_sql_database_instance", ["update"], {"deletion_protection": True, "settings": [WITHOUT_IP_CONFIGURATION]}),
         change("i", "google_storage_bucket", ["update"],
                {"location": "US-CENTRAL1", "labels": {"lab-deploy-app": "demo"}, "uniform_bucket_level_access": True, "public_access_prevention": "inherited"}),
         change("j", "google_storage_bucket", ["create"], {"location": "US-CENTRAL1", "labels": {"lab-deploy-app": "demo"}, "uniform_bucket_level_access": True},
@@ -188,7 +191,7 @@ def test_policy_refuses_public_members_powerful_roles_platform_identities_and_un
     assert rules["e"] == ["state_bucket_untouched"]
     assert rules["f"] == ["federation_unconditioned"]
     assert rules["g"] == ["region_policy"]
-    assert rules["h"] == ["private_database"]  # an update that drops ip_configuration is refused too
+    assert rules["h"] == ["encrypted_connections", "private_database"]  # an update that drops ip_configuration is refused on both counts
     assert rules["i"] == ["private_bucket"]
     assert rules["j"] == ["private_bucket"]
     good = {"resource_changes": [

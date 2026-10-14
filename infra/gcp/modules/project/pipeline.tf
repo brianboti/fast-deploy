@@ -1,7 +1,8 @@
 # The infrastructure pipeline's identities. GitHub Actions in the platform repository exchanges its OIDC token for one
 # of two service accounts through two providers that pin, in the token's claims, what may run as each: the plan
-# identity only from the plan workflow on a pull request, the apply identity only from the apply workflow on the main
-# branch in the protected environment. Google's guide for deployment pipelines shows this ref and workflow pinning.
+# identity only from the plan workflow on a pull request or from the weekly drift workflow on main (scheduled or run by
+# hand), the apply identity only from the apply workflow on the main branch in the protected environment. Google's guide
+# for deployment pipelines shows this ref and workflow pinning.
 locals {
   pipeline_enabled = var.pipeline != null
   pipeline_repo    = local.pipeline_enabled ? var.pipeline.platform_repository : ""
@@ -17,7 +18,7 @@ resource "google_iam_workload_identity_pool_provider" "plan" {
   count                              = local.pipeline_enabled ? 1 : 0
   workload_identity_pool_id          = google_iam_workload_identity_pool.platform[0].workload_identity_pool_id
   workload_identity_pool_provider_id = "github-plan"
-  display_name                       = "Plan on pull requests"
+  display_name                       = "Plan: pull requests and drift" # at most 32 characters
   attribute_mapping = {
     "google.subject"                = "assertion.sub"
     "attribute.repository_id"       = "assertion.repository_id"
@@ -25,7 +26,8 @@ resource "google_iam_workload_identity_pool_provider" "plan" {
     "attribute.event_name"          = "assertion.event_name"
   }
   # A pull request's plan runs the plan workflow from the pull request's own ref, which is why only the file path is pinned.
-  attribute_condition = "${local.pipeline_ids} && assertion.event_name == 'pull_request' && assertion.workflow_ref.startsWith('${local.pipeline_repo}/.github/workflows/infra-plan.yml@')"
+  # The drift check runs from main only, so its workflow is pinned with the ref.
+  attribute_condition = "${local.pipeline_ids} && ((assertion.event_name == 'pull_request' && assertion.workflow_ref.startsWith('${local.pipeline_repo}/.github/workflows/infra-plan.yml@')) || (assertion.event_name in ['schedule', 'workflow_dispatch'] && assertion.ref == 'refs/heads/main' && assertion.workflow_ref == '${local.pipeline_repo}/.github/workflows/infra-drift.yml@refs/heads/main'))"
   oidc { issuer_uri = "https://token.actions.githubusercontent.com" }
 }
 resource "google_iam_workload_identity_pool_provider" "apply" {
@@ -62,6 +64,15 @@ resource "google_service_account_iam_member" "infra_plan_federation" {
   # Each provider maps an attribute the other does not (event_name here, environment below), so a token from one
   # provider can never become the other identity.
   depends_on = [google_iam_workload_identity_pool_provider.plan]
+}
+# The weekly drift check (and its manual run) plans as the same read-only identity; the provider above admits those events
+# only for the drift workflow on main.
+resource "google_service_account_iam_member" "infra_plan_drift_federation" {
+  for_each           = local.pipeline_enabled ? toset(["schedule", "workflow_dispatch"]) : toset([])
+  service_account_id = google_service_account.infra_plan[0].name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.platform[0].name}/attribute.event_name/${each.value}"
+  depends_on         = [google_iam_workload_identity_pool_provider.plan]
 }
 resource "google_service_account_iam_member" "infra_apply_federation" {
   count              = local.pipeline_enabled ? 1 : 0
