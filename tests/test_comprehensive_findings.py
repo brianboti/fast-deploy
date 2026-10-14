@@ -507,3 +507,41 @@ def test_a_failed_migration_waits_for_its_late_traceback_and_names_its_last_line
         adapter.migrate("img@sha256:" + "b" * 64, AppSpec(name="demo", needs={"database": "postgres", "migrate": ["alembic", "upgrade", "head"]}))
     assert len(reads) == 3 and str(failure.value).endswith('relation "experiment_typo" does not exist')
     assert failure.value.logs[-1]["message"].endswith('does not exist') and len(failure.value.logs[-1]["message"]) == 500
+
+
+def test_a_cancel_is_reported_as_a_cancel_not_as_a_failed_migration(tmp_path, monkeypatch):
+    # Live on 1.8.2: the cancel worked (traffic restored, the deploy job cancelled) but the status read
+    # "The database migration failed ... (KeyboardInterrupt: )".
+    import json
+
+    from labdeploy.release import rollout
+    from labdeploy.status import RELEASE_STEP, advice
+
+    monkeypatch.chdir(tmp_path)
+
+    class Cloud:
+        service = "demo"
+
+        def describe(self):
+            return {"status": {"url": "https://demo.run.app", "traffic": [{"revisionName": "demo-rold", "percent": 100}]}}
+
+        def traffic(self, allocations):
+            pass
+
+        def require_needs(self, spec):
+            pass
+
+        def migrate(self, image, spec):
+            raise KeyboardInterrupt  # what SIGINT does while the release waits on the migration job
+
+        def run(self, args):
+            return ""
+
+    spec = AppSpec(name="demo", reviewed=True, needs={"database": "postgres", "migrate": ["alembic", "upgrade", "head"]})
+    with pytest.raises(KeyboardInterrupt):
+        rollout(Cloud(), "us-central1-docker.pkg.dev/test-project/demo/demo@sha256:" + "a" * 64, spec, "1" * 32, "receipt.json")
+    receipt = json.loads(Path("receipt.json").read_text())
+    assert receipt["cancelled"] is True and receipt["state"] == "traffic_restored" and receipt["failed_phase"] == "migrating"
+    text = advice({"state": "cancelled", "failed_step": {"step": RELEASE_STEP}, "receipt": receipt})
+    assert text.startswith("The release was cancelled while migrating; nothing new serves") and "may still finish" in text
+    assert "migration failed" not in text and "KeyboardInterrupt" not in text

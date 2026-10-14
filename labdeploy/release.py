@@ -515,7 +515,11 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
         # Graceful termination gets an immediate recovery attempt. A killed runner is
         # handled by the durable journal and separate recovery workflow instead.
         held = hold_signals()  # a cancel sends SIGINT, then SIGTERM: neither may cut the restore short
-        receipt["error"] = str(error)[:400] if isinstance(error, MigrationFailed) else describe_error(error)
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):  # the run was cancelled (SIGINT) or stopped (SIGTERM)
+            receipt["cancelled"] = True
+            receipt["error"] = "the run was cancelled"
+        else:
+            receipt["error"] = str(error)[:400] if isinstance(error, MigrationFailed) else describe_error(error)
         failed_phase = receipt["failed_phase"] = receipt["state"]
         if failed_phase == "migrating":
             receipt["migration_logs"] = getattr(error, "logs", [])
