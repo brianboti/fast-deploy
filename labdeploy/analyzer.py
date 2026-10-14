@@ -1,10 +1,14 @@
 """Conservative static inspection; never imports or executes repository code."""
 import re
 from pathlib import Path
+from typing import get_args
 
 from .models import AppSpec
 
 FILES = ("requirements.txt", "pyproject.toml", "Dockerfile", "package.json", "platform.yaml")
+PYTHONS = get_args(AppSpec.model_fields["python"].annotation)
+# Package managers whose files the platform does not read; each exports the pip files it does (DEVELOPER-CONTRACT 1a).
+OTHER_MANAGERS = (("environment.yml", "conda"), ("environment.yaml", "conda"), ("poetry.lock", "Poetry"), ("uv.lock", "uv"))
 TEST_PATH = re.compile(r"(^|/)tests?(/|$)|(^|/)test_[^/]+\.py$|_test\.py$")
 # Decision D16: needs are suggested in the review questions from the dependencies, never added to the draft silently.
 NEEDS_HINTS = (
@@ -45,16 +49,20 @@ def analyze(files: dict[str, str], name: str, paths: list[str] | None = None) ->
             evidence.append("requirements.txt pins without hashes: builds are not reproducible. Add a requirements.lock from "
                             "'pip-compile --generate-hashes' and install it with --require-hashes in the Dockerfile.")
     base = re.search(r"^\s*FROM\s+(?:docker\.io/)?(?:library/)?python:(3\.\d+)", dockerfile, re.M | re.I)
-    if base and base.group(1) != "3.12":
-        evidence.append(f"The Dockerfile builds on Python {base.group(1)}; set python: \"{base.group(1)}\" in platform.yaml so the "
-                        "tests run on the same version (supported: 3.11, 3.12, 3.13)")
+    version = base.group(1) if base else None
+    if version in PYTHONS and version != "3.12":
+        evidence.append(f"The Dockerfile builds on Python {version}; the draft sets python: \"{version}\" so the tests and the "
+                        "dependency audit run on the same version")
+    unsupported = version is not None and version not in PYTHONS
+    managers = sorted({manager for filename, manager in OTHER_MANAGERS if filename in (paths or ())})
     tests = [path for path in paths or () if TEST_PATH.search(path) and path.endswith(".py")]
     if tests:
         evidence.append(f"{len(tests)} test file{'' if len(tests) == 1 else 's'} found; they run before every build")
     sync_framework = any(re.search(rf"\b{framework}\b", deps, re.I) for framework in ("flask", "django"))
     if sync_framework:
         evidence.append("Synchronous framework hint: draft concurrency lowered to 8 per instance")
-    draft = AppSpec(name=name, port=port, dependencies=dependencies, concurrency=8 if sync_framework else 80)
+    draft = AppSpec(name=name, port=port, dependencies=dependencies, concurrency=8 if sync_framework else 80,
+                    python=version if version in PYTHONS else "3.12")
     review = [
         "Confirm stateless HTTP service; source files cannot prove this.",
         "Confirm port and health endpoint; EXPOSE is only a hint.",
@@ -68,6 +76,12 @@ def analyze(files: dict[str, str], name: str, paths: list[str] | None = None) ->
                       + "; ".join(suggested) + ".")
     if not tests:
         review.append("Add pytest tests, or declare tests: none knowingly; every plan for an app without tests carries a warning.")
+    if unsupported:
+        review.append(f"The Dockerfile builds on Python {version}, which the platform does not test or audit on (supported: "
+                      f"{', '.join(PYTHONS)}); move the image to a supported version.")
+    if managers and not requirements.strip():
+        review.append(f"{' and '.join(managers)} files found but no requirements.txt: the platform installs with pip. Export "
+                      "requirements.txt, requirements.lock and requirements-dev.txt as docs/DEVELOPER-CONTRACT.md section 1a shows.")
     review.append("List configuration as env (plain values) and secrets (names of Secret Manager secrets called <service>-NAME); "
                   "nothing else reaches the container.")
     return {"supported_candidate": python, "evidence": evidence, "draft_spec": draft.model_dump(),
