@@ -52,6 +52,7 @@ principals:
     token_sha256: "REPLACE_WITH_GENERATED_SHA256"
     applications: [demo]
     can_deploy: true
+    # may_merge_own_requests: false   # once there are two operators: what this identity asks for waits for the other (docs/SETUP.md 7l)
 
 # Google's native budget spend caps for Cloud Run that exist in Cloud Billing (docs/SETUP.md 7i), project id: USD a month.
 # A record for plans and the status; create the cap itself with scripts/spend-cap.sh.
@@ -75,3 +76,4 @@ principals:
 #     viewers: ["user:someone@example.edu"]   # lab-members apps: who may open the pages, on top of default_viewers
 #     provenance: unavailable    # exception only: skip signed provenance (fresh builds; a reused image is refused)
 #     bake_seconds: 600          # watch the promoted revision longer (0 to 900; 0 turns the bake off)
+#     auto_merge: false          # keep this app's onboarding pull requests for a person (default: onboarding.auto_merge)

@@ -1,3 +1,54 @@
+# 1.12.0: legible approvals and the operator's succession (roadmap Phase 12)
+
+Planned in `docs/ROADMAP.md` Phase 12 from the research review (`docs/RESEARCH-2026-10-14.md`, section 4.4, the trust
+gaps). Nothing here costs anything at idle.
+
+## Added
+
+1. **Approval blocks rendered by code** (12.1). The infrastructure plan comment opens with a fixed block that
+   `labdeploy/infra.py` renders from the Terraform plan, never from Claude's words: resources to add, change, destroy and
+   replace, also by type; a reversibility tier per type and for the whole plan (`reversible`; `identity` for grants,
+   service accounts and federation; `data-bearing` for the types the policy never lets the pipeline destroy; the highest
+   wins); the root's idle floor per month before and after, at list prices (a size it cannot price is named); every
+   exposure change; and the pull request, head commit and plan run. `create_deployment_plan` returns an `approval` block
+   built the same way from the plan: the commit and its first line, the spec hash, the target and the service's folder,
+   the cost bounds, exposure, needs, the number of warnings, a reversibility tier (`data-bearing` when the release runs a
+   migration, because a rollback restores traffic only), and the chain of identifiers (plan, commit, who asked, the
+   onboarding, and the workflow run once dispatched).
+2. **Requester and approver** (12.2, D29). A principal's `may_merge_own_requests` (default true) and an application's
+   `auto_merge` (under `applications.<id>` or `application_settings.<id>`; by default it follows `onboarding.auto_merge`).
+   Onboarding merges its own pull requests only when both allow it; otherwise it waits for another operator and says so,
+   names who asked (`requested_by`), and records who merged (`merged_by`) when someone does. An identity no longer in
+   the configuration approves nothing. `.github/CODEOWNERS` names `/infra/gcp/apps/**`, and `docs/SETUP.md` 7l says how
+   to require Code Owner review once a second operator exists.
+3. **Tool descriptions pinned** (12.3). `schema/tools.sha256.json` holds a SHA-256 of every tool's name, title,
+   description, schemas and annotations; a test compares it with what Claude is served, so changing what Claude reads
+   about a tool is a deliberate, reviewed commit (`python -m labdeploy.cli tools-checksum --write`). A second test refuses
+   any tool that is not wrapped by the audited decorator.
+4. **The exit procedure** (12.4). `scripts/export-app.sh APP [DEST_DIR] [--dry-run]` copies what one application needs to
+   run elsewhere: the image of every serving revision by digest, the service in Cloud Run's Knative-compatible format,
+   the root's Terraform state (read-only), every declared bucket, a Postgres dump or a Firestore export, and a manifest
+   with sizes and SHA-256s. The runbook's "Leaving Google Cloud" says how each part runs or restores elsewhere. CI
+   validates the foundation and every application root with OpenTofu 1.12.6 too (downloaded by version and SHA-256).
+5. **The quarterly restore drill** (12.5). `python -m labdeploy.cli restore-drill` restores the newest controller backup
+   from the backup bucket into a temporary folder, read-only, checks its integrity, counts what it holds, and records a
+   `restore_drill` event; the daily watchdog says when no drill has passed for 92 days. The runbook gains "Succession"
+   and "Quarterly restore drill".
+
+## Changed
+
+1. An unexpected failure in a tool or REST call returns a plain message with what to check before asking again (REST
+   answers 500 with the same text), and the commonest refusals name their next action.
+2. `get_onboarding_status` puts what the current step waits for into its next action.
+3. The policy treats a Cloud SQL database (`google_sql_database`) as data: the pipeline never deletes one.
+4. CI installs zsh so the export script's tests run there.
+
+## Upgrade steps
+
+1. Restart the controller. No workflow regeneration and no Terraform apply are needed for this release.
+2. Run the first restore drill (`python -m labdeploy.cli restore-drill`); until then the daily watchdog reports it due.
+3. Once a second operator exists: `docs/SETUP.md` 7l and the runbook's "Succession".
+
 # 1.11.0: the platform writes the boilerplate (roadmap Phase 11)
 
 ## Added

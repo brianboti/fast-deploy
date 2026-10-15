@@ -232,7 +232,7 @@ An app has one `database`. Changing its type means retiring the old database fir
 
 - **Live views**: add `observer: {service_account: lab-deploy-observer@PROJECT.iam.gserviceaccount.com}` to the configuration and list yourself in Terraform's `observer_impersonators` (for example `["user:you@example.edu"]`). The controller then asks gcloud for short-lived tokens of that viewer-only identity for `get_service_health` and `get_recent_logs`; on a Google Cloud machine it uses the attached identity instead. Nothing here can change anything in the cloud.
 - **Auto-deploy**: `auto_deploy: true` on an application. Every few minutes the controller compares the tip of main with the live release and releases it once, as the identity `auto-deploy`, unless the commit was already attempted, the app or the controller is paused, or a policy refuses it. Notifications come from the workflow as usual.
-- **Watchdog**: set `notify_webhook_url` (Slack or Discord) to receive the daily findings: an expiring GitHub credential, a paused or stale schedule, an unsupported platform pin, a newest release attempt that failed, or a configuration file that could not be loaded. `python -m labdeploy.cli watchdog` runs it now.
+- **Watchdog**: set `notify_webhook_url` (Slack or Discord) to receive the daily findings: an expiring GitHub credential, a paused or stale schedule, an unsupported platform pin, a newest release attempt that failed, a configuration file that could not be loaded, or, with `backup_bucket` set, a quarterly restore drill that is due (`python -m labdeploy.cli restore-drill`, `docs/RUNBOOK.md`). `python -m labdeploy.cli watchdog` runs it now.
 - **Backups**: the database is copied nightly next to itself (`backup_dir` to change), fourteen copies kept, and, with `backup_bucket` set to the foundation's `backup_bucket` output (`PROJECT-lab-deploy-backups`), the copy and the configuration file go to that private versioned bucket as well, using the operator's own gcloud sign-in. `python -m labdeploy.cli backup` runs it now; `get_controller_status` shows the last run. Restoring is `docs/RUNBOOK.md`, "Restore the controller on another machine", rehearsed on 2026-10-12.
 - **Is the controller up?** Set the repository variable `CONTROLLER_HEALTH_URL` on the platform repository to `https://YOUR_HOST/healthz`; its controller-watch workflow pings it every thirty minutes and fails loudly when it does not answer.
 
@@ -284,7 +284,7 @@ Set it up once:
 3. Create the GitHub environment `infra`, restrict its deployment branches to `main` and turn off "allow administrators to bypass"; protect `main` itself: a pull request with the `test` and `terraform` checks is required, administrators included, no force pushes, no deletion (`.github/CODEOWNERS` names the owner of `infra/`, the policy and the workflows). Add required reviewers on the environment when more than one person can merge.
 4. Optionally add the secret `APP_REPOS_TOKEN`: a fine-grained token with **Variables: read and write** on the application repositories. With it, the apply job writes the eight outputs into each application's `staging` environment; without it, the job prints them for the operator to copy.
 
-How a change flows: `python -m labdeploy.cli infra render APP --pull-request` (or Claude's `propose_infrastructure`) opens the pull request; the plan job runs with the read-only identity and `-lock=false`, checks the plan with `python -m labdeploy.infra check` and posts one comment per application that it updates on every push; merging runs the apply job from the `infra` environment, which plans again with the lock, refuses any plan the policy rejects, applies, and publishes the outputs. Policies, all fail-closed and judged by the rules on `main` rather than the pull request's own copy: no service account keys; only roles from an allow-list of what an application needs (never owner, editor or an IAM-admin role); no `allUsers` or `allAuthenticatedUsers` anywhere; no authoritative IAM policies; no destruction of resources that hold data (buckets, databases, datasets, secrets, registries); nothing outside `us-central1`; databases private and delete-protected, buckets uniform and non-public, on creation and on every update; the `lab-deploy-app` label on every managed resource; no reference to the platform's own identities or the state bucket from an application root; and a value the plan cannot know before applying is refused rather than assumed. The comment on the pull request carries the full plan text. A change to `modules/service` plans and applies every root. `workflow_dispatch` on the apply workflow applies named roots by hand, for example after the foundation first exists.
+How a change flows: `python -m labdeploy.cli infra render APP --pull-request` (or Claude's `propose_infrastructure`) opens the pull request; the plan job runs with the read-only identity and `-lock=false`, checks the plan with `python -m labdeploy.infra check` and posts one comment per application that it updates on every push; merging runs the apply job from the `infra` environment, which plans again with the lock, refuses any plan the policy rejects, applies, and publishes the outputs. Policies, all fail-closed and judged by the rules on `main` rather than the pull request's own copy: no service account keys; only roles from an allow-list of what an application needs (never owner, editor or an IAM-admin role); no `allUsers` or `allAuthenticatedUsers` anywhere; no authoritative IAM policies; no destruction of resources that hold data (buckets, databases, datasets, secrets, registries); nothing outside `us-central1`; databases private and delete-protected, buckets uniform and non-public, on creation and on every update; the `lab-deploy-app` label on every managed resource; no reference to the platform's own identities or the state bucket from an application root; and a value the plan cannot know before applying is refused rather than assumed. The comment on the pull request opens with an approval block the code renders from the plan, never from Claude's words: resources to add, change, destroy and replace, by type; a reversibility tier (`reversible`, `identity` for grants and identities, `data-bearing` for anything that holds data, the highest one for the whole plan); the root's idle floor per month before and after at list prices (a Cloud SQL instance, a provenance key); every change to who can reach the application (ingress, the invoker check, Identity-Aware Proxy, invoker and accessor grants); and the pull request, head commit and plan run it was rendered for. Every resource line and the full plan text follow it, then the policy verdict. A change to `modules/service` plans and applies every root. `workflow_dispatch` on the apply workflow applies named roots by hand, for example after the foundation first exists.
 
 Retiring an application is the one case the pipeline does not handle: the operator runs `terraform destroy` in the root (section 7d) and removes the directory in a pull request.
 
@@ -309,7 +309,37 @@ onboarding:
 
 What the tool does, in order: contract check (blocks with a checklist), registration, infrastructure pull request (merged once the plan workflow's policy verdict is `passed` and only when every file sits under `infra/gcp/apps/<service>/`), the apply, the `staging` environment with its variables, the workflows pull request (merged when GitHub reports it mergeable), the first release. Long waits end the call and the scheduler continues every minute; `get_onboarding_status` reports the step, and a blocked onboarding resumes from its step when the same tool is called again.
 
-The operator's switches for an onboarded application (a cost ceiling, auto-deploy, a pause, viewers, infrastructure settings) go under `application_settings: <app id>:` in `config.local.yaml`; they are laid over the registered entry on the next request, with no restart and nothing copied (`config.example.yaml` shows the shape).
+The operator's switches for an onboarded application (a cost ceiling, auto-deploy, a pause, viewers, infrastructure settings, `auto_merge`) go under `application_settings: <app id>:` in `config.local.yaml`; they are laid over the registered entry on the next request, with no restart and nothing copied (`config.example.yaml` shows the shape). `auto_merge: false` there keeps that one application's pull requests for a person even when `onboarding.auto_merge` is on, and `auto_merge: true` does the opposite.
+
+## 7l. A second operator: who asks and who approves
+
+With one operator, onboarding merges the pull requests it opened once the policy passes (decision D12), so the person who
+asks in chat is also the one who approves. Once a second operator exists, separate the two (decision D29):
+
+1. Give the new person their own identity (`docs/RUNBOOK.md`, "Succession"); never share a token.
+2. On GitHub, give them write access to the platform repository, and in a pull request add their account next to the
+   owner in `.github/CODEOWNERS` (at least on `/infra/gcp/apps/**`, which the controller writes on people's behalf).
+3. In the branch protection of `main` (Settings, Branches): **Require a pull request before merging**, **Require
+   approvals** (one), **Require review from Code Owners**, and keep administrators included. On the `infra` environment,
+   add both people as required reviewers. Turn these on only when there are two people: GitHub never lets the author of a
+   pull request approve it, and the controller's pull requests are authored by its GitHub credential's account.
+4. In the controller configuration, set `may_merge_own_requests: false` on each person's principal:
+
+   ```yaml
+   principals:
+     - name: brian
+       token_sha256: ...
+       applications: ["*"]
+       can_deploy: true
+       may_merge_own_requests: false
+   ```
+
+From then on onboarding still opens the pull requests and checks the plan's policy verdict, then waits at its merging step:
+`get_onboarding_status` says "waiting for another operator to review and merge PR #N"; when someone merges it, the
+onboarding continues within a minute. What GitHub cannot see is who asked in chat (every pull request the controller
+opens carries the credential's account), so the last half of the rule is the operators' agreement: the person who asked
+does not approve. A GitHub App or a bot account as the controller's credential (decision D14) keeps both people able to
+approve. `onboarding.auto_merge: false` keeps every merge for a person, whoever asked.
 
 **Before onboarding** (since 1.11.0): `check_repository` reads a repository against the contract without creating anything, and `propose_configuration` with a repository link (and `path`) opens one draft pull request with the files it lacks, for a person to review and merge. Both need the onboarding identity (`applications: ["*"]`). The checker compiles `requirements.lock` with uv in a container of the app's own Python on the controller's machine, so Docker must be running there; without it the pull request names the command to run instead.
 
@@ -404,6 +434,10 @@ Terraform's member resources check only their own members.
   release when they are error-level (since 1.10.0; warnings never do). Set the application repository's variable
   `HADOLINT_BLOCKING` to `false` to keep them as annotations only for that repository.
 - **Image scanning**: Terraform enables Artifact Analysis (`image_vulnerability_scanning`, about USD 0.26 per new image digest), often more than a small staging app's compute for the month; it is a per-project cost choice, and the estimate names it. The deployment job writes `vulnerability-summary.json` into the release receipt and the job summary. To block releases with critical findings, set the repository variable `BLOCK_ON_CRITICAL_VULNERABILITIES` to `true`; an unfinished scan then also blocks.
+- **Tool descriptions are pinned**: what Claude reads about each MCP tool steers what it does, so `schema/tools.sha256.json`
+  holds a SHA-256 of every tool's name, title, description, schemas and safety hints, and a test fails when one differs.
+  After a deliberate change, run `python -m labdeploy.cli tools-checksum --write` and commit the reviewed diff with the
+  change; an upgrade of the MCP SDK or pydantic that changes a schema shows up the same way.
 - **Platform dependencies** are hash-locked. Refresh them deliberately, review the diff, and let CI's pip-audit and tests judge the result:
 
 ```bash

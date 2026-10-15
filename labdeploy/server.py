@@ -39,6 +39,17 @@ class UpstreamError(ValueError):
     """GitHub could not serve the request; explained in plain words and reported as a gateway failure on REST."""
 
 
+class UnexpectedError(RuntimeError):
+    """A failure nobody foresaw, still reported as a sentence with a next action rather than a bare exception text."""
+
+
+def unexpected(exc):
+    """What Claude and the operator read when something unforeseen fails (docs/ROADMAP.md 12.3)."""
+    return (f"The controller stopped on an unexpected {type(exc).__name__}: {str(exc)[:300] or 'no detail'}. It retried nothing. Check the "
+            "state of what was asked (get_deployment_status, get_onboarding_status or list_applications) before asking again, and tell the "
+            "operator if it repeats: list_events and the controller log have the details.")
+
+
 def plain_validation(error):
     """A validation failure as one sentence a person can act on: which field, and what it must be."""
     problems = [f"{'.'.join(str(part) for part in item.get('loc', ())) or 'the file'}: {item.get('msg')}" for item in error.errors()]
@@ -66,9 +77,13 @@ def invoke(store, kind, name, fn, subject=None, record=True):
         message = plain_validation(exc)
         note("error", message)
         raise ValueError(message) from None
-    except Exception as exc:
+    except ValueError as exc:  # the controller's own refusals: already a sentence that says what to do
         note("error", str(exc))
         raise
+    except Exception as exc:
+        message = unexpected(exc)
+        note("error", message)
+        raise UnexpectedError(message) from exc
     note("ok")
     return result
 
@@ -90,6 +105,7 @@ def audited(store, record=True):
                 client_address.set(client)
                 return invoke(store, "tool", fn.__name__, lambda: fn(*args, **kwargs), subject, record)
             return await run_in_threadpool(call)
+        wrapper.lab_deploy_audited = True  # tests/test_phase12.py refuses any registered tool without it
         return wrapper
     return decorate
 
@@ -416,6 +432,7 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
                 scheduler["thread"].stop()
 
     app = FastAPI(title="Lab Deploy", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app.state.mcp = mcp  # the tool list, for the description checksums (labdeploy/toolpin.py) and the wrapper test
     limits = Limits(config)
     oauth = Provider(config, store) if config.oauth else None
     app.add_middleware(Authenticate, config=config, limits=limits, oauth=oauth, store=store)
@@ -431,6 +448,10 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
     @app.exception_handler(ValueError)
     async def bad_request(request, exc):
         return JSONResponse({"error": str(exc)}, status_code=400)
+
+    @app.exception_handler(UnexpectedError)
+    async def unexpected_failure(request, exc):
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
     @app.exception_handler(httpx.HTTPStatusError)
     async def github_refused(request, exc):

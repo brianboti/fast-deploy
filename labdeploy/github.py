@@ -266,7 +266,8 @@ class GitHub:
     def pull_request(self, repository, number):
         data = self.request("GET", f"/repos/{repository}/pulls/{number}").json()
         return {"number": number, "state": data["state"], "merged": bool(data.get("merged")), "mergeable_state": data.get("mergeable_state"),
-                "head_sha": data["head"]["sha"], "merge_commit_sha": data.get("merge_commit_sha"), "url": data["html_url"]}
+                "head_sha": data["head"]["sha"], "merge_commit_sha": data.get("merge_commit_sha"), "url": data["html_url"],
+                "merged_by": (data.get("merged_by") or {}).get("login")}
 
     def pull_request_files(self, repository, number):
         return [item["filename"] for item in self.request("GET", f"/repos/{repository}/pulls/{number}/files", params={"per_page": 100}).json()]

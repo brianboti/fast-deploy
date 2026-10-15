@@ -300,7 +300,7 @@ Cost effect: none; the builder image pull adds Actions minutes on private reposi
 
 ## Phase 12: legible approvals and the operator's succession (about three days) → version 1.12.0
 
-Status: planned on 2026-10-14 (research items 4, 9 and 10, and the trust gaps in the review's section 4.4).
+Status: built on 2026-10-15 as 1.12.0, stacked on 1.11.0; the export dry runs and the OpenTofu checks ran, the live parts wait for the merges. Planned on 2026-10-14 (research items 4, 9 and 10, and the trust gaps in the review's section 4.4).
 
 | Item | Change | Where |
 |---|---|---|

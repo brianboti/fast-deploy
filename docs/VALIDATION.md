@@ -435,3 +435,34 @@ security control.
 
 Platform tests on 1.9.1: 364 passed; ruff and zizmor clean.
 
+
+## 1.10.0 to 1.12.0 before the merges: what was checked (2026-10-15)
+
+Built and checked in one night; nothing was applied, deployed or created in the cloud. The live exercises (a two-service
+repository onboarded with one sentence each, Sophia's copy from `backend/`, Postgres by password, the checker's draft on a
+bare repository, a buildpack release, an approval block on a real infrastructure pull request) follow the merges of
+brianboti/lab-deploy#44 and #45 and the foundation apply 1.10.0 needs.
+
+| Check | Observed |
+|---|---|
+| A root with `database_auth: password` planned against the real foundation state (local backend, `-refresh=false`, nothing applied) | 46 to add; the platform's policy: 0 violations; the plan's JSON holds no `postgresql://` URL, and the user's `password` and the secret version's `secret_data` are null (only the write-only versions, 1, appear) |
+| The same root with `-lockfile=readonly` | `terraform init` and `validate` pass with the foundation's lock (the `random` provider 3.9.1 now pinned there); OpenTofu 1.12.6 validates it too |
+| The live demo and Sophia roots with the 1.10.0 module (read-only plans) | No changes: a first service of a repository renders exactly as before |
+| The two-service test repository, locally (scratch copy, not yet on GitHub) | Both services' tests pass (the admin service's with the repository root on the import path, as the workflow sets it); hadolint finds nothing; both images build for `linux/amd64`; the admin image, built from the repository root with its `Dockerfile.dockerignore`, holds only `app.py`, `migrate.py`, `lib/` and the lock, and answers `/health` and `/` with the shared code |
+| Google's buildpacks on the demo app, locally under emulation (`pack` 0.40.9 by SHA-256, builder and run image by digest) | The Ubuntu 24.04 builder refuses Python 3.12 (it offers 3.13.0 to 3.15.0 only); the Ubuntu 22.04 builder built it on 3.12.15 in 58 seconds, pip installing the lock with its hashes; the image runs as uid 1000 and answers `/health`. Size as Docker reports it: 394 MB, against 52 MB for the demo's own Dockerfile image. Decision D28: the Dockerfile stays the default |
+| The scaffold, end to end in scratch copies | The lock compiled in a container of Python 3.12 in about 4 seconds (14 packages, 163 hashes); drafted Dockerfiles for FastAPI, Flask, Django, Bottle and Litestar apps build and serve `/health` as uid 65532; the drafted CI steps pass in a clean container; hadolint and zizmor find nothing in the drafts |
+| `scripts/export-app.sh --dry-run` for the demo (from the configuration file) and Sophia (from the controller's database, read-only) | Every command printed, none run. A real export of the demo was not run: the auto-mode classifier declined it, and it is left for the operator |
+| OpenTofu 1.12.6 on the four committed roots (the foundation, lab-demo, lab-notebook, sophia) | All validate, with the official image and with the pinned amd64 binary the CI step downloads |
+
+Read-only checks against the real system on the same night, with the branch code:
+
+| Check | Observed |
+|---|---|
+| The checker on the new private test repository brianboti/lab-monorepo (two services: `services/api`, and `services/admin` built from the repository root with Postgres by password) | Given `brianboti/Lab-Monorepo`, it resolved GitHub's own spelling `brianboti/lab-monorepo`; both services ready; recommended items missing: `SECURITY.md`, CI, Dependabot, all of which the platform drafts; a folder that does not exist is refused in plain words. It also showed the scaffold would draft a `.dockerignore` beside `services/admin/Dockerfile.dockerignore` and a second health test: fixed before the merge, after which it drafts only the three missing files |
+| The checker on Sophia's copy, folder `backend` | Not ready: only `backend/platform.yaml` is missing, which the platform drafts; it found FastAPI (`app.main:app`), Python 3.13 from the Dockerfile, port 8000 and `/health`, and would also draft `requirements-dev.txt`, a health test, `SECURITY.md` and Dependabot; the lock is left to the compile step or its command |
+| The approval block on a real plan | The pipeline's comments on brianboti/lab-deploy#46 open with it: for the demo root, 0 to add, change or destroy, `reversible`, idle floor USD 0.06 before and after (the provenance key), no exposure change, the pull request, head commit and plan run |
+| The restore drill | `python -m labdeploy.cli restore-drill` passed: the newest backup (1.1 hours old, 0.9 MB) opened read-only with integrity ok, 56 plans, 822 audit events, 213 plan state changes, 2 registered applications and 2 onboarding records; the configuration copy loads; recorded as the event `restore_drill` (ok), next due by 2027-01-15 |
+| The foundation with the 1.10.0 module (read-only plan, `-lock=false`) | 3 to add, 0 to change, 0 to destroy: the custom role `labDeploySecretWriter`, its grant to the apply identity, and `roles/secretmanager.viewer` for the plan identity |
+| The checker's draft on a bare repository (brianboti/lab-bare, private: only `app.py`, `requirements.txt` and one test), through the controller's own `propose_config` with GitHub reached by `gh` | Draft pull request brianboti/lab-bare#1 with nine files: the Dockerfile, an allow-list `.dockerignore`, `requirements.lock` compiled in a Python 3.12 container on this machine, `requirements-dev.txt`, a health test, `platform.yaml` with `reviewed: false`, CI, `SECURITY.md` and Dependabot. On GitHub the drafted CI passed in 14 seconds and GitHub accepted the Dependabot file. Locally the drafted Dockerfile passed hadolint, built, answered `/health` as uid 65532, and its 52 MB image held only `app.py` and the two requirement files. Found: a root service drafted before registration was named `my-service`; it now takes the repository's name |
+
+Platform tests on 1.12.0: 454 passed; ruff and zizmor clean.

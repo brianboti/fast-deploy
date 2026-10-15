@@ -36,6 +36,9 @@ jobs:
           python -m pip install --require-hashes -r audit.lock
           python -m pip_audit --require-hashes -r requirements.lock
           python -m pip_audit --require-hashes -r requirements-dev.lock
+      # scripts/export-app.sh is a zsh script; its tests run it with fake gcloud and docker, and skip where zsh is missing.
+      - name: Install zsh
+        run: command -v zsh || { sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends zsh; }
       - run: python -m pytest -q
       - run: python -m pytest examples/demo-app -q
       - run: python -m labdeploy.cli validate examples/demo-app/platform.yaml
@@ -56,4 +59,21 @@ jobs:
           for root in project apps/*/; do
             echo "== $root"
             (cd "$root" && terraform init -backend=false -input=false && terraform validate)
+          done
+      # OpenTofu stays a drop-in (docs/ROADMAP.md 12.4): the same roots must validate with it. Downloaded by version and
+      # checksum like hadolint; run on a copy of the committed roots, because `tofu init` rewrites a lock file for its own
+      # registry and the committed ones must stay as Terraform wrote them.
+      - name: Validate every infrastructure root with OpenTofu too
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/tofu.tar.gz" https://github.com/opentofu/opentofu/releases/download/v1.12.6/tofu_1.12.6_linux_amd64.tar.gz
+          echo "50a6106fa4de523d09c87af85f3db1dd47535fc005727fdca6852146476b88ec  $RUNNER_TEMP/tofu.tar.gz" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/tofu" "$RUNNER_TEMP/roots" "$RUNNER_TEMP/tofu-plugins"
+          tar -xzf "$RUNNER_TEMP/tofu.tar.gz" -C "$RUNNER_TEMP/tofu" tofu
+          git archive HEAD infra/gcp | tar -x -C "$RUNNER_TEMP/roots"
+          export TF_PLUGIN_CACHE_DIR="$RUNNER_TEMP/tofu-plugins"
+          cd "$RUNNER_TEMP/roots/infra/gcp"
+          for root in project apps/*/; do
+            echo "== $root (OpenTofu)"
+            (cd "$root" && "$RUNNER_TEMP/tofu/tofu" init -backend=false -input=false && "$RUNNER_TEMP/tofu/tofu" validate)
           done

@@ -3,7 +3,8 @@
 Every step looks at what already exists and continues from there, so a second call finishes an interrupted first one.
 Steps that wait on GitHub or the pipeline (a plan, an apply, a build) end the call; the scheduler's tick or the next call
 carries on. The controller merges only pull requests it opened itself, only on the application's own files, only when
-the policy and the checks have passed, and only when the configuration allows it (`onboarding.auto_merge`).
+the policy and the checks have passed, and only when the configuration allows it (`onboarding.auto_merge`, or the
+application's own `auto_merge`) and the identity that asked may merge its own requests; otherwise it waits for a person.
 """
 import re
 import time
@@ -201,6 +202,7 @@ def describe(record):
     state = record["state"]
     view = {k: record.get(k) for k in ("application", "repository", "path", "service", "state", "plan_id", "auto_deploy", "created_at", "updated_at",
                                        "completed_at", "measures")}
+    view["requested_by"] = record.get("principal")
     view["steps"] = record.get("steps", {})
     if state == "complete":
         view["next_action"] = (f"Onboarding is complete; the first release is plan {record.get('plan_id')}. Ask for get_deployment_status with that id.")
@@ -209,7 +211,9 @@ def describe(record):
         view["error"] = record.get("error")
         view["next_action"] = "Fix what the error names, then call onboard_application again with the same repository; it continues from this step."
     else:
-        view["next_action"] = f"In progress: {WHAT_NEXT[state]}. The controller continues on its own every minute; ask for get_onboarding_status to follow it."
+        waiting = (view["steps"].get(state) or {}).get("waiting")
+        doing = f"waiting for {waiting}" if waiting else WHAT_NEXT[state]
+        view["next_action"] = f"In progress: {doing}. The controller continues on its own every minute; ask for get_onboarding_status to follow it."
     return view
 
 
@@ -226,6 +230,23 @@ class Onboarder:
 
     def principal(self, record):
         return Principal(name=f"onboarding:{record['principal']}", token_sha256="0" * 64, applications=["*"], can_deploy=True)
+
+    def merge_gate(self, record, pr):
+        """None when onboarding may merge this pull request itself, else what it waits for (docs/ROADMAP.md D29).
+
+        Auto-merge must be on for the application (its own `auto_merge`, else `onboarding.auto_merge`), and the identity that
+        asked for the onboarding must be allowed to merge its own requests. Otherwise a person merges it, and the next pass
+        sees the merge and continues; an identity no longer in the configuration cannot approve anything.
+        """
+        app = self.c.config.applications.get(record["application"])
+        own = getattr(app, "auto_merge", None)
+        if not (self.settings.auto_merge if own is None else own):
+            return f"a person to merge {pr['url']}"
+        requester = next((p for p in self.c.config.principals if p.name == record["principal"]), None)
+        if requester is None or not requester.may_merge_own_requests:
+            return (f"another operator to review and merge PR #{pr['number']} ({pr['url']}): {record['principal']} asked for this onboarding "
+                    "and may not approve their own request")
+        return None
 
     # ---- entry points
     def start(self, principal, repository, app_id=None, auto_deploy=False, path=None):
@@ -345,7 +366,8 @@ class Onboarder:
         pr = self.c.github.pull_request(platform.repository, number)
         step = record["steps"].setdefault("planning", {})
         if pr["merged"]:
-            step.update(merge_sha=pr["merge_commit_sha"], waiting=None)
+            # Who approved it, as GitHub records it (D29): the audit trail keeps the requester and the approver apart.
+            step.update(merge_sha=pr["merge_commit_sha"], waiting=None, merged_by=pr.get("merged_by"))
             record["state"] = "applying"
             return
         runs = self.c.github.workflow_runs(platform.repository, "infra-plan.yml", head_sha=pr["head_sha"])
@@ -359,8 +381,9 @@ class Onboarder:
             problems = [line for line in verdict.splitlines() if line.startswith("- ")]
             raise Blocked("The infrastructure plan did not pass: " + ("; ".join(problems) if problems else f"run {run['url']} concluded {run['conclusion']}")
                           + f". Pull request {pr['url']}.")
-        if not self.settings.auto_merge:
-            step.update(waiting=f"a person to merge {pr['url']}")
+        waiting = self.merge_gate(record, pr)
+        if waiting:
+            step.update(waiting=waiting)
             return
         files = self.c.github.pull_request_files(platform.repository, number)
         outside = [path for path in files if not path.startswith(f"infra/gcp/apps/{service}/")]
@@ -439,11 +462,12 @@ class Onboarder:
         pr = self.c.github.pull_request(app.repository, number)
         step = record["steps"].setdefault("merging_workflows", {})
         if pr["merged"]:
-            step.update(merge_sha=pr["merge_commit_sha"], waiting=None)
+            step.update(merge_sha=pr["merge_commit_sha"], waiting=None, merged_by=pr.get("merged_by"))
             record["state"] = "releasing"
             return
-        if not self.settings.auto_merge:
-            step.update(waiting=f"a person to merge {pr['url']}")
+        waiting = self.merge_gate(record, pr)
+        if waiting:
+            step.update(waiting=waiting)
             return
         if pr["mergeable_state"] == "dirty":
             raise Blocked(f"The workflows pull request has conflicts; resolve them by hand: {pr['url']}")

@@ -29,6 +29,9 @@ A working first implementation of the lab deployment platform: Claude calls auth
 - A bake after every promotion: for five minutes the release watches the new revision's own Cloud Run logs and restores the previous traffic split on a crash, on more than 5% 5xx answers, or on a p95 latency three times the previous one; too little traffic is reported as inconclusive.
 - Two spending guards: the platform's cap workflow, and Google's native budget spend cap for Cloud Run (generally available since 2026-10-12), which the operator creates with `scripts/spend-cap.sh` and every plan names; a project without one carries a warning.
 - Dockerfile lint with hadolint in every build, as annotations and in the receipt; error-level findings stop the release (a repository switch turns that off).
+- Several services in one repository, each in its own folder with its own workflows, GitHub environment, identities and Terraform root; shared code through `build: {context: repository}`; a Compose file read into one draft per web service, never deployed; Postgres by password (`DATABASE_URL` as a secret, written through write-only arguments so no Terraform state holds it) next to the default IAM sign-in.
+- The platform writes the boilerplate: `check_repository` lists what a repository lacks, and `propose_configuration` drafts it (Dockerfile, lock compiled for the app's Python, test tools, a health test, `platform.yaml` with `reviewed: false`, CI, security policy, Dependabot) as one draft pull request that never changes an existing file. A `Procfile` alone builds with Google's buildpacks.
+- Approvals a person can read: the infrastructure plan comment and every release plan carry a fixed block rendered by code (what changes, the cost before and after, exposure, how far a rollback undoes it, the chain of identifiers); requester and approver can be kept apart; tool descriptions are pinned by checksum; an export script and a quarterly restore drill cover leaving Google Cloud and losing the laptop.
 - Data-protection policy on every infrastructure plan: database backups, encrypted-only connections, deletion protection, no force-destroyed buckets, versioned checkpoints, and no secret material in Terraform state, each with a planted-violation test.
 - A weekly drift check plans every application root against the live infrastructure with the read-only identity, keeps an issue open while anything differs, and feeds the watchdog.
 - Every step visible: status reports every workflow step with timing, the release receipt and the candidate's own log lines on failure, the recovery run that followed, and a plain next action; a finished release is stored as history with its revision, digest and commit. Notifications to Slack or Discord, GitHub Deployments records, revision labels and protected serving images. An audit trail of every call and sign-in (`list_events`). Terraform runtime alerts: authenticated uptime check, errors, latency, saturation, memory, log errors, and a dashboard.
@@ -46,7 +49,7 @@ A working first implementation of the lab deployment platform: Claude calls auth
 
 | Item | First release |
 |---|---|
-| App | Python HTTP service, stateless, Dockerfile at repo root |
+| App | Python HTTP service, stateless, Dockerfile (or a `Procfile`) at the repository root or in the service's folder; several services per repository |
 | Branch/environment | Protected `main`, GCP `staging` |
 | Region | `us-central1` foundation |
 | Access | Authenticated Cloud Run; no public grants |

@@ -9,7 +9,7 @@ platform (`lab-deploy-staging-f29a`, operated from Claude chat by one person); u
 |---|---|---|
 | Owner and only operator | Brian Boti | Claude chat (the connector), the terminal on the laptop that runs the controller |
 | Alerts | the `alert_email` and optional `alert_webhook_url` in `infra/gcp/project/terraform.tfvars`; GitHub's failed-workflow emails; the `NOTIFY_WEBHOOK_URL` secret on each app repository | arrive without anyone watching |
-| Escalation | nobody else today | when a second operator joins, add them to `principals`, `observer_impersonators` and `.github/CODEOWNERS`, and require a reviewer on the `infra` environment |
+| Escalation | nobody else today | when a second operator joins, follow "Succession" below: their own principal, `observer_impersonators`, `.github/CODEOWNERS`, required review (`docs/SETUP.md` 7l) and a rehearsal |
 
 There is no service level objective: this is a staging platform for a lab. The targets below are what the platform is
 built to do, and the watchdog reports when it does not.
@@ -60,6 +60,34 @@ clear text, the GitHub token, the ngrok credentials.
    Keychain and starts the controller and the tunnel. `scripts/install-launch-agent.sh` makes that happen at login.
 7. In Claude, open the connector and sign in with the new operator token. `list_applications` and `get_controller_status`
    confirm the restored state; `list_plans` shows history up to the last backup.
+
+## Quarterly restore drill
+
+A backup nobody has restored is a hope. Once a quarter (the daily watchdog says "quarterly restore drill due" when no
+drill has passed for 92 days, whenever `backup_bucket` is set), run on the controller's machine:
+
+```bash
+python -m labdeploy.cli restore-drill        # LAB_CONFIG or --config for another configuration file
+```
+
+It needs gcloud signed in as someone who may read the backup bucket. It restores nothing into the live database, which
+only gains the drill's audit event. It lists
+`gs://BUCKET/controller/`, downloads the newest `deployments-*.db` into a temporary folder (deleted afterwards), opens it
+read-only, runs SQLite's integrity check, counts the plans, audit events, plan state changes, registered applications and
+onboarding records, downloads `config.yaml` and checks that it loads, prints a short report, and records the outcome as
+the audit event `restore_drill` (`list_events` shows it). A copy older than 48 hours passes with a warning: the nightly
+backup runs inside the controller, so a laptop that was off for days has an old newest copy.
+
+| The drill says | Do |
+|---|---|
+| No database copy in the bucket | `python -m labdeploy.cli backup`, then the drill again; check `backup_bucket` in the configuration |
+| `gcloud storage ... failed` | `gcloud auth login` as the operator: the bucket has no grants of its own, so reading it takes a project role that may read Cloud Storage (the owner role does) |
+| Integrity check or missing tables | Take a fresh backup (`python -m labdeploy.cli backup`) and drill again; if it repeats, the live database needs attention before the next laptop failure does |
+| The configuration copy does not load | Compare it with `config.local.yaml` (a field the current version refuses); fix the file, back up, drill again |
+
+The drill checks the copy, not the whole procedure. Every second drill, or whenever the machine or the operator changes,
+do the full "Restore the controller on another machine" above on a spare machine instead, and record it in
+`docs/VALIDATION.md`.
 
 ## The spending cap fired
 
@@ -157,9 +185,89 @@ from the application's state (`terraform state rm` in `infra/gcp/apps/SERVICE` w
 set `database: none` in `platform.yaml`, and merge the re-rendered root. The two scripts that did this during the
 1.4 trial are recorded in `docs/VALIDATION.md`.
 
+## Leaving Google Cloud
+
+The exit procedure, for the day there is a concrete reason (a Cloud Run retirement notice, a grant or data-residency
+requirement, a need this cloud cannot meet; `docs/RESEARCH-2026-10-14.md` 4.3). The decision is the operator's. One
+application at a time, first as a dry run:
+
+```bash
+scripts/export-app.sh APP --dry-run                 # every command it would run; nothing runs, nothing is written
+scripts/export-app.sh APP [DEST_DIR]                # default folder: ~/.local/share/lab-deploy/exports/APP-STAMP
+```
+
+`APP` is the application id (`list_applications`); the target comes from the configuration file or, for an onboarded
+application, from the controller's database, read-only, and the declared needs from the rendered root on this checkout.
+It needs gcloud signed in as the project owner, Docker running and able to read Artifact Registry
+(`gcloud auth configure-docker us-central1-docker.pkg.dev` once). It deletes no data and no resource, refuses a folder that
+is not empty, and makes the folder readable by your account only.
+
+| In the folder | What it is | How it runs or restores elsewhere |
+|---|---|---|
+| `image/SERVICE-REVISION.tar` | The image every serving revision runs, pulled by digest and saved with `docker save` (an OCI-compatible archive) | `docker load -i image/SERVICE-REVISION.tar` gives `SERVICE:REVISION`; `docker run -p 8080:8080 -e PORT=8080 SERVICE:REVISION` runs it, and `docker tag` plus `docker push` moves it to any registry |
+| `service/service.yaml` | The service in Cloud Run's export format, a Knative Serving `serving.knative.dev/v1` Service: image, port, environment, CPU and memory, concurrency, timeout, scaling annotations | On a cluster with Knative Serving: point the image at the new registry, drop the `run.googleapis.com/*` annotations, the Cloud Run labels and `serviceAccountName`, then `kubectl apply -f`. Any other platform reads the same fields |
+| `terraform/terraform.tfstate` | The application root's state, pulled read-only (`terraform state pull`) | A reference, not something to apply: it describes Google resources. Read the names, settings and grants that existed (`terraform show -json`) to rebuild them elsewhere |
+| `buckets/BUCKET/` | Every object of each declared bucket (`gcloud storage cp -r`); an empty bucket is noted, not copied | Plain files: upload them to any object store with its own tool, or back to Cloud Storage with `gcloud storage cp -r` |
+| `database/postgres-app.sql.gz` | A Postgres need: Cloud SQL's SQL dump of the database `app` (`gcloud sql export sql`) | `gunzip -c database/postgres-app.sql.gz \| psql "postgresql://USER@HOST/app"` into an empty PostgreSQL 17 database. It may name Cloud SQL's own roles (`cloudsqlsuperuser`, the runtime's IAM user `SERVICE-runtime@PROJECT.iam`): create roles of those names first, or remove those statements |
+| `database/firestore/` | A Firestore need: the managed export (`gcloud firestore export`) | Google's own format: it imports into Firestore in any project (`gcloud storage cp -r` to a bucket there, then `gcloud firestore import gs://BUCKET/firestore --database=NAME`). Outside Google it needs a conversion, so read the data out through the Firestore API as well before the project closes |
+| `manifest.json` | What was exported and skipped, each file's size and SHA-256, the image digests, the times, the platform commit | Check the copy against it after moving the folder |
+
+Not in the folder: secret values (Secret Manager; the operator keeps them, decision D5: list them with
+`gcloud secrets list --filter=name:SERVICE- --project PROJECT`), Pub/Sub topics and subscriptions (messages in flight only;
+their names are in the state), logs, metrics and alert history, and the controller's own database (the backup bucket,
+above).
+
+What it costs: a Postgres export runs on the instance, which must be running (the script refuses a stopped one and says
+how to start it; starting it bills by the hour), takes minutes even for a small database, and the dump bills as storage in
+the recovery bucket and as egress when copied down. Firestore bills an export as one document read per document. Both
+exports stay in `gs://RECOVERY_BUCKET/exports/STAMP/` until you remove them. The one change the script makes in the cloud
+is for Postgres: Cloud SQL writes the dump as its own identity, so the script grants that identity object creation on the
+recovery bucket for the export and removes the grant afterwards (also when the export fails).
+
+Terraform and OpenTofu: CI validates the foundation and every application root with OpenTofu 1.12.6 as well as
+Terraform 1.13.5 (`.github/workflows/ci.yml`), so the same roots can be planned and applied with `tofu` if Terraform's
+licence or price ever matters. `tofu init` rewrites a root's `.terraform.lock.hcl` for its own registry; commit that change
+deliberately on the day of a switch, not before. Keep the roots free of features only Terraform 1.14 or later has.
+
+## Succession
+
+The platform's biggest risk is that one person runs it (`docs/RESEARCH-2026-10-14.md` 4.4). Naming the second operator is
+the owner's decision; until then nothing in the configuration names anyone. When that person exists:
+
+1. **Their own identity.** They run `python -m labdeploy.cli token` in their own checkout, keep the token (it is their
+   password for the Claude connector's sign-in page) and send the owner only the `token_sha256` line. The owner adds a
+   principal with that hash, `applications: ["*"]`, `can_deploy: true` and `may_merge_own_requests: false`, sets the same
+   switch on their own principal (`docs/SETUP.md` 7l), and the controller picks it up on the next request.
+2. **Cloud access.** Add `user:their-account` to `observer_impersonators` in the foundation's `terraform.tfvars` and
+   apply the foundation (`scripts/apply-foundation.sh`), for live health and logs. For the procedures below they also need
+   a project role that may manage Cloud Run, Cloud SQL, buckets and budgets; until the lab decides on narrower roles that
+   is the project owner role, granted by the owner in the console.
+3. **GitHub.** Write access to the platform repository and the application repositories, a line in `.github/CODEOWNERS`,
+   required review on `main` and the `infra` environment (`docs/SETUP.md` 7l).
+4. **The machine.** The controller runs on the owner's laptop today; the second operator restores it on their own
+   machine from the backup bucket when needed ("Restore the controller on another machine"), with their own GitHub token.
+
+What they must be able to do alone: sign in to the connector and read the state; deploy, follow, cancel and roll back a
+release; review and merge an infrastructure pull request someone else asked for (the comment's approval block first);
+start, restore and pause the controller; lift and re-arm both spend caps; rotate the credentials; run the restore drill and
+the exit procedure; read this runbook's sections on drift, stuck releases and the caps.
+
+Rehearsal, done once by the new person alone, the owner watching without touching, and recorded in `docs/VALIDATION.md`
+with anything that misled them (then fix this runbook):
+
+- [ ] Signs in to the connector with their own token; `get_controller_status` and `list_applications` answer.
+- [ ] Deploys the demo from chat, follows `get_deployment_status` to `succeeded`, then rolls it back with `rollback_staging`.
+- [ ] Reviews and merges an infrastructure pull request the other operator asked for, reading its approval block first.
+- [ ] Restores the controller on their own machine from the backup bucket, up to `list_plans` showing the history.
+- [ ] Runs `python -m labdeploy.cli restore-drill` and explains its report.
+- [ ] Finds both spend caps (`scripts/spend-cap.sh check PROJECT`, the budget's cap workflow) and says how to lift each.
+- [ ] Runs `scripts/export-app.sh demo --dry-run` and explains what the real run would copy.
+- [ ] Pauses and resumes one application through the configuration file.
+
 ## Monthly checklist
 
 - `get_controller_status` and the last watchdog findings; the backup bucket has copies from the last day.
+- Every quarter: the restore drill (`python -m labdeploy.cli restore-drill`; the watchdog reminds).
 - The cost report issue on each app repository: spend against the budget, drift, proposals.
 - Any `lab-deploy-cap-lifted` label left from the previous month (`gcloud run services list --format="table(name,labels)"`).
 - The native spend cap still exists (`scripts/spend-cap.sh check PROJECT`) and the drift issue on the platform repository is closed.

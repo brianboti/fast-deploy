@@ -103,13 +103,18 @@ jobs:
           set +e
           python3 -m labdeploy.infra check "infra/gcp/apps/$APP/plan.json"
           echo "status=$?" >> "$GITHUB_OUTPUT"
+      # The comment opens with the approval block the code renders from the plan (counts, reversibility, idle floor,
+      # exposure) and the identifiers a reviewer can follow: this pull request, its head commit and this run.
       - name: Post the plan on the pull request (one comment per application, updated in place)
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          PYTHONPATH=platform-main python3 -m labdeploy.infra summary "infra/gcp/apps/$APP/plan.json" "$APP" "infra/gcp/apps/$APP/plan.txt" > comment.md
+          PYTHONPATH=platform-main python3 -m labdeploy.infra summary "infra/gcp/apps/$APP/plan.json" "$APP" "infra/gcp/apps/$APP/plan.txt" \
+            --pull-request "$NUMBER" --head-sha "$HEAD_SHA" --run-url "$RUN_URL" > comment.md
           marker="<!-- lab-deploy-infra:$APP -->"
           existing=$(gh api "repos/$REPOSITORY/issues/$NUMBER/comments" --paginate --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n 1)
           if [ -n "$existing" ]; then

@@ -32,6 +32,8 @@ class Application(StrictModel):
     cost_ceiling_usd: float | int | None = None
     paused: bool = False  # refuse new plans and dispatches for this app without touching anything else
     auto_deploy: bool = False  # release the tip of main on its own when it is not the live release; every guardrail still applies
+    # Whether onboarding merges this application's own pull requests itself; None follows onboarding.auto_merge (docs/ROADMAP.md D29).
+    auto_merge: bool | None = None
     # Per-app infrastructure settings the renderer writes into the app's Terraform root (alert thresholds, image retention);
     # keys and ranges are those of labdeploy.infra.DEFAULT_SETTINGS. The generated root is never the source of truth.
     infra: dict[str, int | bool] = Field(default_factory=dict)
@@ -90,6 +92,9 @@ class Principal(StrictModel):
     token_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     applications: list[str]  # application ids, or ["*"] for every application including the ones onboarding registers later
     can_deploy: bool = False
+    # Requester and approver (docs/ROADMAP.md D29): false means the pull requests opened for this identity's requests wait for
+    # another operator to review and merge them. True keeps the one-operator behaviour: they merge once the policy passes.
+    may_merge_own_requests: bool = True
 
 
 VIEWER = re.compile(r"^(user|group|domain):[A-Za-z0-9._%+-]+(@[A-Za-z0-9.-]+\.[A-Za-z]{2,})?$")
@@ -174,6 +179,7 @@ class ApplicationSettings(StrictModel):
     cost_ceiling_usd: float | int | None = None
     paused: bool | None = None
     auto_deploy: bool | None = None
+    auto_merge: bool | None = None  # overrides onboarding.auto_merge for this application
     infra: dict[str, int | bool] | None = None
     viewers: list[str] | None = None
     provenance: Literal["required", "unavailable"] | None = None
