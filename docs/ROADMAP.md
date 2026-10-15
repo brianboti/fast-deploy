@@ -266,7 +266,7 @@ Cost effect: none; the bake reads logs and metrics within the free allotment.
 
 ## Phase 10: one repository, several services (about four and a half days) → version 1.10.0
 
-Status: built on 2026-10-15 as 1.10.0 (pull request #44); the live exercise waits for the merge and the foundation apply. Planned on 2026-10-14 (research items 2 and 3, and the gaps the Sophia copy exposed). This phase removes the root-Dockerfile requirement Sophia's copy needed and gives the contract its answer for front-ends, caches, queues and workers.
+Status: shipped on 2026-10-15 as 1.10.0 (pull request #44); live on 2026-10-15 (`docs/VALIDATION.md`): the first service of a two-service repository onboarded with one sentence and released; the second, with Postgres by password, found a missing permission fixed in 1.12.1, and finishes after that release's foundation apply; Sophia's copy from `backend/` is still to do. Planned on 2026-10-14 (research items 2 and 3, and the gaps the Sophia copy exposed). This phase removes the root-Dockerfile requirement Sophia's copy needed and gives the contract its answer for front-ends, caches, queues and workers.
 
 | Item | Change | Where |
 |---|---|---|
@@ -284,7 +284,7 @@ Cost effect: none at idle; a second service in a repository is another scale-to-
 
 ## Phase 11: easy, the platform writes the boilerplate (about five days) → version 1.11.0
 
-Status: built on 2026-10-15 as 1.11.0, stacked on 1.10.0; the buildpack comparison ran locally (D28 decided), the live exercise waits for the merges. Planned on 2026-10-14 (research items 5, 6 and 11).
+Status: shipped on 2026-10-15 as 1.11.0; the buildpack comparison ran locally (D28 decided); live on 2026-10-15: the checker and its draft on a bare repository, Compose drafts, onboarding measures; the bare repository's release and the buildpack release wait for a person to review its draft. Planned on 2026-10-14 (research items 5, 6 and 11).
 
 | Item | Change | Where |
 |---|---|---|
@@ -300,7 +300,7 @@ Cost effect: none; the builder image pull adds Actions minutes on private reposi
 
 ## Phase 12: legible approvals and the operator's succession (about three days) → version 1.12.0
 
-Status: built on 2026-10-15 as 1.12.0, stacked on 1.11.0; the export dry runs and the OpenTofu checks ran, the live parts wait for the merges. Planned on 2026-10-14 (research items 4, 9 and 10, and the trust gaps in the review's section 4.4).
+Status: shipped on 2026-10-15 as 1.12.0; live on 2026-10-15: approval blocks on real infrastructure pull requests, a tool-description change refused by CI, the exit dry run, the restore drill; the review by a second person waits for one. Planned on 2026-10-14 (research items 4, 9 and 10, and the trust gaps in the review's section 4.4).
 
 | Item | Change | Where |
 |---|---|---|

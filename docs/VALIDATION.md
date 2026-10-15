@@ -466,3 +466,35 @@ Read-only checks against the real system on the same night, with the branch code
 | The checker's draft on a bare repository (brianboti/lab-bare, private: only `app.py`, `requirements.txt` and one test), through the controller's own `propose_config` with GitHub reached by `gh` | Draft pull request brianboti/lab-bare#1 with nine files: the Dockerfile, an allow-list `.dockerignore`, `requirements.lock` compiled in a Python 3.12 container on this machine, `requirements-dev.txt`, a health test, `platform.yaml` with `reviewed: false`, CI, `SECURITY.md` and Dependabot. On GitHub the drafted CI passed in 14 seconds and GitHub accepted the Dependabot file. Locally the drafted Dockerfile passed hadolint, built, answered `/health` as uid 65532, and its 52 MB image held only `app.py` and the two requirement files. Found: a root service drafted before registration was named `my-service`; it now takes the repository's name |
 
 Platform tests on 1.12.0: 454 passed; ruff and zizmor clean.
+
+
+## Live exercise of 1.10.0 to 1.12.0 (2026-10-15)
+
+Run after the operator merged brianboti/lab-deploy#44, #45 and #46 (each squash made the next stacked pull request
+conflict; they were replayed onto `main` with identical files and the tests run again) and applied the foundation.
+Everything else by Claude through the platform's own tools, scripts and workflows; the merges of the platform's own pull
+requests and the review flag of a draft the platform wrote stay with the operator.
+
+| Step | Run, pull request or plan | Observed |
+|---|---|---|
+| Foundation apply (operator) | `scripts/apply-foundation.sh lab-deploy-staging-f29a` | The first attempt changed nothing (Docker was not running, and the script needs it); the second created `labDeploySecretWriter`, its grant, and `roles/secretmanager.viewer` for the plan identity |
+| Controller on 1.12.0 | `scripts/start.sh` in a terminal tab | 1.12.0 locally and through the tunnel; Docker running for the lock compile |
+| Re-pin | lab-demo-app#20, lab-notebook#10, sophia#13 (platform 0e7802a) | Merged; Sophia's four failing checks are its own, the same as on its previous re-pin; `platform.minimum_commit` raised to 0e7802a and the configuration reloaded |
+| The checker on a bare repository | `check_repository` on brianboti/lab-bare (only `app.py`, `requirements.txt`, a test) | Not ready: Dockerfile and `platform.yaml` missing, both draftable; seven recommended items, five draftable |
+| The checker's draft | `propose_configuration`: brianboti/lab-bare#2 (the 1.10.0-era #1, still `my-service`, closed) | Nine files; `name: lab-bare`, FastAPI on 8080 found, `/health` route found in `app.py`, Python 3.12 (the default), lock compiled in Docker; its CI passed. Found: a second call while #1 was open answered `changed: []` and left the stale draft as it was without saying so (1.12.1 says so). Merging waits for a person to set `reviewed: true` |
+| Both monorepo services ready | `check_repository` on brianboti/lab-monorepo, `services/api` and `services/admin` | Both ready; `SECURITY.md`, CI and Dependabot recommended |
+| One sentence, the first service | `onboard_application` (`services/api`): lab-deploy#49, apply run 38785212259, lab-monorepo#1, plan ff711e05 | Registered as `api` (service `mono-api`, environment `staging`, `deploy-gcp.yml`); the infrastructure pull request planned (37 to add), merged by the controller once the checks passed, applied; environment variables published; the workflows pull request merged; first release `succeeded` at 18:33 UTC (bake inconclusive: no traffic); measures "Onboarded in 3.9 minutes, with no step blocked" (to the first release's dispatch; serving 11.6 minutes after the sentence) |
+| One sentence, the second service | `onboard_application` (`services/admin`): lab-deploy#50, apply run 38785364285 | Registered as `admin` with the suffixed names (`staging-mono-admin`, `deploy-gcp-mono-admin.yml`); plan 48 to add, idle floor USD 8.63 per month, `data-bearing`; the apply created the Cloud SQL instance (6 min 18 s), the database and both users, then **failed** on the URL's secret version: Google's provider enables a version right after adding it, and `labDeploySecretWriter` lacked `secretmanager.versions.enable`; the workflow's retry lacked `versions.destroy`. Onboarding stopped as `blocked`, naming the run and what to do. Fixed in 1.12.1 |
+| What the retry would have done | The plan of brianboti/lab-deploy#52 | With the permission, the retry would have written a URL holding a new password while the user kept the first: 1.12.1 ties the user's `password_wo_version` to the URL's version number. The plan on #52: `mono-admin` replaces the tainted version and updates the `app` user in place (0 to add, 1 to change, 1 to replace); the four other roots no change |
+| Compose drafts | `analyze_repository` for `api` (the repository's `compose.yaml`) | Two web drafts (`services/api`; `services/admin` with `build.context: repository`), Postgres advice for `db`, the cache rule for `redis` (no cache by default; Memorystore about USD 36 to 47 a month, never scales to zero). Found: the admin draft said `database: none` although Compose gives it `DATABASE_URL` and `depends_on: [db]` (1.12.1 drafts Postgres by password) |
+| Approval blocks on real pull requests | The plan comments on lab-deploy#49 and #50 | Rendered by the pipeline from the plan: resources by type and reversibility, idle floor before and after (USD 0.06 for `mono-api`'s provenance key; USD 8.63 for `mono-admin`), three exposure changes each, the pull request, head commit and plan run. Found: nothing on the pull request said who asked (1.12.1 adds it to the description the controller writes) |
+| A tool-description change | Draft brianboti/lab-deploy#51 (one word added to `propose_configuration`'s description) | CI failed: `test_every_tool_matches_its_pinned_description_checksum` named `propose_configuration` and the command to run; closed unmerged |
+| The exit dry run | `scripts/export-app.sh demo DEST --dry-run` on `main` | Every command printed (the Knative-format service, the serving image by digest, the state pull, the uploads bucket), none run |
+| The restore drill | `python -m labdeploy.cli restore-drill` | Passed: newest backup 2.0 hours old (0.9 MB), integrity ok, 56 plans, 835 audit events, 2 registered applications, 2 onboarding records; the configuration copy loads (1 application in the file, the others registered in the database); next due by 2027-01-15 |
+
+Still to do after 1.12.1's merge and foundation apply: dispatch the infrastructure apply for `mono-admin`, let its onboarding
+continue (the migration job, the first release reading `DATABASE_URL`), then delete the trial database; the bare
+repository's release (and the same repository without a Dockerfile through the buildpack path) once a person has
+reviewed its draft; Sophia's copy from `backend/`.
+
+Cost: the Cloud SQL instance of `mono-admin` is billed from 18:31 UTC at about USD 0.012 per hour until it is deleted.
