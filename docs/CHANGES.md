@@ -1,3 +1,26 @@
+# 1.9.1: a missing drift report is asked for again
+
+## Fixed
+
+1. Found in the 1.9.0 live exercise: the controller remembered "the drift check has produced no report yet" for an hour,
+   so `get_controller_status` kept saying `not_run` after the first manual drift run had already reported. With no report
+   it now asks GitHub again on the next call; a report it found is still remembered for an hour.
+
+2. **The health view now sees an outage from outside.** When the native spend cap paused staging in the live exercise,
+   every service answered 503 while `get_service_health` still showed open ingress and no server errors: requests the cap
+   (or Google's front end) refuses never reach the container, so the service's own metrics do not count them. The view
+   now reports `uptime_checks_passed`, the share of Google's uptime-check probes that reached the health path in the
+   window, and notes it plainly below 100%, pointing to the spend cap when every app fails at once. Measured during the
+   trial: 75% for the demo and Sophia over ten minutes.
+3. `scripts/spend-cap.sh` gains `amount` (change the cap and re-arm a lifted one) and `lift`. Changing a spend cap's amount
+   through the Budget API needs the mask `amount.specifiedAmount,spendCap.inputState` with the whole budget in the body;
+   a mask of `amount` alone is refused as an invalid argument (found while lowering the cap for the live exercise). The
+   check prints fractional amounts.
+
+## Upgrade steps
+
+1. Restart the controller.
+
 # 1.9.0: cost and safety layers that cost nothing (roadmap Phase 9)
 
 Planned in `docs/ROADMAP.md` Phase 9 from the research review `docs/RESEARCH-2026-10-14.md`. Every item has zero idle cost.

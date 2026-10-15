@@ -249,7 +249,7 @@ applies, naming the second operator, and merging the checker's pull requests on 
 
 ## Phase 9: cost and safety layers that cost nothing (about three days) → version 1.9.0
 
-Status: planned on 2026-10-14 (research items 1, 7, 8 and 12) and implemented the same day as 1.9.0 (`docs/CHANGES.md`); the live exercise follows the merge, the foundation apply and the operator's spend cap. Differences from the plan below: the native cap is recorded under a top-level `cloud_run_spend_caps` (a cap belongs to a project, and the onboarding block is optional); the drift check is its own workflow, `infra-drift.yml`, so the pull-request plan workflow stays unchanged; and the plan workflows store no plan files at all, so 9.4's retention point had nothing to shorten. Every item has zero idle cost.
+Status: planned on 2026-10-14 (research items 1, 7, 8 and 12) and implemented the same day as 1.9.0 (`docs/CHANGES.md`) and exercised live that night: a bake that passed, one that restored traffic and one inconclusive, the planted violations refused, a drift found, repaired and closed, and the native spend cap tripped, lifted and re-armed (`docs/VALIDATION.md`); 1.9.1 fixed the three things the exercise found. Differences from the plan below: the native cap is recorded under a top-level `cloud_run_spend_caps` (a cap belongs to a project, and the onboarding block is optional); the drift check is its own workflow, `infra-drift.yml`, so the pull-request plan workflow stays unchanged; and the plan workflows store no plan files at all, so 9.4's retention point had nothing to shorten. Every item has zero idle cost.
 
 | Item | Change | Where |
 |---|---|---|

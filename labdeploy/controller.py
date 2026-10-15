@@ -366,6 +366,8 @@ class Controller:
         except Exception as exc:  # noqa: BLE001 - the drift view is informative; its absence is reported, never fatal
             return {"status": "unavailable", "note": explain(exc) or str(exc)[:200]}
         if not found:
+            # A first report can appear any minute (a manual run); ask again next time instead of remembering "none" for an hour.
+            self._cache.pop(("drift", platform.repository), None)
             return {"status": "not_run", "note": "The weekly drift check (.github/workflows/infra-drift.yml) has produced no report yet; it needs the "
                                                  "foundation applied with the 1.9.0 plan identity, and runs on Mondays or on demand."}
         report = found.get("report") or {}
@@ -442,6 +444,11 @@ class Controller:
                          "someone changed traffic outside the pipeline, or a release is in progress")
         if metrics.get("server_errors"):
             notes.append(f"{metrics['server_errors']} server errors in the last {metrics['window_minutes']} minutes")
+        passed = metrics.get("uptime_checks_passed")
+        if passed is not None and passed < 1:
+            notes.append(f"Google's uptime check reached the health path in only {passed:.0%} of its probes in the last {metrics['window_minutes']} minutes, "
+                         "although the service's own metrics may look normal: requests refused before they reach the container are not counted there. "
+                         "When every app fails at once, check the native spend cap (docs/RUNBOOK.md, \"The native spend cap tripped\").")
         needs = []
         try:
             spec = self.spec_at(app, (live or {}).get("sha") or self.github.head(app))
