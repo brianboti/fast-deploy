@@ -42,6 +42,12 @@ def build_parser():
     for name, text in (("watchdog", "run the daily watchdog once and print its findings"), ("backup", "write one backup of the controller database now")):
         job = commands.add_parser(name, help=text)
         job.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
+    dr = commands.add_parser("restore-drill", help="restore the newest controller backup from the backup bucket into a temporary folder, read-only, "
+                                                   "check and count it, and record the outcome (the quarterly drill)")
+    dr.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
+    tc = commands.add_parser("tools-checksum", help="print the SHA-256 of every MCP tool's name, description and schemas; --write updates "
+                                                    "schema/tools.sha256.json after a deliberate change")
+    tc.add_argument("--write", action="store_true", help="write schema/tools.sha256.json (review and commit the diff)")
     d = commands.add_parser("decommission", help="print the checklist that retires one application cleanly")
     d.add_argument("app")
     d.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
@@ -219,6 +225,36 @@ def run(parser, args):
         config = load_config(config_path)
         controller = Controller(config, GitHub(), Store(config.database))
         print(json.dumps(controller.watchdog_tick() if args.command == "watchdog" else controller.backup_tick(config_path=config_path), indent=2))
+    elif args.command == "restore-drill":
+        import getpass
+        import os
+
+        from .config import load_config
+        from .controller import Store
+        from .drill import lines, restore_drill
+        config = load_config(args.config or os.environ.get("LAB_CONFIG", "config.local.yaml"))
+        try:
+            who = getpass.getuser()
+        except (OSError, KeyError):
+            who = "unknown"
+        report = restore_drill(config, Store(config.database), identity=f"operator-cli:{who}")
+        print("\n".join(lines(report)))
+        if not report["ok"]:
+            sys.exit(1)
+    elif args.command == "tools-checksum":
+        from .toolpin import PINS, checksums, compare, listed_tools, pinned, write
+        found = checksums(listed_tools())
+        print(json.dumps(found, indent=2))
+        if args.write:
+            print(f"Wrote {write(found)}; review the diff and commit it with the change that caused it.", file=sys.stderr)
+            return
+        difference = compare(found, pinned())
+        if any(difference.values()):
+            parts = [f"{what}: {', '.join(names)}" for what, names in difference.items() if names]
+            print(f"Differs from {PINS.name} ({'; '.join(parts)}). If the change is deliberate, run this again with --write and commit the reviewed diff.",
+                  file=sys.stderr)
+            sys.exit(1)
+        print(f"Matches {PINS.name}.", file=sys.stderr)
     elif args.command == "decommission":
         import os
 

@@ -57,3 +57,20 @@ jobs:
             echo "== $root"
             (cd "$root" && terraform init -backend=false -input=false && terraform validate)
           done
+      # OpenTofu stays a drop-in (docs/ROADMAP.md 12.4): the same roots must validate with it. Downloaded by version and
+      # checksum like hadolint; run on a copy of the committed roots, because `tofu init` rewrites a lock file for its own
+      # registry and the committed ones must stay as Terraform wrote them.
+      - name: Validate every infrastructure root with OpenTofu too
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/tofu.tar.gz" https://github.com/opentofu/opentofu/releases/download/v1.12.6/tofu_1.12.6_linux_amd64.tar.gz
+          echo "50a6106fa4de523d09c87af85f3db1dd47535fc005727fdca6852146476b88ec  $RUNNER_TEMP/tofu.tar.gz" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/tofu" "$RUNNER_TEMP/roots" "$RUNNER_TEMP/tofu-plugins"
+          tar -xzf "$RUNNER_TEMP/tofu.tar.gz" -C "$RUNNER_TEMP/tofu" tofu
+          git archive HEAD infra/gcp | tar -x -C "$RUNNER_TEMP/roots"
+          export TF_PLUGIN_CACHE_DIR="$RUNNER_TEMP/tofu-plugins"
+          cd "$RUNNER_TEMP/roots/infra/gcp"
+          for root in project apps/*/; do
+            echo "== $root (OpenTofu)"
+            (cd "$root" && "$RUNNER_TEMP/tofu/tofu" init -backend=false -input=false && "$RUNNER_TEMP/tofu/tofu" validate)
+          done

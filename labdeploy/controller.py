@@ -92,7 +92,7 @@ class Store:
         with self.connect() as db:
             row = db.execute("SELECT state,payload FROM plans WHERE id=? AND owner=?", (plan_id, owner)).fetchone()
         if row is None:
-            raise ValueError("Plan not found for this identity")
+            raise ValueError("Plan not found for this identity; list_plans shows the plans it may see, or create a new plan")
         return {**json.loads(row[1]), "state": row[0]}
 
     def fetch(self, plan_id):
@@ -177,6 +177,16 @@ class Store:
                        (time.time(), identity, client, kind, name, application, outcome, duration_ms, (detail or "")[:500] or None))
             db.execute("DELETE FROM events WHERE at < ?", (time.time() - 365 * 86_400,))
 
+    def newest_event(self, kind, outcome=None):
+        """The newest audit event of one kind, optionally with one outcome; None when there is none."""
+        query, params = "SELECT at, identity, name, outcome, detail FROM events WHERE kind=?", [kind]
+        if outcome is not None:
+            query += " AND outcome=?"
+            params.append(outcome)
+        with self.connect() as db:
+            row = db.execute(query + " ORDER BY at DESC, rowid DESC LIMIT 1", params).fetchone()
+        return dict(zip(("at", "identity", "name", "outcome", "detail"), row, strict=True)) if row else None
+
     def recent_events(self, limit=50, identity=None, application=None):
         query, params = "SELECT at, identity, client, kind, name, application, outcome, duration_ms, detail FROM events", []
         clauses = []
@@ -192,6 +202,42 @@ class Store:
             rows = db.execute(query + " ORDER BY rowid DESC LIMIT ?", (*params, limit)).fetchall()
         keys = ("at", "identity", "client", "kind", "name", "application", "outcome", "duration_ms", "detail")
         return [dict(zip(keys, row, strict=True)) for row in rows]
+
+
+def release_approval(plan, requested_by=None):
+    """The fixed approval block of a release plan (docs/ROADMAP.md 12.1), built by code from the plan's own fields and never
+    from Claude's words: the commit, where it goes, what it may cost, who may reach it, what it needs, how far a rollback
+    undoes it, and the identifiers that tie the request to the plan and the run. The same plan always gives the same block."""
+    spec, cost, target = plan.get("spec") or {}, plan.get("cost") or {}, plan.get("target") or {}
+    needs = spec.get("needs") or {}
+    lines = ((plan.get("commit") or {}).get("message") or "").strip().splitlines()
+    migrates = bool(needs.get("migrate"))
+    reversibility = ({"tier": "data-bearing", "detail": "the migration changes the database; a rollback restores traffic only"} if migrates
+                     else {"tier": "reversible", "detail": "traffic rollback in seconds"})
+    requester = requested_by or ""
+    return {
+        "commit": {"sha": plan.get("sha"), "message": lines[0][:100] if lines else None},
+        "spec_hash": plan.get("spec_hash"),
+        "target": {"project_id": target.get("project_id"), "region": target.get("region"), "service": target.get("service")},
+        "cost": {"idle_floor_usd_month": cost.get("idle_floor_usd_month"), "compute_ceiling_usd_month": cost.get("compute_ceiling_usd_month"),
+                 "needs_floor_usd_month": cost.get("needs_floor_usd_month"), "ceiling_policy": (cost.get("ceiling_policy") or {}).get("status")},
+        "exposure": spec.get("exposure", "authenticated"),
+        "needs": {"buckets": list(needs.get("buckets") or []), "topics": list(needs.get("topics") or []), "database": needs.get("database", "none"),
+                  "migrate": migrates},
+        "warnings": len(plan.get("warnings") or []),
+        "reversibility": reversibility,
+        "identifiers": {"plan": plan.get("id"), "commit": plan.get("sha"), "requested_by": requested_by,
+                        "onboarding": plan.get("application") if requester.startswith("onboarding:") else None, "run": None, "run_url": None},
+    }
+
+
+def link_run(plan):
+    """Add the workflow run to a release plan's approval identifiers once GitHub has one, so the chain reads request, plan, run."""
+    approval, workflow, dispatched = plan.get("approval"), plan.get("workflow") or {}, plan.get("dispatch_result") or {}
+    run = workflow.get("id") or dispatched.get("workflow_run_id")
+    if isinstance(approval, dict) and run:
+        approval.setdefault("identifiers", {}).update(run=run, run_url=workflow.get("html_url") or dispatched.get("html_url"))
+    return plan
 
 
 class Controller:
@@ -268,7 +314,7 @@ class Controller:
         if record is None:
             raise ValueError("No onboarding record for this application; call onboard_application with the repository link")
         if "*" not in principal.applications and app_id not in principal.applications:
-            raise ValueError("Application is not authorized for this identity")
+            raise ValueError("Application is not authorized for this identity; list_applications shows the ones it may use")
         return describe(record)
 
     AUTO_DEPLOY_IDENTITY = "auto-deploy"
@@ -375,6 +421,9 @@ class Controller:
             if drift.get("stale"):
                 problems.append(f"the weekly drift check last reported {drift.get('checked_at')}; its schedule may have stopped (GitHub pauses schedules "
                                 "after sixty days without activity)")
+        reminder = self.restore_drill_reminder()
+        if reminder:
+            problems.append(reminder)
         report = {"checked_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"), "problems": problems, "notified": False}
         self.store.record_event("watchdog", outcome="problems" if problems else "ok", detail="; ".join(problems) or None)
         if problems and self.config.notify_webhook_url:
@@ -386,6 +435,23 @@ class Controller:
             except Exception as exc:  # noqa: BLE001
                 report["notify_error"] = str(exc)[:200]
         return report
+
+    RESTORE_DRILL_DAYS = 92  # a quarter and a day: the restore drill is due when none has passed for longer than this
+
+    def restore_drill_reminder(self, now=None):
+        """The watchdog's line when the quarterly restore drill is due (docs/RUNBOOK.md, "Quarterly restore drill"), else None.
+        Only with a backup bucket: the drill restores the copy that survives losing this machine."""
+        if not getattr(self.config, "backup_bucket", None):
+            return None
+        now = now or time.time()
+        passed = self.store.newest_event("restore_drill", "ok")
+        if passed and now - passed["at"] <= self.RESTORE_DRILL_DAYS * 86_400:
+            return None
+        when = "no drill has passed yet" if passed is None else f"the last one passed on {datetime.datetime.fromtimestamp(passed['at'], datetime.UTC):%Y-%m-%d}"
+        latest = self.store.newest_event("restore_drill")
+        if latest and latest["outcome"] != "ok":
+            when += f"; the latest attempt failed: {(latest['detail'] or 'no detail')[:160]}"
+        return f"quarterly restore drill due ({when}): run python -m labdeploy.cli restore-drill"
 
     DRIFT_STALE_DAYS = 8  # the drift check runs weekly; a report older than this means the schedule stopped
 
@@ -519,9 +585,9 @@ class Controller:
 
     def app(self, principal, app_id, write=False):
         if app_id not in self.visible_apps(principal):
-            raise ValueError("Application is not authorized for this identity")
+            raise ValueError("Application is not authorized for this identity; list_applications shows the ones it may use")
         if write and not principal.can_deploy:
-            raise ValueError("Identity has read-only access")
+            raise ValueError("Identity has read-only access; reads still work, and a deploying identity (can_deploy) is the operator's to grant")
         return self.config.applications[app_id]
 
     def require_active(self, app_id):
@@ -703,6 +769,7 @@ class Controller:
             plan["reuse_image"] = image
             plan["reused_from_plan"] = prior["id"]
             plan["checks"].update(tests="passed_in_earlier_release", dependency_scan="passed_in_earlier_release")
+        plan["approval"] = release_approval(plan, principal.name)
         self.store.add(principal.name, plan)
         return {**plan, "state": "planned", "live_dispatch_enabled": self.config.live_dispatch, "next_action": advice({"state": "planned"})}
 
@@ -774,7 +841,7 @@ class Controller:
         if principal.can_deploy:
             found = self.store.fetch(plan_id)
             if found is None or found[1].get("application") not in self.visible_apps(principal):
-                raise ValueError("Plan not found for this identity")
+                raise ValueError("Plan not found for this identity; list_plans shows the plans it may see, or create a new plan")
             return found
         return principal.name, self.store.get(principal.name, plan_id)
 
@@ -1018,6 +1085,7 @@ class Controller:
             self.store.finish(principal.name, plan, "dispatch_unknown")
             raise ValueError("Dispatch outcome unknown. Inspect GitHub before requesting another deployment.") from None
         plan["dispatch_result"] = result
+        link_run(plan)
         self.store.finish(principal.name, plan, "dispatched")
         return self.store.get(principal.name, plan_id)
 
@@ -1117,6 +1185,7 @@ class Controller:
             workflow = self.github.status(app, plan)
             plan["dispatch_state"] = plan["state"]
             plan["workflow"] = workflow
+            link_run(plan)
             plan.update(summarize(workflow, plan["checks"], plan.get("kind")))
             if plan["state"] == "awaiting_workflow" and self.dispatch_lost(plan):
                 plan["state"] = "dispatch_lost"

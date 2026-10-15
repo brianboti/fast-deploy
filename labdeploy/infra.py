@@ -485,24 +485,213 @@ def summary(plan):
     return {"counts": counts, "lines": lines}
 
 
-def comment(app, plan, violations, plan_text=None):
-    """Markdown for the pull request: what the apply would do, the full plan folded away, and whether policy allows it."""
+# ---- the approval block (docs/ROADMAP.md 12.1): what a reviewer approves, computed from the plan by this code, never
+# written by Claude. Approval prompts built from the agent's own description are the most exploited failure of agentic
+# systems (docs/RESEARCH-2026-10-14.md, 4.4); this block is built from the resource changes themselves.
+
+# How far a change can be undone, in rising order: data-bearing outranks identity, which outranks reversible.
+TIERS = ("reversible", "identity", "data-bearing")
+TIER_MEANING = {
+    "reversible": "reverting the pull request undoes it; nothing here holds data or grants access",
+    "identity": "it changes who or what may act (grants, service accounts, workload identity); a revert removes the access, "
+                "not what was done with it meanwhile",
+    "data-bearing": "it adds or changes a resource that holds data; the pipeline never destroys one, so a revert cannot take it "
+                    "away, and data written meanwhile stays",
+}
+# What a resource bills every month while nothing uses it, in USD at list price (the idle floor). A copy of the figures in
+# labdeploy/cost.py, which this standard-library file cannot import; a test keeps them equal. Every other type costs nothing
+# at rest or bills only by use (storage, messages, requests, scans), which the floor does not count.
+IDLE_FLOOR_USD_MONTH = {
+    # db-f1-micro with 10 GB of HDD, the only size the service module creates: cost.NEEDS_PRICING["postgres"], instance plus storage.
+    "google_sql_database_instance": {"db-f1-micro": 8.57},
+    # One software key version (the application's provenance key, docs/SETUP.md section 8).
+    "google_kms_crypto_key": 0.06,
+}
+PULL_REQUEST_NUMBER = re.compile(r"^[0-9]{1,10}$")
+COMMIT_SHA = re.compile(r"^[a-f0-9]{40}$")
+RUN_URL = re.compile(r"^https://[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+(/attempts/[0-9]+)?$")
+
+
+def _action(actions):
+    """One resource's verb in a plan, counted as `summary` counts it: create, update, delete or replace; None for no change."""
+    if actions in (["no-op"], ["read"], []):
+        return None
+    if actions == ["create"]:
+        return "create"
+    if actions == ["delete"]:
+        return "delete"
+    return "replace" if "create" in actions and "delete" in actions else "update"
+
+
+def tier(change):
+    """How far one resource change can be undone: data-bearing (the types the policy never lets the pipeline destroy),
+    identity (IAM members and bindings, service accounts, workload identity), or reversible."""
+    kind = change.get("type", "")
+    if kind in DATA_TYPES:
+        return "data-bearing"
+    if kind.endswith(("_iam_member", "_iam_binding", "_iam_policy")) or kind.startswith(("google_service_account", "google_iam_", "google_project_iam_")):
+        return "identity"
+    return "reversible"
+
+
+def _floor_of(kind, values):
+    """The idle floor of one resource in one state (before or after), or None when the table has no price for its size."""
+    price = IDLE_FLOOR_USD_MONTH.get(kind, 0.0)
+    return price.get(_nested(values, "settings", "tier")) if isinstance(price, dict) else price
+
+
+def idle_floor(plan):
+    """The application root's monthly idle floor before and after the plan, from every resource it manages (unchanged ones too)."""
+    before, after, unpriced = 0.0, 0.0, []
+    for change in plan.get("resource_changes", []):
+        actions = change.get("change", {}).get("actions", [])
+        if actions in (["read"], []):
+            continue
+        kind, detail = change.get("type", ""), change.get("change", {})
+        for exists, values, side in ((actions != ["create"], detail.get("before") or {}, "before"),
+                                     (actions not in (["delete"], ["forget"]), detail.get("after") or {}, "after")):
+            if not exists:
+                continue
+            price = _floor_of(kind, values)
+            if price is None:
+                unpriced.append(change.get("address", "?"))
+            elif side == "before":
+                before += price
+            else:
+                after += price
+    return {"before_usd_month": round(before, 2), "after_usd_month": round(after, 2), "delta_usd_month": round(after - before, 2),
+            "unpriced": sorted(set(unpriced))}
+
+
+def _shown(value, unknown=False):
+    if unknown:
+        return "known after apply"
+    if value is None or value == [] or value == "":
+        return "unset"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return ", ".join(str(item) for item in value) if isinstance(value, list) else str(value)
+
+
+def exposure_changes(plan):
+    """Every change to who can reach an application: Cloud Run ingress, invoker check, Identity-Aware Proxy and URL settings,
+    invoker and IAP accessor grants, and any IAP resource."""
+    found = []
+    for change in plan.get("resource_changes", []):
+        verb = _action(change.get("change", {}).get("actions", []))
+        if verb is None:
+            continue
+        kind, address = change.get("type", ""), change.get("address", "?")
+        before, after = change.get("change", {}).get("before") or {}, _after(change)
+        if kind == "google_cloud_run_v2_service":
+            if verb == "delete":
+                found.append({"address": address, "action": verb, "detail": "the service and its address are removed"})
+                continue
+            fields = [field for field in EXPOSURE_FIELDS if before.get(field) != after.get(field) or _unknown(change, field)]
+            if fields:
+                found.append({"address": address, "action": verb, "detail": "; ".join(
+                    f"{field} {_shown(before.get(field))} -> {_shown(after.get(field), _unknown(change, field))}" for field in fields)})
+        elif kind.startswith("google_iap_") or (kind.endswith(("_iam_member", "_iam_binding")) and (after.get("role") or before.get("role")) in EXPOSURE_ROLES):
+            values = before if verb == "delete" else after
+            who = values.get("member") or values.get("members")
+            found.append({"address": address, "action": verb,
+                          "detail": f"{values.get('role') or kind} for {_shown(who, who is None and _unknown(change, 'member'))}"})
+    return found
+
+
+def identifiers(pull_request=None, head_sha=None, run_url=None):
+    """The chain a reviewer can follow from the approval to the pipeline: pull request, head commit, plan run. Values come
+    from GitHub through the workflow; anything that does not look like one is refused rather than printed."""
+    for pattern, value, what in ((PULL_REQUEST_NUMBER, pull_request, "pull request number"), (COMMIT_SHA, head_sha, "head commit"),
+                                 (RUN_URL, run_url, "workflow run URL")):
+        if value not in (None, "") and not pattern.fullmatch(str(value)):
+            raise ValueError(f"Invalid {what}: {value!r}")
+    return {"pull_request": int(pull_request) if pull_request not in (None, "") else None, "head_sha": head_sha or None, "run_url": run_url or None}
+
+
+def approval(plan, pull_request=None, head_sha=None, run_url=None):
+    """The facts of the approval block: counts by action and by resource type, the reversibility tier of each type and of
+    the whole plan, the idle floor before and after, every exposure change, and the identifiers. Deterministic: the same
+    plan and identifiers always give the same facts."""
+    counts = {"create": 0, "update": 0, "delete": 0, "replace": 0}
+    by_type, tiers = {}, []
+    for change in plan.get("resource_changes", []):
+        verb = _action(change.get("change", {}).get("actions", []))
+        if verb is None:
+            continue
+        level = tier(change)
+        counts[verb] += 1
+        row = by_type.setdefault(change.get("type", "?"), {"create": 0, "update": 0, "delete": 0, "replace": 0, "tier": level})
+        row[verb] += 1
+        tiers.append(level)
+    overall = max(tiers, key=TIERS.index) if tiers else "reversible"
+    return {"counts": counts, "by_type": dict(sorted(by_type.items())), "tier": overall, "tier_meaning": TIER_MEANING[overall],
+            "idle_floor": idle_floor(plan), "exposure": exposure_changes(plan), "identifiers": identifiers(pull_request, head_sha, run_url)}
+
+
+def _cell(text):
+    """A plan value inside a table cell: code-formatted, and unable to break out of its cell or its code span."""
+    return "`" + str(text).replace("`", "'").replace("|", "\\|").replace("\n", " ") + "`"
+
+
+def _usd(value):
+    return f"-${-value:.2f}" if value < 0 else f"${value:.2f}"
+
+
+def approval_block(facts):
+    """The fixed Markdown block a reviewer reads first: the same rows in the same order for every plan."""
+    counts, floor, ids = facts["counts"], facts["idle_floor"], facts["identifiers"]
+    delta = floor["delta_usd_month"]
+    exposure = facts["exposure"]
+    rows = [
+        ("Resources", f"{counts['create']} to add, {counts['update']} to change, {counts['delete']} to destroy, {counts['replace']} to replace."),
+        ("Reversibility", f"**{facts['tier']}**: {facts['tier_meaning']}"),
+        ("Idle floor per month", f"{_usd(floor['before_usd_month'])} before, {_usd(floor['after_usd_month'])} after "
+                                 f"({'+' if delta > 0 else ''}{_usd(delta)}; list prices, usage not included)"
+         + (f"; no price for {', '.join(_cell(a) for a in floor['unpriced'])}" if floor["unpriced"] else "")),
+        ("Exposure", f"**{len(exposure)} change{'' if len(exposure) == 1 else 's'}**, listed below" if exposure else "no change to who can reach the application"),
+        ("Pull request", f"#{ids['pull_request']}" if ids["pull_request"] else "not given"),
+        ("Head commit", f"`{ids['head_sha']}`" if ids["head_sha"] else "not given"),
+        ("Plan run", ids["run_url"] or "not given"),
+    ]
+    text = ["#### What merging this changes", "",
+            "Rendered by the pipeline from the Terraform plan (`labdeploy/infra.py`), not written by Claude.", "",
+            "| | |", "|---|---|"] + [f"| {name} | {value} |" for name, value in rows]
+    if facts["by_type"]:
+        text += ["", "| Resource type | Add | Change | Destroy | Replace | Reversibility |", "|---|---|---|---|---|---|"]
+        text += [f"| {_cell(kind)} | {row['create']} | {row['update']} | {row['delete']} | {row['replace']} | {row['tier']} |"
+                 for kind, row in facts["by_type"].items()]
+    if exposure:
+        verbs = {"create": "add", "update": "change", "delete": "destroy", "replace": "replace"}
+        text += ["", "| Exposure change | Resource | What |", "|---|---|---|"]
+        text += [f"| {verbs[item['action']]} | {_cell(item['address'])} | {_cell(item['detail'])} |" for item in exposure[:50]]
+        if len(exposure) > 50:
+            text.append(f"| … | {len(exposure) - 50} more | see the full plan |")
+    return "\n".join(text) + "\n"
+
+
+COMMENT_LIMIT = 60_000  # GitHub refuses comments over 65,536 characters; the folded full plan gives way first
+
+
+def comment(app, plan, violations, plan_text=None, pull_request=None, head_sha=None, run_url=None):
+    """Markdown for the pull request: the approval block first, then every resource change, the full plan folded away, and
+    whether policy allows it."""
     digest = summary(plan)
-    counts = digest["counts"]
     head = (f"<!-- lab-deploy-infra:{app} -->\n### Infrastructure plan for `{app}`\n\n"
-            f"{counts['create']} to add, {counts['update']} to change, {counts['delete']} to destroy, {counts['replace']} to replace.\n")
+            + approval_block(approval(plan, pull_request, head_sha, run_url)))
     if digest["lines"]:
         body = "\n```\n" + "\n".join(digest["lines"][:200]) + ("\n…" if len(digest["lines"]) > 200 else "") + "\n```\n"
     else:
         body = "\nNo changes.\n"
-    if plan_text and digest["lines"]:
-        text = plan_text if len(plan_text) <= 50_000 else plan_text[:50_000] + "\n… (truncated; the full plan is in the workflow log)"
-        body += "\n<details><summary>Full plan with every attribute</summary>\n\n```\n" + text.replace("```", "'''") + "\n```\n</details>\n"
     if violations:
         verdict = "\n**Policy: blocked.** The apply job refuses this plan until these are resolved:\n\n" + "\n".join(
             f"- `{v['address']}`: {v['detail']} ({v['rule']})" for v in violations) + "\n"
     else:
         verdict = "\n**Policy: passed.** Merging applies exactly this plan.\n"
+    if plan_text and digest["lines"]:
+        room = max(0, min(50_000, COMMENT_LIMIT - len(head) - len(body) - len(verdict) - 200))
+        text = plan_text if len(plan_text) <= room else plan_text[:room] + "\n… (truncated; the full plan is in the workflow log)"
+        body += "\n<details><summary>Full plan with every attribute</summary>\n\n```\n" + text.replace("```", "'''") + "\n```\n</details>\n"
     return head + body + verdict
 
 
@@ -555,10 +744,22 @@ def publish(outputs, token=None, environment="staging", request=github_request):
     return "\n".join(lines) + "\n", ok
 
 
+def _options(argv, names):
+    """Take `--name value` pairs out of an argument list; the positional arguments keep their order."""
+    found, rest, items = {}, [], iter(argv)
+    for item in items:
+        if item.startswith("--") and item[2:] in names:
+            found[item[2:]] = next(items, "")
+        else:
+            rest.append(item)
+    return found, rest
+
+
 def main(argv=None):
-    argv = list(sys.argv[1:] if argv is None else argv)
-    usage = ("usage: python -m labdeploy.infra check PLAN.json | summary PLAN.json APP [PLAN.txt] | roots CHANGED.txt APPS_DIR | roots-all APPS_DIR"
-             " | publish OUTPUTS.json | drift PLAN.json APP | drift-report RECORDS_DIR APPS_JSON [RUN_URL] | drift-issue REPORT.json")
+    options, argv = _options(list(sys.argv[1:] if argv is None else argv), ("pull-request", "head-sha", "run-url"))
+    usage = ("usage: python -m labdeploy.infra check PLAN.json | summary PLAN.json APP [PLAN.txt] [--pull-request N] [--head-sha SHA] [--run-url URL]"
+             " | roots CHANGED.txt APPS_DIR | roots-all APPS_DIR | publish OUTPUTS.json | drift PLAN.json APP"
+             " | drift-report RECORDS_DIR APPS_JSON [RUN_URL] | drift-issue REPORT.json")
     if len(argv) < 2 or argv[0] not in ("check", "summary", "roots", "roots-all", "publish", "drift", "drift-report", "drift-issue"):
         print(usage, file=sys.stderr)
         return 1
@@ -601,7 +802,13 @@ def main(argv=None):
         return 0 if ok else 1
     app = argv[2] if len(argv) > 2 else "app"
     plan_text = Path(argv[3]).read_text() if len(argv) > 3 and Path(argv[3]).is_file() else None
-    print(comment(app, document, check_plan(document), plan_text))
+    try:
+        text = comment(app, document, check_plan(document), plan_text, pull_request=options.get("pull-request") or None,
+                       head_sha=options.get("head-sha") or None, run_url=options.get("run-url") or None)
+    except ValueError as exc:
+        print(f"Comment not written: {exc}", file=sys.stderr)
+        return 1
+    print(text)
     return 0
 
 
