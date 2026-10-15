@@ -66,7 +66,17 @@ case "$ACTION" in
       exit 1
     fi
     echo "$found"
-    echo "Record it in the controller configuration: cloud_run_spend_caps: {$PROJECT: AMOUNT}"
+    # Compare with what the controller configuration records (config.local.yaml next to this script's repository).
+    LIVE=$(echo "$found" | head -1 | awk '{print $2}')
+    CONFIG="$(dirname "$0")/../config.local.yaml"
+    RECORDED=$(sed -n '/^cloud_run_spend_caps:/,/^[^ #]/p' "$CONFIG" 2>/dev/null | sed -n "s/^ *$PROJECT: *\([0-9.]*\).*/\1/p" | head -1)
+    if [[ -z "$RECORDED" ]]; then
+      echo "Not recorded yet. Add to the controller configuration: cloud_run_spend_caps: {$PROJECT: $LIVE}"
+    elif [[ "$RECORDED" == "$LIVE" || "$RECORDED" == "$LIVE.0" ]]; then
+      echo "Recorded in the controller configuration ($RECORDED USD). Nothing to do."
+    else
+      echo "The controller configuration records $RECORDED USD, but the cap is $LIVE USD: update cloud_run_spend_caps.$PROJECT."
+    fi
     ;;
   create)
     AMOUNT=${3:?usage: spend-cap.sh create PROJECT_ID AMOUNT_USD}
