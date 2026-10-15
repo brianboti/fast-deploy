@@ -454,4 +454,14 @@ brianboti/lab-deploy#44 and #45 and the foundation apply 1.10.0 needs.
 | `scripts/export-app.sh --dry-run` for the demo (from the configuration file) and Sophia (from the controller's database, read-only) | Every command printed, none run. A real export of the demo was not run: the auto-mode classifier declined it, and it is left for the operator |
 | OpenTofu 1.12.6 on the four committed roots (the foundation, lab-demo, lab-notebook, sophia) | All validate, with the official image and with the pinned amd64 binary the CI step downloads |
 
+Read-only checks against the real system on the same night, with the branch code:
+
+| Check | Observed |
+|---|---|
+| The checker on the new private test repository brianboti/lab-monorepo (two services: `services/api`, and `services/admin` built from the repository root with Postgres by password) | Given `brianboti/Lab-Monorepo`, it resolved GitHub's own spelling `brianboti/lab-monorepo`; both services ready; recommended items missing: `SECURITY.md`, CI, Dependabot, all of which the platform drafts; a folder that does not exist is refused in plain words. It also showed the scaffold would draft a `.dockerignore` beside `services/admin/Dockerfile.dockerignore` and a second health test: fixed before the merge, after which it drafts only the three missing files |
+| The checker on Sophia's copy, folder `backend` | Not ready: only `backend/platform.yaml` is missing, which the platform drafts; it found FastAPI (`app.main:app`), Python 3.13 from the Dockerfile, port 8000 and `/health`, and would also draft `requirements-dev.txt`, a health test, `SECURITY.md` and Dependabot; the lock is left to the compile step or its command |
+| The approval block on a real plan | The pipeline's comments on brianboti/lab-deploy#46 open with it: for the demo root, 0 to add, change or destroy, `reversible`, idle floor USD 0.06 before and after (the provenance key), no exposure change, the pull request, head commit and plan run |
+| The restore drill | `python -m labdeploy.cli restore-drill` passed: the newest backup (1.1 hours old, 0.9 MB) opened read-only with integrity ok, 56 plans, 822 audit events, 213 plan state changes, 2 registered applications and 2 onboarding records; the configuration copy loads; recorded as the event `restore_drill` (ok), next due by 2027-01-15 |
+| The foundation with the 1.10.0 module (read-only plan, `-lock=false`) | 3 to add, 0 to change, 0 to destroy: the custom role `labDeploySecretWriter`, its grant to the apply identity, and `roles/secretmanager.viewer` for the plan identity |
+
 Platform tests on 1.12.0: 454 passed; ruff and zizmor clean.
