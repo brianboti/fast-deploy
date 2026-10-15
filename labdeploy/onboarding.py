@@ -126,7 +126,7 @@ class Onboarder:
                       "state": "validating", "steps": {}, "created_at": time.time()}
             self.c.store.record_event("onboarding", name=app_id, identity=principal.name, application=app_id, outcome="started",
                                       detail=repository + (f" ({path})" if path else ""))
-        elif record["repository"] != repository or record.get("path", "") != path:
+        elif record["repository"].lower() != repository.lower() or record.get("path", "") != path:
             where = record["repository"] + (f" at {record['path']}" if record.get("path") else "")
             raise ValueError(f"Application {app_id} is being onboarded from {where}; give another application id for this repository or folder")
         elif record["state"] == "complete":
@@ -159,6 +159,9 @@ class Onboarder:
     def step_validating(self, record):
         github = self.c.github
         repo = github.repository(record["repository"])
+        # The name exactly as GitHub spells it: the registry, the workflows and the identities all use this one.
+        if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo.get("full_name") or "") and repo["full_name"].lower() == record["repository"].lower():
+            record["repository"] = repo["full_name"]
         branch = repo["default_branch"] or "main"
         checklist = []
         if branch != "main":
@@ -203,7 +206,7 @@ class Onboarder:
         app_id, service, folder = record["application"], record["service"], record.get("path", "")
         if app_id in self.c.config.applications:
             app = self.c.config.applications[app_id]
-            if app.repository != record["repository"] or app.service != service or app.path != folder:
+            if app.repository.lower() != record["repository"].lower() or app.service != service or app.path != folder:
                 raise Blocked(f"Application {app_id} is already registered for {app.repository}" + (f" at {app.path}" if app.path else "")
                               + f" as service {app.service}; give another application id, or unregister it first (lab-deploy unregister {app_id})")
             record["steps"]["registering"] = {"note": "already registered"}
@@ -212,7 +215,8 @@ class Onboarder:
             project, region = settings.project_id, settings.region
             # The first application of a repository keeps the plain names; a further one gets its own (D24), so the two never
             # share workflows, an environment's variables, a deploy identity's trust or a release queue.
-            sibling = any(other.repository == record["repository"] for other in self.c.config.applications.values())
+            # GitHub's names ignore case, so lab/Mono and lab/mono are one repository with one set of workflow files.
+            sibling = any(other.repository.lower() == record["repository"].lower() for other in self.c.config.applications.values())
             suffix = f"-{service}" if sibling else ""
             entry = {"repository": record["repository"], "branch": "main", "service": service, "auto_deploy": record["auto_deploy"],
                      "path": folder, "workflow": f"deploy-gcp{suffix}.yml", "environment": f"staging{suffix}",

@@ -276,6 +276,10 @@ class MonorepoGitHub(OnboardingGitHub):
         self.repos["lab/mono"] = {"files": files, "default_branch": "main"}
         self.repos[PLATFORM]["files"].update({f"templates/{name}": Path("templates", name).read_text() for name in TEMPLATES})
 
+    def repository(self, repository):
+        canonical = next(name for name in self.repos if name.lower() == repository.lower())  # GitHub ignores case
+        return {**super().repository(canonical), "full_name": canonical}
+
     def tree(self, repository, ref):
         paths = set(self.repos[repository]["files"])
         return sorted(paths | {"/".join(p.split("/")[:i]) for p in paths for i in range(1, p.count("/") + 1)})
@@ -288,10 +292,10 @@ def test_each_service_of_a_monorepo_is_onboarded_by_its_own_sentence(tmp_path):
     assert first["application"] == "api" and first["path"] == "services/api" and first["state"] == "planning"
     api = controller.config.applications["api"]
     assert (api.path, api.workflow, api.environment) == ("services/api", "deploy-gcp.yml", "staging")
-    second = controller.onboard(brian, "lab/mono", path="/services/admin/")
+    second = controller.onboard(brian, "lab/Mono", path="/services/admin/")  # GitHub's names ignore case
     assert second["application"] == "admin" and second["state"] == "planning"
     app = controller.config.applications["admin"]
-    assert (app.path, app.workflow, app.environment) == ("services/admin", "deploy-gcp-admin.yml", "staging-admin")
+    assert (app.repository, app.path, app.workflow, app.environment) == ("lab/mono", "services/admin", "deploy-gcp-admin.yml", "staging-admin")
     number = second["steps"]["infrastructure"]["pull_request"]
     root = gh.prs[(PLATFORM, number)]["files"]
     assert 'github_environment           = "staging-admin"' in root["infra/gcp/apps/admin/main.tf"]

@@ -256,7 +256,7 @@ class GitHub:
     def repository(self, repository):
         data = self.request("GET", f"/repos/{repository}").json()
         return {"repository_id": str(data["id"]), "owner_id": str(data["owner"]["id"]), "default_branch": data.get("default_branch"),
-                "private": bool(data.get("private")), "url": data.get("html_url")}
+                "private": bool(data.get("private")), "url": data.get("html_url"), "full_name": data.get("full_name")}
 
     def tree(self, repository, ref):
         """Every path in the repository at a ref (files and directories), for the contract's checks."""
