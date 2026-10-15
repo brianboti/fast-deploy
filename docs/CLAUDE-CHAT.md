@@ -47,6 +47,7 @@ daily reference; `docs/SETUP.md` covers the one-time setup and `docs/RUNBOOK.md`
 | Ask | Tool | Result |
 |---|---|---|
 | "Deploy github.com/ORG/REPO on GCP" | `onboard_application`, `get_onboarding_status` | The whole onboarding, unattended, for a repository that follows the contract (next section) |
+| "Deploy the service in services/admin of github.com/ORG/REPO" | `onboard_application` with `path` | The same for one service of a repository that holds several; one sentence per service |
 | "Draft a configuration for github.com/ORG/REPO" | `analyze_repository`, `propose_configuration` | A draft `platform.yaml` with review questions, as a pull request on the app repository, for a repository that has none yet |
 | "Give demo a bucket called uploads" | A reviewed `needs` change, then `propose_infrastructure` | The developer (or you) adds it to `platform.yaml` in a pull request on the app repository; after that merge, the infrastructure pull request provisions it and the next release uses it. The same for topics, a database or a migration command. `propose_configuration` refuses an app that already has a `platform.yaml` |
 | "Render demo's infrastructure" | `propose_infrastructure` | The app's Terraform root as a pull request on the platform repository; the plan and policy verdict appear as a comment, merging applies it |
@@ -71,6 +72,13 @@ my release?"* follows the first deployment. If a step blocks, the status names t
 sentence continues from that step once it is fixed. Every merge is a pull request the controller opened itself, on the
 application's own files only, after the policy and the checks passed; set `auto_merge: false` in the configuration to
 keep every merge for a person.
+
+**A repository with several services** (`docs/DEVELOPER-CONTRACT.md` section 4a): name the folder, one sentence per
+service: *"Deploy the service in services/api of https://github.com/ORG/REPO"*, then *"... the one in services/admin"*.
+The first keeps the plain workflow names and the `staging` environment; the second gets its own
+(`deploy-gcp-admin.yml`, `staging-admin`), and the onboarding status says which. When the repository has a
+`compose.yaml`, *"Analyze REPO"* turns it into one draft per web service and says where the database, cache and
+workers go; nothing from Compose is deployed as such.
 
 ## Pages for people
 

@@ -71,9 +71,23 @@ needs:
   buckets: [uploads]      # arrives as BUCKET_UPLOADS
   topics: [events]        # arrives as TOPIC_EVENTS and SUBSCRIPTION_EVENTS
   database: none          # none | firestore | postgres (postgres: about 9 dollars a month from the moment it exists)
+  database_auth: iam      # postgres only: iam (no password anywhere) or password (the app gets DATABASE_URL as a secret)
   migrate: []             # e.g. [alembic, upgrade, head]: runs before visitors move to a new version
+build:
+  context: service        # or repository, when a service in a monorepo copies shared code from outside its folder
 reviewed: true            # set by the person who reviewed the file
 ```
+
+**Several services in one repository.** Each service has its own folder with its own `Dockerfile`, `platform.yaml`,
+requirement files and tests, and is onboarded with its own sentence and `path` (for example `services/api`). A Compose
+file is read to draft these, never deployed. Where each part of an app goes:
+
+- Every part that answers web requests: its own service, in its own folder.
+- Databases, files, topics: `needs`.
+- A cache (Redis): none by default; memory or Firestore instead. A managed cache costs tens of dollars a month even
+  idle, so it is the operator's decision.
+- A background worker (Celery, RQ): a topic with push delivery to a service, or a Cloud Run job.
+- A front end for lab members: built files served by the API's own container, with `exposure: lab-members`.
 
 ## 4. Rules for the app itself
 
@@ -90,7 +104,7 @@ reviewed: true            # set by the person who reviewed the file
 - Database migrations are safe to run twice and still work with the previous version, so a rollback stays safe.
 - Answers a client's mistake with 4xx, never 5xx: for five minutes after a release takes over, a crash or more than 5% of
   requests answering 5xx brings the previous version back (the bake). The health path is not counted.
-- The Dockerfile passes hadolint (the build job runs it on every release; from platform 1.10.0 errors stop the release),
+- The Dockerfile passes hadolint (the build job runs it on every release; error-level findings stop the release),
   with dependencies installed before the code is copied, so a code change rebuilds one layer.
 
 ## 5. Pages for people
@@ -109,7 +123,7 @@ container, branches other than `main`, production, and editing the three workflo
 
 When the operator asks "what do I tell developers?", give this, in plain words:
 
-1. A `Dockerfile` at the root that builds the app and listens on port 8080.
+1. A `Dockerfile` at the root (or in the service's folder) that builds the app and listens on port 8080.
 2. A `platform.yaml` filled in and marked `reviewed: true` (the operator can draft it).
 3. `requirements.txt` with exact versions; `requirements-dev.txt` with pytest.
 4. Tests that pass with `python -m pytest`.

@@ -8,6 +8,12 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 7.0"
     }
+    # Not used here: required so this root's lock file, which every application root copies, pins the provider that
+    # generates a database_auth = "password" root's password (an ephemeral random_password, docs/ROADMAP.md 10.6).
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.7"
+    }
   }
   backend "gcs" {}
 }

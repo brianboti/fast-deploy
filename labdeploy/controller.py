@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 
-from .analyzer import FILES, analyze
+from .analyzer import COMPOSE_FILES, FILES, analyze
 from .config import Application, Principal
 from .cost import estimate, findings
 from .github import explain
@@ -213,10 +213,10 @@ class Controller:
         return [app_id for app_id in principal.applications if app_id in self.config.applications]
 
     # ---- one sentence: a repository that follows the contract becomes a running service
-    def onboard(self, principal, repository, app_id=None, auto_deploy=False):
+    def onboard(self, principal, repository, app_id=None, auto_deploy=False, path=None):
         from .onboarding import Onboarder
         with self._onboarding_lock:
-            return Onboarder(self).start(principal, repository, app_id, auto_deploy)
+            return Onboarder(self).start(principal, repository, app_id, auto_deploy, path)
 
     def advance_onboarding(self, app_id):
         from .onboarding import Onboarder
@@ -266,6 +266,15 @@ class Controller:
         self._cache[key] = (time.monotonic(), value)
         return value
 
+    def touched_since(self, app, base, head):
+        """Whether a commit range concerns a service in a folder of a shared repository: a file under its folder or one of
+        its own workflows changed, or its build reads the whole repository. When in doubt, it does."""
+        if self.spec_at(app, head).build.context == "repository":
+            return True
+        files, complete = self.github.changed_files(app.repository, base, head)
+        own = {f".github/workflows/{name}" for name in app.workflows.values()}
+        return not complete or any(name.startswith(f"{app.path}/") or name in own for name in files)
+
     def auto_deploy_tick(self):
         """One pass: for every app with auto_deploy, release the tip of main when it is neither live nor already attempted."""
         if self.config.paused:
@@ -282,6 +291,9 @@ class Controller:
                 live = self.store.latest_success(app_id)
                 if live and live["sha"] == head:
                     results[app_id] = "up to date"
+                    continue
+                if live and app.path and not self.touched_since(app, live["sha"], head):
+                    results[app_id] = f"up to date: nothing under {app.path} changed since {live['sha'][:12]}"
                     continue
                 attempted = self.store.latest_plan(app_id, head)
                 if attempted and not self.retryable(attempted):
@@ -497,7 +509,7 @@ class Controller:
         if self.config.applications[app_id].paused:
             raise ValueError(f"Deployments of {app_id} are paused by the operator (paused: true on the application); reads still work")
 
-    SCHEDULES = {"recover-gcp.yml": 2 * 86_400, "rightsize-gcp.yml": 8 * 86_400}  # staleness: six-hourly and weekly runs, with slack
+    SCHEDULES = {"recover": 2 * 86_400, "rightsize": 8 * 86_400}  # staleness: six-hourly and weekly runs, with slack
 
     def schedule_health(self, app):
         """The two scheduled workflows per app: paused by GitHub, stale, or fine. GitHub disables schedules after sixty idle days."""
@@ -505,7 +517,8 @@ class Controller:
         if not callable(check):
             return None
         result = {}
-        for workflow, limit in self.SCHEDULES.items():
+        for kind, limit in self.SCHEDULES.items():
+            workflow = app.workflows[kind]
             health = check(app, workflow)
             last = health.get("last_scheduled_run")
             age = None
@@ -534,7 +547,7 @@ class Controller:
         pin = self.pinned_platform(app, platform.repository)
         result = {"commit": pin, "supported": None, "note": None}
         if pin is None:
-            result.update(supported=False, note="The app has no deploy-gcp.yml pinned to this platform; run update_app_workflows.")
+            result.update(supported=False, note=f"The app has no {app.workflow} pinned to this platform; run update_app_workflows.")
         elif platform.commit and pin == platform.commit:
             result.update(supported=True)
         elif platform.minimum_commit:
@@ -549,6 +562,14 @@ class Controller:
             result.update(note="No platform.commit or platform.minimum_commit is configured, so the pin is reported but not enforced.")
         return result
 
+    @staticmethod
+    def service_paths(app, paths):
+        """A repository's file list as the service sees it: only its folder's files, relative to that folder."""
+        if paths is None or not app.path:
+            return paths
+        prefix = app.path + "/"
+        return [path[len(prefix):] for path in paths if path.startswith(prefix)]
+
     def inspect(self, principal, app_id):
         import httpx
         app = self.app(principal, app_id)
@@ -556,25 +577,34 @@ class Controller:
         files = {}
         for filename in FILES:
             try:
-                files[filename] = self.github.file(app, sha, filename)
+                files[filename] = self.github.file(app, sha, app.repo_path(filename))
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code != 404:
                     raise
+        for filename in COMPOSE_FILES:  # a Compose file usually sits at the repository's root, beside the services it names
+            for candidate in dict.fromkeys((app.repo_path(filename), filename)):
+                if "compose" in files:
+                    break
+                try:
+                    files["compose"] = self.github.file(app, sha, candidate)
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code != 404:
+                        raise
         try:  # the file list lets the analyzer see tests and a lock file; without it the advice is only more cautious
             paths = self.github.tree(app.repository, sha) if hasattr(self.github, "tree") else None
         except Exception:  # noqa: BLE001
             paths = None
-        return {"commit_sha": sha, **analyze(files, app.service, paths)}
+        return {"commit_sha": sha, "path": app.path, **analyze(files, app.service, self.service_paths(app, paths))}
 
     def spec_at(self, app, sha):
         """The reviewed specification at a commit, with a plain explanation when the app has none yet."""
         import httpx
         try:
-            text = self.github.file(app, sha, "platform.yaml")
+            text = self.github.file(app, sha, app.repo_path("platform.yaml"))
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != 404:
                 raise
-            raise ValueError(f"{app.repository} has no platform.yaml on {app.branch}; run propose_configuration to draft one, review it, "
+            raise ValueError(f"{app.repository} has no {app.repo_path('platform.yaml')} on {app.branch}; run propose_configuration to draft one, review it, "
                              "set reviewed: true and merge it through the normal process") from None
         return parse_spec(text)
 
@@ -621,6 +651,7 @@ class Controller:
             "pinned_commit": bool(commit_sha), "behind_branch_by": behind,
             "provenance": app.provenance,
             "bake_seconds": app.bake_seconds,
+            "layout": {"path": app.path, "workflow": app.workflow, "github_environment": app.environment},
             "warnings": [],
         }
         if not app.bake_seconds:
@@ -659,12 +690,12 @@ class Controller:
         self.require_active(app_id)
         report = self.inspect(principal, app_id)
         try:
-            self.github.file(app, report["commit_sha"], "platform.yaml")
+            self.github.file(app, report["commit_sha"], app.repo_path("platform.yaml"))
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != 404:
                 raise
         else:
-            raise ValueError("platform.yaml already exists; edit it through a normal reviewed PR")
+            raise ValueError(f"{app.repo_path('platform.yaml')} already exists; edit it through a normal reviewed PR")
         if not report["supported_candidate"]:
             raise ValueError("No supported Python manifest found")
         if not self.config.live_dispatch:
@@ -688,7 +719,7 @@ class Controller:
 
     def pinned_platform(self, app, repository):
         """The platform commit the app's deploy workflow pins today, or None when the workflow is absent."""
-        found = self.github.contents(app.repository, app.branch, ".github/workflows/deploy-gcp.yml")
+        found = self.github.contents(app.repository, app.branch, f".github/workflows/{app.workflow}")
         return pinned_commit(found["text"], repository) if found else None
 
     def update_workflows(self, principal, app_id, platform_sha=None, allow_writes=False):
@@ -706,11 +737,11 @@ class Controller:
         if current == sha:
             return {"application": app_id, "platform_commit": sha, "current_pin": current, "pull_request": None, "note": "Already pinned to this platform commit."}
         files = {}
-        for name in TEMPLATES:
+        for name, kind in zip(TEMPLATES, ("deploy", "recover", "rightsize"), strict=True):
             template = self.github.contents(platform.repository, sha, f"templates/{name}")
             if template is None:
                 raise ValueError(f"templates/{name} does not exist at platform commit {sha[:12]}")
-            files[f".github/workflows/{name}"] = render(template["text"], platform.repository, sha)
+            files[f".github/workflows/{app.workflows[kind]}"] = render(template["text"], platform.repository, sha, app)
         return {"application": app_id, "platform_commit": sha, "current_pin": current, "pull_request": self.github.update_workflows(app, sha, files)}
 
     def render_infrastructure(self, principal, app_id, state_bucket=None, bootstrap_image=None, settings=None):
@@ -727,7 +758,7 @@ class Controller:
         files = app_root(target.service, project_id=target.project_id, region=target.region, state_bucket=state_bucket or f"{target.project_id}-tfstate",
                          github_repository=app.repository, github_repository_id=ids["repository_id"], github_owner_id=ids["owner_id"],
                          bootstrap_image=bootstrap_image or BOOTSTRAP_IMAGE, health_path=health_path, settings={**app.infra, **(settings or {})}, needs=needs,
-                         exposure=exposure, viewers=self.viewers(app))
+                         exposure=exposure, viewers=self.viewers(app), github_environment=app.environment, workflow_files=list(app.workflows.values()))
         return {"application": app_id, "service": target.service, "directory": f"infra/gcp/apps/{target.service}", "files": files, "note": note}
 
     def viewers(self, app):
@@ -835,7 +866,7 @@ class Controller:
 
     def cost_report(self, principal, app_id):
         app = self.app(principal, app_id)
-        result = self.github.cost_report(app)
+        result = self.github.cost_report(app, workflow=app.workflows["rightsize"])
         if isinstance(result, dict):
             result["spending_guards"] = self.spending_guards(app)
         return result
@@ -846,7 +877,7 @@ class Controller:
         self.require_active(app_id)
         if not self.config.live_dispatch:
             raise ValueError("Writes are disabled (live_dispatch: false); enable them before proposing changes")
-        latest = self.github.cost_report(app)
+        latest = self.github.cost_report(app, workflow=app.workflows["rightsize"])
         report = latest.get("report")
         if not report:
             raise ValueError("No cost report yet; the right-sizing workflow runs weekly, or dispatch it in GitHub Actions")
@@ -855,7 +886,7 @@ class Controller:
         if not proposals:
             return {"application": app_id, "pull_request": None, "changes": [], "note": "The latest report proposes no concrete setting change."}
         head = self.describe_head(app)
-        text = self.github.file(app, head["sha"], "platform.yaml")
+        text = self.github.file(app, head["sha"], app.repo_path("platform.yaml"))
         new_text, applied, regenerated = apply_settings(text, {p["setting"]: p["recommended"] for p in proposals})
         if new_text == text:
             return {"application": app_id, "pull_request": None, "changes": [], "note": "platform.yaml already matches the proposals."}
@@ -876,7 +907,7 @@ class Controller:
                 + ("The file was regenerated from the model because a proposed key was missing, so comments were not kept.\n\n" if regenerated else "")
                 + "Review, adjust and merge through the normal process; the next release applies it. Nothing is merged or deployed by this pull request itself.")
         branch = f"lab-deploy/rightsize-{(report.get('generated_at') or '')[:10].replace('-', '') or uuid.uuid4().hex[:8]}"
-        pull_request = self.github.open_pull_request(app, branch, {"platform.yaml": new_text}, "Right-size platform.yaml from measured usage", body,
+        pull_request = self.github.open_pull_request(app, branch + app.suffix, {app.repo_path("platform.yaml"): new_text}, "Right-size platform.yaml from measured usage", body,
                                                      "Apply measured right-sizing proposals to platform.yaml")
         return {"application": app_id, "changes": applied, "estimated_monthly_saving_usd": round(savings, 4),
                 "cost": {"worst_case_before_usd_month": before["compute_ceiling_usd_month"], "worst_case_after_usd_month": after["compute_ceiling_usd_month"],
@@ -898,6 +929,9 @@ class Controller:
             raise ValueError("Plan expired; create a new plan")
         if plan["repository"] != app.repository or plan["branch"] != app.branch or plan.get("target") != app.target.model_dump():
             raise ValueError("Registry changed; create a new plan")
+        layout = {"path": app.path, "workflow": app.workflow, "github_environment": app.environment}
+        if plan.get("layout", {"path": "", "workflow": "deploy-gcp.yml", "github_environment": "staging"}) != layout:
+            raise ValueError("The application's folder or workflow names changed since this plan; create a new plan")
         if plan.get("provenance", "required") != app.provenance:
             raise ValueError("The application's provenance setting changed since this plan; create a new plan")
         if plan.get("pinned_commit"):
@@ -961,7 +995,7 @@ class Controller:
             "from_plan": live["id"], "from_revision": receipt.get("revision"), "to_traffic": receipt["previous_traffic"],
         }
         try:
-            record["dispatch_result"] = self.github.dispatch_workflow(app, "recover-gcp.yml", {"rollback_plan_id": live["id"]})
+            record["dispatch_result"] = self.github.dispatch_workflow(app, app.workflows["recover"], {"rollback_plan_id": live["id"]})
         except Exception:
             self.store.add(principal.name, record, "dispatch_unknown")
             raise ValueError("Rollback dispatch outcome unknown. Inspect GitHub before requesting it again.") from None
@@ -1070,7 +1104,7 @@ class Controller:
         lookup = getattr(self.github, "recovery_after", None)
         if not callable(lookup) or not (plan.get("workflow") or {}).get("id"):
             return
-        plan["recovery_run"] = lookup(app, plan["workflow"])
+        plan["recovery_run"] = lookup(app, plan["workflow"], workflow=app.workflows["recover"])
         if persist and (plan["recovery_run"] or {}).get("conclusion"):
             self.persist(owner, plan)
 

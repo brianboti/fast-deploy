@@ -164,6 +164,43 @@ resource "google_sql_user" "runtime" {
   type           = "CLOUD_IAM_SERVICE_ACCOUNT"
   database_roles = ["cloudsqlsuperuser"]
 }
+# database_auth = "password", for code that connects with a URL: a built-in user `app` whose password the root generates in
+# every run and these write-only arguments send once (the version pins the first value; raise it to rotate the password).
+# The URL reaches the app as the secret <service>-DATABASE_URL, which the runtime may read through the app's secret grant
+# above; neither Terraform's state nor any plan ever holds the password.
+locals {
+  password_auth    = var.needs.database == "postgres" && var.needs.database_auth == "password"
+  password_version = 1
+}
+resource "google_sql_user" "password" {
+  count               = local.password_auth ? 1 : 0
+  name                = "app"
+  instance            = google_sql_database_instance.need[0].name
+  password_wo         = var.database_password
+  password_wo_version = local.password_version
+}
+resource "google_secret_manager_secret" "database_url" {
+  count     = local.password_auth ? 1 : 0
+  secret_id = "${var.service}-DATABASE_URL"
+  labels    = local.labels
+  replication {
+    user_managed {
+      replicas {
+        location = var.region
+      }
+    }
+  }
+}
+resource "google_secret_manager_secret_version" "database_url" {
+  count                  = local.password_auth ? 1 : 0
+  secret                 = google_secret_manager_secret.database_url[0].id
+  secret_data_wo         = "postgresql://app:${var.database_password}@${google_sql_database_instance.need[0].private_ip_address}:5432/app?sslmode=require"
+  secret_data_wo_version = local.password_version
+  lifecycle {
+    # A user created again gets this run's password; the URL must be written again in the same run to match it.
+    replace_triggered_by = [google_sql_user.password]
+  }
+}
 resource "google_project_iam_member" "need_sql_runtime" {
   for_each = var.needs.database == "postgres" ? toset(["roles/cloudsql.client", "roles/cloudsql.instanceUser"]) : toset([])
   project  = var.project_id

@@ -81,7 +81,9 @@ operator to restart it with the current code (`scripts/start.sh` on the laptop).
 ### 1. "Deploy github.com/ORG/REPO on GCP" (a new app)
 
 1. Call `onboard_application` with the link. Pass `application` only when the operator names the app. Pass
-   `auto_deploy: true` only when they ask for every merge to main to be released automatically.
+   `auto_deploy: true` only when they ask for every merge to main to be released automatically. When the service lives
+   in a folder (a repository with several services, or a `backend/` folder), pass that folder as `path`, and make one
+   call per service; the second service of a repository gets its own workflow names and environment (`staging-NAME`).
 2. Report the step in plain words. The steps, in order: checking the repository; registering the app; preparing its
    cloud setup as a pull request; waiting for the plan and the safety rules, then merging; building the cloud setup;
    creating the GitHub environment; adding the release workflows as a pull request; merging it; the first release.

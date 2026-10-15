@@ -87,6 +87,8 @@ resource "google_project_iam_member" "infra_plan_roles" {
     "roles/iam.securityReviewer", "roles/run.viewer", "roles/artifactregistry.reader", "roles/monitoring.viewer", "roles/pubsub.viewer",
     "roles/cloudsql.viewer", "roles/datastore.viewer", "roles/iam.workloadIdentityPoolViewer", "roles/serviceusage.serviceUsageViewer",
     "roles/compute.networkViewer", "roles/bigquery.metadataViewer", "roles/logging.viewer", "roles/storage.bucketViewer",
+    # Secret metadata only (never a value): an application root with database_auth = password plans its DATABASE_URL secret.
+    "roles/secretmanager.viewer",
   ]) : toset([])
   project = var.project_id
   role    = each.value
@@ -142,6 +144,23 @@ resource "google_project_iam_member" "infra_apply_log_alerts" {
   count   = local.pipeline_enabled ? 1 : 0
   project = var.project_id
   role    = google_project_iam_custom_role.log_alert_writer[0].name
+  member  = "serviceAccount:${google_service_account.infra_apply[0].email}"
+}
+# An application root with database_auth = "password" creates its DATABASE_URL secret and adds the first version through a
+# write-only argument. Creating and describing secrets and versions only: secretmanager.versions.access is not here, so the
+# pipeline can never read a value back (the provider does not read a write-only version's payload either).
+resource "google_project_iam_custom_role" "secret_writer" {
+  count       = local.pipeline_enabled ? 1 : 0
+  role_id     = "labDeploySecretWriter"
+  title       = "Lab Deploy secret writer"
+  description = "Creates application secrets and adds versions without reading any secret value"
+  permissions = ["secretmanager.secrets.create", "secretmanager.secrets.get", "secretmanager.secrets.list", "secretmanager.secrets.update",
+  "secretmanager.versions.add", "secretmanager.versions.get", "secretmanager.versions.list"]
+}
+resource "google_project_iam_member" "infra_apply_secrets" {
+  count   = local.pipeline_enabled ? 1 : 0
+  project = var.project_id
+  role    = google_project_iam_custom_role.secret_writer[0].name
   member  = "serviceAccount:${google_service_account.infra_apply[0].email}"
 }
 resource "google_storage_bucket_iam_member" "infra_apply_state" {

@@ -1,5 +1,5 @@
-name: Recover GCP staging
-run-name: ${{ inputs.rollback_plan_id && format('rollback-{0}', inputs.rollback_plan_id) || 'Recover GCP staging' }}
+name: Recover GCP staging__LAB_NAME_SUFFIX__
+run-name: ${{ inputs.rollback_plan_id && format('rollback-{0}', inputs.rollback_plan_id) || 'Recover GCP staging__LAB_NAME_SUFFIX__' }}
 # workflow_run is acceptable here: this workflow never checks out or executes the triggering workflow's code.
 on: # zizmor: ignore[dangerous-triggers]
   workflow_dispatch:
@@ -10,7 +10,7 @@ on: # zizmor: ignore[dangerous-triggers]
         default: ''
         type: string
   workflow_run:
-    workflows: ['Deploy GCP staging']
+    workflows: ['Deploy GCP staging__LAB_NAME_SUFFIX__']
     types: [completed]
   # Safety net only: the completion trigger above handles every normal release. Each scheduled run costs Actions
   # minutes on private repositories, so this stays at every six hours.
@@ -19,7 +19,7 @@ on: # zizmor: ignore[dangerous-triggers]
 permissions:
   contents: read
 concurrency:
-  group: gcp-staging
+  group: gcp-staging__LAB_SUFFIX__
   cancel-in-progress: false
   queue: max
 jobs:
@@ -27,7 +27,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    environment: staging
+    environment: staging__LAB_SUFFIX__
     permissions:
       contents: read
       id-token: write

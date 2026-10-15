@@ -1,3 +1,53 @@
+# 1.10.0: one repository, several services (roadmap Phase 10)
+
+## Added
+
+1. **A service's folder.** An application can live in a folder of its repository (`services/api`, `backend`): the registry
+   records it as `path`, `onboard_application` takes it, and the analyzer, the contract check, the plan, the drafted
+   configuration, the right-sizing pull request and the weekly cost report all read `platform.yaml` there. The deploy
+   workflow runs the tests and the audit in that folder and builds from it. A plan records the folder and workflow names
+   it was made for and is refused if they changed (decision D23).
+2. **Several services in one repository.** The first service of a repository keeps the plain names; each further one gets
+   its own workflows (`deploy-gcp-<service>.yml`, `recover-gcp-<service>.yml`, `rightsize-gcp-<service>.yml`), GitHub
+   environment (`staging-<service>`), queue and Terraform root. Its deploy identity trusts only its own workflows in its
+   own environment, so one service's workflow cannot release another, and the pipeline publishes its variables to its own
+   environment. Re-pinning, rollback, recovery records, cost reports and `lab-deploy decommission` use the service's own
+   names; retiring one service keeps the repository's access for the others (D24).
+3. **`build: {context: repository}`** in `platform.yaml` for a service that copies shared code from elsewhere in the
+   repository: the whole repository is the build context and the Dockerfile stays in the service's folder. The contract
+   says how to keep that context small with a `<Dockerfile>.dockerignore`.
+4. **Where each part of an app goes** (the contract's new section 4b): every web component its own service, data under
+   `needs`, no cache by default, workers through a topic's push delivery or a job, a lab-members front end served by the
+   API's own container. The analyzer says so when it sees Redis, Celery or RQ, a `package.json`, or a database driver
+   without the Cloud SQL connector.
+5. **Compose files are read, never deployed.** `analyze_repository` reads a `compose.yaml` (the service's folder first,
+   then the root) and returns one draft `platform.yaml` per web service it builds, with its folder and build context, and
+   the rule for every database, cache, queue and worker it names.
+6. **Postgres by password** (`needs.database_auth: password`, roadmap item 10.6): for code that only
+   speaks a connection URL. The platform creates the database user `app` and the secret `<service>-DATABASE_URL`, which the
+   service receives as `DATABASE_URL`. The root generates the password in each run with an ephemeral `random_password` and
+   sends it once through write-only arguments, so neither Terraform's state, nor a plan, nor the repository, nor the chat
+   ever holds it (checked: a plan of such a root contains no password and passes the policy). The release checks the
+   secret has an enabled version before deploying. IAM sign-in stays the default.
+7. **Auto-deploy in a shared repository** skips a service whose folder and workflows did not change since its live release
+   (unless its build reads the whole repository), so a commit to one service does not rebuild the others.
+
+## Changed
+
+1. **Dockerfile lint errors stop the release by default**, as 1.9.0 announced. Warnings never do; the repository variable
+   `HADOLINT_BLOCKING=false` keeps error-level findings as annotations for one repository. The four Dockerfiles in use
+   have no findings.
+2. The onboarding block's `environment` setting accepts `staging` only: the platform names GitHub environments itself.
+3. The foundation's lock file pins the `random` provider (3.9.1) for the roots that copy it.
+
+## Upgrade steps
+
+1. Apply the foundation (`scripts/apply-foundation.sh PROJECT`): the plan identity gets `roles/secretmanager.viewer` and
+   the apply identity the custom role `labDeploySecretWriter`, which create and describe secrets without reading a value.
+2. Restart the controller.
+3. Re-pin every application ("re-pin APP" or `lab-deploy update-workflows`): the workflow templates changed. Existing
+   roots render unchanged, so no infrastructure pull request is needed.
+
 # 1.9.2: the spend-cap check says whether the cap is recorded
 
 ## Fixed
