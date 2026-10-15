@@ -92,6 +92,11 @@ app; programs that must call the app need a token for the proxy's client id (`do
 
 ## A normal release, as Claude reports it
 
+A plan carries an `approval` block that code builds from the plan, never from Claude's words: the commit, where it goes
+(and the service's folder), the cost bounds, who may reach it, what it needs, how far a rollback undoes it (`reversible`,
+or `data-bearing` when a migration runs), and the identifiers that tie your request to the plan and the run. The
+infrastructure pull request's comment opens with the same kind of block for Terraform changes.
+
 `deploy_latest` returns a plan id and `dispatched`. Asking for the status with a wait of 45 seconds a few times shows the
 workflow steps (tests, dependency audit, Dockerfile lint, build, provenance, scan, deploy, probes), then the release phases
 `preparing, deploying, promoting, baking, succeeded` (with `migrating` before `deploying` when the app declares a

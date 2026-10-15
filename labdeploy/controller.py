@@ -218,7 +218,8 @@ def release_approval(plan, requested_by=None):
     return {
         "commit": {"sha": plan.get("sha"), "message": lines[0][:100] if lines else None},
         "spec_hash": plan.get("spec_hash"),
-        "target": {"project_id": target.get("project_id"), "region": target.get("region"), "service": target.get("service")},
+        "target": {"project_id": target.get("project_id"), "region": target.get("region"), "service": target.get("service"),
+                   "layout": plan.get("layout")},
         "cost": {"idle_floor_usd_month": cost.get("idle_floor_usd_month"), "compute_ceiling_usd_month": cost.get("compute_ceiling_usd_month"),
                  "needs_floor_usd_month": cost.get("needs_floor_usd_month"), "ceiling_policy": (cost.get("ceiling_policy") or {}).get("status")},
         "exposure": spec.get("exposure", "authenticated"),

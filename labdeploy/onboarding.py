@@ -366,7 +366,8 @@ class Onboarder:
         pr = self.c.github.pull_request(platform.repository, number)
         step = record["steps"].setdefault("planning", {})
         if pr["merged"]:
-            step.update(merge_sha=pr["merge_commit_sha"], waiting=None)
+            # Who approved it, as GitHub records it (D29): the audit trail keeps the requester and the approver apart.
+            step.update(merge_sha=pr["merge_commit_sha"], waiting=None, merged_by=pr.get("merged_by"))
             record["state"] = "applying"
             return
         runs = self.c.github.workflow_runs(platform.repository, "infra-plan.yml", head_sha=pr["head_sha"])
@@ -461,7 +462,7 @@ class Onboarder:
         pr = self.c.github.pull_request(app.repository, number)
         step = record["steps"].setdefault("merging_workflows", {})
         if pr["merged"]:
-            step.update(merge_sha=pr["merge_commit_sha"], waiting=None)
+            step.update(merge_sha=pr["merge_commit_sha"], waiting=None, merged_by=pr.get("merged_by"))
             record["state"] = "releasing"
             return
         waiting = self.merge_gate(record, pr)

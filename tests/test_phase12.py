@@ -192,7 +192,7 @@ RELEASE = {"id": "p" * 32, "application": "demo", "sha": "a" * 40, "commit": {"s
 def test_release_approval_is_built_from_the_plan_alone():
     expected = {
         "commit": {"sha": "a" * 40, "message": "Fix the login bug"}, "spec_hash": "h" * 64,
-        "target": {"project_id": "test-project", "region": "us-central1", "service": "demo"},
+        "target": {"project_id": "test-project", "region": "us-central1", "service": "demo", "layout": None},  # a plan from before 1.10.0
         "cost": {"idle_floor_usd_month": 0.0, "compute_ceiling_usd_month": 12.5, "needs_floor_usd_month": 8.57, "ceiling_policy": "within_limit"},
         "exposure": "lab-members", "needs": {"buckets": ["uploads"], "topics": [], "database": "postgres", "migrate": True}, "warnings": 2,
         "reversibility": {"tier": "data-bearing", "detail": "the migration changes the database; a rollback restores traffic only"},

@@ -71,11 +71,13 @@ operator to restart it with the current code (`scripts/start.sh` on the laptop).
   ("roll demo back", "deploy the latest demo"), go ahead. If you are inferring it ("demo seems broken" suggests a
   rollback), propose it in one line with what will happen and wait for a yes.
 - Before a release, say what is going out (commit, what changed) and the cost bounds when they changed;
-  `compare_with_live` gives both in one call.
+  `compare_with_live` gives both in one call. A plan carries an `approval` block that code built from the plan (commit,
+  target, cost, exposure, needs, how far a rollback undoes it, identifiers): show its values as returned, never rounded
+  or reworded, and say "data-bearing" plainly when it says so.
 - `onboard_application` deserves one sentence of warning the first time: when the repository passes the check, it goes
   all the way. It creates cloud resources, merges its own pull requests once the safety rules pass, and releases the
-  first version. If the operator only wants to know whether a repository is ready, do not call it; check it yourself
-  (job 2).
+  first version. If the operator only wants to know whether a repository is ready, do not call it; use
+  `check_repository` (job 2).
 
 ## Jobs
 

@@ -435,3 +435,23 @@ security control.
 
 Platform tests on 1.9.1: 364 passed; ruff and zizmor clean.
 
+
+## 1.10.0 to 1.12.0 before the merges: what was checked (2026-10-15)
+
+Built and checked in one night; nothing was applied, deployed or created in the cloud. The live exercises (a two-service
+repository onboarded with one sentence each, Sophia's copy from `backend/`, Postgres by password, the checker's draft on a
+bare repository, a buildpack release, an approval block on a real infrastructure pull request) follow the merges of
+brianboti/lab-deploy#44 and #45 and the foundation apply 1.10.0 needs.
+
+| Check | Observed |
+|---|---|
+| A root with `database_auth: password` planned against the real foundation state (local backend, `-refresh=false`, nothing applied) | 46 to add; the platform's policy: 0 violations; the plan's JSON holds no `postgresql://` URL, and the user's `password` and the secret version's `secret_data` are null (only the write-only versions, 1, appear) |
+| The same root with `-lockfile=readonly` | `terraform init` and `validate` pass with the foundation's lock (the `random` provider 3.9.1 now pinned there); OpenTofu 1.12.6 validates it too |
+| The live demo and Sophia roots with the 1.10.0 module (read-only plans) | No changes: a first service of a repository renders exactly as before |
+| The two-service test repository, locally (scratch copy, not yet on GitHub) | Both services' tests pass (the admin service's with the repository root on the import path, as the workflow sets it); hadolint finds nothing; both images build for `linux/amd64`; the admin image, built from the repository root with its `Dockerfile.dockerignore`, holds only `app.py`, `migrate.py`, `lib/` and the lock, and answers `/health` and `/` with the shared code |
+| Google's buildpacks on the demo app, locally under emulation (`pack` 0.40.9 by SHA-256, builder and run image by digest) | The Ubuntu 24.04 builder refuses Python 3.12 (it offers 3.13.0 to 3.15.0 only); the Ubuntu 22.04 builder built it on 3.12.15 in 58 seconds, pip installing the lock with its hashes; the image runs as uid 1000 and answers `/health`. Size as Docker reports it: 394 MB, against 52 MB for the demo's own Dockerfile image. Decision D28: the Dockerfile stays the default |
+| The scaffold, end to end in scratch copies | The lock compiled in a container of Python 3.12 in about 4 seconds (14 packages, 163 hashes); drafted Dockerfiles for FastAPI, Flask, Django, Bottle and Litestar apps build and serve `/health` as uid 65532; the drafted CI steps pass in a clean container; hadolint and zizmor find nothing in the drafts |
+| `scripts/export-app.sh --dry-run` for the demo (from the configuration file) and Sophia (from the controller's database, read-only) | Every command printed, none run. A real export of the demo was not run: the auto-mode classifier declined it, and it is left for the operator |
+| OpenTofu 1.12.6 on the four committed roots (the foundation, lab-demo, lab-notebook, sophia) | All validate, with the official image and with the pinned amd64 binary the CI step downloads |
+
+Platform tests on 1.12.0: 454 passed; ruff and zizmor clean.

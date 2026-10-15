@@ -36,6 +36,9 @@ jobs:
           python -m pip install --require-hashes -r audit.lock
           python -m pip_audit --require-hashes -r requirements.lock
           python -m pip_audit --require-hashes -r requirements-dev.lock
+      # scripts/export-app.sh is a zsh script; its tests run it with fake gcloud and docker, and skip where zsh is missing.
+      - name: Install zsh
+        run: command -v zsh || { sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends zsh; }
       - run: python -m pytest -q
       - run: python -m pytest examples/demo-app -q
       - run: python -m labdeploy.cli validate examples/demo-app/platform.yaml

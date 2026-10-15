@@ -48,7 +48,7 @@ ALLOWED_LOCATIONS = ("us-central1",)
 # A provenance key counts as data: its versions are what every stored signature verifies against, and Cloud KMS never frees
 # the name, so a replaced key could not even be created again.
 DATA_TYPES = (
-    "google_storage_bucket", "google_sql_database_instance", "google_bigquery_dataset", "google_firestore_database",
+    "google_storage_bucket", "google_sql_database_instance", "google_sql_database", "google_bigquery_dataset", "google_firestore_database",
     "google_secret_manager_secret", "google_artifact_registry_repository", "google_kms_crypto_key",
 )
 LABELLED_TYPES = ("google_cloud_run_v2_service", "google_storage_bucket", "google_artifact_registry_repository",
