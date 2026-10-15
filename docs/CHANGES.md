@@ -1,3 +1,37 @@
+# 1.12.1: what the 1.12.0 live exercise found
+
+The live exercise of 1.10.0 to 1.12.0 (`docs/VALIDATION.md`, 2026-10-15) onboarded two services of one repository, a
+Postgres database by password, and the checker's draft on a bare repository. It found one real failure and four small
+gaps, fixed here. Nothing here costs anything. **Apply the foundation once** (`scripts/apply-foundation.sh PROJECT`: 1 to
+change, the custom role); no workflow regeneration is needed.
+
+## Fixed
+
+1. **Postgres by password could not be applied.** The first live apply of a `database_auth: password` root created the
+   instance, the database and the user, then failed: Google's provider enables a secret version right after adding it,
+   and the custom role `labDeploySecretWriter` lacked `secretmanager.versions.enable`; the workflow's retry then tried to
+   replace the failed version and lacked `secretmanager.versions.destroy`. The role now also has `versions.enable`,
+   `versions.disable` and `versions.destroy` (state changes only; still no `versions.access`, so no value is ever read
+   back). Had the retry succeeded, it would have written a URL with a new password while the user kept the first one: the
+   user's `password_wo_version` now follows the URL's secret version number, so every new version (the first, a rotation
+   through `password_version`, a retry) sets the user to the same run's password in place. A user is never dropped for
+   this, because it may own the application's tables; a new instance writes the URL again.
+1. **A Compose file's database reaches the draft.** A web service that depends on a Postgres service in the Compose
+   file is drafted with `needs.database: postgres`, and with `database_auth: password` when its `environment` sets
+   `DATABASE_URL` (both the list and the mapping forms of `depends_on` and `environment`); the part says why in
+   `needs_from`. Before, the live test repository's admin service was drafted with `database: none`.
+2. **The infrastructure pull request says who asked.** Its description, written by the controller, ends with
+   `Requested by <identity>`, and with `through the onboarding of <application>` when onboarding opened it, so the chain
+   reads request, pull request, plan run, apply run (roadmap 12.1). The plan comment's code-rendered block is unchanged.
+3. **An open draft is named as possibly stale.** When `propose_configuration` (or any platform pull request) finds a pull
+   request already open on its branch, it still leaves it as it is, and now says so: it may hold a person's edits or
+   predate the request, and closing it lets the platform open a fresh one. The live run had returned `changed: []` and
+   the open 1.10.0 draft that still said `my-service`.
+4. A progress message no longer ends with two full stops ("in progress..").
+
+Platform tests: 459 pass; `terraform validate` passes for the foundation and the live `mono-admin` root.
+
+
 # 1.12.0: legible approvals and the operator's succession (roadmap Phase 12)
 
 Planned in `docs/ROADMAP.md` Phase 12 from the research review (`docs/RESEARCH-2026-10-14.md`, section 4.4, the trust

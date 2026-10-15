@@ -213,7 +213,7 @@ def describe(record):
     else:
         waiting = (view["steps"].get(state) or {}).get("waiting")
         doing = f"waiting for {waiting}" if waiting else WHAT_NEXT[state]
-        view["next_action"] = f"In progress: {doing}. The controller continues on its own every minute; ask for get_onboarding_status to follow it."
+        view["next_action"] = f"In progress: {doing.rstrip('.')}. The controller continues on its own every minute; ask for get_onboarding_status to follow it."
     return view
 
 
@@ -353,7 +353,7 @@ class Onboarder:
             record["steps"]["infrastructure"] = {"note": "the root is already on main"}
             record["state"] = "environment"
             return
-        result = self.c.propose_infrastructure(self.principal(record), app_id, allow_writes=True, **render)
+        result = self.c.propose_infrastructure(self.principal(record), app_id, allow_writes=True, through=f"the onboarding of `{app_id}`", **render)
         pull_request = result["pull_request"]
         if pull_request.get("number") is None:
             raise Blocked(f"The infrastructure pull request could not be opened: {pull_request.get('note')}")

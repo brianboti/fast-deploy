@@ -165,7 +165,7 @@ resource "google_sql_user" "runtime" {
   database_roles = ["cloudsqlsuperuser"]
 }
 # database_auth = "password", for code that connects with a URL: a built-in user `app` whose password the root generates in
-# every run and these write-only arguments send once (the version pins the first value; raise it to rotate the password).
+# every run and these write-only arguments send once (password_version pins the first value; raise it to rotate both).
 # The URL reaches the app as the secret <service>-DATABASE_URL, which the runtime may read through the app's secret grant
 # above; neither Terraform's state nor any plan ever holds the password.
 locals {
@@ -173,11 +173,14 @@ locals {
   password_version = 1
 }
 resource "google_sql_user" "password" {
-  count               = local.password_auth ? 1 : 0
-  name                = "app"
-  instance            = google_sql_database_instance.need[0].name
-  password_wo         = var.database_password
-  password_wo_version = local.password_version
+  count       = local.password_auth ? 1 : 0
+  name        = "app"
+  instance    = google_sql_database_instance.need[0].name
+  password_wo = var.database_password
+  # The number of the URL's secret version: whenever a new version is written (the first run, a rotation, or a version
+  # replaced after a failed create and the workflow's retry), the user gets the same run's password in place. A user is
+  # never dropped for this: it may own the application's tables.
+  password_wo_version = tonumber(regex("[0-9]+$", google_secret_manager_secret_version.database_url[0].name))
 }
 resource "google_secret_manager_secret" "database_url" {
   count     = local.password_auth ? 1 : 0
@@ -197,8 +200,9 @@ resource "google_secret_manager_secret_version" "database_url" {
   secret_data_wo         = "postgresql://app:${var.database_password}@${google_sql_database_instance.need[0].private_ip_address}:5432/app?sslmode=require"
   secret_data_wo_version = local.password_version
   lifecycle {
-    # A user created again gets this run's password; the URL must be written again in the same run to match it.
-    replace_triggered_by = [google_sql_user.password]
+    # A new instance means a new address and a new user: write the URL again in the same run. (A user deleted by hand is
+    # put back with this run's password; raise password_version above to write both again.)
+    replace_triggered_by = [google_sql_database_instance.need[0].id]
   }
 }
 resource "google_project_iam_member" "need_sql_runtime" {

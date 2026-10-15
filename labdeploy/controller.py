@@ -895,7 +895,7 @@ class Controller:
         onboarding = self.config.onboarding
         return sorted(set((onboarding.default_viewers if onboarding else []) + list(app.viewers)))
 
-    def propose_infrastructure(self, principal, app_id, allow_writes=False, **render):
+    def propose_infrastructure(self, principal, app_id, allow_writes=False, through=None, **render):
         """Open the pull request that adds or updates the app's root on the platform repository; the pipeline does the rest."""
         platform = self.config.platform
         if platform is None:
@@ -910,7 +910,9 @@ class Controller:
         body = (f"Terraform root for `{rendered['service']}` rendered by the controller from the configuration, the app's reviewed "
                 "platform.yaml and GitHub's immutable ids.\n\nThe infrastructure plan workflow posts what an apply would do; "
                 "merging applies exactly that with the pipeline identity and publishes the outputs to the app's GitHub environment. "
-                "Nothing is applied by this pull request itself.")
+                "Nothing is applied by this pull request itself.\n\n"
+                f"Requested by `{principal.name}`{' through ' + through if through else ''} (written by the controller, not by Claude); "
+                "with `may_merge_own_requests: false` someone else merges it (docs/ROADMAP.md D29).")
         pull_request = self.github.open_platform_pull_request(platform.repository, platform.branch, f"lab-deploy/infra-{rendered['service']}", paths,
                                                               f"Infrastructure for {rendered['service']}", body, f"Render the infrastructure root for {rendered['service']}")
         return {"application": app_id, "service": rendered["service"], "files": sorted(paths), "pull_request": pull_request, "note": rendered["note"]}

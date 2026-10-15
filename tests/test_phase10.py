@@ -201,8 +201,12 @@ def test_the_module_trusts_only_the_service_s_own_workflows_in_its_own_environme
     assert "assertion.environment == '${var.github_environment}'" in module
     assert "assertion.workflow_ref in [" in module and "@refs/heads/main'" in module
     needs = Path("infra/gcp/modules/service/needs.tf").read_text()
-    assert "password_wo         = var.database_password" in needs and "secret_data_wo         =" in needs
-    assert "replace_triggered_by = [google_sql_user.password]" in needs  # a user created again and its URL always match
+    assert "password_wo = var.database_password" in needs and "secret_data_wo         =" in needs
+    # A new URL version always resets the user to the same run's password in place (1.12.1: the live retry after a failed
+    # create would otherwise have written a URL whose password the user did not have); a new instance writes the URL again.
+    assert 'password_wo_version = tonumber(regex("[0-9]+$", google_secret_manager_secret_version.database_url[0].name))' in needs
+    assert "replace_triggered_by = [google_sql_database_instance.need[0].id]" in needs
+    assert "replace_triggered_by = [google_sql_user.password]" not in needs  # with the line above it would be a cycle
     variables = Path("infra/gcp/modules/service/variables.tf").read_text()
     assert 'variable "database_password"' in variables and "ephemeral   = true" in variables
 

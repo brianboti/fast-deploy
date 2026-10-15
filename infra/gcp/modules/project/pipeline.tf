@@ -154,8 +154,11 @@ resource "google_project_iam_custom_role" "secret_writer" {
   role_id     = "labDeploySecretWriter"
   title       = "Lab Deploy secret writer"
   description = "Creates application secrets and adds versions without reading any secret value"
+  # The provider enables a version right after adding it, and replaces one (a rotation, or a retry after a failed create)
+  # by destroying the old one: enable, disable and destroy change a version's state, never reveal its value.
   permissions = ["secretmanager.secrets.create", "secretmanager.secrets.get", "secretmanager.secrets.list", "secretmanager.secrets.update",
-  "secretmanager.versions.add", "secretmanager.versions.get", "secretmanager.versions.list"]
+    "secretmanager.versions.add", "secretmanager.versions.get", "secretmanager.versions.list", "secretmanager.versions.enable",
+  "secretmanager.versions.disable", "secretmanager.versions.destroy"]
 }
 resource "google_project_iam_member" "infra_apply_secrets" {
   count   = local.pipeline_enabled ? 1 : 0
