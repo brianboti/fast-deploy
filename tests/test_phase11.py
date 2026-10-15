@@ -126,6 +126,7 @@ def test_the_checker_drafts_only_what_is_missing_as_a_draft_pull_request(tmp_pat
     assert "reviewed: false" in opened["files"]["services/web/platform.yaml"] and "README.md" not in opened["files"]
     assert "--require-hashes" in opened["files"]["services/web/Dockerfile"] and "The platform never merges this pull request." in opened["body"]
     assert result["pull_request"]["number"] == 3 and result["files"]["services/web/requirements.lock"].startswith("Every dependency pinned")
+    assert "name: web" in opened["files"]["services/web/platform.yaml"]  # from the folder; a root service takes the repository's name
     # Everything present: nothing to draft, no pull request.
     gh.files.update({path: content for path, content in opened["files"].items()})
     gh.opened.clear()

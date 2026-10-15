@@ -658,15 +658,16 @@ def health_test(found):
     return fill(template("test_health_wsgi.py.tmpl"), **common)
 
 
-def service_name(name, repo):
-    """(name, note): the explicit name, refused when Cloud Run would refuse it, else one made from the folder or pyproject.toml."""
+def service_name(name, repo, fallback=None):
+    """(name, note): the explicit name, refused when Cloud Run would refuse it, else one made from the folder, pyproject.toml
+    or `fallback` (the repository's own name, for a service at its root)."""
     if name is not None:
         if not isinstance(name, str) or not SERVICE_NAME.fullmatch(name):
             raise ValueError(f"'{name}' is not a valid service name: 3 to 21 characters, a lowercase letter first, then lowercase letters, "
                              "digits or dashes, not ending in a dash")
         return name, None
     project = (pyproject_data(repo.text("pyproject.toml")).get("project") or {}).get("name")
-    for candidate in (repo.path.rsplit("/", 1)[-1] if repo.path else None, project if isinstance(project, str) else None):
+    for candidate in (repo.path.rsplit("/", 1)[-1] if repo.path else None, project if isinstance(project, str) else None, fallback):
         slug = re.sub(r"[^a-z0-9]+", "-", (candidate or "").lower())
         slug = re.sub(r"^[^a-z]+", "", slug)[:21].strip("-")
         if SERVICE_NAME.fullmatch(slug):
@@ -694,7 +695,7 @@ def ci_file(repo, name):
     return target, note, []
 
 
-def draft_files(paths, texts, path="", name=None, lock_text=None):
+def draft_files(paths, texts, path="", name=None, lock_text=None, fallback_name=None):
     """D26: the files docs/DEVELOPER-CONTRACT.md asks for that the service lacks, drafted for one pull request.
 
     `paths` is the repository's file list as its Git tree gives it (relative to the root); `texts` maps some of those paths
@@ -711,7 +712,7 @@ def draft_files(paths, texts, path="", name=None, lock_text=None):
         return {"files": {}, "existing": [], "review": [f"No Python code or requirements were found at {where}: the platform deploys Python HTTP "
                                                        "services only, so nothing was drafted."], "detected": None, "lock_command": None, "analysis": None}
     found = _detect(repo)
-    name, name_note = service_name(name, repo)
+    name, name_note = service_name(name, repo, fallback_name)
     command = lock_command(found["python"], repo.path)
     files, existing, review = {}, [], found["notes"] + ([name_note] if name_note else [])
 

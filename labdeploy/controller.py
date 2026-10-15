@@ -738,7 +738,9 @@ class Controller:
         lock = {"text": None, "command": None, "error": None}
         if requirements in texts and locked not in paths and self.config.live_dispatch:
             lock = scaffold.compile_lock(texts[requirements], scaffold.detect(paths, texts, folder)["python"], path=folder)
-        result = scaffold.draft_files(paths, texts, folder, name, lock_text=lock["text"])
+        # Before registration the repository's own name is the last resort for the service's name (after the folder and
+        # pyproject.toml), so the draft is not left saying my-service.
+        result = scaffold.draft_files(paths, texts, folder, name, lock_text=lock["text"], fallback_name=target.repository.split("/")[1])
         if lock["error"]:
             result["review"].append(f"requirements.lock was not compiled on the controller's machine ({lock['error']}): run `{lock['command']}` "
                                     "and commit the file.")
