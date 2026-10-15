@@ -756,7 +756,9 @@ def draft_files(paths, texts, path="", name=None, lock_text=None):
             review.append(f"The requirements do not list {found['server']}, which the drafted Dockerfile starts: add "
                           f"{found['server']}=={SERVER_PINS[found['server']]} to requirements.txt (and recompile the lock).")
 
-    if not present(".dockerignore"):
+    # A Dockerfile-specific ignore file beside the Dockerfile counts: BuildKit prefers it, and it is the one a service built
+    # from the whole repository (build.context: repository) uses.
+    if not present(".dockerignore", "Dockerfile.dockerignore"):
         text, named = dockerignore(repo, "" if repo.at("Dockerfile") in files else dockerfile_text)
         offer(repo.at(".dockerignore"), text, "An allow-list that keeps tests, secrets, environments and caches out of the image: only the "
               "entries it names are copied.")
@@ -772,8 +774,13 @@ def draft_files(paths, texts, path="", name=None, lock_text=None):
         if others:
             review.append(f"{', '.join(others)} also lists development tools; the platform reads only requirements-dev.txt, so merge them into it.")
 
-    # pytest refuses two test modules with the same name, so any test_health.py under the service counts as the health test.
-    health_tests = sorted(item for item in repo.local_paths if item.rsplit("/", 1)[-1] == "test_health.py")
+    # pytest refuses two test modules with the same name, so any test_health.py under the service counts as the health test;
+    # so does a test file that already requests the health path (files_to_read fetches a few test files for this).
+    def tests_health(item):
+        text = repo.text(item)
+        return bool(TEST_PATH.search(item)) and item.endswith(".py") and any(f"{quote}{found['health_path']}{quote}" in text for quote in "\"'")
+
+    health_tests = sorted(item for item in repo.local_paths if item.rsplit("/", 1)[-1] == "test_health.py" or tests_health(item))
     if health_tests:
         existing.extend(repo.at(item) for item in health_tests)
     else:
@@ -828,7 +835,9 @@ def files_to_read(paths, path="", limit=40):
     wanted += [item for item in DEPENDABOT if item in repo.paths]
     wanted += sorted(item for item in repo.paths if WORKFLOW.fullmatch(item) and not PLATFORM_WORKFLOW.fullmatch(item))[:5]
     code = [repo.at(item) for item in sorted(repo.local_paths, key=rank) if application_python(item) and repo.at(item) not in wanted]
-    return wanted + code[:max(limit - len(wanted), 0)]
+    # A few test files, so an existing health test is recognized and not drafted again.
+    tests = sorted(repo.at(item) for item in repo.local_paths if TEST_PATH.search(item) and item.endswith(".py") and repo.at(item) not in wanted)[:5]
+    return wanted + tests + code[:max(limit - len(wanted) - len(tests), 0)]
 
 
 def pull_request_body(result):

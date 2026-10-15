@@ -221,6 +221,9 @@ def test_a_missing_health_route_produces_a_review_note():
     result = scaffold.draft_files(list(texts), texts, name="lab-demo")
     assert result["detected"]["health_path"] == "/health" and not result["detected"]["health_route_found"]  # a test is not a route
     assert any("No /health route was found" in note and "must add one" in note for note in result["review"])
+    assert "tests/test_health.py" not in result["files"] and "test_main.py" in result["existing"]  # it already requests the path
+    untested = dict(texts, **{"test_main.py": "def test_index():\n    pass\n"})
+    result = scaffold.draft_files(list(untested), untested, name="lab-demo")
     assert 'client.get("/health")' in result["files"]["tests/test_health.py"]["content"]
     assert parse_spec(result["files"]["platform.yaml"]["content"]).health_path == "/health"
     # /healthz is routed, but Cloud Run reserves it: the drafts still use /health and say why.
@@ -315,7 +318,7 @@ def test_files_to_read_lists_configuration_then_likely_entry_points():
              ".python-version", ".github/workflows/deploy-gcp.yml", ".github/workflows/test.yml", ".github/dependabot.yml", "svc/.venv/x.py"]
     wanted = scaffold.files_to_read(paths, "svc")
     assert wanted == ["svc/requirements.txt", "svc/manage.py", ".python-version", ".github/dependabot.yml", ".github/workflows/test.yml",
-                      "svc/main.py", "svc/app/routes.py", "svc/app/models.py"]
+                      "svc/tests/test_main.py", "svc/main.py", "svc/app/routes.py", "svc/app/models.py"]  # a few tests, for an existing health test
     assert len(scaffold.files_to_read(paths, "svc", limit=6)) == 6
 
 
