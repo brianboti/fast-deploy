@@ -1,3 +1,11 @@
+# 1.9.2: the spend-cap check says whether the cap is recorded
+
+## Fixed
+
+1. `scripts/spend-cap.sh check` ended with a generic "record it" line showing the word AMOUNT even when the cap was
+   already recorded. It now compares the cap with `cloud_run_spend_caps` in `config.local.yaml` and says "Nothing to
+   do", names the differing amount, or gives the exact line to add.
+
 # 1.9.1: a missing drift report is asked for again
 
 ## Fixed
