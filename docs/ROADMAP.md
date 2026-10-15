@@ -243,7 +243,7 @@ applies, naming the second operator, and merging the checker's pull requests on 
 | D25 | Front-ends | Phase 10 | One mode, `served`: the API container serves its static files behind the same sign-in; Firebase Hosting for public front-ends stays out because public exposure is refused by design |
 | D26 | What the repository checker may write for a developer | Phase 11 | A draft pull request on a branch of the application repository with the files the contract requires and the repository lacks (`Dockerfile`, `.dockerignore`, `requirements-dev.txt`, `requirements.lock`, a health test, `platform.yaml` with `reviewed: false`, `.github/workflows/ci.yml`, `SECURITY.md`, `.github/dependabot.yml`); never a file that already exists; never merged by the platform |
 | D27 | Where the lock file is compiled | Phase 11 | In a container of the application's own Python on the controller's machine (Docker is present there); when it is not, the pull request carries the exact command instead of the file |
-| D28 | Building without a Dockerfile | Phase 11 | Google's buildpacks builder, pinned by digest, in the same build job; a Dockerfile wins when present; the trial decides whether no-Dockerfile becomes the contract's default |
+| D28 | Building without a Dockerfile | Phase 11 | Google's buildpacks builder, pinned by digest, in the same build job; a Dockerfile wins when present; the trial decides whether no-Dockerfile becomes the contract's default. Decided 2026-10-15: the Dockerfile stays the default and the checker drafts one, because the buildpack image of the demo app was about 394 MB against 52 MB; a `Procfile` alone still builds |
 | D29 | Who approves what a person asked for, once a second operator exists | Phase 12 | GitHub's required review with CODEOWNERS on the platform repository; the application's `auto_merge` switch turns off for pull requests the controller opened on that person's behalf |
 | D30 | Drift: how often it is looked for and where it is reported | Phase 9 | A weekly read-only `terraform plan` of every application root by the plan identity, differences posted to a living issue on the platform repository, where the pipeline runs; a drift in IAM, networking or exposure also raises the watchdog notification |
 
@@ -266,7 +266,7 @@ Cost effect: none; the bake reads logs and metrics within the free allotment.
 
 ## Phase 10: one repository, several services (about four and a half days) → version 1.10.0
 
-Status: planned on 2026-10-14 (research items 2 and 3, and the gaps the Sophia copy exposed). This phase removes the root-Dockerfile requirement Sophia's copy needed and gives the contract its answer for front-ends, caches, queues and workers.
+Status: built on 2026-10-15 as 1.10.0 (pull request #44); the live exercise waits for the merge and the foundation apply. Planned on 2026-10-14 (research items 2 and 3, and the gaps the Sophia copy exposed). This phase removes the root-Dockerfile requirement Sophia's copy needed and gives the contract its answer for front-ends, caches, queues and workers.
 
 | Item | Change | Where |
 |---|---|---|
@@ -284,7 +284,7 @@ Cost effect: none at idle; a second service in a repository is another scale-to-
 
 ## Phase 11: easy, the platform writes the boilerplate (about five days) → version 1.11.0
 
-Status: planned on 2026-10-14 (research items 5, 6 and 11).
+Status: built on 2026-10-15 as 1.11.0, stacked on 1.10.0; the buildpack comparison ran locally (D28 decided), the live exercise waits for the merges. Planned on 2026-10-14 (research items 5, 6 and 11).
 
 | Item | Change | Where |
 |---|---|---|

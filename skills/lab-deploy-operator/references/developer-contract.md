@@ -121,13 +121,14 @@ container, branches other than `main`, production, and editing the three workflo
 
 ## 7. The short list for developers
 
-When the operator asks "what do I tell developers?", give this, in plain words:
+When the operator asks "what do I tell developers?", give the three things they must do, in plain words:
 
-1. A `Dockerfile` at the root (or in the service's folder) that builds the app and listens on port 8080.
-2. A `platform.yaml` filled in and marked `reviewed: true` (the operator can draft it).
-3. `requirements.txt` with exact versions; `requirements-dev.txt` with pytest.
-4. Tests that pass with `python -m pytest`.
-5. A health page (for example `/health`) that answers quickly.
-6. `README.md` and `LICENSE`.
-7. Work happens on `main`; no passwords or keys in the repository (send secret values to the operator separately, never
-   in chat or in Git).
+1. A web service that listens on the port in `PORT` (8080) and answers `/health` quickly.
+2. `requirements.txt` with exact versions.
+3. Tests that pass with `python -m pytest`.
+
+Everything else (Dockerfile, lock file, test tools, a health test, `platform.yaml`, CI, security policy, Dependabot) the
+platform drafts as one draft pull request: `check_repository` lists what is missing, `propose_configuration` with the
+repository link (and `path`) drafts it. A person reads the drafted `platform.yaml`, sets `reviewed: true` and merges.
+Work happens on `main`; no passwords or keys in the repository (send secret values to the operator separately, never in
+chat or in Git).

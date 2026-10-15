@@ -21,7 +21,8 @@ jobs:
       - name: Lint Python
         run: python -m ruff check .
       - name: Lint workflows
-        run: zizmor --no-progress .github/workflows templates/*.yml  # templates must be listed as files to be audited
+        # Templates must be listed as files to be audited; templates/repo holds the CI and Dependabot files the checker drafts.
+        run: zizmor --no-progress .github/workflows .github/dependabot.yml templates/*.yml templates/repo/ci.yml templates/repo/dependabot.yml
       # The same hadolint, version and checksum the deploy template uses for every application's Dockerfile.
       - name: Lint Dockerfiles
         run: |

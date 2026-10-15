@@ -5,6 +5,8 @@ WORKDIR /app
 COPY requirements.lock .
 RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 COPY labdeploy ./labdeploy
+# The workflow templates and the files the checker drafts for applications (labdeploy/scaffold.py reads templates/repo).
+COPY templates ./templates
 RUN mkdir /data && chown 65532:65532 /data
 USER 65532:65532
 ENV LAB_CONFIG=/config/config.yaml
