@@ -193,7 +193,8 @@ compose.yaml       optional, for local development only
     context: repository   # the whole repository is the build context; the Dockerfile stays in the service's folder
   ```
 
-  Paths in that Dockerfile are then relative to the repository's root (`COPY services/admin/app.py .`). Docker reads
+  Paths in that Dockerfile are then relative to the repository's root (`COPY services/admin/app.py .`), and the
+  service's tests run with the repository's root on Python's import path, so `import lib.shared` works in both. Docker reads
   the `.dockerignore` at the root of the context; give the service its own `services/admin/Dockerfile.dockerignore`
   (BuildKit prefers a `<Dockerfile>.dockerignore` beside the Dockerfile), listing `.git`, virtual environments, the
   other services' folders and anything secret, so the build sends only what the image needs.

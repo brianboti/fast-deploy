@@ -80,8 +80,14 @@ def test_the_templates_render_one_set_of_workflows_per_service():
 
 
 def test_the_build_reads_the_service_folder_or_the_whole_repository():
-    run = next(step["run"] for step in yaml.safe_load(lay_out(Path("templates/deploy-gcp.yml").read_text()))["jobs"]["build"]["steps"]
-               if step.get("name", "").startswith("Build"))
+    steps = yaml.safe_load(lay_out(Path("templates/deploy-gcp.yml").read_text()))["jobs"]["build"]["steps"]
+    run = next(step["run"] for step in steps if step.get("name", "").startswith("Build"))
+    tests = next(step for step in steps if step.get("name") == "Run unit tests")
+    # Nothing the tests leave behind reaches the image: the virtualenv lives outside the checkout, and the checkout is
+    # cleaned back to the commit before the build.
+    assert ".test-venv" not in tests["run"] and '"$RUNNER_TEMP/test-venv/bin/python" -m pytest' in tests["run"]
+    assert run.index("git -C app clean -ffdxq") < run.index("docker build")
+    assert tests["env"]["CONTEXT"] == "${{ steps.policy.outputs.context }}" and 'export PYTHONPATH="$GITHUB_WORKSPACE/app"' in tests["run"]
     assert 'if [ "$CONTEXT" = "repository" ]' in run
     assert '-f "$APP_DIR/Dockerfile" -t "lab-app:$COMMIT_SHA" app' in run and '-t "lab-app:$COMMIT_SHA" "$APP_DIR"' in run
     spec = AppSpec.model_validate({"name": "admin", "build": {"context": "repository"}})

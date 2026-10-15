@@ -605,7 +605,7 @@ def test_an_application_tests_on_its_own_python_version():
     setup = next(step for step in steps if step.get("id") == "app-python")
     assert setup["with"] == {"python-version": "${{ steps.policy.outputs.python }}", "update-environment": False}
     tests = next(step for step in steps if step.get("name") == "Run unit tests")
-    assert tests["env"]["APP_PYTHON"] == "${{ steps.app-python.outputs.python-path }}" and '"$APP_PYTHON" -m venv .test-venv' in tests["run"]
+    assert tests["env"]["APP_PYTHON"] == "${{ steps.app-python.outputs.python-path }}" and '"$APP_PYTHON" -m venv "$RUNNER_TEMP/test-venv"' in tests["run"]
     assert steps.index(setup) < steps.index(tests)
 
 

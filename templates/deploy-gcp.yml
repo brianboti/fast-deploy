@@ -129,21 +129,27 @@ jobs:
         with:
           python-version: ${{ steps.policy.outputs.python }}
           update-environment: false
+      # The test environment lives outside the checkout, so it can never reach the image. A service whose build reads the
+      # whole repository (build.context: repository) imports shared code from the repository's root in its tests as well.
       - name: Run unit tests
         if: steps.policy.outputs.tests == 'required'
         working-directory: __LAB_APP_DIR__
         env:
           APP_PYTHON: ${{ steps.app-python.outputs.python-path }}
+          CONTEXT: ${{ steps.policy.outputs.context }}
         run: |
           set -euo pipefail
-          "$APP_PYTHON" -m venv .test-venv
+          "$APP_PYTHON" -m venv "$RUNNER_TEMP/test-venv"
           if [ -f requirements.lock ]; then
-            .test-venv/bin/pip install --require-hashes -r requirements.lock
+            "$RUNNER_TEMP/test-venv/bin/pip" install --require-hashes -r requirements.lock
           else
-            .test-venv/bin/pip install -r requirements.txt
+            "$RUNNER_TEMP/test-venv/bin/pip" install -r requirements.txt
           fi
-          .test-venv/bin/pip install -r requirements-dev.txt
-          .test-venv/bin/python -m pytest
+          "$RUNNER_TEMP/test-venv/bin/pip" install -r requirements-dev.txt
+          if [ "$CONTEXT" = "repository" ]; then
+            export PYTHONPATH="$GITHUB_WORKSPACE/app"
+          fi
+          "$RUNNER_TEMP/test-venv/bin/python" -m pytest
       # On the application's own Python: version markers select what that Python installs, and a pin that exists only for
       # an older Python (numpy 1.24 on 3.11) is not refused for failing to install on the platform's 3.12.
       - name: Audit Python dependencies
@@ -200,6 +206,9 @@ jobs:
           CONTEXT: ${{ steps.policy.outputs.context }}
         run: |
           set -euo pipefail
+          # The image is built from exactly the reviewed commit: whatever the tests left in the checkout (caches, files a
+          # test wrote) is removed first.
+          git -C app clean -ffdxq
           # build.context: repository builds from the repository's root (shared code in a monorepo); the Dockerfile stays
           # in the service's folder. Otherwise the service's folder is the whole build context.
           if [ "$CONTEXT" = "repository" ]; then

@@ -34,11 +34,15 @@
 
 ## Changed
 
-1. **Dockerfile lint errors stop the release by default**, as 1.9.0 announced. Warnings never do; the repository variable
+1. **The image is built from exactly the reviewed commit.** The test step kept its virtualenv inside the app's checkout,
+   so a Dockerfile that copies everything (`COPY . .`) without a `.dockerignore` shipped the test environment in the
+   image. The virtualenv now lives in the runner's temporary folder and the checkout is cleaned back to the commit
+   before the build.
+2. **Dockerfile lint errors stop the release by default**, as 1.9.0 announced. Warnings never do; the repository variable
    `HADOLINT_BLOCKING=false` keeps error-level findings as annotations for one repository. The four Dockerfiles in use
    have no findings.
-2. The onboarding block's `environment` setting accepts `staging` only: the platform names GitHub environments itself.
-3. The foundation's lock file pins the `random` provider (3.9.1) for the roots that copy it.
+3. The onboarding block's `environment` setting accepts `staging` only: the platform names GitHub environments itself.
+4. The foundation's lock file pins the `random` provider (3.9.1) for the roots that copy it.
 
 ## Upgrade steps
 
