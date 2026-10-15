@@ -8,6 +8,7 @@ from test_release import IMAGE, PLAN_ID, Cloud
 
 from labdeploy.models import AppSpec
 from labdeploy.release import CloudRun, reconcile_serving_tags, rollout
+from labdeploy.workflows import lay_out
 
 SPEC = AppSpec(name="demo", reviewed=True)
 IMAGE_PATH = "us-central1-docker.pkg.dev/test-project/demo/demo"
@@ -105,7 +106,7 @@ def test_cloud_run_adapter_builds_label_and_log_commands():
 
 
 def test_workflows_record_deployments_tag_releases_and_notify():
-    deploy = yaml.safe_load(Path("templates/deploy-gcp.yml").read_text())
+    deploy = yaml.safe_load(lay_out(Path("templates/deploy-gcp.yml").read_text()))
     assert deploy["jobs"]["deploy"]["environment"] == {"name": "staging", "url": "${{ steps.url.outputs.url }}"}  # GitHub's own deployment record
     release = next(step for step in deploy["jobs"]["deploy"]["steps"] if step.get("name") == "Deploy, probe, promote; restore traffic on failure")
     url = next(step for step in deploy["jobs"]["deploy"]["steps"] if step.get("id") == "url")
@@ -113,7 +114,7 @@ def test_workflows_record_deployments_tag_releases_and_notify():
     push = next(step for step in deploy["jobs"]["deploy"]["steps"] if step.get("name") == "Push image and resolve immutable digest")
     assert 'docker push "$IMAGE:release-$PLAN_ID"' in push["run"]
     for name in ("deploy-gcp.yml", "recover-gcp.yml", "rightsize-gcp.yml"):
-        workflow = yaml.safe_load(Path("templates", name).read_text())
+        workflow = yaml.safe_load(lay_out(Path("templates", name).read_text()))
         notify = workflow["jobs"]["notify"]
         assert notify["if"] == "always()" and notify["env"]["WEBHOOK"] == "${{ secrets.NOTIFY_WEBHOOK_URL }}" and notify["permissions"] == {"contents": "read"}
         script = notify["steps"][-1]["run"]

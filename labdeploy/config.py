@@ -10,12 +10,23 @@ from pydantic import Field, model_validator
 from .models import StrictModel, UniqueLoader
 from .target import Target
 
+# A service's folder inside its repository: relative, forward slashes, no hidden or parent segments, at most eight deep.
+SERVICE_PATH = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*){0,7}$")
+KINDS = ("deploy", "recover", "rightsize")
+
 
 class Application(StrictModel):
     repository: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
     branch: str = Field(default="main", pattern=r"^[A-Za-z0-9_/-]+$")
     service: str = Field(pattern=r"^[a-z][a-z0-9-]{0,29}$")
     workflow: str = "deploy-gcp.yml"
+    # The folder holding the service's Dockerfile, platform.yaml, requirement files and tests; empty for the repository's
+    # root (docs/ROADMAP.md D23). One repository may hold several services, each registered with its own path.
+    path: str = ""
+    # The GitHub environment its workflows run in. The first application of a repository keeps the plain names (staging,
+    # deploy-gcp.yml); each further application of the same repository gets names suffixed with its service
+    # (staging-<service>, deploy-gcp-<service>.yml), so their variables, identities, schedules and queues never mix (D24).
+    environment: str = "staging"
     target: Target
     # Refuse plans whose worst-case monthly compute (every allowed instance busy all month) exceeds this many USD.
     cost_ceiling_usd: float | int | None = None
@@ -40,8 +51,13 @@ class Application(StrictModel):
             raise ValueError("Service must match the configured cloud target")
         if self.branch != "main":
             raise ValueError("MVP workflow and identity trust are restricted to main")
-        if self.workflow != "deploy-gcp.yml":
-            raise ValueError("Only the reviewed deploy-gcp.yml workflow is supported")
+        if self.path and (not SERVICE_PATH.fullmatch(self.path) or ".." in self.path.split("/")):
+            raise ValueError("path is the service's folder inside the repository, such as services/api: relative, no hidden or parent folders")
+        plain = self.workflow == "deploy-gcp.yml" and self.environment == "staging"
+        suffixed = self.workflow == f"deploy-gcp-{self.service}.yml" and self.environment == f"staging-{self.service}"
+        if not (plain or suffixed):
+            raise ValueError("The workflow and environment are deploy-gcp.yml with staging, or, for a further application of the same repository, "
+                             f"deploy-gcp-{self.service}.yml with staging-{self.service}")
         if self.cost_ceiling_usd is not None and self.cost_ceiling_usd <= 0:
             raise ValueError("cost_ceiling_usd must be a positive amount")
         check_viewers(self.viewers)
@@ -52,6 +68,21 @@ class Application(StrictModel):
             if key in SETTING_RANGES and not SETTING_RANGES[key][0] <= value <= SETTING_RANGES[key][1]:
                 raise ValueError(f"infra.{key} must be between {SETTING_RANGES[key][0]} and {SETTING_RANGES[key][1]}")
         return self
+
+
+    @property
+    def suffix(self):
+        """'' for the first application of a repository, '-<service>' for a further one (D24)."""
+        return "" if self.workflow == "deploy-gcp.yml" else f"-{self.service}"
+
+    @property
+    def workflows(self):
+        """The three workflow files this application owns in its repository, by kind."""
+        return {kind: f"{kind}-gcp{self.suffix}.yml" for kind in KINDS}
+
+    def repo_path(self, name):
+        """A file of this service, as a path from the repository's root."""
+        return f"{self.path}/{name}" if self.path else name
 
 
 class Principal(StrictModel):
@@ -79,7 +110,9 @@ class Onboarding(StrictModel):
     region: str = Field(default="us-central1", pattern=r"^[a-z]+-[a-z]+[0-9]$")
     state_bucket: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$")  # default: <project_id>-tfstate
     bootstrap_image: str | None = None  # digest-pinned image for the first revision; default: the platform's reference image
-    environment: str = Field(default="staging", pattern=r"^[a-z][a-z0-9-]{1,30}$")
+    # The GitHub environment is named by the platform: staging for a repository's first application, staging-<service> for a
+    # further one (D24); the workflows and the deploy identity's trust both expect exactly that name.
+    environment: Literal["staging"] = "staging"
     auto_merge: bool = True  # merge the application's own pull requests once the policy and the checks have passed
     billing_export_table: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9-]{4,28}[a-z0-9]\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+$")
     # Pages for people (docs/ROADMAP.md Phase 8): the lab's accounts that may open every lab-members app, and the project's

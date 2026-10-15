@@ -53,7 +53,8 @@ class FakeGitHub:
     def release_receipt(self, app, run_id):
         return self.receipt
 
-    def recovery_after(self, app, run):
+    def recovery_after(self, app, run, workflow="recover-gcp.yml"):
+        self.recovery_workflow = workflow
         return self.recovery
 
     def file(self, app, sha, filename):
@@ -65,7 +66,8 @@ class FakeGitHub:
             raise TimeoutError()
         return {"workflow_run_id": 123}
 
-    def cost_report(self, app):
+    def cost_report(self, app, workflow="rightsize-gcp.yml"):
+        self.cost_workflow = workflow
         return {"report": None, "note": "fake"}
 
     def status(self, app, plan):

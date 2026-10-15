@@ -34,9 +34,15 @@ class Needs(StrictModel):
     database: Literal["none", "firestore", "postgres"] = "none"
     # A command run as a Cloud Run job from the release's image before the candidate gets traffic (schema migrations).
     migrate: list[str] = Field(default_factory=list)
+    # How a postgres database is signed in to. iam (the default): the runtime identity is the user, no password exists
+    # anywhere. password: a built-in user whose generated password reaches the app only as the secret DATABASE_URL, for
+    # code that takes a connection URL; Terraform writes it through write-only arguments, so it is never in its state.
+    database_auth: Literal["iam", "password"] = "iam"
 
     @model_validator(mode="after")
     def valid(self):
+        if self.database_auth == "password" and self.database != "postgres":
+            raise ValueError("database_auth: password applies to database: postgres only")
         if len(self.migrate) > 16:
             raise ValueError("migrate takes at most 16 arguments")
         for part in self.migrate:
@@ -74,9 +80,25 @@ def needs_env(spec, project_id, region="us-central1"):
     if spec.needs.database == "firestore":
         env["FIRESTORE_DATABASE"] = spec.name
     if spec.needs.database == "postgres":
+        user = "app" if spec.needs.database_auth == "password" else f"{spec.name}-runtime@{project_id}.iam"
         env.update({"DATABASE_INSTANCE": f"{project_id}:{region}:{spec.name}", "DATABASE_NAME": "app",
-                    "DATABASE_USER": f"{spec.name}-runtime@{project_id}.iam", "DATABASE_IP_TYPE": "private"})
+                    "DATABASE_USER": user, "DATABASE_IP_TYPE": "private"})
     return env
+
+
+def needs_secrets(spec):
+    """Secrets the platform itself creates for a declared need, by variable name: the Secret Manager secret <service>-NAME.
+    database_auth: password -> DATABASE_URL, a postgresql:// URL with the generated password, over the private address."""
+    if spec.needs.database == "postgres" and spec.needs.database_auth == "password":
+        return {"DATABASE_URL": f"{spec.name}-DATABASE_URL"}
+    return {}
+
+
+class Build(StrictModel):
+    """How the image is built. service (the default): the service's own folder is the Docker build context. repository:
+    the whole repository is, for a service in a monorepo that copies shared code from elsewhere in it; the Dockerfile still
+    lives in the service's folder and its paths are relative to the repository root."""
+    context: Literal["service", "repository"] = "service"
 
 
 class Scaling(StrictModel):
@@ -110,6 +132,7 @@ class AppSpec(StrictModel):
     timeout_seconds: int = Field(default=60, ge=1, le=300)
     # Buckets, topics and a database the platform provisions for the app (docs/SETUP.md 6b); variables are derived.
     needs: Needs = Field(default_factory=Needs)
+    build: Build = Field(default_factory=Build)
     reviewed: bool = False
 
     @model_validator(mode="after")
@@ -130,7 +153,7 @@ class AppSpec(StrictModel):
                 raise ValueError(f"env value for {name} must be a single line of at most 1024 characters")
         if len(set(self.secrets)) != len(self.secrets) or set(self.secrets) & set(self.env):
             raise ValueError("secrets must be unique and must not repeat an env name")
-        derived = needs_env(self, "project")
+        derived = {**needs_env(self, "project"), **needs_secrets(self)}
         taken = set(self.env) | set(self.secrets)
         for name in derived:
             if name in taken:

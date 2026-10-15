@@ -9,12 +9,13 @@ import yaml
 
 from labdeploy.analyzer import analyze
 from labdeploy.models import AppSpec, spec_hash
+from labdeploy.workflows import lay_out
 
 PYTHONS = get_args(AppSpec.model_fields["python"].annotation)
 
 
 def build_steps():
-    return yaml.safe_load(Path("templates/deploy-gcp.yml").read_text())["jobs"]["build"]["steps"]
+    return yaml.safe_load(lay_out(Path("templates/deploy-gcp.yml").read_text()))["jobs"]["build"]["steps"]
 
 
 def step(name=None, id=None):
@@ -46,7 +47,7 @@ def test_the_audit_runs_on_the_app_s_python_and_reads_the_lock_without_installin
     assert audit["env"]["APP_PYTHON"] == "${{ steps.app-python.outputs.python-path }}"
     run = audit["run"]
     assert '"$APP_PYTHON" -m venv "$RUNNER_TEMP/audit-venv"' in run
-    assert '"$RUNNER_TEMP/audit-venv/bin/pip" install --require-hashes --only-binary=:all: -r ../platform/audit.lock' in run
+    assert '"$RUNNER_TEMP/audit-venv/bin/pip" install --require-hashes --only-binary=:all: -r "$GITHUB_WORKSPACE/platform/audit.lock"' in run
     lock, plain = run.split("else")
     assert "if [ -f requirements.lock ]" in lock and 'pip_audit --disable-pip -r requirements.lock' in lock
     assert '"$RUNNER_TEMP/audit-venv/bin/python" -m pip_audit -r requirements.txt' in plain

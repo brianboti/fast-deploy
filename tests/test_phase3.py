@@ -63,7 +63,7 @@ class Reporting(FakeGitHub):
     def __init__(self, recommendations):
         self.recommendations, self.prs = recommendations, []
 
-    def cost_report(self, app):
+    def cost_report(self, app, workflow="rightsize-gcp.yml"):
         return {"workflow_run_id": 1, "run_url": "https://example/run", "generated_at": "2026-10-12T06:23:00Z",
                 "report": {"generated_at": "2026-10-12T06:23:00+00:00", "rightsizing": {"recommendations": self.recommendations}}}
 

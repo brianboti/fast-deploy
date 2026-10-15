@@ -54,6 +54,10 @@ The MCP analyzer returns structured evidence and a draft. The onboarding tool ca
 9. Promotion failure attempts to restore the exact previous traffic split. Receipt state distinguishes success, traffic restoration and rollback failure.
 10. Cloud Run gates traffic on an HTTP startup probe at the reviewed health path, so an instance that never becomes ready is never promoted by the platform's own probes.
 11. A promoted revision is watched before the release counts as done (`labdeploy/bake.py`, 1.9.0): for `bake_seconds` the runner reads that revision's own request and system logs, and a crash, more than 5% 5xx answers among at least twenty requests, or a p95 latency above three times the previous revisions' restores the previous traffic split. Too little traffic is inconclusive and passes, and the receipt says so.
+12. One repository may hold several services, each registered with its folder (`path`, 1.10.0). Every service owns its
+    workflow files, GitHub environment, release queue, identities and Terraform root: the first of a repository keeps the
+    plain names, a further one has them suffixed with its service. A deploy identity's federation admits only its own
+    service's workflow files in its own environment, and a plan binds the folder and names it was made for.
 
 ## Dispatch state and retries
 

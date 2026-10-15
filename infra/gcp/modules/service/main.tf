@@ -242,7 +242,8 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.repository_id"       = "assertion.repository_id"
     "attribute.repository_owner_id" = "assertion.repository_owner_id"
   }
-  attribute_condition = "assertion.repository_id == '${var.github_repository_id}' && assertion.repository_owner_id == '${var.github_owner_id}' && assertion.ref == 'refs/heads/main' && assertion.environment == 'staging' && assertion.workflow_ref in ['${var.github_repository}/.github/workflows/deploy-gcp.yml@refs/heads/main', '${var.github_repository}/.github/workflows/recover-gcp.yml@refs/heads/main', '${var.github_repository}/.github/workflows/rightsize-gcp.yml@refs/heads/main']"
+  # The application's own environment and workflow files: a further application of the same repository has its own (D24).
+  attribute_condition = "assertion.repository_id == '${var.github_repository_id}' && assertion.repository_owner_id == '${var.github_owner_id}' && assertion.ref == 'refs/heads/main' && assertion.environment == '${var.github_environment}' && assertion.workflow_ref in [${join(", ", [for file in var.workflow_files : "'${var.github_repository}/.github/workflows/${file}@refs/heads/main'"])}]"
   oidc { issuer_uri = "https://token.actions.githubusercontent.com" }
 }
 resource "google_service_account_iam_member" "federation" {

@@ -12,7 +12,7 @@ import httpx
 import yaml
 
 from .analyzer import TEST_PATH
-from .config import Application, Principal
+from .config import SERVICE_PATH, Application, Principal
 from .github import explain
 from .models import AppSpec
 
@@ -60,6 +60,18 @@ def normalize_repository(text):
     raise ValueError("Give a GitHub repository as https://github.com/OWNER/NAME or OWNER/NAME")
 
 
+def normalize_path(text):
+    """A service's folder as the registry keeps it: '' for the repository's root, else a relative path such as services/api."""
+    value = (text or "").strip().replace("\\", "/").strip("/")
+    while value.startswith("./"):
+        value = value[2:]
+    if value in ("", "."):
+        return ""
+    if not SERVICE_PATH.fullmatch(value) or ".." in value.split("/"):
+        raise ValueError("Give the service's folder inside the repository, such as services/api (relative, no hidden or parent folders)")
+    return value
+
+
 def slug(name):
     """An application id from a repository name: lowercase letters, digits and dashes."""
     value = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-")[:30]
@@ -71,7 +83,7 @@ def slug(name):
 def describe(record):
     """The record as the operator sees it: the step, what it waits for or what blocked it, and what exists so far."""
     state = record["state"]
-    view = {k: record.get(k) for k in ("application", "repository", "service", "state", "plan_id", "auto_deploy", "created_at", "updated_at")}
+    view = {k: record.get(k) for k in ("application", "repository", "path", "service", "state", "plan_id", "auto_deploy", "created_at", "updated_at")}
     view["steps"] = record.get("steps", {})
     if state == "complete":
         view["next_action"] = (f"Onboarding is complete; the first release is plan {record.get('plan_id')}. Ask for get_deployment_status with that id.")
@@ -99,21 +111,24 @@ class Onboarder:
         return Principal(name=f"onboarding:{record['principal']}", token_sha256="0" * 64, applications=["*"], can_deploy=True)
 
     # ---- entry points
-    def start(self, principal, repository, app_id=None, auto_deploy=False):
+    def start(self, principal, repository, app_id=None, auto_deploy=False, path=None):
         if "*" not in principal.applications:
             raise ValueError("Onboarding needs an identity that may see every application: applications: ['*'] in the controller configuration")
         if not principal.can_deploy:
             raise ValueError("Identity has read-only access")
         _ = self.settings  # fail early when the block is missing
         repository = normalize_repository(repository)
-        app_id = slug(app_id or repository.split("/")[1])
+        path = normalize_path(path)
+        app_id = slug(app_id or (path.rsplit("/", 1)[-1] if path else repository.split("/")[1]))
         record = self.c.store.onboarding(app_id)
         if record is None:
-            record = {"application": app_id, "repository": repository, "principal": principal.name, "auto_deploy": bool(auto_deploy),
+            record = {"application": app_id, "repository": repository, "path": path, "principal": principal.name, "auto_deploy": bool(auto_deploy),
                       "state": "validating", "steps": {}, "created_at": time.time()}
-            self.c.store.record_event("onboarding", name=app_id, identity=principal.name, application=app_id, outcome="started", detail=repository)
-        elif record["repository"] != repository:
-            raise ValueError(f"Application {app_id} is being onboarded from {record['repository']}; give another application id for {repository}")
+            self.c.store.record_event("onboarding", name=app_id, identity=principal.name, application=app_id, outcome="started",
+                                      detail=repository + (f" ({path})" if path else ""))
+        elif record["repository"].lower() != repository.lower() or record.get("path", "") != path:
+            where = record["repository"] + (f" at {record['path']}" if record.get("path") else "")
+            raise ValueError(f"Application {app_id} is being onboarded from {where}; give another application id for this repository or folder")
         elif record["state"] == "complete":
             return describe(record)
         elif record["state"] == "blocked":
@@ -144,15 +159,24 @@ class Onboarder:
     def step_validating(self, record):
         github = self.c.github
         repo = github.repository(record["repository"])
+        # The name exactly as GitHub spells it: the registry, the workflows and the identities all use this one.
+        if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo.get("full_name") or "") and repo["full_name"].lower() == record["repository"].lower():
+            record["repository"] = repo["full_name"]
         branch = repo["default_branch"] or "main"
         checklist = []
         if branch != "main":
             raise Blocked(f"The default branch is {branch}; the platform releases only from main")
+        folder = record.get("path", "")
+        tree = github.tree(record["repository"], branch)
+        if folder:
+            if folder not in tree:
+                raise Blocked(f"The repository has no folder {folder} on {branch}; give the folder that holds the service's Dockerfile and platform.yaml")
+            tree = [entry[len(folder) + 1:] for entry in tree if entry.startswith(folder + "/")]
         files = {}
         for name, why in REQUIRED_FILES:
-            files[name] = github.contents(record["repository"], branch, name)
-            checklist.append({"item": name, "ok": files[name] is not None, "why": why})
-        tree = github.tree(record["repository"], branch)
+            where = f"{folder}/{name}" if folder else name
+            files[name] = github.contents(record["repository"], branch, where)
+            checklist.append({"item": where, "ok": files[name] is not None, "why": why})
         spec = None
         if files["platform.yaml"] is not None:
             try:
@@ -163,7 +187,7 @@ class Onboarder:
         if spec is not None:
             checklist.append({"item": "platform.yaml says reviewed: true", "ok": spec.reviewed, "why": "a person has read it"})
             if spec.tests == "required":
-                checklist.append({"item": "tests (pytest files or a tests/ directory)", "ok": any(TEST_PATH.search(path) for path in tree), "why": "run before every build"})
+                checklist.append({"item": "tests (pytest files or a tests/ directory)", "ok": any(TEST_PATH.search(entry) for entry in tree), "why": "run before every build"})
                 checklist.append({"item": "requirements-dev.txt", "ok": "requirements-dev.txt" in tree, "why": "installs pytest for the test step"})
             dockerfile = (files["Dockerfile"] or {}).get("text", "")
             if dockerfile:
@@ -179,16 +203,23 @@ class Onboarder:
         record["state"] = "registering"
 
     def step_registering(self, record):
-        app_id, service = record["application"], record["service"]
+        app_id, service, folder = record["application"], record["service"], record.get("path", "")
         if app_id in self.c.config.applications:
             app = self.c.config.applications[app_id]
-            if app.repository != record["repository"] or app.service != service:
-                raise Blocked(f"Application {app_id} is already registered for {app.repository} as service {app.service}; give another application id")
+            if app.repository.lower() != record["repository"].lower() or app.service != service or app.path != folder:
+                raise Blocked(f"Application {app_id} is already registered for {app.repository}" + (f" at {app.path}" if app.path else "")
+                              + f" as service {app.service}; give another application id, or unregister it first (lab-deploy unregister {app_id})")
             record["steps"]["registering"] = {"note": "already registered"}
         else:
             settings = self.settings
             project, region = settings.project_id, settings.region
+            # The first application of a repository keeps the plain names; a further one gets its own (D24), so the two never
+            # share workflows, an environment's variables, a deploy identity's trust or a release queue.
+            # GitHub's names ignore case, so lab/Mono and lab/mono are one repository with one set of workflow files.
+            sibling = any(other.repository.lower() == record["repository"].lower() for other in self.c.config.applications.values())
+            suffix = f"-{service}" if sibling else ""
             entry = {"repository": record["repository"], "branch": "main", "service": service, "auto_deploy": record["auto_deploy"],
+                     "path": folder, "workflow": f"deploy-gcp{suffix}.yml", "environment": f"staging{suffix}",
                      "target": {"project_id": project, "region": region, "service": service, "registry": service,
                                 "deploy_service_account": f"{service}-deploy@{project}.iam.gserviceaccount.com",
                                 "probe_service_account": f"{service}-probe@{project}.iam.gserviceaccount.com",
@@ -294,9 +325,9 @@ class Onboarder:
             variables["BILLING_EXPORT_TABLE"] = settings.billing_export_table
         if settings.iap_client_id:
             variables["IAP_CLIENT_ID"] = settings.iap_client_id
-        self.c.github.ensure_environment(app.repository, settings.environment, app.branch)
-        self.c.github.set_environment_variables(app.repository, settings.environment, variables)
-        record["steps"]["environment"] = {"environment": settings.environment, "variables": sorted(variables)}
+        self.c.github.ensure_environment(app.repository, app.environment, app.branch)
+        self.c.github.set_environment_variables(app.repository, app.environment, variables)
+        record["steps"]["environment"] = {"environment": app.environment, "variables": sorted(variables)}
         record["state"] = "workflows"
 
     def step_workflows(self, record):

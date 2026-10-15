@@ -311,6 +311,10 @@ What the tool does, in order: contract check (blocks with a checklist), registra
 
 The operator's switches for an onboarded application (a cost ceiling, auto-deploy, a pause, viewers, infrastructure settings) go under `application_settings: <app id>:` in `config.local.yaml`; they are laid over the registered entry on the next request, with no restart and nothing copied (`config.example.yaml` shows the shape).
 
+**A repository with several services** (since 1.10.0; `docs/DEVELOPER-CONTRACT.md` section 4a). Give `onboard_application` the service's folder as `path`, one call per service. The registry records the folder; the first service of a repository keeps `deploy-gcp.yml` and the `staging` environment, and each further one gets `deploy-gcp-<service>.yml`, `recover-gcp-<service>.yml`, `rightsize-gcp-<service>.yml` and the environment `staging-<service>`, created by the onboarding with its own variables. Its root says so (`github_environment`, `workflow_files`), and its deploy identity's federation admits only those workflows in that environment, so one service's workflow cannot release another. `lab-deploy decommission` names the service's own files and keeps the repository's access while other services still deploy from it. A service onboarded before 1.10.0 keeps its root folder: to move it into a folder, unregister it (`lab-deploy unregister APP`), move its files in a pull request, and onboard it again with `path` (its cloud resources are kept, since the names do not change).
+
+**Postgres by password** (`needs.database_auth: password`, since 1.10.0) needs the foundation applied with 1.10.0: the apply identity gets the custom role `labDeploySecretWriter` (create and describe secrets and add versions, never read a value) and the plan identity `roles/secretmanager.viewer`. The root generates the password in each run with an ephemeral `random_password` and the module writes it through write-only arguments to the database user `app` and to the secret `<service>-DATABASE_URL`, once; neither the state nor a plan holds it. The foundation's lock file pins the `random` provider for every root that copies it. To rotate the password, raise `local.password_version` in `infra/gcp/modules/service/needs.tf` (1 today) and let the pipeline apply: the user and the secret get the same new password in one run, and the next release picks up the new version. If the user is ever created again, the secret is written again in the same run.
+
 ## 7h. Pages for people (Identity-Aware Proxy)
 
 Applications with `exposure: lab-members` get Google's Identity-Aware Proxy directly on their Cloud Run service. One
@@ -395,8 +399,8 @@ Terraform's member resources check only their own members.
   - If a verification step fails, it fails closed by design: confirm the runner can read the private registry through `docker-credential-gcloud`, and for a private repository that the key exists (`gcloud kms keys list --keyring lab-deploy --location us-central1 --project PROJECT`).
 - **Dockerfile lint**: hadolint 2.15.1 checks each application's Dockerfile in the build job before the image is built.
   Findings are annotations on the run, a line in its summary and `dockerfile_lint` in the release receipt; they stop a
-  release only when the application repository's variable `HADOLINT_BLOCKING` is `true`, and then only for error-level
-  findings. 1.10.0 makes blocking on errors the default.
+  release when they are error-level (since 1.10.0; warnings never do). Set the application repository's variable
+  `HADOLINT_BLOCKING` to `false` to keep them as annotations only for that repository.
 - **Image scanning**: Terraform enables Artifact Analysis (`image_vulnerability_scanning`, about USD 0.26 per new image digest), often more than a small staging app's compute for the month; it is a per-project cost choice, and the estimate names it. The deployment job writes `vulnerability-summary.json` into the release receipt and the job summary. To block releases with critical findings, set the repository variable `BLOCK_ON_CRITICAL_VULNERABILITIES` to `true`; an unfinished scan then also blocks.
 - **Platform dependencies** are hash-locked. Refresh them deliberately, review the diff, and let CI's pip-audit and tests judge the result:
 

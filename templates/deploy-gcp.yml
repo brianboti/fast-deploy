@@ -1,4 +1,4 @@
-name: Deploy GCP staging
+name: Deploy GCP staging__LAB_NAME_SUFFIX__
 run-name: deploy-${{ inputs.plan_id }}
 on:
   workflow_dispatch:
@@ -34,7 +34,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: gcp-staging
+  group: gcp-staging__LAB_SUFFIX__
   cancel-in-progress: false
   queue: max
 env:
@@ -45,6 +45,11 @@ env:
   IMAGE_DIGEST_INPUT: ${{ inputs.image_digest }}
   PROVENANCE_INPUT: ${{ inputs.provenance }}
   BAKE_SECONDS: ${{ inputs.bake_seconds }}
+  # Where this service lives in its repository (the checkout is app/; a monorepo service has its own folder) and the file
+  # name of this workflow, which the build provenance names. Rendered per application by the platform; never edit by hand.
+  APP_DIR: __LAB_APP_DIR__
+  APP_PATH: __LAB_APP_PATH__
+  DEPLOY_WORKFLOW: deploy-gcp__LAB_SUFFIX__.yml
 jobs:
   build:
     # Skipped when the plan reuses an image this workflow already built and attested for the same commit.
@@ -95,7 +100,7 @@ jobs:
           import os
           from pathlib import Path
           from labdeploy.models import parse_spec, spec_hash, enforce
-          spec = parse_spec(Path('app/platform.yaml').read_text())
+          spec = parse_spec(Path(os.environ['APP_DIR'], 'platform.yaml').read_text())
           enforce(spec)
           assert spec_hash(spec) == os.environ['SPEC_HASH'], 'Spec hash mismatch'
           PY
@@ -106,12 +111,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TESTS=$(python -c 'from pathlib import Path; from labdeploy.models import parse_spec; print(parse_spec(Path("app/platform.yaml").read_text()).tests)')
+          read_spec() { python -c 'import os, sys; from pathlib import Path; from labdeploy.models import parse_spec; spec = parse_spec(Path(os.environ["APP_DIR"], "platform.yaml").read_text()); print({"tests": spec.tests, "python": spec.python, "context": spec.build.context}[sys.argv[1]])' "$1"; }
+          TESTS=$(read_spec tests)
           [[ "$TESTS" =~ ^(required|none)$ ]]
           echo "tests=$TESTS" >> "$GITHUB_OUTPUT"
-          PYTHON=$(python -c 'from pathlib import Path; from labdeploy.models import parse_spec; print(parse_spec(Path("app/platform.yaml").read_text()).python)')
+          PYTHON=$(read_spec python)
           [[ "$PYTHON" =~ ^3\.(11|12|13|14|15)$ ]]
           echo "python=$PYTHON" >> "$GITHUB_OUTPUT"
+          CONTEXT=$(read_spec context)
+          [[ "$CONTEXT" =~ ^(service|repository)$ ]]
+          echo "context=$CONTEXT" >> "$GITHUB_OUTPUT"
           [ "$TESTS" = "required" ] || echo "::warning::platform.yaml declares tests: none; no automated tests guard this release"
       # The application's own Python (platform.yaml `python`) for its tests and its dependency audit; the platform's steps
       # keep theirs on PATH.
@@ -120,31 +129,37 @@ jobs:
         with:
           python-version: ${{ steps.policy.outputs.python }}
           update-environment: false
+      # The test environment lives outside the checkout, so it can never reach the image. A service whose build reads the
+      # whole repository (build.context: repository) imports shared code from the repository's root in its tests as well.
       - name: Run unit tests
         if: steps.policy.outputs.tests == 'required'
-        working-directory: app
+        working-directory: __LAB_APP_DIR__
         env:
           APP_PYTHON: ${{ steps.app-python.outputs.python-path }}
+          CONTEXT: ${{ steps.policy.outputs.context }}
         run: |
           set -euo pipefail
-          "$APP_PYTHON" -m venv .test-venv
+          "$APP_PYTHON" -m venv "$RUNNER_TEMP/test-venv"
           if [ -f requirements.lock ]; then
-            .test-venv/bin/pip install --require-hashes -r requirements.lock
+            "$RUNNER_TEMP/test-venv/bin/pip" install --require-hashes -r requirements.lock
           else
-            .test-venv/bin/pip install -r requirements.txt
+            "$RUNNER_TEMP/test-venv/bin/pip" install -r requirements.txt
           fi
-          .test-venv/bin/pip install -r requirements-dev.txt
-          .test-venv/bin/python -m pytest
+          "$RUNNER_TEMP/test-venv/bin/pip" install -r requirements-dev.txt
+          if [ "$CONTEXT" = "repository" ]; then
+            export PYTHONPATH="$GITHUB_WORKSPACE/app"
+          fi
+          "$RUNNER_TEMP/test-venv/bin/python" -m pytest
       # On the application's own Python: version markers select what that Python installs, and a pin that exists only for
       # an older Python (numpy 1.24 on 3.11) is not refused for failing to install on the platform's 3.12.
       - name: Audit Python dependencies
-        working-directory: app
+        working-directory: __LAB_APP_DIR__
         env:
           APP_PYTHON: ${{ steps.app-python.outputs.python-path }}
         run: |
           set -euo pipefail
           "$APP_PYTHON" -m venv "$RUNNER_TEMP/audit-venv"
-          "$RUNNER_TEMP/audit-venv/bin/pip" install --require-hashes --only-binary=:all: -r ../platform/audit.lock
+          "$RUNNER_TEMP/audit-venv/bin/pip" install --require-hashes --only-binary=:all: -r "$GITHUB_WORKSPACE/platform/audit.lock"
           if [ -f requirements.lock ]; then
             # Every locked package at its exact version, read from the lock without installing or building anything.
             "$RUNNER_TEMP/audit-venv/bin/python" -m pip_audit --disable-pip -r requirements.lock
@@ -152,11 +167,11 @@ jobs:
             "$RUNNER_TEMP/audit-venv/bin/python" -m pip_audit -r requirements.txt
           fi
       # hadolint checks the Dockerfile against Docker's best practices. Its findings become annotations on this run and travel
-      # with the release receipt; they stop a release only when the repository variable HADOLINT_BLOCKING is 'true', and then
-      # only for error-level findings (the default from 1.10.0). Downloaded by version and checked against its SHA-256.
+      # with the release receipt; error-level findings stop the release (since 1.10.0) unless the repository variable
+      # HADOLINT_BLOCKING is 'false'. Warnings never do. Downloaded by version and checked against its SHA-256.
       - name: Lint the Dockerfile
         env:
-          HADOLINT_BLOCKING: ${{ vars.HADOLINT_BLOCKING || 'false' }}
+          HADOLINT_BLOCKING: ${{ vars.HADOLINT_BLOCKING || 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -164,9 +179,10 @@ jobs:
           echo "c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507  $RUNNER_TEMP/hadolint" | sha256sum --check --strict
           chmod +x "$RUNNER_TEMP/hadolint"
           mkdir -p bundle
-          "$RUNNER_TEMP/hadolint" --no-fail --format json app/Dockerfile > bundle/hadolint.json
+          "$RUNNER_TEMP/hadolint" --no-fail --format json "$APP_DIR/Dockerfile" > bundle/hadolint.json
           python3 - <<'PY'
           import json, os
+          dockerfile = os.path.normpath(os.path.join(os.environ["APP_PATH"], "Dockerfile"))  # as the repository names it
           def escape(text, property=False):
               text = str(text).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
               return text.replace(":", "%3A").replace(",", "%2C") if property else text
@@ -174,7 +190,7 @@ jobs:
           command = {"error": "error", "warning": "warning"}
           for f in findings:
               kind = command.get(f.get("level"), "notice")
-              print(f"::{kind} file=Dockerfile,line={int(f.get('line') or 1)},title={escape('hadolint ' + str(f.get('code')), True)}::{escape(f.get('message', ''))}")
+              print(f"::{kind} file={escape(dockerfile, True)},line={int(f.get('line') or 1)},title={escape('hadolint ' + str(f.get('code')), True)}::{escape(f.get('message', ''))}")
           counts = {}
           for f in findings:
               counts[str(f.get("level"))] = counts.get(str(f.get("level")), 0) + 1
@@ -183,15 +199,26 @@ jobs:
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
               summary.write(line + "\n")
           if counts.get("error") and os.environ["HADOLINT_BLOCKING"] == "true":
-              raise SystemExit("hadolint found error-level problems and HADOLINT_BLOCKING is true for this repository")
+              raise SystemExit("hadolint found error-level problems; fix the annotated lines (the repository variable HADOLINT_BLOCKING=false turns blocking off)")
           PY
       - name: Build without cloud credentials
+        env:
+          CONTEXT: ${{ steps.policy.outputs.context }}
         run: |
           set -euo pipefail
-          docker build --platform linux/amd64 -t "lab-app:$COMMIT_SHA" app
+          # The image is built from exactly the reviewed commit: whatever the tests left in the checkout (caches, files a
+          # test wrote) is removed first.
+          git -C app clean -ffdxq
+          # build.context: repository builds from the repository's root (shared code in a monorepo); the Dockerfile stays
+          # in the service's folder. Otherwise the service's folder is the whole build context.
+          if [ "$CONTEXT" = "repository" ]; then
+            docker build --platform linux/amd64 -f "$APP_DIR/Dockerfile" -t "lab-app:$COMMIT_SHA" app
+          else
+            docker build --platform linux/amd64 -t "lab-app:$COMMIT_SHA" "$APP_DIR"
+          fi
           mkdir -p bundle
           docker save "lab-app:$COMMIT_SHA" -o bundle/image.tar
-          cp app/platform.yaml bundle/platform.yaml
+          cp "$APP_DIR/platform.yaml" bundle/platform.yaml
           sha256sum bundle/image.tar | cut -d' ' -f1 > bundle/image.sha256
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -209,7 +236,7 @@ jobs:
     timeout-minutes: 35
     # GitHub records a deployment for this environment job; the URL below makes it show the released service.
     environment:
-      name: staging
+      name: staging__LAB_SUFFIX__
       url: ${{ steps.url.outputs.url }}
     permissions:
       contents: read
@@ -267,7 +294,7 @@ jobs:
           fi
           IMAGE="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT_ID/$REGISTRY_NAME/$SERVICE"
           [[ "$IMAGE_DIGEST_INPUT" =~ ^"$IMAGE"@sha256:[a-f0-9]{64}$ ]]
-          mkdir -p bundle && cp app/platform.yaml bundle/platform.yaml
+          mkdir -p bundle && cp "$APP_DIR/platform.yaml" bundle/platform.yaml
           echo "IMAGE_DIGEST=$IMAGE_DIGEST_INPUT" >> "$GITHUB_ENV"
           echo "IMAGE_NAME=$IMAGE" >> "$GITHUB_ENV"
           echo "IMAGE_SHA256=${IMAGE_DIGEST_INPUT##*@}" >> "$GITHUB_ENV"
@@ -362,7 +389,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh attestation verify "oci://$IMAGE_DIGEST" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/deploy-gcp.yml"
+          gh attestation verify "oci://$IMAGE_DIGEST" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/$DEPLOY_WORKFLOW"
       # The Cloud KMS path: only this application's deployer may sign with its key, and the deployer is reachable only from
       # these workflows on main in the staging environment.
       - name: Install Cosign

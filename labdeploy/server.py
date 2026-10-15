@@ -273,12 +273,13 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
 
     @mcp.tool(title="Onboard a repository (one sentence)", annotations=CHANGES_CLOUD, structured_output=True)
     @plain_errors
-    def onboard_application(repository: str, application: str | None = None, auto_deploy: bool = False) -> dict[str, Any]:
+    def onboard_application(repository: str, application: str | None = None, auto_deploy: bool = False, path: str | None = None) -> dict[str, Any]:
         """From a repository link to a running service, for a repository that follows docs/DEVELOPER-CONTRACT.md: validate it, register it,
         open and (when the policy and checks pass) merge its infrastructure and workflow pull requests, wait for the pipeline, create the
-        GitHub environment with its variables, and release the first commit. Resumable: call again to continue, or after fixing what
-        blocked it. Changes cloud resources."""
-        return controller.onboard(identity.get(), repository, application, auto_deploy)
+        GitHub environment with its variables, and release the first commit. `path`: the service's folder when it is not the repository
+        root (a monorepo, e.g. services/api); call once per service. Resumable: call again to continue, or after fixing what blocked it.
+        Changes cloud resources."""
+        return controller.onboard(identity.get(), repository, application, auto_deploy, path)
 
     @mcp.tool(title="Get onboarding status", annotations=READ_ONLY, structured_output=True)
     @plain_errors

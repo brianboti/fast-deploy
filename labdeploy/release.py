@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .bake import DEFAULT_BAKE_SECONDS, MAX_BAKE_SECONDS, BakeFailed, bake
 from .bake import iso as bake_iso
-from .models import PLATFORM_NETWORK, PLATFORM_SUBNET, enforce, needs_env, parse_spec, spec_hash
+from .models import PLATFORM_NETWORK, PLATFORM_SUBNET, enforce, needs_env, needs_secrets, parse_spec, spec_hash
 from .provenance import MODES as PROVENANCE_MODES
 
 COMMAND_TIMEOUT = 600  # seconds for any one gcloud call; the migration job is given less, so its wait always ends first
@@ -142,8 +142,10 @@ class CloudRun:
             flags.append(f"--env-vars-file={env_file}")
         else:
             flags.append("--clear-env-vars")
-        if spec.secrets:
-            flags.append("--set-secrets=" + ",".join(f"{name}={self.secret_name(name)}:latest" for name in spec.secrets))
+        # A need's own secret (DATABASE_URL for database_auth: password) is named by the platform, not by platform.yaml.
+        secrets = {**{name: self.secret_name(name) for name in spec.secrets}, **needs_secrets(spec)}
+        if secrets:
+            flags.append("--set-secrets=" + ",".join(f"{name}={secret}:latest" for name, secret in secrets.items()))
         else:
             flags.append("--clear-secrets")
         return flags
@@ -197,12 +199,19 @@ class CloudRun:
         if spec.needs.migrate:
             checks.append((f"migration job {spec.name}-migrate",
                            ["gcloud", "run", "jobs", "describe", f"{spec.name}-migrate", "--project", self.project, "--region", self.region, "--format=value(name)"]))
+        for secret in needs_secrets(spec).values():
+            # The pipeline writes its only version; a secret without an enabled version would fail the candidate at startup.
+            checks.append((f"secret {secret}", ["gcloud", "secrets", "versions", "list", secret, "--project", self.project, "--filter=state:ENABLED",
+                                                "--limit=1", "--format=value(name)"]))
         missing = []
         for label, command in checks:
             try:
-                self.run(command)
+                found = self.run(command)
             except subprocess.CalledProcessError:
                 missing.append(label)
+                continue
+            if label.startswith("secret ") and not (found or "").strip():
+                missing.append(f"{label} (no enabled version)")
         if missing:
             raise ValueError("Missing needs: " + ", ".join(missing) + ". Ask for propose_infrastructure, merge the pull request and let the pipeline apply it before releasing.")
 

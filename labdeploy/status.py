@@ -18,8 +18,9 @@ STEP_ADVICE = [
     ("Validate reviewed specification", "platform.yaml on main no longer matches the plan; create a new plan."),
     ("Run unit tests", "Unit tests failed on main; fix them and deploy again. The job log names the failing tests."),
     ("Audit Python dependencies", "The dependency audit found known vulnerabilities; upgrade the packages named in the job log, then deploy again."),
-    ("Lint the Dockerfile", "The Dockerfile lint found error-level problems and HADOLINT_BLOCKING is on for this repository; fix the lines the run annotates "
-     "(or download hadolint's findings from the run), then deploy again."),
+    ("Lint the Dockerfile", "The Dockerfile lint found error-level problems, which stop a release; fix the lines the run annotates "
+     "(or download hadolint's findings from the run), then deploy again. The operator can turn blocking off for one repository "
+     "with its variable HADOLINT_BLOCKING=false."),
     ("Build without cloud credentials", "The container image did not build; check the Dockerfile and the job log, then deploy again."),
     ("Validate artifact and deployment configuration", "The staging environment variables differ from the reviewed target; compare them with the Terraform outputs."),
     ("google-github-actions/auth", "Cloud sign-in failed; check the staging environment's variables and the identity federation in Terraform."),

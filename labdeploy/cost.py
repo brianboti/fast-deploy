@@ -466,13 +466,18 @@ def release_tolls(image_path, repository, token, runner=None, now=None, api=gith
     return result
 
 
-def reviewed_spec_from_github(repository, ref="main", token=None):
-    """platform.yaml at the branch tip through the GitHub API, read with the workflow's own token."""
+def reviewed_spec_from_github(repository, ref="main", token=None, path="."):
+    """platform.yaml at the branch tip through the GitHub API, read with the workflow's own token; `path` is the service's
+    folder in the repository ("." for one at the root)."""
     import base64
+    import urllib.parse
     import urllib.request
 
     from .models import parse_spec
-    request = urllib.request.Request(f"https://api.github.com/repos/{repository}/contents/platform.yaml?ref={ref}",
+    folder = "" if path in ("", ".") else path.strip("/") + "/"
+    if folder and (".." in folder.split("/") or not re.fullmatch(r"[A-Za-z0-9_./-]+", folder)):
+        raise ValueError("Unexpected service folder")
+    request = urllib.request.Request(f"https://api.github.com/repos/{repository}/contents/{urllib.parse.quote(folder)}platform.yaml?ref={urllib.parse.quote(ref)}",
                                      headers={"Accept": "application/vnd.github+json", **({"Authorization": f"Bearer {token}"} if token else {})})
     with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 - fixed https host
         data = json.load(response)
@@ -596,7 +601,8 @@ def report():
     repository = os.environ.get("GITHUB_REPOSITORY")
     if repository:
         try:
-            result["drift"] = drift(result["live_settings"], reviewed_spec_from_github(repository, os.environ.get("GITHUB_REF_NAME", "main"), os.environ.get("GH_TOKEN")))
+            result["drift"] = drift(result["live_settings"], reviewed_spec_from_github(repository, os.environ.get("GITHUB_REF_NAME", "main"), os.environ.get("GH_TOKEN"),
+                                                                                os.environ.get("APP_PATH", ".")))
         except Exception as exc:  # noqa: BLE001 - drift is best effort; the report says why it is missing
             result["drift"] = {"warning": f"Could not compare with platform.yaml: {str(exc)[:200]}"}
     try:

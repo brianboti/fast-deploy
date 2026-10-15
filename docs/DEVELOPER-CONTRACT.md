@@ -31,7 +31,7 @@ The standard has three levels:
 | `.github/CODEOWNERS` | Recommended | Who reviews what; branch protection can require their review. | GitHub |
 | `.github/dependabot.yml` | Recommended | Keeps pins current through reviewable pull requests for `pip`, `docker` and `github-actions`. | GitHub; the OpenSSF Dependency-Update-Tool check |
 | `.github/workflows/ci.yml` | Recommended | Runs the tests and lint on every pull request so `main` stays releasable; make it a required status check. Set `permissions: contents: read` at the top. | GitHub; the OpenSSF CI-Tests and Token-Permissions checks |
-| `.github/workflows/deploy-gcp.yml`, `recover-gcp.yml`, `rightsize-gcp.yml` | Added by the platform | The release, recovery and right-sizing jobs, pinned to a platform commit. Never edited by hand; "re-pin APP" regenerates them. | GitHub Actions and the controller |
+| `.github/workflows/deploy-gcp.yml`, `recover-gcp.yml`, `rightsize-gcp.yml` | Added by the platform | The release, recovery and right-sizing jobs, pinned to a platform commit. Never edited by hand; "re-pin APP" regenerates them. A second service in the same repository gets its own three, named after it (`deploy-gcp-admin.yml`, section 4a). | GitHub Actions and the controller |
 | `.pre-commit-config.yaml` | Recommended | Lint, format and secret-scan before a push (ruff, gitleaks). | Developers |
 | `CHANGELOG.md` | Optional | What changed per release, for people; the platform records every release by commit and digest regardless. | People |
 
@@ -121,7 +121,7 @@ Recommended:
   reinstalling every dependency.
 - Keep it clean for hadolint, which the build job runs on every release (version 2.15.1, the same rules as
   `hadolint Dockerfile` on your machine or `docker run --rm -i hadolint/hadolint:v2.15.1 < Dockerfile`). Findings are
-  annotations on the run today; from platform 1.10.0 error-level findings stop the release.
+  annotations on the run, and error-level findings stop the release (warnings do not).
 
 ## 3. Behaviour: the twelve factors on Cloud Run
 
@@ -165,6 +165,66 @@ Recommended:
   vulnerability scanning of every image, least-privilege workflow tokens in the three generated workflows, deploy by
   digest, recovery after runner loss, measured cost reports.
 
+## 4a. Several services in one repository
+
+A repository may hold more than one service, each in its own folder with its own `Dockerfile`, `platform.yaml`,
+requirement files and tests (the files of section 1, inside the folder):
+
+```text
+services/api/      Dockerfile  platform.yaml  requirements.txt  requirements-dev.txt  tests/
+services/admin/    Dockerfile  platform.yaml  requirements.txt  requirements-dev.txt  tests/
+lib/               shared code, when a service needs it
+compose.yaml       optional, for local development only
+```
+
+- **One sentence per service.** "Deploy https://github.com/lab/mono, the service in services/api" onboards one; the
+  folder is the `path` of `onboard_application`. The service name comes from `platform.yaml`, the application id from
+  the folder's last part unless you give one.
+- **Names.** The first service of a repository keeps the plain names (`deploy-gcp.yml`, the `staging` environment);
+  every further one gets its own, suffixed with its service: `deploy-gcp-admin.yml`, `recover-gcp-admin.yml`,
+  `rightsize-gcp-admin.yml` and the environment `staging-admin`. Each service has its own identities, trusted only from
+  its own workflows in its own environment, so one service's workflow can never release another.
+- **The build context.** By default the service's folder is the Docker build context: the Dockerfile copies paths
+  relative to the folder and nothing outside it is visible. When a service copies shared code from elsewhere in the
+  repository (`COPY lib/ ./lib/`), say so in its `platform.yaml`:
+
+  ```yaml
+  build:
+    context: repository   # the whole repository is the build context; the Dockerfile stays in the service's folder
+  ```
+
+  Paths in that Dockerfile are then relative to the repository's root (`COPY services/admin/app.py .`), and the
+  service's tests run with the repository's root on Python's import path, so `import lib.shared` works in both. Docker reads
+  the `.dockerignore` at the root of the context; give the service its own `services/admin/Dockerfile.dockerignore`
+  (BuildKit prefers a `<Dockerfile>.dockerignore` beside the Dockerfile), listing `.git`, virtual environments, the
+  other services' folders and anything secret, so the build sends only what the image needs.
+- **Releases.** Each service is released on its own. With `auto_deploy`, a commit that changes nothing in a service's
+  folder (or its workflows) does not release it again, unless its build reads the whole repository.
+- **Compose.** A `compose.yaml` at the root is read as a description of the parts, never deployed (section 4b).
+
+## 4b. Where each part of an application goes
+
+Cloud Run runs one container per service and bills the default way only while a request is being served, so a database,
+cache or worker inside the app's container (or beside it as a sidecar) loses its data with the instance and gets no CPU
+between requests. Each part has one place:
+
+| Part of the application | Where it goes | Why |
+|---|---|---|
+| Each component that answers HTTP (API, admin pages, a second service) | Its own service with its own `platform.yaml`, in its own folder (section 4a) | Each scales to zero and is billed on its own |
+| Postgres, Firestore, files, topics | `needs` in `platform.yaml` | The platform creates, backs up and connects them |
+| Cache or session store (Redis, memcached) | None by default: keep it in the process's memory or in Firestore. A managed cache never scales to zero (tens of dollars a month), so it is the operator's decision, not the contract's | Postgres with Redis is the most common pairing in real apps; the answer must be explicit |
+| Background worker or queue consumer (Celery, RQ, Dramatiq) | A topic need with a push subscription to a request-billed service, or a Cloud Run job for batches | Pull workers need an always-on instance, which the platform does not run |
+| Front end for lab members | Build it and serve the built files from the API's own container (for example FastAPI's `StaticFiles`) with `exposure: lab-members` | No extra service and the same sign-in; a separate public site is not offered |
+| Proxy, telemetry agent | Not needed: Cloud Run terminates TLS and collects logs and metrics | Sidecars may come later for these only |
+
+**Postgres sign-in.** The default (`database_auth: iam`) has the service sign in as its own Google identity through the
+Cloud SQL Python Connector: no password exists anywhere, which is what Google recommends. Code that only speaks a
+connection URL (SQLAlchemy's `create_engine(os.environ["DATABASE_URL"])`, Django's `dj-database-url`, many ORMs) says
+`database_auth: password`: the platform creates a database user `app` with a generated password and hands the service
+`DATABASE_URL` (`postgresql://app:...@PRIVATE-IP:5432/app?sslmode=require`) as a secret. Terraform generates the
+password in each run and writes it once through write-only arguments, so it is never in Terraform's state, a plan, the
+repository or the chat.
+
 ## 5. platform.yaml reference
 
 ```yaml
@@ -188,7 +248,10 @@ needs:
   buckets: [uploads]      # env BUCKET_UPLOADS
   topics: [events]        # env TOPIC_EVENTS and SUBSCRIPTION_EVENTS
   database: none          # none | firestore | postgres (about 9 dollars a month from the moment it exists)
+  database_auth: iam      # postgres only: iam (no password anywhere) or password (DATABASE_URL arrives as a secret; section 4b)
   migrate: []             # e.g. [alembic, upgrade, head]: a job from the same image, before traffic moves
+build:
+  context: service        # service (the folder holding platform.yaml) or repository (shared code in a monorepo; section 4a)
 reviewed: true            # set by the person who reviewed the file
 ```
 
@@ -226,7 +289,8 @@ through (the lab's list plus the app's own list; developers ask the operator to 
 ## 7. What is not supported
 
 Public endpoints (anyone without a sign-in), GPUs, runtimes other than Python HTTP services, stateful containers, a branch
-other than `main`, production environments, and editing the three workflow files the platform adds.
+other than `main`, production environments, editing the workflow files the platform adds, several containers in one
+service, and deploying a Compose file as such.
 
 ## Sources
 
@@ -238,4 +302,7 @@ other than `main`, production environments, and editing the three workflow files
 - [The Twelve-Factor App](https://12factor.net/): config, backing services, processes, port binding, disposability, logs, admin processes
 - [Docker: building best practices](https://docs.docker.com/build/building/best-practices/): multi-stage builds, `.dockerignore`, pinned base images by digest, exec-form `CMD`, non-root `USER`, rebuild often
 - [OpenSSF Scorecard checks](https://github.com/ossf/scorecard/blob/main/docs/checks.md): Branch-Protection, CI-Tests, Code-Review, Dependency-Update-Tool, License, Pinned-Dependencies, Security-Policy, Token-Permissions, Vulnerabilities, Binary-Artifacts
+- [Cloud Run sidecars](https://docs.cloud.google.com/run/docs/deploying#sidecars) and [billing settings](https://docs.cloud.google.com/run/docs/configuring/billing-settings): with request-based billing, sidecars get CPU only while a request is served or the instance starts
+- [Cloud SQL IAM database authentication](https://docs.cloud.google.com/sql/docs/postgres/iam-authentication) and [built-in users](https://docs.cloud.google.com/sql/docs/postgres/users): the IAM path Google recommends, and the password path for URL-only code
+- [Docker: .dockerignore files](https://docs.docker.com/build/concepts/context/#dockerignore-files): a `<Dockerfile>.dockerignore` beside the Dockerfile takes precedence over the context root's
 - [GitHub community health files](https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/creating-a-default-community-health-file): `SECURITY.md`, `CONTRIBUTING.md`, `SUPPORT.md`, and the per-repository `LICENSE`

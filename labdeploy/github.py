@@ -142,6 +142,14 @@ class GitHub:
                  for f in data.get("files", [])][:50]
         return {"status": data.get("status"), "ahead_by": data.get("ahead_by", 0), "behind_by": data.get("behind_by", 0), "commits": commits[-10:], "files": files}
 
+    def changed_files(self, repository, base, head):
+        """The paths a comparison touches (both names of a rename), and whether that list is complete: GitHub lists at most
+        300 files, and a base that is not an ancestor (a rewritten branch) says nothing reliable."""
+        data = self.request("GET", f"/repos/{repository}/compare/{quote(base, safe='')}...{quote(head, safe='')}").json()
+        listed = data.get("files", [])
+        files = sorted({name for f in listed for name in (f.get("filename"), f.get("previous_filename")) if name})
+        return files, data.get("status") in ("ahead", "identical") and len(listed) < 300
+
     def schedule_health(self, app, workflow):
         """Whether GitHub still runs a scheduled workflow and when it last did; GitHub pauses schedules in idle repositories."""
         state = self.request("GET", f"/repos/{app.repository}/actions/workflows/{workflow}").json().get("state")
@@ -248,7 +256,7 @@ class GitHub:
     def repository(self, repository):
         data = self.request("GET", f"/repos/{repository}").json()
         return {"repository_id": str(data["id"]), "owner_id": str(data["owner"]["id"]), "default_branch": data.get("default_branch"),
-                "private": bool(data.get("private")), "url": data.get("html_url")}
+                "private": bool(data.get("private")), "url": data.get("html_url"), "full_name": data.get("full_name")}
 
     def tree(self, repository, ref):
         """Every path in the repository at a ref (files and directories), for the contract's checks."""
@@ -379,7 +387,8 @@ class GitHub:
         body = (f"Regenerated from the platform templates at commit `{platform_sha}`.\n\nFiles: " + ", ".join(f"`{p}`" for p in files)
                 + "\n\nReview and merge through the normal process; the controller refuses to deploy an app whose pin it does not support. "
                 "Nothing is merged or deployed by this pull request itself.")
-        result = self.open_pull_request(app, f"lab-deploy/platform-{platform_sha[:12]}", files, f"Update Lab Deploy workflows to platform {platform_sha[:12]}", body,
+        result = self.open_pull_request(app, f"lab-deploy/platform-{platform_sha[:12]}{getattr(app, 'suffix', '')}", files,
+                                        f"Update Lab Deploy workflows to platform {platform_sha[:12]}" + (f" ({app.service})" if getattr(app, "suffix", "") else ""), body,
                                         f"Pin Lab Deploy workflows to platform {platform_sha[:12]}")
         if result.get("note") == "The files already have this content.":
             result["note"] = "The workflows already match this platform commit."
@@ -408,7 +417,7 @@ class GitHub:
         branch = "lab-deploy/onboard-" + uuid.uuid4().hex[:12]
         self.request("POST", f"/repos/{app.repository}/git/refs", json={"ref": f"refs/heads/{branch}", "sha": sha})
         content = yaml.safe_dump(draft, sort_keys=False)
-        self.request("PUT", f"/repos/{app.repository}/contents/platform.yaml", json={
+        self.request("PUT", f"/repos/{app.repository}/contents/{quote(app.repo_path('platform.yaml'))}", json={
             "message": "Add deployment specification for review", "branch": branch,
             "content": base64.b64encode(content.encode()).decode(),
         })
@@ -426,7 +435,7 @@ class GitHub:
         run_id = result.get("workflow_run_id")
         rollback = plan.get("kind") == "rollback"
         title = f"rollback-{plan['from_plan']}" if rollback else f"deploy-{plan['id']}"
-        workflow = "recover-gcp.yml" if rollback else app.workflow
+        workflow = app.workflows["recover"] if rollback else app.workflow
         if run_id:
             run = self.request("GET", f"/repos/{app.repository}/actions/runs/{int(run_id)}").json()
         else:

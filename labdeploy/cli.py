@@ -71,9 +71,10 @@ def build_parser():
     return parser
 
 
-def decommission_steps(app_id, app, needs=None, note=None, registered=False):
+def decommission_steps(app_id, app, needs=None, note=None, registered=False, siblings=()):
     """The order that retires an app without leaving a bill or a dangling trust: drain, delete, then let Terraform forget it.
-    `registered`: the app was onboarded, so its entry lives in the controller's database rather than the configuration file."""
+    `registered`: the app was onboarded, so its entry lives in the controller's database rather than the configuration file.
+    `siblings`: the other applications deployed from the same repository, which keep its access and their own workflows."""
     t = app.target
     needs = needs or {}
     extra = []
@@ -109,7 +110,10 @@ def decommission_steps(app_id, app, needs=None, note=None, registered=False):
         "and delete that directory in a pull request; Terraform drops the identities, trust and alerts it still owns, and schedules its provenance "
         "key's versions for destruction (Cloud KMS keeps the key's name, so a later app of the same name imports it rather than creating it).",
         forget,
-        f"In {app.repository}: disable or delete the three workflows and the staging environment, and revoke the platform credential's access to the repository.",
+        (f"In {app.repository}: delete {', '.join(app.workflows.values())} and the {app.environment} environment. Keep the platform credential's "
+         f"access to the repository: {', '.join(sorted(siblings))} still deploy from it." if siblings else
+         f"In {app.repository}: disable or delete {', '.join(app.workflows.values())} and the {app.environment} environment, and revoke the platform "
+         "credential's access to the repository."),
     ]
 
 
@@ -233,7 +237,8 @@ def run(parser, args):
             needs = controller.spec_at(app, controller.github.head(app)).needs.model_dump()
         except Exception as exc:  # noqa: BLE001 - the checklist is still useful without the spec; say what could not be read
             note = f"The app's platform.yaml could not be read ({str(exc)[:100]}); check it for buckets, topics and a database and delete their data deliberately."
-        steps = decommission_steps(args.app, applications[args.app], needs, note, registered=args.app not in config.applications)
+        siblings = [other for other, entry in applications.items() if other != args.app and entry.repository.lower() == applications[args.app].repository.lower()]
+        steps = decommission_steps(args.app, applications[args.app], needs, note, registered=args.app not in config.applications, siblings=siblings)
         for number, step in enumerate(steps, 1):
             print(f"{number}. {step}")
     elif args.command == "unregister":
@@ -297,9 +302,11 @@ def run(parser, args):
             parser.error(f"Unknown application(s): {', '.join(unknown)}")
         print(json.dumps(update_workflows(config, GitHub(), app_ids, args.platform_commit), indent=2))
     else:
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.platform_repo) or not re.fullmatch(r"[a-f0-9]{40}", args.platform_sha):
-            parser.error("Provide owner/repository and a full 40-character platform commit SHA")
-        rendered = args.template.read_text().replace("PLATFORM_REPOSITORY", args.platform_repo).replace("PLATFORM_COMMIT", args.platform_sha)
+        from .workflows import render
+        try:
+            rendered = render(args.template.read_text(), args.platform_repo, args.platform_sha)  # the plain layout: one service at the root
+        except ValueError as exc:
+            parser.error(str(exc))
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with args.output.open("x") as f:
             f.write(rendered)

@@ -14,6 +14,7 @@ from labdeploy.models import AppSpec
 from labdeploy.release import recover, rollout
 from labdeploy.status import summarize
 from labdeploy.target import Target, verify_target
+from labdeploy.workflows import lay_out
 
 
 def test_success_updates_status_and_individual_checks(setup):
@@ -218,8 +219,8 @@ def test_github_uses_current_attempt_steps_and_checks_run_identity(monkeypatch):
 
 def test_both_workflows_share_queued_lock_and_recovery_is_independent():
     import yaml
-    deploy = yaml.safe_load(Path("templates/deploy-gcp.yml").read_text())
-    recovery = yaml.safe_load(Path("templates/recover-gcp.yml").read_text())
+    deploy = yaml.safe_load(lay_out(Path("templates/deploy-gcp.yml").read_text()))
+    recovery = yaml.safe_load(lay_out(Path("templates/recover-gcp.yml").read_text()))
     assert deploy["concurrency"] == recovery["concurrency"] == {"group": "gcp-staging", "cancel-in-progress": False, "queue": "max"}
     assert "build" not in recovery["jobs"]
     assert all(step.get("with", {}).get("ref", "PLATFORM_COMMIT") == "PLATFORM_COMMIT" for step in recovery["jobs"]["recover"]["steps"])
