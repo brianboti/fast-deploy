@@ -573,6 +573,8 @@ def issue_body(report, run_url):
             lines += ["", "By application label:"] + [f"- {r['app']}: ${r['net_cost_usd']:.2f}" for r in actual["by_app"][:8]]
     elif actual.get("warning"):
         lines += ["", f"Actual spend unavailable: {actual['warning']}"]
+    if report.get("onboarding"):
+        lines += ["", str(report["onboarding"])[:300]]
     lines += ["", f"Generated {report.get('generated_at')} by [this run]({run_url}). "
               "Ask Claude for `get_cost_report` for the full JSON, or `propose_rightsizing` to turn proposals into a pull request."]
     return "\n".join(lines)
@@ -592,6 +594,8 @@ def report():
     monitoring = CloudMonitoring(target.project_id, lambda: run(["gcloud", "auth", "print-access-token"]))
     metrics = monitoring.collect(target.service, window_days)
     result = build_report(target.service, target.project_id, window_days, description, metrics, cost_recommender(target.project_id, target.region))
+    if os.environ.get("ONBOARDING_SUMMARY"):  # written by the controller when onboarding finished (docs/ROADMAP.md 11.5)
+        result["onboarding"] = os.environ["ONBOARDING_SUMMARY"][:300]
     table = os.environ.get("BILLING_EXPORT_TABLE", "")
     if table:
         try:

@@ -42,13 +42,14 @@ changes until a person merges. **Act** tools change the cloud.
 | `get_service_health` | Look | Live: is it serving, requests, errors, latency, instances, memory, declared needs, who may open its pages |
 | `get_recent_logs` | Look | Newest log lines at or above a severity (ERROR by default) |
 | `get_deployment_status` | Look | Where a release is: every step, the release phases, the new version's last log lines on failure, the next action. `wait_seconds` (up to 45) waits for a change |
+| `check_repository` | Look | Is a repository (or one service folder) ready to deploy: each contract item, why it matters, what the platform can draft |
 | `get_onboarding_status` | Look | Where an onboarding stands, what it waits for, or what blocked it and how to fix it |
 | `list_plans` | Look | Plan history, newest first |
 | `list_events` | Look | The audit trail: every call and sign-in |
 | `estimate_cost` | Look | Cost bounds and money-saving findings; optional traffic scenario |
 | `get_cost_report` | Look | The weekly measured report: real usage, proposals, actual spend |
 | `create_deployment_plan` | Record | A plan for one exact commit already on main; it expires after 15 minutes |
-| `propose_configuration` | Record | A draft `platform.yaml` pull request for a registered app that has none yet |
+| `propose_configuration` | Record | A draft pull request with the contract files a service lacks (never one that exists), for a registered app or a repository link before onboarding |
 | `propose_infrastructure` | Record | The app's cloud setup (Terraform) as a pull request on the platform repository; merging applies it |
 | `update_app_workflows` | Record | Re-pin the app's three workflow files to the current platform, as a pull request |
 | `propose_rightsizing` | Record | The weekly report's measured proposals as a pull request on `platform.yaml` |
@@ -101,11 +102,12 @@ operator to restart it with the current code (`scripts/start.sh` on the laptop).
 
 ### 2. "Is this repo ready?" or "What do developers need to give me?"
 
-Read `references/developer-contract.md`. If you can read the repository (a GitHub connector, or the public repository
-on the web), go through its checklist and report what is there, what is missing, and why each missing item matters. If
-you cannot read it, say so and offer `onboard_application`, which checks first and creates nothing when something is
-missing, but goes all the way when everything passes. For "what do developers need", give the short list from the
-reference in plain words, not the whole standard.
+Call `check_repository` with the link (and `path` for a service in a folder). It reads only and creates nothing.
+Report what is there, what is missing and why each missing item matters, in plain words; say which missing files the
+platform can draft. If the operator wants them, `propose_configuration` with the same link and `path` opens one draft
+pull request; a person reviews `platform.yaml`, sets `reviewed: true` and merges, then `onboard_application`. When it is
+ready, say that `onboard_application` will deploy it. For "what do developers need", give the three things from
+`references/developer-contract.md`, not the whole standard.
 
 ### 3. Release an update of an app that is already live
 

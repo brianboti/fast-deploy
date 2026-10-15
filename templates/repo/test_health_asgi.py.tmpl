@@ -1,0 +1,18 @@
+"""The health check the platform probes before and after every release (docs/DEVELOPER-CONTRACT.md, section 3).
+
+Drafted by Lab Deploy; keep it, and add tests of your own beside it.
+"""
+import asyncio
+
+import httpx
+
+__IMPORT__
+
+
+def test_health_answers_200():
+    async def get():
+        transport = httpx.ASGITransport(app=__APP__)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.get("__HEALTH_PATH__")
+
+    assert asyncio.run(get()).status_code == 200

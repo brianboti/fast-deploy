@@ -89,13 +89,20 @@ class LocalRepository:
     def dispatch(self, app, plan):
         raise ValueError("Demo mode never dispatches a workflow")
 
-    def propose_config(self, app, sha, draft, assumptions):
+    def contents(self, repository, ref, path):
+        """A file of the local repository, as GitHub's contents API gives it; None when it does not exist."""
+        try:
+            return {"sha": "local", "text": self.file(None, ref, path)}
+        except httpx.HTTPStatusError:
+            return None
+
+    def open_pull_request(self, app, branch, files, title, body, message, draft=False):
         raise ValueError("Demo mode never creates a pull request")
 
     def status(self, app, plan):
         raise ValueError("Demo mode has no workflow runs; plans stay planned")
 
-    def cost_report(self, app):
+    def cost_report(self, app, workflow="rightsize-gcp.yml"):
         raise ValueError("Demo mode has no telemetry; the rightsizing workflow produces measured cost reports in a real project")
 
 

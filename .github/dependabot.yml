@@ -7,12 +7,17 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # A release must be a week old before it is proposed: a compromised or broken one is usually caught by then.
+    cooldown:
+      default-days: 7
   - package-ecosystem: terraform
     directories:
       - /infra/gcp/project
       - /infra/gcp/apps/*
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     # A new provider major is an upgrade with a validated plan, not a bump; minor and patch updates still arrive.
     ignore:
       - dependency-name: hashicorp/google

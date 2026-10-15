@@ -53,8 +53,8 @@ def test_demo_flow_never_dispatches_or_writes(tmp_path):
     assert status["state"] == "planned"
     assert [e["event"] for e in status["events"]] == ["planned"]
     assert [x["id"] for x in c.plans(p)["plans"]] == [plan["id"]]
-    with pytest.raises(ValueError, match="already exists"):
-        c.propose_config(p, "demo")
+    drafted = c.propose_config(p, "demo")  # the files the demo lacks are listed, and nothing is written in demo mode
+    assert drafted["pull_request"] == "disabled" and "platform.yaml" not in drafted["files"] and "platform.yaml" in drafted["existing"]
     with pytest.raises(ValueError, match="never"):
         repo.dispatch(None, plan)
 
@@ -73,7 +73,7 @@ def test_demo_server_serves_all_tools_over_mcp(tmp_path):
         assert "dispatched" in init["instructions"]
         names = [t["name"] for t in rpc("tools/list")["tools"]]
         assert names == ["list_applications", "analyze_repository", "create_deployment_plan", "propose_configuration", "update_app_workflows", "propose_infrastructure", "onboard_application",
-                         "get_onboarding_status", "deploy_staging",
+                         "check_repository", "get_onboarding_status", "deploy_staging",
                          "deploy_latest", "rollback_staging", "cancel_deployment", "compare_with_live", "get_service_health", "get_recent_logs", "get_deployment_status",
                          "list_plans", "estimate_cost", "propose_rightsizing", "get_cost_report", "list_events", "get_controller_status"]
         planned = rpc("tools/call", {"name": "create_deployment_plan", "arguments": {"application": "demo"}})

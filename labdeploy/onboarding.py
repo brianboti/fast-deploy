@@ -20,6 +20,40 @@ STEPS = ("validating", "registering", "infrastructure", "planning", "applying", 
 WAITING = {"planning", "applying", "merging_workflows"}
 ACTIVE = set(STEPS) - {"complete"}
 REQUIRED_FILES = (("Dockerfile", "the build recipe"), ("platform.yaml", "the application's contract"), ("requirements.txt", "pinned runtime dependencies"))
+# What the contract recommends and why; found() below says where each may live, with the scaffold's own rules (any CI
+# workflow counts, Renovate counts for Dependabot), so the checker never asks for a file the scaffold would not draft.
+RECOMMENDED_FILES = (
+    ("requirements.lock", "hash-locked installs: the image matches the audited versions"),
+    (".dockerignore", "keeps tests, caches and local files out of the image"),
+    ("README.md", "what the service is and how to run it"),
+    ("LICENSE", "lets the lab reuse the code"),
+    ("SECURITY.md", "how to report a vulnerability privately"),
+    (".github/workflows/ci.yml", "runs the tests on every pull request, so main stays releasable"),
+    (".github/dependabot.yml", "keeps the pins current through reviewable pull requests"),
+)
+
+
+def recommended_found(name, everything, tree):
+    """Whether a recommended file exists: `tree` is the service's folder (relative paths), `everything` the repository."""
+    from .scaffold import DEPENDABOT, PLATFORM_WORKFLOW, RENOVATE, SECURITY_POLICY, WORKFLOW
+    lowered = {entry.lower() for entry in everything} | {entry.lower() for entry in tree}
+    if name == "requirements.lock":
+        return "requirements.lock" in tree
+    if name == ".dockerignore":  # a Dockerfile-specific ignore file counts, and is the one a whole-repository build reads
+        return ".dockerignore" in tree or "Dockerfile.dockerignore" in tree
+    if name in ("README.md", "LICENSE"):
+        stem = name.split(".")[0].lower()
+        return any(entry.split("/")[-1].startswith((stem, "licence" if stem == "license" else stem)) and entry.count("/") == 0 for entry in lowered)
+    if name == "SECURITY.md":
+        return any(candidate in lowered for candidate in SECURITY_POLICY)
+    if name == ".github/workflows/ci.yml":
+        return any(WORKFLOW.fullmatch(entry) and not PLATFORM_WORKFLOW.fullmatch(entry) for entry in everything)
+    if name == ".github/dependabot.yml":
+        return any(candidate in everything for candidate in (*DEPENDABOT, *RENOVATE))
+    return name in tree
+# The files the platform's checker may draft for a developer, in a draft pull request it never merges (docs/ROADMAP.md D26).
+PLATFORM_WRITES = frozenset({"Dockerfile", ".dockerignore", "requirements-dev.txt", "requirements.lock", "tests", "platform.yaml",
+                             ".github/workflows/ci.yml", "SECURITY.md", ".github/dependabot.yml"})
 WHAT_NEXT = {
     "validating": "checking the repository against the contract",
     "registering": "registering the application with the controller",
@@ -35,6 +69,76 @@ WHAT_NEXT = {
 
 class Blocked(Exception):
     """The onboarding cannot continue until a person changes something; the message says what."""
+
+
+def contract_check(github, repository, folder=""):
+    """The contract's checklist for one service of a repository, read-only (docs/DEVELOPER-CONTRACT.md): every required item
+    and every recommended one, whether it holds, why it matters, and whether the platform's checker can draft it. Raises
+    Blocked when the repository cannot be checked at all (another default branch, a folder that does not exist)."""
+    repo = github.repository(repository)
+    # The name exactly as GitHub spells it: the registry, the workflows and the identities all use this one.
+    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo.get("full_name") or "") and repo["full_name"].lower() == repository.lower():
+        repository = repo["full_name"]
+    branch = repo["default_branch"] or "main"
+    if branch != "main":
+        raise Blocked(f"The default branch is {branch}; the platform releases only from main")
+    everything = github.tree(repository, branch)
+    tree = everything
+    if folder:
+        if folder not in everything:
+            raise Blocked(f"The repository has no folder {folder} on {branch}; give the folder that holds the service's Dockerfile and platform.yaml")
+        tree = [entry[len(folder) + 1:] for entry in everything if entry.startswith(folder + "/")]
+    checklist, recommended, files = [], [], {}
+
+    def item(key, name, ok, why=None, detail=None, into=checklist):
+        entry = {"item": name, "ok": bool(ok), "platform_writes": key in PLATFORM_WRITES and not ok}
+        if why:
+            entry["why"] = why
+        if detail:
+            entry["detail"] = detail
+        into.append(entry)
+
+    for name, why in REQUIRED_FILES:
+        where = f"{folder}/{name}" if folder else name
+        files[name] = github.contents(repository, branch, where)
+        if name == "Dockerfile" and files[name] is None and "Procfile" in tree:
+            # Built with Google's buildpacks instead (docs/ROADMAP.md D28); the images are several times larger.
+            item(name, where, True, why, detail="no Dockerfile: Google's buildpacks build the image from the Procfile")
+            continue
+        item(name, where, files[name] is not None, why)
+    spec = None
+    if files["platform.yaml"] is not None:
+        try:
+            spec = AppSpec.model_validate(yaml.safe_load(files["platform.yaml"]["text"]))
+            item("valid", "platform.yaml is valid", True)
+        except Exception as exc:  # noqa: BLE001 - any parse or validation problem is a checklist line
+            item("valid", "platform.yaml is valid", False, detail=str(exc)[:300])
+    if spec is not None:
+        item("reviewed", "platform.yaml says reviewed: true", spec.reviewed, "a person has read it")
+        if spec.tests == "required":
+            item("tests", "tests (pytest files or a tests/ directory)", any(TEST_PATH.search(entry) for entry in tree), "run before every build")
+            item("requirements-dev.txt", "requirements-dev.txt", "requirements-dev.txt" in tree, "installs pytest for the test step")
+        dockerfile = (files["Dockerfile"] or {}).get("text", "")
+        if dockerfile:
+            item("port", f"Dockerfile exposes port {spec.port}", re.search(rf"^\s*EXPOSE\s+{spec.port}(/tcp)?\s*$", dockerfile, re.M) is not None,
+                 "the port in platform.yaml is the one Cloud Run sends requests to")
+    for name, why in RECOMMENDED_FILES:
+        in_service = name in ("requirements.lock", ".dockerignore")
+        item(name, f"{folder}/{name}" if folder and in_service else name, recommended_found(name, everything, tree), why, into=recommended)
+    return {"repository": repository, "path": folder, "branch": branch, "repository_id": repo["repository_id"], "owner_id": repo["owner_id"],
+            "checklist": checklist, "recommended": recommended, "spec": spec, "ready": all(entry["ok"] for entry in checklist)}
+
+
+def missing_message(checklist):
+    """Why a repository is not ready, and what the platform can draft for it."""
+    missing = [entry for entry in checklist if not entry["ok"]]
+    text = ("The repository does not follow the contract yet: " + "; ".join(entry["item"] + (f" ({entry['detail']})" if entry.get("detail") else "")
+                                                                             for entry in missing) + ". See docs/DEVELOPER-CONTRACT.md.")
+    writable = [entry["item"] for entry in missing if entry["platform_writes"]]
+    if writable:
+        text += (f" The platform can draft {', '.join(writable)} in a draft pull request (propose_configuration); a person reviews it, sets "
+                 "reviewed: true and merges it.")
+    return text
 
 
 def plain(error):
@@ -80,10 +184,23 @@ def slug(name):
     return value
 
 
+def summary(record):
+    """One line for people: when the onboarding finished, how long it took, and how often a person had to step in."""
+    measures = record.get("measures", {})
+    blocked, interventions = measures.get("blocked", 0), measures.get("interventions", 0)
+    when = time.strftime("%Y-%m-%d", time.gmtime(record.get("completed_at") or time.time()))
+    text = f"Onboarded {when} in {measures.get('minutes', 0):g} minutes"
+    if not blocked:
+        return text + ", with no step blocked."
+    steps = ", ".join(measures.get("blocked_steps", []))
+    return text + (f"; {blocked} block{'s' if blocked != 1 else ''} ({steps}), {interventions} resolved by the operator.")
+
+
 def describe(record):
     """The record as the operator sees it: the step, what it waits for or what blocked it, and what exists so far."""
     state = record["state"]
-    view = {k: record.get(k) for k in ("application", "repository", "path", "service", "state", "plan_id", "auto_deploy", "created_at", "updated_at")}
+    view = {k: record.get(k) for k in ("application", "repository", "path", "service", "state", "plan_id", "auto_deploy", "created_at", "updated_at",
+                                       "completed_at", "measures")}
     view["steps"] = record.get("steps", {})
     if state == "complete":
         view["next_action"] = (f"Onboarding is complete; the first release is plan {record.get('plan_id')}. Ask for get_deployment_status with that id.")
@@ -132,6 +249,9 @@ class Onboarder:
         elif record["state"] == "complete":
             return describe(record)
         elif record["state"] == "blocked":
+            # Someone fixed what blocked it and asked again: an intervention, counted for the onboarding measures.
+            measures = record.setdefault("measures", {})
+            measures["interventions"] = measures.get("interventions", 0) + 1
             record["state"], record["error"] = record.pop("blocked_at", "validating"), None
         return self.advance(record)
 
@@ -147,6 +267,10 @@ class Onboarder:
                 record["blocked_at"], record["state"], record["error"] = state, "blocked", str(exc)[:600]
             except Exception as exc:  # noqa: BLE001 - a GitHub or cloud error is reported the same way, and the next call retries the step
                 record["blocked_at"], record["state"], record["error"] = state, "blocked", plain(exc)[:600]
+            if record["state"] == "blocked":
+                measures = record.setdefault("measures", {})
+                measures["blocked"] = measures.get("blocked", 0) + 1
+                measures["blocked_steps"] = sorted(set(measures.get("blocked_steps", [])) | {state})
             self.c.store.save_onboarding(record["application"], record)
             if record["state"] != state:
                 self.c.store.record_event("onboarding", name=record["application"], application=record["application"], outcome=record["state"],
@@ -157,49 +281,14 @@ class Onboarder:
 
     # ---- the steps
     def step_validating(self, record):
-        github = self.c.github
-        repo = github.repository(record["repository"])
-        # The name exactly as GitHub spells it: the registry, the workflows and the identities all use this one.
-        if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo.get("full_name") or "") and repo["full_name"].lower() == record["repository"].lower():
-            record["repository"] = repo["full_name"]
-        branch = repo["default_branch"] or "main"
-        checklist = []
-        if branch != "main":
-            raise Blocked(f"The default branch is {branch}; the platform releases only from main")
-        folder = record.get("path", "")
-        tree = github.tree(record["repository"], branch)
-        if folder:
-            if folder not in tree:
-                raise Blocked(f"The repository has no folder {folder} on {branch}; give the folder that holds the service's Dockerfile and platform.yaml")
-            tree = [entry[len(folder) + 1:] for entry in tree if entry.startswith(folder + "/")]
-        files = {}
-        for name, why in REQUIRED_FILES:
-            where = f"{folder}/{name}" if folder else name
-            files[name] = github.contents(record["repository"], branch, where)
-            checklist.append({"item": where, "ok": files[name] is not None, "why": why})
-        spec = None
-        if files["platform.yaml"] is not None:
-            try:
-                spec = AppSpec.model_validate(yaml.safe_load(files["platform.yaml"]["text"]))
-                checklist.append({"item": "platform.yaml is valid", "ok": True})
-            except Exception as exc:  # noqa: BLE001 - any parse or validation problem is a checklist line
-                checklist.append({"item": "platform.yaml is valid", "ok": False, "detail": str(exc)[:300]})
-        if spec is not None:
-            checklist.append({"item": "platform.yaml says reviewed: true", "ok": spec.reviewed, "why": "a person has read it"})
-            if spec.tests == "required":
-                checklist.append({"item": "tests (pytest files or a tests/ directory)", "ok": any(TEST_PATH.search(entry) for entry in tree), "why": "run before every build"})
-                checklist.append({"item": "requirements-dev.txt", "ok": "requirements-dev.txt" in tree, "why": "installs pytest for the test step"})
-            dockerfile = (files["Dockerfile"] or {}).get("text", "")
-            if dockerfile:
-                checklist.append({"item": f"Dockerfile exposes port {spec.port}", "ok": re.search(rf"^\s*EXPOSE\s+{spec.port}(/tcp)?\s*$", dockerfile, re.M) is not None,
-                                  "why": "the port in platform.yaml is the one Cloud Run sends requests to"})
-        record["steps"]["validating"] = {"checklist": checklist, "repository_id": repo["repository_id"], "owner_id": repo["owner_id"]}
-        missing = [item for item in checklist if not item["ok"]]
-        if missing:
-            raise Blocked("The repository does not follow the contract yet: " + "; ".join(item["item"] + (f" ({item['detail']})" if item.get("detail") else "") for item in missing)
-                          + ". See docs/DEVELOPER-CONTRACT.md.")
-        record["service"] = spec.name
-        record["needs"] = spec.needs.model_dump()
+        result = contract_check(self.c.github, record["repository"], record.get("path", ""))
+        record["repository"] = result["repository"]
+        record["steps"]["validating"] = {"checklist": result["checklist"], "recommended": result["recommended"],
+                                         "repository_id": result["repository_id"], "owner_id": result["owner_id"]}
+        if not result["ready"]:
+            raise Blocked(missing_message(result["checklist"]))
+        record["service"] = result["spec"].name
+        record["needs"] = result["spec"].needs.model_dump()
         record["state"] = "registering"
 
     def step_registering(self, record):
@@ -374,4 +463,13 @@ class Onboarder:
         result = self.c.deploy_latest(self.principal(record), app_id)
         record["plan_id"] = result["id"]
         record["steps"]["releasing"] = {"plan_id": result["id"], "state": result["state"], "sha": result["sha"]}
+        record["completed_at"] = time.time()
+        measures = record.setdefault("measures", {})
+        measures["minutes"] = round((record["completed_at"] - record.get("created_at", record["completed_at"])) / 60, 1)
         record["state"] = "complete"
+        # The weekly cost issue repeats it, so the lab sees how long onboarding took without asking (docs/ROADMAP.md 11.5).
+        app = self.c.config.applications[app_id]
+        try:
+            self.c.github.set_environment_variables(app.repository, app.environment, {"ONBOARDING_SUMMARY": summary(record)})
+        except Exception as exc:  # noqa: BLE001 - a measure is never worth failing an onboarding that has finished
+            record["steps"]["releasing"]["note"] = f"The onboarding summary was not written to the environment: {plain(exc)[:200]}"

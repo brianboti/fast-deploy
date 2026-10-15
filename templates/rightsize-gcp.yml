@@ -68,6 +68,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/platform
           GH_TOKEN: ${{ github.token }}
           BILLING_EXPORT_TABLE: ${{ vars.BILLING_EXPORT_TABLE }}
+          ONBOARDING_SUMMARY: ${{ vars.ONBOARDING_SUMMARY }}
         run: python -m labdeploy.cost
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()

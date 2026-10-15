@@ -139,14 +139,15 @@ USES = re.compile(r"^(?P<lead>\s*-?\s*uses:\s*)(?P<action>[A-Za-z0-9_.-]+/[A-Za-
 
 
 def sync_pins(ci_path, templates_dir):
-    """Dependabot updates only .github/workflows; this carries each new pin into templates/*.yml. Returns changed lines."""
+    """Dependabot updates only .github/workflows; this carries each new pin into templates/*.yml and the CI workflow the
+    checker drafts for applications (templates/repo/ci.yml). Returns changed lines."""
     pins = {}
     for line in ci_path.read_text().splitlines():
         match = USES.match(line)
         if match:
             pins[match["action"]] = (match["sha"], (match["comment"] or "").strip())
     changed = []
-    for template in sorted(templates_dir.glob("*.yml")):
+    for template in sorted([*templates_dir.glob("*.yml"), *templates_dir.glob("repo/*.yml")]):
         lines = template.read_text().splitlines(keepends=True)
         for index, line in enumerate(lines):
             match = USES.match(line.rstrip("\n"))
@@ -157,7 +158,7 @@ def sync_pins(ci_path, templates_dir):
                 continue
             tail = (" " + comment) if comment else (match["comment"] or "")
             lines[index] = f"{match['lead']}{match['action']}@{sha}{tail}\n"
-            changed.append(f"{template.name}: {match['action']} {match['sha'][:12]} -> {sha[:12]}")
+            changed.append(f"{template.relative_to(templates_dir)}: {match['action']} {match['sha'][:12]} -> {sha[:12]}")
         template.write_text("".join(lines))
     return changed
 

@@ -5,7 +5,39 @@ with one request in Claude chat; the platform provides everything else (identiti
 databases, monitoring, cost control, signed images, rollback). `examples/demo-app` in the platform repository is a
 complete reference.
 
-The standard has three levels:
+## The three things you do
+
+1. **A web service that listens on `$PORT` and answers its health path.** Start an HTTP server on `0.0.0.0` at the port
+   Cloud Run passes in `PORT` (8080 unless `platform.yaml` says otherwise), and answer `GET /health` with 200 within
+   seconds of starting, without calling anything else.
+2. **Pinned requirements.** `requirements.txt` lists every runtime dependency at an exact version (`fastapi==0.143.1`).
+3. **Tests.** At least one pytest test (a `tests/` folder or `test_*.py` files) that passes with `python -m pytest`.
+
+That is all you must write. Ask Claude *"check github.com/ORG/REPO"* to see what else is missing, then *"draft the files
+for it"*: the platform opens one draft pull request with everything below, and never changes a file you already have.
+Read it, set `reviewed: true` in `platform.yaml` once its values are right, merge it, and say *"deploy
+github.com/ORG/REPO"*.
+
+### What the platform writes for you
+
+| File | What the draft holds |
+|---|---|
+| `Dockerfile` | Your Python's slim image pinned by digest, dependencies installed before the code, a non-root user, your server (uvicorn or gunicorn) started on `$PORT` |
+| `.dockerignore` | An allow-list: only what the service needs reaches the image; tests, environments, notebooks and keys stay out |
+| `requirements.lock` | Every dependency with its hashes for your Python, compiled with uv in a container of that Python |
+| `requirements-dev.txt` | pytest (and httpx for an ASGI app), pinned, kept out of the image |
+| `tests/test_health.py` | A test that the health path answers 200 |
+| `platform.yaml` | The deployment contract, with `reviewed: false`: the one file you must read before merging |
+| `.github/workflows/ci.yml` | Your tests on every pull request, with a read-only token |
+| `SECURITY.md`, `.github/dependabot.yml` | How to report a vulnerability; weekly, reviewable updates of the pins |
+
+**No Dockerfile at all?** A `Procfile` with one line (`web: uvicorn app:app --host 0.0.0.0 --port $PORT`) works too:
+Google's buildpacks then build the image. The images are several times larger (the demo app: about 394 MB against
+52 MB from its Dockerfile, measured locally on 2026-10-15), which costs registry storage and cold-start time, so the
+platform drafts a Dockerfile by default. A service whose build reads the whole repository needs a Dockerfile.
+
+The rest of this page is the full standard, for reviewers and for anyone who writes these files by hand. It has three
+levels:
 
 - **Required**: the pipeline refuses the release without it.
 - **Required by review**: the lab's rule; `analyze_repository` and the reviewer of `platform.yaml` check it.

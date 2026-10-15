@@ -1,3 +1,45 @@
+# 1.11.0: the platform writes the boilerplate (roadmap Phase 11)
+
+## Added
+
+1. **`check_repository`** (11.1), a read-only tool: the contract's checklist for a repository or one service folder of it,
+   before anything is registered. Each required and recommended item says whether it holds, why it matters, and whether
+   the platform can draft it. Onboarding runs the same check first and stops with the same list, naming what the
+   platform can draft. Any CI workflow of the repository counts for CI, and Renovate counts for Dependabot.
+2. **The checker writes** (11.2, decisions D26 and D27). `propose_configuration` now opens one draft pull request with
+   every file the contract asks for that the service lacks: a Dockerfile (the app's Python slim image by digest,
+   dependencies before code, a non-root user, uvicorn or gunicorn on `$PORT`), an allow-list `.dockerignore`,
+   `requirements-dev.txt`, a health test, `platform.yaml` with `reviewed: false`, a CI workflow, `SECURITY.md` and
+   Dependabot. It detects FastAPI, Starlette, Flask, Django and others, the Python version and the health route from the
+   code, read as text and never run. The lock is compiled on the controller's machine with uv in a container of the
+   app's own Python; without Docker the pull request names the exact command instead. It works for a repository that is
+   not registered yet (an identity with `applications: ['*']`), never changes a file that exists (also when one appears
+   on the branch meanwhile), and is never merged by the platform. The pull request explains each file in one line.
+3. **Building without a Dockerfile** (11.3, D28). A service with a `Procfile` and no Dockerfile is built with Google's
+   buildpacks: `pack` 0.40.9 downloaded by version and SHA-256, the builder and run image pinned by digest. Python 3.11
+   and 3.12 use the Ubuntu 22.04 builder because the Ubuntu 24.04 one offers 3.13 and later only (found in the trial).
+   pip installs the lock with its hashes when there is one. Measured locally on the demo app, the buildpack image is
+   about 394 MB against 52 MB from its Dockerfile, so the Dockerfile stays the default and the checker drafts one.
+4. **The contract opens with the three things a developer does** (11.4): a service on `$PORT` that answers its health
+   path, pinned requirements, tests. Everything else is under "What the platform writes for you".
+5. **Onboarding measures** (11.5): each onboarding records how long it took, how many times a step blocked, which steps,
+   and how many times the operator stepped in. `list_applications` shows it, and the weekly cost issue repeats the line
+   (the controller writes it to the environment as `ONBOARDING_SUMMARY` when onboarding finishes).
+
+## Changed
+
+1. `propose_configuration` takes a registered `application`, or a `repository` link and `path`; it no longer refuses a
+   repository that has a `platform.yaml`, it drafts the other missing files instead.
+2. The controller's container image includes `templates/`; `lab-deploy sync-pins` also updates the drafted CI workflow;
+   CI lints the drafted workflows and the platform's Dependabot file, which now waits seven days for a new release.
+
+## Upgrade steps
+
+1. Restart the controller. Docker must be running on its machine for the lock to be compiled (otherwise the pull request
+   carries the command).
+2. Re-pin every application: the deploy workflow gained the buildpack build and the right-sizing workflow the onboarding
+   summary.
+
 # 1.10.0: one repository, several services (roadmap Phase 10)
 
 ## Added

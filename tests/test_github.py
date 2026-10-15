@@ -20,23 +20,37 @@ def test_dispatch_uses_fixed_workflow_and_commit(monkeypatch):
     assert gh.dispatch(Application(repository="lab/demo", service="demo", target=TARGET), {"sha": "a" * 40, "spec_hash": "b" * 64, "id": "c" * 32, "target": TARGET})["workflow_run_id"] == 42
 
 
-def test_config_pr_is_draft_and_never_reviewed(monkeypatch):
+def test_config_pr_is_draft_and_never_overwrites_a_file(monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "test-credential")
     requests = []
+
     def handler(request):
-        body = json.loads(request.content)
-        requests.append((request.url.path, body))
-        if request.url.path.endswith("/pulls"):
+        body = json.loads(request.content) if request.content else None
+        requests.append((request.method, request.url.path, body))
+        path = request.url.path
+        if request.method == "GET" and path.endswith("/pulls"):
+            return httpx.Response(200, json=[])
+        if request.method == "GET" and "/commits/" in path:
+            return httpx.Response(200, json={"sha": "a" * 40})
+        if request.method == "POST" and path.endswith("/git/refs"):
+            return httpx.Response(201, json={})
+        if request.method == "GET" and "/contents/" in path:
+            if path.endswith("/SECURITY.md"):  # appeared on the branch after the files were drafted
+                return httpx.Response(200, json={"type": "file", "encoding": "base64", "sha": "s", "content": base64.b64encode(b"ours").decode()})
+            return httpx.Response(404, json={})
+        if request.method == "PUT":
+            assert "sha" not in body  # create-only: an existing file is never overwritten
+            return httpx.Response(201, json={})
+        if request.method == "POST" and path.endswith("/pulls"):
             assert body["draft"] is True
             return httpx.Response(201, json={"number": 1, "html_url": "https://github.com/lab/demo/pull/1"})
-        if request.method == "PUT":
-            assert "reviewed: false" in base64.b64decode(body["content"]).decode()
-            assert "sha" not in body  # create-only; cannot overwrite an existing file
-        return httpx.Response(201, json={})
+        raise AssertionError(f"unexpected {request.method} {path}")
     gh = GitHub(httpx.Client(base_url="https://api.github.com", transport=httpx.MockTransport(handler)))
-    result = gh.propose_config(Application(repository="lab/demo", service="demo", target=TARGET), "a" * 40, {"name": "demo", "reviewed": False}, ["Confirm stateless"])
-    assert len(requests) == 3
-    assert result["number"] == 1
+    app = Application(repository="lab/demo", service="demo", target=TARGET)
+    result = gh.open_pull_request(app, "lab-deploy/contract-files", {"platform.yaml": "name: demo\nreviewed: false\n", "SECURITY.md": "theirs"},
+                                  "Add the files", "body", "message", draft=True, create_only=True)
+    assert result["number"] == 1 and result["changed"] == ["platform.yaml"] and result["kept"] == ["SECURITY.md"]
+    assert [method for method, *_ in requests].count("PUT") == 1
 
 
 def test_symlink_content_rejected(monkeypatch):

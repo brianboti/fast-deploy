@@ -48,7 +48,8 @@ daily reference; `docs/SETUP.md` covers the one-time setup and `docs/RUNBOOK.md`
 |---|---|---|
 | "Deploy github.com/ORG/REPO on GCP" | `onboard_application`, `get_onboarding_status` | The whole onboarding, unattended, for a repository that follows the contract (next section) |
 | "Deploy the service in services/admin of github.com/ORG/REPO" | `onboard_application` with `path` | The same for one service of a repository that holds several; one sentence per service |
-| "Draft a configuration for github.com/ORG/REPO" | `analyze_repository`, `propose_configuration` | A draft `platform.yaml` with review questions, as a pull request on the app repository, for a repository that has none yet |
+| "Is github.com/ORG/REPO ready?" | `check_repository` | The contract's checklist, read-only: what is there, what is missing and why, and what the platform can draft |
+| "Draft the files for github.com/ORG/REPO" | `propose_configuration` | One draft pull request with every contract file the service lacks (Dockerfile, lock, test tools, a health test, `platform.yaml` with `reviewed: false`, CI, security policy, Dependabot), never changing an existing file; works before onboarding |
 | "Give demo a bucket called uploads" | A reviewed `needs` change, then `propose_infrastructure` | The developer (or you) adds it to `platform.yaml` in a pull request on the app repository; after that merge, the infrastructure pull request provisions it and the next release uses it. The same for topics, a database or a migration command. `propose_configuration` refuses an app that already has a `platform.yaml` |
 | "Render demo's infrastructure" | `propose_infrastructure` | The app's Terraform root as a pull request on the platform repository; the plan and policy verdict appear as a comment, merging applies it |
 | "Re-pin demo to the current platform" | `update_app_workflows` | The three workflow files regenerated against a platform commit, as a pull request |

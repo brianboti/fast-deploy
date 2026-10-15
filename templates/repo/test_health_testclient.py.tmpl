@@ -1,0 +1,13 @@
+"""The health check the platform probes before and after every release (docs/DEVELOPER-CONTRACT.md, section 3).
+
+Drafted by Lab Deploy; keep it, and add tests of your own beside it.
+"""
+from __TESTCLIENT__ import TestClient
+
+__IMPORT__
+
+
+def test_health_answers_200():
+    with TestClient(__APP__) as client:
+        response = client.get("__HEALTH_PATH__")
+    assert response.status_code == 200

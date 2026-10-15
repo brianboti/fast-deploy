@@ -255,9 +255,12 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
 
     @mcp.tool(title="Propose configuration (draft PR)", annotations=CREATES_RECORD, structured_output=True)
     @plain_errors
-    def propose_configuration(application: str) -> dict[str, Any]:
-        """Create a draft config PR for a new app. Never merges or replaces existing platform.yaml."""
-        return controller.propose_config(identity.get(), application)
+    def propose_configuration(application: str | None = None, repository: str | None = None, path: str | None = None) -> dict[str, Any]:
+        """Open a draft pull request with the files docs/DEVELOPER-CONTRACT.md asks for that the service lacks (Dockerfile, .dockerignore,
+        requirements-dev.txt, a hash-locked requirements.lock, a health test, platform.yaml with reviewed: false, CI, SECURITY.md,
+        Dependabot), never one that exists. Give a registered `application`, or a `repository` link and its `path` before onboarding.
+        The platform never merges it."""
+        return controller.propose_config(identity.get(), application, repository, path)
 
     @mcp.tool(title="Update app workflows (pull request)", annotations=CREATES_RECORD, structured_output=True)
     @plain_errors
@@ -280,6 +283,13 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
         root (a monorepo, e.g. services/api); call once per service. Resumable: call again to continue, or after fixing what blocked it.
         Changes cloud resources."""
         return controller.onboard(identity.get(), repository, application, auto_deploy, path)
+
+    @mcp.tool(title="Check a repository", annotations=READ_ONLY, structured_output=True)
+    @plain_errors
+    def check_repository(repository: str, path: str | None = None) -> dict[str, Any]:
+        """Check a GitHub repository (or one service folder of it) against docs/DEVELOPER-CONTRACT.md before deploying: each required
+        and recommended item, whether it holds, why it matters, and which missing files the platform can draft. Reads only."""
+        return controller.check_repository(identity.get(), repository, path)
 
     @mcp.tool(title="Get onboarding status", annotations=READ_ONLY, structured_output=True)
     @plain_errors

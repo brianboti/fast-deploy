@@ -218,6 +218,28 @@ class Controller:
         with self._onboarding_lock:
             return Onboarder(self).start(principal, repository, app_id, auto_deploy, path)
 
+    def check_repository(self, principal, repository, path=None):
+        """The contract's checklist for a repository, or one service folder of it, before anything is registered or created:
+        each item, whether it holds, why it matters, and whether the platform can draft it (docs/ROADMAP.md 11.1)."""
+        from .onboarding import Blocked, contract_check, missing_message, normalize_path, normalize_repository
+        if "*" not in principal.applications:
+            raise ValueError("Checking a repository that is not registered needs an identity that may see every application: applications: ['*']")
+        repository, path = normalize_repository(repository), normalize_path(path)
+        try:
+            result = contract_check(self.github, repository, path)
+        except Blocked as exc:
+            return {"repository": repository, "path": path, "ready": False, "error": str(exc),
+                    "next_action": "Fix what the error names; nothing was created."}
+        view = {key: result[key] for key in ("repository", "path", "branch", "ready", "checklist", "recommended")}
+        writable = [entry["item"] for entry in result["checklist"] + result["recommended"] if entry["platform_writes"]]
+        view["platform_can_draft"] = writable
+        if result["ready"]:
+            view["next_action"] = (f"Ready to deploy: onboard_application with {repository}" + (f" and path {path}" if path else "")
+                                   + (". The platform can still draft the recommended " + ", ".join(writable) + " with propose_configuration." if writable else "."))
+        else:
+            view["next_action"] = missing_message(result["checklist"])
+        return view
+
     def advance_onboarding(self, app_id):
         from .onboarding import Onboarder
         with self._onboarding_lock:
@@ -684,23 +706,62 @@ class Controller:
         self.store.add(principal.name, plan)
         return {**plan, "state": "planned", "live_dispatch_enabled": self.config.live_dispatch, "next_action": advice({"state": "planned"})}
 
-    def propose_config(self, principal, app_id):
-        import httpx
-        app = self.app(principal, app_id, write=True)
-        self.require_active(app_id)
-        report = self.inspect(principal, app_id)
-        try:
-            self.github.file(app, report["commit_sha"], app.repo_path("platform.yaml"))
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code != 404:
-                raise
+    def propose_config(self, principal, app_id=None, repository=None, path=None):
+        """D26: one draft pull request with the files docs/DEVELOPER-CONTRACT.md asks for and the service lacks, never one that
+        exists, for a registered application or, before registration, for a repository link and folder. The lock is compiled
+        here in a container of the app's own Python when Docker is available (D27). The platform never merges it."""
+        from types import SimpleNamespace
+
+        from . import scaffold
+        from .onboarding import normalize_path, normalize_repository, slug
+        if app_id:
+            app = self.app(principal, app_id, write=True)
+            self.require_active(app_id)
+            target, folder, name = SimpleNamespace(repository=app.repository, branch=app.branch), app.path, app.service
         else:
-            raise ValueError(f"{app.repo_path('platform.yaml')} already exists; edit it through a normal reviewed PR")
-        if not report["supported_candidate"]:
-            raise ValueError("No supported Python manifest found")
+            if not repository:
+                raise ValueError("Give an application, or a repository link (and the service's folder when it is not the root)")
+            if "*" not in principal.applications or not principal.can_deploy:
+                raise ValueError("Drafting files for a repository that is not registered needs an identity that may onboard: "
+                                 "applications: ['*'] with can_deploy")
+            target, folder, name = SimpleNamespace(repository=normalize_repository(repository), branch="main"), normalize_path(path), None
+        sha = self.github.head(target)
+        paths = self.github.tree(target.repository, sha)
+        if folder and folder not in paths:
+            raise ValueError(f"{target.repository} has no folder {folder} on {target.branch}")
+        texts = {}
+        for item in scaffold.files_to_read(paths, folder):
+            found = self.github.contents(target.repository, sha, item)
+            if found is not None:
+                texts[item] = found["text"]
+        requirements, locked = (f"{folder}/requirements.txt", f"{folder}/requirements.lock") if folder else ("requirements.txt", "requirements.lock")
+        lock = {"text": None, "command": None, "error": None}
+        if requirements in texts and locked not in paths and self.config.live_dispatch:
+            lock = scaffold.compile_lock(texts[requirements], scaffold.detect(paths, texts, folder)["python"], path=folder)
+        # Before registration the repository's own name is the last resort for the service's name (after the folder and
+        # pyproject.toml), so the draft is not left saying my-service.
+        result = scaffold.draft_files(paths, texts, folder, name, lock_text=lock["text"], fallback_name=target.repository.split("/")[1])
+        if lock["error"]:
+            result["review"].append(f"requirements.lock was not compiled on the controller's machine ({lock['error']}): run `{lock['command']}` "
+                                    "and commit the file.")
+        view = {"repository": target.repository, "path": folder, "commit_sha": sha,
+                "files": {target_path: item["purpose"] for target_path, item in sorted(result["files"].items())},
+                "existing": result["existing"], "review": result["review"], "detected": result["detected"]}
+        if not result["files"]:
+            view["pull_request"] = None
+            view["note"] = "Nothing to draft: the files the contract asks for already exist. Edit them through a normal reviewed pull request."
+            return view
         if not self.config.live_dispatch:
-            return {**report, "pull_request": "disabled"}
-        return self.github.propose_config(app, report["commit_sha"], report["draft_spec"], report["review_required"])
+            view["pull_request"] = "disabled"
+            return view
+        branch = "lab-deploy/contract-files" + (f"-{slug(folder.replace('/', '-'))}" if folder else "")
+        view["pull_request"] = self.github.open_pull_request(
+            target, branch, {target_path: item["content"] for target_path, item in result["files"].items()},
+            "Add the files Lab Deploy needs" + (f" for {folder}" if folder else ""), scaffold.pull_request_body(result),
+            "Add the files the Lab Deploy contract asks for (drafted; platform.yaml says reviewed: false)", draft=True, create_only=True)
+        self.store.record_event("propose_configuration", name=target.repository, identity=principal.name, application=app_id,
+                                outcome="opened", detail=f"{len(result['files'])} files" + (f" in {folder}" if folder else ""))
+        return view
 
     def plans(self, principal):
         """Deployers see every plan of their applications, including auto-deploy's; read-only identities see their own."""
@@ -801,6 +862,11 @@ class Controller:
                 entry["schedules"] = self.cached(("schedules", app_id), 300, lambda app=app: self.schedule_health(app))
             except Exception as exc:  # noqa: BLE001 - a GitHub hiccup must not hide the application list
                 entry["schedules"] = {"warning": f"Could not read the scheduled workflows: {str(exc)[:120]}"}
+            record = self.store.onboarding(app_id)
+            if record is not None and record.get("state") == "complete":
+                from .onboarding import summary
+                entry["onboarding"] = {"minutes": (record.get("measures") or {}).get("minutes"), "blocked": (record.get("measures") or {}).get("blocked", 0),
+                                       "interventions": (record.get("measures") or {}).get("interventions", 0), "summary": summary(record)}
             live = self.store.latest_success(app_id)
             if live is None:
                 entry["live_release"] = None

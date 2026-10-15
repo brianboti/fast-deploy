@@ -1,0 +1,25 @@
+"""The health check the platform probes before and after every release (docs/DEVELOPER-CONTRACT.md, section 3).
+
+Drafted by Lab Deploy; keep it, and add tests of your own beside it.
+"""
+from wsgiref.util import setup_testing_defaults
+
+__IMPORT__
+
+
+def test_health_answers_200():
+    environ = {"REQUEST_METHOD": "GET", "PATH_INFO": "__HEALTH_PATH__"}
+    setup_testing_defaults(environ)
+    statuses = []
+
+    def start_response(status, headers, exc_info=None):
+        statuses.append(status)
+        return lambda data: None
+
+    body = __APP__(environ, start_response)
+    try:
+        b"".join(body)
+    finally:
+        if hasattr(body, "close"):
+            body.close()
+    assert statuses and statuses[0].startswith("200")

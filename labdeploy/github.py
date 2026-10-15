@@ -343,8 +343,9 @@ class GitHub:
     def branch_head(self, repository, branch="main"):
         return self.request("GET", f"/repos/{repository}/commits/{quote(branch, safe='')}").json()["sha"]
 
-    def open_pull_request(self, app, branch, files, title, body, message):
-        """Open one pull request with the given files on a branch; never merges, never force-pushes, reuses an open one."""
+    def open_pull_request(self, app, branch, files, title, body, message, draft=False, create_only=False):
+        """Open one pull request with the given files on a branch; never merges, never force-pushes, reuses an open one.
+        `create_only`: a file that already exists on the branch is left alone (and named), never overwritten."""
         owner = app.repository.split("/")[0]
         open_prs = self.request("GET", f"/repos/{app.repository}/pulls", params={"head": f"{owner}:{branch}", "state": "open"}).json()
         if open_prs:
@@ -357,10 +358,13 @@ class GitHub:
             branch = f"{branch}-{base[:7]}"
             if not self.fresh_branch(app.repository, branch, base):
                 raise ValueError(f"Branches {branch} already exist and differ from {app.branch}; delete the old ones and try again")
-        changed = []
+        changed, kept = [], []
         for path, text in files.items():
             current = self.contents(app.repository, branch, path)
             if current is not None and current["text"] == text:
+                continue
+            if current is not None and create_only:
+                kept.append(path)
                 continue
             payload = {"message": message, "branch": branch, "content": base64.b64encode(text.encode()).decode()}
             if current is not None:
@@ -368,9 +372,12 @@ class GitHub:
             self.request("PUT", f"/repos/{app.repository}/contents/{quote(path, safe='/')}", json=payload)
             changed.append(path)
         if not changed:
-            return {"number": None, "url": None, "branch": branch, "changed": [], "note": "The files already have this content."}
-        response = self.request("POST", f"/repos/{app.repository}/pulls", json={"title": title, "base": app.branch, "head": branch, "draft": False, "body": body})
-        return {"number": response.json()["number"], "url": response.json()["html_url"], "branch": branch, "changed": changed}
+            return {"number": None, "url": None, "branch": branch, "changed": [], "kept": kept, "note": "The files already have this content."}
+        response = self.request("POST", f"/repos/{app.repository}/pulls", json={"title": title, "base": app.branch, "head": branch, "draft": draft, "body": body})
+        result = {"number": response.json()["number"], "url": response.json()["html_url"], "branch": branch, "changed": changed}
+        if kept:
+            result["kept"] = kept
+        return result
 
     def fresh_branch(self, repository, branch, base):
         """Create the branch at `base`, or accept an existing one only when it is exactly `base`; False when it has drifted."""
@@ -409,26 +416,6 @@ class GitHub:
         response = self.request("POST", f"/repos/{app.repository}/actions/workflows/{app.workflow}/dispatches", json={"ref": app.branch, "inputs": inputs})
         # Current API returns 200 with run ID; older deployments may still return 204.
         return response.json() if response.content else {}
-
-    def propose_config(self, app, sha, draft, assumptions):
-        import uuid
-
-        import yaml
-        branch = "lab-deploy/onboard-" + uuid.uuid4().hex[:12]
-        self.request("POST", f"/repos/{app.repository}/git/refs", json={"ref": f"refs/heads/{branch}", "sha": sha})
-        content = yaml.safe_dump(draft, sort_keys=False)
-        self.request("PUT", f"/repos/{app.repository}/contents/{quote(app.repo_path('platform.yaml'))}", json={
-            "message": "Add deployment specification for review", "branch": branch,
-            "content": base64.b64encode(content.encode()).decode(),
-        })
-        response = self.request("POST", f"/repos/{app.repository}/pulls", json={
-            "title": "Review generated deployment specification", "base": app.branch, "head": branch, "draft": True,
-            "body": ("Generated from commit `" + sha + "`. Configuration is blocked from deployment until reviewed.\n\n"
-                     + "\n".join("- " + x for x in assumptions)
-                     + "\n\nAfter review, set `reviewed: true` and merge through normal branch protection. "
-                     "No merge or cloud deployment is performed by this tool."),
-        })
-        return {"number": response.json()["number"], "url": response.json()["html_url"], "branch": branch}
 
     def status(self, app, plan):
         result = plan.get("dispatch_result", {})
