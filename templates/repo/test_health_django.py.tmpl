@@ -1,0 +1,26 @@
+"""The health check the platform probes before and after every release (docs/DEVELOPER-CONTRACT.md, section 3).
+
+Drafted by Lab Deploy; keep it, and add tests of your own beside it.
+"""
+import os
+
+import django
+import pytest
+
+
+@pytest.fixture(scope="module")
+def client():
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "__SETTINGS__")
+    django.setup()
+    from django.test import Client
+
+    return Client()
+
+
+def test_health_answers_200(client):
+    from django.test import override_settings
+
+    # The test client calls itself "testserver"; on Cloud Run, ALLOWED_HOSTS must also allow the service's own host.
+    with override_settings(ALLOWED_HOSTS=["testserver"]):
+        response = client.get("__HEALTH_PATH__")
+    assert response.status_code == 200

@@ -1,0 +1,28 @@
+# Drafted by Lab Deploy: weekly pull requests that keep the pins current (docs/DEVELOPER-CONTRACT.md, section 4). Each
+# update waits seven days after its release (cooldown), so a broken or malicious release is usually withdrawn before it
+# arrives here. Dependabot updates requirements.txt, not requirements.lock: recompile the lock in the same pull request with
+#   __LOCK_COMMAND__
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: __DIRECTORY__
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+  - package-ecosystem: docker
+    directory: __DIRECTORY__
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    # A new Python is a decision (python in platform.yaml moves with it), not a weekly bump: only the digest is refreshed.
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
