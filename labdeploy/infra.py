@@ -6,6 +6,7 @@ outputs to the application's GitHub environment. Standard library only, so the p
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -254,6 +255,18 @@ CUSTOM_ROLE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/roles/labDeplo
 CAP_OPERATOR_ROLE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/roles/labDeployCapOperator$")
 CAP_IDENTITY = "serviceAccount:lab-deploy-spending-cap@"
 STATE_BUCKET = re.compile(r"-tfstate$")
+# Buckets whose old object versions are what makes them useful: a release's recovery checkpoint and the controller's backups.
+VERSIONED_BUCKET = re.compile(r"-(recovery|lab-deploy-backups)$")
+ENCRYPTED_ONLY = ("ENCRYPTED_ONLY", "TRUSTED_CLIENT_CERTIFICATE_REQUIRED")
+# Resources whose secret material lands in Terraform's state and in every plan: never in an application root. Their
+# write-only forms (a `_wo` argument, an ephemeral resource) keep the value out of both and are what a root must use.
+SECRET_IN_STATE = {
+    "google_secret_manager_secret_version": "secret_data",
+    "google_sql_user": "password",
+    "random_password": None,
+    "tls_private_key": None,
+    "google_kms_secret_ciphertext": "plaintext",
+}
 
 
 def check_plan(plan, allowed_locations=ALLOWED_LOCATIONS):
@@ -315,18 +328,104 @@ def check_plan(plan, allowed_locations=ALLOWED_LOCATIONS):
             if kind == "google_sql_database_instance":
                 if _nested(after, "settings", "ip_configuration", "ipv4_enabled") is not False or _unknown(change, "settings", "ip_configuration", "ipv4_enabled"):
                     add("private_database", address, "databases get a private address only: settings.ip_configuration.ipv4_enabled must be false")
-                if after.get("deletion_protection") is not True:
-                    add("protected_database", address, "databases keep deletion protection on")
-            if kind == "google_firestore_database" and after.get("delete_protection_state") != "DELETE_PROTECTION_ENABLED":
-                add("protected_database", address, "databases keep delete protection on")
-            if kind == "google_storage_bucket" and (after.get("uniform_bucket_level_access") is not True or after.get("public_access_prevention") != "enforced"
-                                                   or _unknown(change, "public_access_prevention")):
-                add("private_bucket", address, "buckets use uniform bucket-level access and enforced public access prevention")
+                if after.get("deletion_protection") is not True or _nested(after, "settings", "deletion_protection_enabled") is not True:
+                    add("protected_database", address, "databases keep deletion protection on, in Terraform and in Cloud SQL itself "
+                        "(deletion_protection and settings.deletion_protection_enabled)")
+                if _nested(after, "settings", "backup_configuration", "enabled") is not True or _unknown(change, "settings", "backup_configuration", "enabled"):
+                    add("database_backups", address, "databases keep automated backups on: settings.backup_configuration.enabled must be true")
+                if _nested(after, "settings", "ip_configuration", "ssl_mode") not in ENCRYPTED_ONLY or _unknown(change, "settings", "ip_configuration", "ssl_mode"):
+                    add("encrypted_connections", address, "databases accept encrypted connections only: settings.ip_configuration.ssl_mode must be "
+                        "ENCRYPTED_ONLY or TRUSTED_CLIENT_CERTIFICATE_REQUIRED")
+            if kind == "google_firestore_database":
+                if after.get("delete_protection_state") != "DELETE_PROTECTION_ENABLED":
+                    add("protected_database", address, "databases keep delete protection on")
+                if after.get("deletion_policy") == "DELETE":
+                    add("protected_database", address, "a Firestore database is abandoned, never deleted, when Terraform stops managing it (deletion_policy)")
+            if kind == "google_storage_bucket":
+                if (after.get("uniform_bucket_level_access") is not True or after.get("public_access_prevention") != "enforced"
+                        or _unknown(change, "public_access_prevention")):
+                    add("private_bucket", address, "buckets use uniform bucket-level access and enforced public access prevention")
+                if after.get("force_destroy") is True or _unknown(change, "force_destroy"):
+                    add("no_force_destroy", address, "a bucket is never force-destroyed: force_destroy would delete every object with it")
+                name = after.get("name") or ""
+                if VERSIONED_BUCKET.search(name) and _nested(after, "versioning", "enabled") is not True:
+                    add("versioned_checkpoints", address, f"{name} keeps object versioning on: recovery reads the checkpoint's earlier versions")
+            if kind in SECRET_IN_STATE:
+                field = SECRET_IN_STATE[kind]
+                if field is None or after.get(field) is not None or _unknown(change, field):
+                    add("no_secret_in_state", address, "secret material would be stored in Terraform's state and printed in every plan; use the "
+                        "write-only argument (secret_data_wo, password_wo) or an ephemeral resource instead")
             if kind in LABELLED_TYPES:
                 labels = (_nested(after, "settings", "user_labels") if kind == "google_sql_database_instance" else after.get("labels")) or {}
                 if not isinstance(labels, dict) or "lab-deploy-app" not in labels:
                     add("labels_present", address, "every managed resource carries the lab-deploy-app label for cost allocation and the spending cap")
     return violations
+
+
+SERIOUS_DRIFT = ("iam", "network", "exposure")
+EXPOSURE_FIELDS = ("ingress", "invoker_iam_disabled", "iap_enabled", "default_uri_disabled", "custom_audiences")
+EXPOSURE_ROLES = ("roles/run.invoker", "roles/iap.httpsResourceAccessor")
+
+
+def drift_category(change):
+    """What kind of difference a change of an applied root is: exposure, iam, network, data, monitoring or other."""
+    kind = change.get("type", "")
+    before, after = change.get("change", {}).get("before") or {}, _after(change)
+    if kind.startswith("google_iap_") or (kind.endswith("_iam_member") and (after.get("role") or before.get("role")) in EXPOSURE_ROLES):
+        return "exposure"
+    if kind == "google_cloud_run_v2_service" and any(before.get(field) != after.get(field) for field in EXPOSURE_FIELDS):
+        return "exposure"
+    if kind.endswith(("_iam_member", "_iam_binding", "_iam_policy")) or kind.startswith(("google_service_account", "google_iam_", "google_project_iam_")):
+        return "iam"
+    if kind.startswith(("google_compute_", "google_vpc_access_", "google_service_networking_", "google_dns_")):
+        return "network"
+    if kind in DATA_TYPES or kind in ("google_pubsub_topic", "google_pubsub_subscription"):
+        return "data"
+    if kind.startswith("google_monitoring_"):
+        return "monitoring"
+    return "other"
+
+
+def drift(plan, app):
+    """What a plan of an applied root would change. Each change is a difference between the code on main and what runs:
+    an edit made outside the pipeline (drift), or an apply that did not finish."""
+    changes = []
+    for change in plan.get("resource_changes", []):
+        actions = change.get("change", {}).get("actions", [])
+        if actions in (["no-op"], ["read"], []):
+            continue
+        changes.append({"address": change.get("address", "?"), "type": change.get("type", ""), "actions": actions, "category": drift_category(change)})
+    return {"app": app, "state": "present", "drifted": bool(changes), "changes": changes,
+            "categories": sorted({c["category"] for c in changes}), "serious": [c for c in changes if c["category"] in SERIOUS_DRIFT]}
+
+
+def drift_report(records, apps, run_url=None, now=None):
+    """The weekly drift check's result for every application root; a root without a record means its plan failed."""
+    found = {record["app"]: record for record in records if isinstance(record, dict) and record.get("app")}
+    return {"checked_at": now or datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"), "run_url": run_url,
+            "applications": [found[app] for app in sorted(found)],
+            "drifted": sorted(app for app, record in found.items() if record.get("drifted")),
+            "serious": sorted(app for app, record in found.items() if record.get("serious")),
+            "failed": sorted(set(apps) - set(found))}
+
+
+def drift_issue(report):
+    """Markdown for the living drift issue on the platform repository."""
+    lines = ["Updated by the weekly drift check (`.github/workflows/infra-drift.yml`), which plans every application root against the live "
+             "infrastructure with the read-only identity. A difference is an edit made outside the pipeline, or an apply that did not finish; "
+             "merging any change to the root (or dispatching the infrastructure apply) puts the code's version back.", ""]
+    for record in report["applications"]:
+        if not record.get("drifted"):
+            continue
+        lines.append(f"### `{record['app']}`: {', '.join(record['categories'])}")
+        lines += [f"- `{change['address']}` ({change['category']}): {'/'.join(change['actions'])}" for change in record["changes"][:50]]
+        lines.append("")
+    if report["failed"]:
+        lines += ["Plans that did not finish (see the run): " + ", ".join(f"`{app}`" for app in report["failed"]), ""]
+    if not report["drifted"] and not report["failed"]:
+        lines += ["No drift: every application root matches the live infrastructure.", ""]
+    lines.append(f"Checked {report['checked_at']}" + (f" by [this run]({report['run_url']})." if report.get("run_url") else "."))
+    return "\n".join(lines) + "\n"
 
 
 def summary(plan):
@@ -424,13 +523,23 @@ def publish(outputs, token=None, environment="staging", request=github_request):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    usage = "usage: python -m labdeploy.infra check PLAN.json | summary PLAN.json APP [PLAN.txt] | roots CHANGED.txt APPS_DIR | publish OUTPUTS.json"
-    if len(argv) < 2 or argv[0] not in ("check", "summary", "roots", "publish"):
+    usage = ("usage: python -m labdeploy.infra check PLAN.json | summary PLAN.json APP [PLAN.txt] | roots CHANGED.txt APPS_DIR | roots-all APPS_DIR"
+             " | publish OUTPUTS.json | drift PLAN.json APP | drift-report RECORDS_DIR APPS_JSON [RUN_URL] | drift-issue REPORT.json")
+    if len(argv) < 2 or argv[0] not in ("check", "summary", "roots", "roots-all", "publish", "drift", "drift-report", "drift-issue"):
         print(usage, file=sys.stderr)
         return 1
     if argv[0] == "roots":
         changed = [line.strip() for line in Path(argv[1]).read_text().splitlines() if line.strip()]
         print("apps=" + json.dumps(roots(changed, argv[2] if len(argv) > 2 else "infra/gcp/apps")))
+        return 0
+    if argv[0] == "roots-all":
+        directory = Path(argv[1])
+        names = sorted(p.name for p in directory.iterdir() if p.is_dir() and NAME.fullmatch(p.name)) if directory.is_dir() else []
+        print("apps=" + json.dumps(names))
+        return 0
+    if argv[0] == "drift-report":
+        records = [json.loads(path.read_text()) for path in sorted(Path(argv[1]).glob("*.json"))] if Path(argv[1]).is_dir() else []
+        print(json.dumps(drift_report(records, json.loads(argv[2]), argv[3] if len(argv) > 3 else None), indent=2))
         return 0
     document = json.loads(Path(argv[1]).read_text())
     if argv[0] == "check":
@@ -439,6 +548,15 @@ def main(argv=None):
             print(f"{violation['rule']}: {violation['address']}: {violation['detail']}")
         print(f"{len(violations)} violation(s)")
         return 2 if violations else 0
+    if argv[0] == "drift":
+        if not NAME.fullmatch(argv[2] if len(argv) > 2 else ""):
+            print("drift needs the application's root name", file=sys.stderr)
+            return 1
+        print(json.dumps(drift(document, argv[2]), indent=2))
+        return 0
+    if argv[0] == "drift-issue":
+        print(drift_issue(document), end="")
+        return 0
     if argv[0] == "publish":
         try:
             text, ok = publish(document, os.environ.get("APP_REPOS_TOKEN") or None)

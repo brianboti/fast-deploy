@@ -84,11 +84,14 @@ app; programs that must call the app need a token for the proxy's client id (`do
 ## A normal release, as Claude reports it
 
 `deploy_latest` returns a plan id and `dispatched`. Asking for the status with a wait of 45 seconds a few times shows the
-workflow steps (tests, dependency audit, build, provenance, scan, deploy, probes), then the release phases
-`preparing, deploying, promoting, succeeded` (with `migrating` before `deploying` when the app declares a migration).
-The demo takes about three to four minutes. A failed candidate never takes traffic: the status says
-`release_failed_health_unconfirmed`, shows the candidate's last log lines, and the next action is to fix and deploy
-again. `dispatch_lost` means GitHub never showed the run; deploy again.
+workflow steps (tests, dependency audit, Dockerfile lint, build, provenance, scan, deploy, probes), then the release phases
+`preparing, deploying, promoting, baking, succeeded` (with `migrating` before `deploying` when the app declares a
+migration). The bake watches the new revision's real traffic for five minutes after it takes over, so the demo takes about
+eight to nine minutes. A failed candidate never takes traffic: the status says `release_failed_health_unconfirmed`, shows
+the candidate's last log lines, and the next action is to fix and deploy again. A revision that took over and then
+crashed or answered too many requests with 5xx "failed its bake after promotion": the previous traffic is back, and the
+bake's numbers and the revision's log lines are in the status. A bake with too little traffic to judge says
+`inconclusive`; the release still counts. `dispatch_lost` means GitHub never showed the run; deploy again.
 
 ## Guardrails Claude cannot talk its way around
 
@@ -97,7 +100,10 @@ again. `dispatch_lost` means GitHub never showed the run; deploy again.
 - `cost_ceiling_usd` refuses plans whose compute bound plus the needs' floor is too high; estimates come from list prices.
 - Infrastructure changes are pull requests with a fail-closed policy; nothing that holds data is ever destroyed by the pipeline.
 - Secret values never pass through Claude: the operator creates them with `gcloud`, `platform.yaml` only names them.
-- The spending cap closes ingress and stops databases at the budget line, whatever anyone asks for.
+- The spending cap closes ingress and stops databases at the budget line, whatever anyone asks for; Google's own spend
+  cap pauses Cloud Run in the project as a second, independent layer once the operator has created it.
+- Every release is watched for five minutes after it takes over; a crash or 5xx answers bring the previous version back.
+- A weekly drift check reports anything changed outside the pipeline; `get_controller_status` shows it.
 
 ## When something is off
 
@@ -108,6 +114,9 @@ again. `dispatch_lost` means GitHub never showed the run; deploy again.
 | Platform pin unsupported | The app's workflows pin a platform commit older than `platform.minimum_commit` | "Re-pin APP to the current platform", merge the pull request |
 | Policy: blocked | An infrastructure plan violates a rule | Read the rule in the pull request comment; change `platform.yaml` or the configuration, render again |
 | Cost policy exceeds limit | The app's worst case is above `cost_ceiling_usd` | Lower resources or raise the ceiling deliberately in the configuration |
+| Failed its bake after promotion | The new version crashed or answered too many 5xx once it served everyone; the previous version is back | Read the bake's numbers and the log lines in the status, fix, deploy again |
+| `no_native_spend_cap` in a plan or estimate | Google's spend cap for Cloud Run is not recorded for the project | `docs/SETUP.md` 7i: create it, then record it under `cloud_run_spend_caps` |
+| Infrastructure drift in the controller status | Something in an app's infrastructure differs from the code | `docs/RUNBOOK.md` "Drift reported" |
 
 ## Verified
 

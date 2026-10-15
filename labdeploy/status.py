@@ -1,6 +1,8 @@
 """Report evidence from CI steps; never infer individual checks from overall success."""
 import datetime
 
+from .bake import summary as bake_summary
+
 CHECKS = {
     "tests": ("build", "Run unit tests"),
     "dependency_scan": ("build", "Audit Python dependencies"),
@@ -16,6 +18,8 @@ STEP_ADVICE = [
     ("Validate reviewed specification", "platform.yaml on main no longer matches the plan; create a new plan."),
     ("Run unit tests", "Unit tests failed on main; fix them and deploy again. The job log names the failing tests."),
     ("Audit Python dependencies", "The dependency audit found known vulnerabilities; upgrade the packages named in the job log, then deploy again."),
+    ("Lint the Dockerfile", "The Dockerfile lint found error-level problems and HADOLINT_BLOCKING is on for this repository; fix the lines the run annotates "
+     "(or download hadolint's findings from the run), then deploy again."),
     ("Build without cloud credentials", "The container image did not build; check the Dockerfile and the job log, then deploy again."),
     ("Validate artifact and deployment configuration", "The staging environment variables differ from the reviewed target; compare them with the Terraform outputs."),
     ("google-github-actions/auth", "Cloud sign-in failed; check the staging environment's variables and the identity federation in Terraform."),
@@ -105,8 +109,21 @@ def release_phases(receipt):
               "restore_error": receipt.get("restore_error"), "service_ready": receipt.get("service_ready"), "note": receipt.get("note"),
               "previous_traffic": receipt.get("previous_traffic"), "cleanup_warning": receipt.get("cleanup_warning"),
               "timestamps": receipt.get("phases"), "candidate_logs": receipt.get("candidate_logs"), "candidate_logs_note": receipt.get("candidate_logs_note"),
-              "migration": receipt.get("migration")}
+              "migration": receipt.get("migration"), "bake": receipt.get("bake"), "bake_summary": bake_summary(receipt.get("bake")),
+              "dockerfile_lint": receipt.get("dockerfile_lint"), "failed_phase": receipt.get("failed_phase")}
     return {key: value for key, value in phases.items() if value is not None}
+
+
+def bake_note(receipt):
+    """What the bake could not judge, said plainly after a successful release; empty when it passed or did not run."""
+    bake = receipt.get("bake") or {}
+    if bake.get("result") == "inconclusive":
+        return " The bake saw too little traffic to judge errors or latency, so only the probes vouch for this release."
+    if bake.get("result") == "unobserved":
+        return " The bake could not read the new revision's logs, so nothing watched it after its final probe; check the deployer's Logging viewer role."
+    if bake.get("result") == "skipped":
+        return " No bake ran (bake_seconds: 0 for this application)."
+    return ""
 
 
 def advice(plan):
@@ -141,9 +158,9 @@ def advice(plan):
     if state == "succeeded":
         if receipt.get("revision") and plan.get("run_ended"):
             return (f"Revision {receipt['revision']} serves all traffic at {receipt.get('url', 'the service URL')}: the release completed before "
-                    f"the run ended ({plan['run_ended']}), so this is the live release. Roll back if it should not serve.")
+                    f"the run ended ({plan['run_ended']}), so this is the live release. Roll back if it should not serve.{bake_note(receipt)}")
         if receipt.get("revision"):
-            return f"Revision {receipt['revision']} serves all traffic at {receipt.get('url', 'the service URL')}. Nothing to do."
+            return f"Revision {receipt['revision']} serves all traffic at {receipt.get('url', 'the service URL')}. Nothing to do.{bake_note(receipt)}"
         return "The workflow succeeded; the release receipt was not available, so confirm the serving revision in Cloud Run."
     if state == "completed_unverified":
         return "The workflow finished but not every check reported a result; inspect the run before trusting this release."
@@ -154,6 +171,9 @@ def advice(plan):
             phase = receipt.get("failed_phase") or "the release"
             job = (" The migration job runs on in Google Cloud once started and may still finish; check its execution before "
                    "releasing again." if phase == "migrating" else "")
+            if phase == "baking":
+                return ("The release was cancelled while baking: the new revision had served all traffic since its promotion, and the previous "
+                        "traffic split is restored now. Deploy again when ready." + recovered)
             return (f"The release was cancelled while {phase}; nothing new serves and the previous revision kept serving.{job} "
                     "Deploy again when ready." + recovered)
         if receipt.get("state") == "traffic_restored" and receipt.get("failed_phase") == "preparing":
@@ -163,13 +183,17 @@ def advice(plan):
             return (f"The database migration failed, so nothing new was deployed and the previous revision kept serving ({receipt.get('error', 'see the receipt')}). "
                     "Fix the migration and deploy again; check its log lines in the receipt first, since a tool that does not run the "
                     "migration in one transaction may have applied part of it." + recovered)
+        if receipt.get("state") == "traffic_restored" and receipt.get("failed_phase") == "baking":
+            return (f"The new revision served all traffic but failed its bake after promotion ({receipt.get('error', 'see the receipt')}); the previous "
+                    "traffic split was restored, so the previous revision serves again. The new revision's last log lines and the bake's numbers are in "
+                    "the receipt; fix the application and deploy again." + recovered)
         if receipt.get("state") == "traffic_restored":
             return (f"The candidate failed ({receipt.get('error', 'see the receipt')}); traffic was restored and the previous revision kept serving. "
                     "Fix the application and deploy again." + (" The candidate's last log lines are in the receipt." if receipt.get("candidate_logs") else "") + recovered)
         if receipt.get("state") == "rollback_failed_manual_recovery_required":
             return (f"Traffic restoration failed ({receipt.get('restore_error', 'see the receipt')}). Run the recovery workflow now and inspect Cloud Run; "
                     f"the previous split was {receipt.get('previous_traffic')}.{recovered}")
-        if receipt.get("state") in {"preparing", "migrating", "deploying", "promoting"}:
+        if receipt.get("state") in {"preparing", "migrating", "deploying", "promoting", "baking"}:
             note = " The migration job may have run; check its log before releasing again." if receipt.get("state") == "migrating" else ""
             return f"The runner stopped mid-release at '{receipt['state']}'; the recovery workflow restores traffic from the checkpoint.{note}{recovered}"
         if receipt.get("state") == "succeeded":

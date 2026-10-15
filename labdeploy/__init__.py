@@ -1,3 +1,3 @@
 """Lab deployment control plane."""
 
-__version__ = "1.8.8"
+__version__ = "1.9.0"

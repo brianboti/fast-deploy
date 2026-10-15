@@ -13,6 +13,8 @@ from urllib.parse import quote
 import httpx
 import jwt
 
+from .bake import DEFAULT_BAKE_SECONDS
+
 TOKEN_WARNING_DAYS = 14
 
 
@@ -392,6 +394,9 @@ class GitHub:
         if plan.get("provenance") == "unavailable":
             # Sent only for the exception: a workflow pinned before 1.8.6 has no such input and GitHub refuses unknown ones.
             inputs["provenance"] = "unavailable"
+        if plan.get("bake_seconds", DEFAULT_BAKE_SECONDS) != DEFAULT_BAKE_SECONDS:
+            # Sent only when the operator changed it, for the same reason: a workflow pinned before 1.9.0 has no such input.
+            inputs["bake_seconds"] = str(int(plan["bake_seconds"]))
         response = self.request("POST", f"/repos/{app.repository}/actions/workflows/{app.workflow}/dispatches", json={"ref": app.branch, "inputs": inputs})
         # Current API returns 200 with run ID; older deployments may still return 204.
         return response.json() if response.content else {}
@@ -448,6 +453,18 @@ class GitHub:
                 break
             page += 1
         return {**{key: run.get(key) for key in ("id", "status", "conclusion", "html_url", "head_sha", "run_attempt", "created_at", "run_started_at", "updated_at")}, "jobs": jobs}
+
+    def drift_report(self, repository, workflow="infra-drift.yml", name="drift-report"):
+        """The newest report of the platform repository's weekly drift check, or None when it has not produced one yet."""
+        runs = self.request("GET", f"/repos/{repository}/actions/workflows/{workflow}/runs",
+                            params={"branch": "main", "status": "completed", "per_page": 5}).json()["workflow_runs"]
+        holder = types.SimpleNamespace(repository=repository)
+        for run in runs:
+            files = self.artifact_json(holder, run["id"], name, ("drift-report.json",))
+            if files and "drift-report.json" in files:
+                return {"workflow_run_id": run["id"], "run_url": run.get("html_url"), "conclusion": run.get("conclusion"),
+                        "created_at": run.get("created_at"), "report": files["drift-report.json"]}
+        return None
 
     def cost_report(self, app, workflow="rightsize-gcp.yml", name="cost-report", limit=1_048_576):
         """The newest cost-report artifact from a successful rightsizing run, or an explicit 'none yet'."""

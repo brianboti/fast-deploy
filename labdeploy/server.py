@@ -366,6 +366,13 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
         principal = identity.get()
         return {"events": store.recent_events(min(max(int(limit), 1), 500), identity=None if principal.can_deploy else principal.name, application=application)}
 
+    def spending_guards():
+        caps = getattr(config, "cloud_run_spend_caps", None) or {}
+        projects = sorted({application.target.project_id for application in config.applications.values()})
+        return {"cloud_run_spend_caps": {project: caps.get(project) for project in projects},
+                "missing": [project for project in projects if not caps.get(project)],
+                "note": "Native Cloud Run spend caps the operator recorded (docs/SETUP.md 7i); the platform's own cap workflow also stops databases."}
+
     @mcp.tool(title="Get controller status", annotations=READ_ONLY, structured_output=True)
     @plain_errors
     def get_controller_status() -> dict[str, Any]:
@@ -379,6 +386,7 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
                 "paused_applications": sorted(k for k, a in config.applications.items() if a.paused),
                 "configuration": {"path": getattr(config, "path", None), "reloaded_at": getattr(config, "reloaded_at", None), "error": getattr(config, "error", None)},
                 "applications": sorted(config.applications), "github_credential": credential,
+                "spending_guards": spending_guards(), "infrastructure_drift": controller.drift_status(),
                 "pricing_verified": PRICING["verified"], "started_at": datetime.datetime.fromtimestamp(started, datetime.UTC).isoformat(timespec="seconds"),
                 "uptime_seconds": int(time.time() - started)}
 

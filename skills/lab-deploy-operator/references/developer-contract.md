@@ -88,6 +88,10 @@ reviewed: true            # set by the person who reviewed the file
   Google's client libraries and the app's own identity; Postgres signs in without a password.
 - Writes logs as one JSON object per line with `severity` and `message`; never logs secrets or personal data.
 - Database migrations are safe to run twice and still work with the previous version, so a rollback stays safe.
+- Answers a client's mistake with 4xx, never 5xx: for five minutes after a release takes over, a crash or more than 5% of
+  requests answering 5xx brings the previous version back (the bake). The health path is not counted.
+- The Dockerfile passes hadolint (the build job runs it on every release; from platform 1.10.0 errors stop the release),
+  with dependencies installed before the code is copied, so a code change rebuilds one layer.
 
 ## 5. Pages for people
 

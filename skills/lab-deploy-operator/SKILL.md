@@ -123,6 +123,9 @@ reference in plain words, not the whole standard.
    in seconds, nothing is rebuilt. Say what it cannot do: it does not undo database changes or anything the app already
    did. Afterwards the developer fixes the code and you release again.
 4. A release that is still running and going wrong: `cancel_deployment`.
+5. `get_controller_status` also shows the weekly infrastructure drift check: something in an app's cloud setup that differs
+   from what the platform wrote, changed by hand or left by an unfinished apply. Point the operator to `docs/RUNBOOK.md`
+   "Drift reported"; never try to fix it from chat.
 
 ### 5. Money
 
@@ -135,7 +138,9 @@ reference in plain words, not the whole standard.
 - A plan refused for cost means the worst case is above the app's ceiling: lower the size in `platform.yaml`, or the
   operator raises the ceiling on purpose in the controller's configuration.
 - The spending cap closes every app and stops the databases when the monthly budget is reached, whatever anyone asks.
-  Lifting it is a deliberate operator step (`docs/RUNBOOK.md`), never something to do from chat.
+  Google's own spend cap, once the operator creates it, pauses every app in the project the same way (they answer with
+  errors) without stopping databases. Lifting either is a deliberate operator step (`docs/RUNBOOK.md`), never something
+  to do from chat. A plan or estimate that says `no_native_spend_cap` means the operator has not recorded Google's cap yet.
 
 ### 6. Who can open an app's pages
 
@@ -166,7 +171,9 @@ Always pass on the status's own `next_action` too; it is written for exactly thi
 |---|---|---|
 | `dispatched` | GitHub accepted the job; nothing is live yet | Follow `get_deployment_status` |
 | `preparing`, `migrating`, `deploying`, `promoting` | Getting ready; updating the database; new version starting beside the old one; moving visitors | Wait |
-| `succeeded` | The new version is live | Say which commit is live |
+| `baking` | The new version serves everyone; its real traffic is watched for five minutes | Wait; say it comes back on its own if it crashes or errors |
+| `succeeded` | The new version is live | Say which commit is live; if the bake was `inconclusive`, say only the health checks vouch for it (too little traffic to judge) |
+| `traffic_restored` after `baking` | The new version took over, then crashed or answered too many requests with errors; the previous one is back | Show the bake's numbers and its log lines; the developer fixes; release again |
 | `release_failed_health_unconfirmed` | The new version failed; visitors stayed on the old one | Show its last log lines; the developer fixes; release again |
 | `rolled_back`, `traffic_restored` | Visitors are back on the previous version | Say why it happened |
 | `rollback_failed_manual_recovery_required` | Putting visitors back failed and needs a person | Tell the operator at once (`docs/RUNBOOK.md`) |

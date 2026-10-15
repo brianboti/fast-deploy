@@ -8,7 +8,9 @@ Three layers, each explicit about its evidence:
    guidance for Cloud Run services.
 3. ``recommend``: right-sizing from measured Cloud Monitoring data that the
    rightsizing workflow collects on the deployment runner. Nothing is inferred
-   from source code, and nothing is applied automatically.
+   from source code, and nothing is applied automatically. Google's Cloud Run
+   recommender advises only the billing mode (and two security checks); it never
+   sizes CPU or memory, so these measured proposals are the only sizing signal.
 
 Prices are list prices for Tier 1 regions as published on the Cloud Run pricing
 page and must be re-verified when Google changes them. This module never calls a
@@ -49,7 +51,13 @@ EXCLUDED = [
     "GitHub Actions minutes",
     "databases or any service outside this deployment",
 ]
-RECOMMENDER = "google.run.service.CostRecommender"
+RECOMMENDER = "google.run.service.CostRecommender"  # billing mode only: request-based versus instance-based
+# GitHub Actions on private repositories (public repositories are free on standard runners). Each job is rounded up to the
+# whole minute; the plan's included minutes are shared by every private repository of the account and reset monthly.
+GITHUB_ACTIONS = {"source": "https://docs.github.com/en/billing/reference/actions-runner-pricing", "verified": "2026-10-14",
+                  "linux_x64_usd_per_minute": 0.006, "included_minutes": {"free": 2000, "pro": 3000, "team": 3000}}
+RELEASE_TAG = re.compile(r"^release-[a-f0-9]{32}$")
+MAX_RUNS = 300
 PRICE_CHECK_DAYS = 90
 # Charges outside the Cloud Run figures that a release or an idle app still incurs. Described, not added to the bounds.
 OVERHEADS = {
@@ -352,6 +360,20 @@ def summary_lines(report):
         lines.append(f"Observed usage priced at list rates: ${observed['usd_month_at_list_price']:.2f}/month ({observed['requests']} requests)")
     else:
         lines.append("No usage metrics were returned for the window")
+    tolls = report.get("release_tolls") or {}
+    if "fresh_images" in tolls:
+        actions = tolls.get("actions") or {}
+        if actions.get("billable"):
+            spent = f"; Actions {actions['minutes']} billable minute(s) on this private repository (${actions['usd_at_list_price']:.2f} at list price after the included minutes)"
+        elif actions.get("billable") is False:
+            spent = "; Actions minutes are free on this public repository"
+        else:
+            spent = ""
+        lines.append(f"This month ({tolls['month']}): {tolls['fresh_images']} fresh image(s) scanned, about ${tolls['image_scans_usd']:.2f}{spent}")
+    actual = report.get("actual_spend") or {}
+    if actual.get("bigquery_bytes_processed") is not None:
+        lines.append(f"The billing queries read {actual['bigquery_bytes_processed'] / 1e6:.1f} MB of BigQuery (1 TiB a month is free)")
+    lines.append("Google's Cloud Run recommender advises only the billing mode; the proposals below are the only CPU and memory sizing signal")
     for item in report["rightsizing"]["recommendations"]:
         saving = item["estimated_monthly_saving_usd"]
         money = "" if saving is None else f"; about ${saving:.2f}/month"
@@ -364,6 +386,84 @@ def drift(settings, spec):
     reviewed = {"cpu": spec.resources.cpu, "memory_mib": spec.resources.memory_mib, "concurrency": spec.concurrency,
                 "minimum": spec.scaling.minimum, "maximum": spec.scaling.maximum}
     return [{"setting": key, "platform_yaml": reviewed[key], "live": settings.get(key)} for key in reviewed if settings.get(key) != reviewed[key]]
+
+
+def fresh_images(listing, month):
+    """Digests a fresh release build pushed in `month` (YYYY-MM): each carries a release-<plan> tag, and Artifact Analysis
+    scans every new digest once. Reused images, attestations and serving tags push nothing new."""
+    return sorted({item.get("version") for item in listing
+                   if str(item.get("createTime", "")).startswith(month) and any(RELEASE_TAG.fullmatch(str(tag)) for tag in item.get("tags") or [])})
+
+
+def job_minutes(job):
+    """Billable minutes of one job on a standard GitHub-hosted runner: its duration rounded up to the whole minute."""
+    if job.get("conclusion") == "skipped" or not job.get("started_at") or not job.get("completed_at"):
+        return 0
+    try:
+        start = datetime.datetime.fromisoformat(job["started_at"].replace("Z", "+00:00"))
+        end = datetime.datetime.fromisoformat(job["completed_at"].replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    seconds = (end - start).total_seconds()
+    return math.ceil(seconds / 60) if seconds > 0 else 0
+
+
+def github_api(path, token, params=None):
+    """One GET against the GitHub API with the workflow's own token."""
+    import urllib.parse
+    import urllib.request
+    url = "https://api.github.com" + path + (("?" + urllib.parse.urlencode(params)) if params else "")
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
+                                                   **({"Authorization": f"Bearer {token}"} if token else {})})
+    with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 - fixed https host
+        return json.load(response)
+
+
+def actions_minutes(repository, token, month, api=github_api):
+    """This repository's billable GitHub Actions minutes in `month`, from each run's jobs; free on a public repository."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise ValueError("Unexpected repository name")
+    if not api(f"/repos/{repository}", token).get("private"):
+        return {"billable": False, "note": "free: standard GitHub-hosted runners cost nothing on a public repository"}
+    runs, page = [], 1
+    while len(runs) < MAX_RUNS:
+        batch = api(f"/repos/{repository}/actions/runs", token, {"created": f">={month}-01", "per_page": 100, "page": page}).get("workflow_runs", [])
+        runs += [run for run in batch if str(run.get("created_at", "")).startswith(month)]
+        if len(batch) < 100:
+            break
+        page += 1
+    minutes, by_workflow = 0, {}
+    for run in runs[:MAX_RUNS]:
+        jobs = api(f"/repos/{repository}/actions/runs/{int(run['id'])}/jobs", token, {"per_page": 100}).get("jobs", [])
+        used = sum(job_minutes(job) for job in jobs)
+        minutes += used
+        name = str(run.get("path") or run.get("name") or "workflow").split("@")[0].rsplit("/", 1)[-1]  # the workflow file, not the run's title
+        by_workflow[name] = by_workflow.get(name, 0) + used
+    rate = GITHUB_ACTIONS["linux_x64_usd_per_minute"]
+    return {"billable": True, "runs": len(runs[:MAX_RUNS]), "truncated": len(runs) > MAX_RUNS, "minutes": minutes,
+            "by_workflow": dict(sorted(by_workflow.items(), key=lambda kv: -kv[1])), "usd_at_list_price": _usd(minutes * rate),
+            "note": f"{rate} USD a minute on the standard Linux runner, each job rounded up to the minute, after the plan's included minutes "
+                    "(2,000 a month on GitHub Free), which every private repository of the account shares; this figure is this repository's share only."}
+
+
+def release_tolls(image_path, repository, token, runner=None, now=None, api=github_api):
+    """The per-event charges outside the Cloud Run figures, this month: image scans, and Actions minutes on a private repository."""
+    if runner is None:
+        from .release import run as runner
+    if not re.fullmatch(r"[a-z0-9-]+-docker\.pkg\.dev/[a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+", image_path):
+        raise ValueError("Unexpected image path")
+    month = (now or datetime.datetime.now(datetime.UTC)).strftime("%Y-%m")
+    listing = json.loads(runner(["gcloud", "artifacts", "docker", "images", "list", image_path, "--include-tags", "--format=json"]) or "[]")
+    digests = fresh_images(listing, month)
+    result = {"month": month, "fresh_images": len(digests), "image_scans_usd": _usd(len(digests) * OVERHEADS["image_scan_usd_per_release"]),
+              "image_scans_note": f"about {OVERHEADS['image_scan_usd_per_release']} USD per new image digest while Artifact Analysis scanning is on "
+                                  "(the foundation's default); a release that reuses an image adds nothing"}
+    if repository:
+        try:
+            result["actions"] = actions_minutes(repository, token, month, api)
+        except Exception as exc:  # noqa: BLE001 - the minutes are informative; the report says why they are missing
+            result["actions"] = {"warning": f"Actions minutes unavailable: {str(exc)[:200]}"}
+    return result
 
 
 def reviewed_spec_from_github(repository, ref="main", token=None):
@@ -402,6 +502,8 @@ def billing_actuals(table, project_id, token, days=30, client=None, app=None, no
     if not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+", table):
         raise ValueError("BILLING_EXPORT_TABLE must be project.dataset.table")
 
+    read = []
+
     def query(text, parameters=()):
         body = {"query": text, "useLegacySql": False, "parameterMode": "NAMED", "timeoutMs": 30000, "maxResults": 100, "queryParameters": list(parameters)}
         response = (client or httpx).post(f"https://bigquery.googleapis.com/bigquery/v2/projects/{project_id}/queries", json=body,
@@ -410,6 +512,8 @@ def billing_actuals(table, project_id, token, days=30, client=None, app=None, no
         data = response.json()
         if not data.get("jobComplete", True):
             raise ValueError("BigQuery did not finish the billing query in time")
+        if str(data.get("totalBytesProcessed", "")).isdigit():
+            read.append(int(data["totalBytesProcessed"]))
         return data.get("rows", [])
 
     rows = query(FRESHNESS_QUERY.format(table=table))
@@ -418,6 +522,7 @@ def billing_actuals(table, project_id, token, days=30, client=None, app=None, no
     data_through = datetime.datetime.fromtimestamp(latest, datetime.UTC).isoformat(timespec="minutes") if latest is not None else None
     if latest is None or (now or time.time()) - latest > STALE_AFTER_SECONDS:
         return {"window_days": days, "table": table, "data_through": data_through, "total_net_cost_usd": None, "by_service": None, "by_app": None,
+                "bigquery_bytes_processed": sum(read) if read else None,
                 "warning": (f"The billing export has no data after {data_through[:10]}" if data_through else "The billing export is empty")
                 + "; actual spend is unknown, not zero. An export starts within a day of being enabled; if this lasts, check Billing → "
                   "Billing export in the console (the dataset and the standard usage cost export)."}
@@ -432,6 +537,7 @@ def billing_actuals(table, project_id, token, days=30, client=None, app=None, no
     result = {"window_days": days, "table": table, "data_through": data_through, "total_net_cost_usd": round(sum(c["net_cost_usd"] for c in cells), 4),
               "by_service": [{"service": s, "net_cost_usd": v} for s, v in sorted(by_service.items(), key=lambda kv: -kv[1])],
               "by_app": [{"app": a, "net_cost_usd": v} for a, v in sorted(by_app.items(), key=lambda kv: -kv[1])],
+              "bigquery_bytes_processed": sum(read) if read else None,
               "note": "Net of credits, from Google's billing export; up to a day behind. Resources carry the lab-deploy-app label; "
                       "Firestore and Cloud Run request fees are not labelled and show as unlabelled. Compare with usd_month_at_list_price above."}
     if app:
@@ -444,7 +550,7 @@ def billing_actuals(table, project_id, token, days=30, client=None, app=None, no
 def issue_body(report, run_url):
     """Markdown for the living cost-report issue: the summary lines, proposals, drift and actual spend."""
     lines = ["Updated by the weekly right-sizing workflow. Proposals are suggestions for `platform.yaml`; nothing is applied automatically.", ""]
-    lines += [f"- {line}" for line in summary_lines(report)[1:]]
+    lines += [f"- {line}" for line in summary_lines(report)[1:] if not line.startswith("- ")]
     proposals = (report.get("rightsizing") or {}).get("recommendations") or []
     if proposals:
         lines += ["", "| Setting | Current | Proposed | Why | Monthly saving |", "|---|---|---|---|---|"]
@@ -493,6 +599,11 @@ def report():
             result["drift"] = drift(result["live_settings"], reviewed_spec_from_github(repository, os.environ.get("GITHUB_REF_NAME", "main"), os.environ.get("GH_TOKEN")))
         except Exception as exc:  # noqa: BLE001 - drift is best effort; the report says why it is missing
             result["drift"] = {"warning": f"Could not compare with platform.yaml: {str(exc)[:200]}"}
+    try:
+        result["release_tolls"] = release_tolls(f"{target.region}-docker.pkg.dev/{target.project_id}/{target.registry}/{target.service}",
+                                                os.environ.get("GITHUB_REPOSITORY"), os.environ.get("GH_TOKEN"), run)
+    except Exception as exc:  # noqa: BLE001 - informative only; the report says why it is missing
+        result["release_tolls"] = {"warning": f"Per-release charges unavailable: {str(exc)[:200]}"}
     try:
         from .release import reconcile_serving_tags
         result["serving_tags"] = reconcile_serving_tags(adapter, f"{target.region}-docker.pkg.dev/{target.project_id}/{target.registry}/{target.service}", run)

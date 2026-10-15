@@ -1,3 +1,78 @@
+# 1.9.0: cost and safety layers that cost nothing (roadmap Phase 9)
+
+Planned in `docs/ROADMAP.md` Phase 9 from the research review `docs/RESEARCH-2026-10-14.md`. Every item has zero idle cost.
+
+## Added
+
+1. **A bake after promotion** (decision D22). Once traffic has moved to the new revision and its final probe passed, the
+   release step watches that revision's own Cloud Run logs for `bake_seconds` (default 300, at most 900, 0 turns it off)
+   before the release counts as done. It restores the previous traffic split, exactly as a failed probe does, on a crash
+   (Cloud Run's system log shows the container exiting, stopped for memory or a signal, or a new instance failing its
+   startup probe), on more than 5% 5xx answers among at least 20 requests, or, at the end of the window, on a p95 latency
+   above three times the previous revisions' p95 over the hour before the switch (when both saw at least 20 requests). The
+   health path is left out: the uptime check and the probes call it every minute. Too little traffic is
+   `inconclusive` and passes with a note; logs that cannot be read leave the bake `unobserved`, which also passes, loudly.
+   The receipt carries the window's numbers (`bake`), the status shows them, a failure reads "failed its bake after
+   promotion" with the new revision's last log lines, and a runner lost while baking is recovered like one lost while
+   promoting. Observed in staging while building it: Cloud Run logs `Container called exit(1).` at WARNING, so the bake
+   matches crash messages rather than severity alone, and ignores harmless sandbox warnings.
+   The release phases are now `preparing, (migrating,) deploying, promoting, baking, succeeded`. The setting is per
+   application (`bake_seconds` under `applications.<id>` or `application_settings.<id>`); the plan records it and the
+   dispatch sends it only when it differs from 300, so workflows pinned before 1.9.0 keep working. The deploy job may now
+   run 35 minutes instead of 20.
+2. **Google's native spend cap for Cloud Run** (decision D21), generally available since 2026-10-12: a monthly budget on one
+   project and the Cloud Run service that pauses every Cloud Run workload in the project when the month's gross estimated
+   cost passes it. It does not stop Cloud SQL, buckets or topics, so the platform's own cap workflow keeps that job; the
+   native cap is the second layer that needs nothing of this platform to work. `scripts/spend-cap.sh check|create` reads
+   and creates it through the Budget API (Terraform's Google provider has no spend-cap argument as of 8.7.0); the
+   operator records it under `cloud_run_spend_caps` in the controller configuration. Every plan, `estimate_cost`,
+   `get_cost_report` and `get_controller_status` now name both guards, and a project without a recorded cap gets the
+   warning finding `no_native_spend_cap`. Docs: `docs/SETUP.md` 7i and the runbook's "The native spend cap tripped".
+3. **Dockerfile lint**: hadolint 2.15.1 (downloaded by version and SHA-256, like Cosign) runs in the build job before the
+   image is built. Findings become annotations on the run and travel in the release receipt (`dockerfile_lint`); they stop
+   a release only when the repository variable `HADOLINT_BLOCKING` is `true`, and then only for error-level findings
+   (the default from 1.10.0). The platform's own CI lints its Dockerfile and the example app's with the same pin. The
+   four Dockerfiles in use today (the platform, the demo, the Sophia copy, lab-notebook) have no findings.
+4. **Data-protection rules in the infrastructure policy**, each with a planted-violation test: Cloud SQL keeps automated
+   backups (`database_backups`), accepts encrypted connections only (`encrypted_connections`) and keeps deletion
+   protection in Cloud SQL itself as well as in Terraform; a Firestore database is abandoned, never deleted, when Terraform
+   lets go of it; no bucket is force-destroyed (`no_force_destroy`); the recovery and backup buckets keep versioning
+   (`versioned_checkpoints`); and no resource may store secret material in Terraform's state or plan
+   (`no_secret_in_state`: secret versions with `secret_data`, SQL users with `password`, generated passwords and keys;
+   the write-only forms are allowed). The modules already met every rule, so no live resource changes; a test keeps a
+   trimmed real plan of the demo's root (`tests/fixtures/lab-demo-plan-2026-10-14.json`) passing with every resource
+   treated as changing, and another scans every module and rendered root for secret-bearing resources.
+5. **The weekly drift check** (decision D30): `.github/workflows/infra-drift.yml` plans every application root against the
+   live infrastructure on Mondays (or on demand from `main`) with the read-only plan identity and no state lock, and
+   reports what differs from the code: an edit made outside the pipeline, or an apply that did not finish. The result is
+   a living issue on the platform repository, "Lab Deploy: infrastructure drift" (closed when everything matches), and a
+   `drift-report` artifact of addresses and categories only, never attribute values. The controller reads it:
+   `get_controller_status` shows it, and the daily watchdog notifies on drift in IAM, networking or exposure, on a root
+   whose plan failed, and on a report older than eight days. A separate workflow keeps the pull-request plan workflow
+   unchanged; the plan identity's federation now admits `schedule` and `workflow_dispatch` events only for that file on
+   `main`.
+6. **Per-event charges in the weekly cost report**: the month's freshly built images (each one is an Artifact Analysis
+   scan at about USD 0.26), the repository's billable GitHub Actions minutes when it is private (each job rounded up to
+   the minute, USD 0.006 a minute on the standard Linux runner after the account's included minutes), and the bytes the
+   billing queries read. Measured on 2026-10-14: the demo built 15 images this month (about USD 3.90 in scans, more than
+   its compute), and the private Sophia copy used 873 billable minutes in two days, 709 of them its own CI. The right-sizing
+   job gains `actions: read` for this.
+
+## Changed
+
+1. The cost documents and the report say plainly that Google's Cloud Run recommender advises only the billing mode
+   (and two security checks); it never sizes CPU or memory, so the weekly measured proposals are the only sizing signal.
+2. The living cost-report issue no longer lists each proposal twice.
+
+## Upgrade steps
+
+1. Merge, then apply the foundation (`scripts/apply-foundation.sh PROJECT`): it lets the plan identity run the drift check.
+2. Restart the controller and re-pin every application's workflows (the deploy and right-sizing templates changed); after
+   that, raise `platform.minimum_commit` to the 1.9.0 commit, so a non-default `bake_seconds` never reaches an old pin.
+3. Create the native spend cap (`scripts/spend-cap.sh create PROJECT AMOUNT`, or the console, `docs/SETUP.md` 7i) and
+   record it under `cloud_run_spend_caps`.
+4. Optional: dispatch the drift workflow once from the Actions tab to see the first report.
+
 # 1.8.8: applications on Python 3.11 to 3.15, audited on their own Python; conda, Poetry and uv
 
 Asked after the Sophia test: people bring different Pythons and package managers. Three gaps, all in the build job; no

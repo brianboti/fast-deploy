@@ -367,3 +367,26 @@ audit tool installs from wheels only on 3.11, 3.13, 3.14 and 3.15; the documente
 | The same app after the upgrade (sophia#11) | ed87c7e4 | aiohttp 3.14.3, multidict 6.9.1, urllib3 2.8.0 (only those changed, recompiled in the image's Python); tests pass again, audit clean, provenance `cosign-kms` signed and verified, released; 10 of 10 |
 
 Platform tests: 299 passed; ruff and zizmor clean.
+
+## 1.9.0 before the merge: what was checked against the real system (2026-10-14)
+
+Read-only checks against staging and GitHub with the operator's own credentials while building Phase 9; nothing was
+applied, deployed or created. The live exercise (a bake that restores traffic, a planted public bucket refused, a drift
+reported, the native cap tripped and lifted) follows the merge, the foundation apply and the operator's spend cap.
+
+| Check | Observed |
+|---|---|
+| The bake's log reads on the live demo (revision `lab-demo-r9c4f02f614fb4c0c`, after seven authenticated requests) | 19 request lines in ten minutes: 13 to `/health` (the uptime check and one probe) and 6 others (five 200, one 404); p95 3.2 ms; verdict `inconclusive` (fewer than 20 requests besides the health path), as designed for an idle staging app |
+| Crash detection on real system logs | The 2026-10-12 crash of `lab-demo-r65462e46bf8e4bc9` found from its line `Container called exit(1).`, which Cloud Run writes at WARNING; startup-probe failures are ERROR. Both are bake failures; sandbox warnings are not |
+| The deployer identities' Logging viewer role | Present for `lab-demo-deploy`, `lab-notebook-deploy` and `sophia-deploy`: the bake needs no new grant |
+| Read-only plans of the three application roots (`-lock=false`, nothing applied) | `lab-demo` and `lab-notebook`: 3 to add each, the provenance key and its two grants that 1.8.6 left for each root's next apply; `sophia`: no changes. The new policy rules pass all three plans, and pass the demo's with every resource treated as changing; the drift classifier names the pending three as `data` and `iam` and reports `sophia` clean. A trimmed copy of the demo's plan is the regression fixture `tests/fixtures/lab-demo-plan-2026-10-14.json` |
+| `scripts/spend-cap.sh check lab-deploy-staging-f29a` | No native spend cap; the account's two budgets (the USD 50 alert and the project's USD 20 budget) are alerts only, which the Budget API confirms |
+| The month's per-event charges, counted from the registries and the Actions API | Demo (public): 15 freshly built images, about USD 3.90 in scans, Actions free. Sophia copy (private): 4 images, about USD 1.04; 873 billable Actions minutes in two days, 709 of them the project's own CI |
+| hadolint 2.15.1 on the four Dockerfiles in use (platform, demo, Sophia copy, lab-notebook) | No findings |
+| The foundation and the demo root with the 1.9.0 modules | `terraform validate` and `terraform fmt -check` clean |
+
+Platform tests: 359 passed; ruff and zizmor clean.
+
+Found on the way, for the operator: `lab-demo` and `lab-notebook` still lack the provenance key 1.8.6 planned for their
+roots' next apply. Dispatching **Infrastructure apply** for both closes that difference, which the first drift report will
+otherwise list.

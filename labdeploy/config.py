@@ -30,6 +30,9 @@ class Application(StrictModel):
     # required: every release carries signed provenance (GitHub's for a public repository, Cosign with the app's Cloud KMS
     # key otherwise). unavailable: the operator's exception for staging or an emergency; a fresh build only, never a reuse.
     provenance: Literal["required", "unavailable"] = "required"
+    # How long the release watches a promoted revision's own logs before calling it done (docs/ROADMAP.md D22); a crash or
+    # 5xx answers restore the previous traffic. 0 turns the bake off for this application.
+    bake_seconds: int = Field(default=300, ge=0, le=900)
 
     @model_validator(mode="after")
     def workflow_fixed(self):
@@ -141,6 +144,10 @@ class ApplicationSettings(StrictModel):
     infra: dict[str, int | bool] | None = None
     viewers: list[str] | None = None
     provenance: Literal["required", "unavailable"] | None = None
+    bake_seconds: int | None = Field(default=None, ge=0, le=900)
+
+
+PROJECT_ID = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
 
 
 class Config(StrictModel):
@@ -160,6 +167,9 @@ class Config(StrictModel):
     backup_bucket: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$")
     log_file: str | None = None  # rotating controller log (requests, warnings); the audit trail itself lives in the database
     live_dispatch: bool = False
+    # Google's native budget spend caps for Cloud Run that the operator has created (docs/SETUP.md 7i), by project id, in
+    # USD a month. A record only: the cap lives in Cloud Billing; plans and the status name it, and warn where none exists.
+    cloud_run_spend_caps: dict[str, float | int] = Field(default_factory=dict)
     database: str = "deployments.db"
     allowed_hosts: list[str] = Field(default_factory=lambda: ["127.0.0.1:*", "localhost:*", "testserver"])
     # Per-identity request budget and per-client budget for failed logins; the MCP specification requires both kinds of limit.
@@ -175,6 +185,9 @@ class Config(StrictModel):
         for p in self.principals:
             if set(p.applications) - {"*"} - self.applications.keys():
                 raise ValueError("Principal references unknown application")
+        for project, amount in self.cloud_run_spend_caps.items():
+            if not PROJECT_ID.fullmatch(project) or amount <= 0:
+                raise ValueError("cloud_run_spend_caps maps a project id to a positive monthly amount in USD")
         for host in self.allowed_hosts:
             # The MCP transport matches Host exactly or as "host:*"; a wildcard entry would silently match nothing.
             if not re.fullmatch(r"(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:(\d{1,5}|\*))?", host):

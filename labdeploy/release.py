@@ -7,9 +7,12 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from .bake import DEFAULT_BAKE_SECONDS, MAX_BAKE_SECONDS, BakeFailed, bake
+from .bake import iso as bake_iso
 from .models import PLATFORM_NETWORK, PLATFORM_SUBNET, enforce, needs_env, parse_spec, spec_hash
 from .provenance import MODES as PROVENANCE_MODES
 
@@ -278,6 +281,43 @@ class CloudRun:
             lines.append({"at": entry.get("timestamp"), "severity": entry.get("severity"), "message": text[-500:], "last_line": last[:300]})
         return lines
 
+    REVISION = re.compile(r"[a-z][a-z0-9-]{1,62}")
+
+    def _log_query(self, log, revisions, since, until=None, extra=None):
+        names = list(revisions)
+        if not names or any(not self.REVISION.fullmatch(name) for name in names):
+            raise ValueError("Invalid revision name")
+        clauses = ['resource.type="cloud_run_revision"', f'resource.labels.service_name="{self.service}"',
+                   "(" + " OR ".join(f'resource.labels.revision_name="{name}"' for name in names) + ")",
+                   f'logName="projects/{self.project}/logs/{urllib.parse.quote(log, safe="")}"', f'timestamp>="{bake_iso(since)}"']
+        if until is not None:
+            clauses.append(f'timestamp<"{bake_iso(until)}"')
+        if extra:
+            clauses.append(extra)
+        return " AND ".join(clauses)
+
+    def revision_requests(self, revisions, since, until=None, limit=1000):
+        """Cloud Run's request log lines for these revisions in a window: status, latency and path, newest first."""
+        query = self._log_query("run.googleapis.com/requests", revisions, since, until)
+        raw = self.run(["gcloud", "logging", "read", query, "--project", self.project, "--limit", str(int(limit)), "--order=desc", "--format=json"])
+        lines = []
+        for entry in json.loads(raw or "[]"):
+            request = entry.get("httpRequest") if isinstance(entry.get("httpRequest"), dict) else {}
+            latency = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)s", str(request.get("latency") or ""))
+            status = request.get("status")
+            lines.append({"at": entry.get("timestamp"), "status": status if isinstance(status, int) else None,
+                          "latency_ms": float(latency.group(1)) * 1000 if latency else None,
+                          "path": urllib.parse.urlparse(str(request.get("requestUrl") or "")).path or "/"})
+        return lines
+
+    def revision_system_logs(self, revision, since, limit=200):
+        """What Cloud Run itself said about a revision since a moment, at WARNING or above: crashes, probe failures, memory."""
+        query = self._log_query("run.googleapis.com/varlog/system", [revision], since, extra="severity>=WARNING")
+        raw = self.run(["gcloud", "logging", "read", query, "--project", self.project, "--limit", str(int(limit)), "--order=desc", "--format=json"])
+        return [{"at": entry.get("timestamp"), "severity": entry.get("severity"),
+                 "message": str(entry.get("textPayload") or (entry.get("jsonPayload") or {}).get("message") or "")[:500]}
+                for entry in json.loads(raw or "[]")]
+
     def revision_image(self, revision):
         return self.run(self.command("revisions", "describe", revision, "--format=value(status.imageDigest)"))
 
@@ -314,6 +354,8 @@ class CloudRun:
 
 
 TERMINAL = {"succeeded", "traffic_restored", "recovered", "rolled_back"}
+# A runner lost while baking leaves the new revision serving without its verdict: recovery restores the previous split.
+RECOVERABLE = {"preparing", "migrating", "deploying", "promoting", "baking", "rolling_back", "rollback_failed_manual_recovery_required"}
 IMAGE_DIGEST = re.compile(r"[a-z0-9-]+-docker\.pkg\.dev/[a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+@sha256:[a-f0-9]{64}")
 
 
@@ -380,7 +422,7 @@ def recover(adapter, journal, target):
         raise ValueError("Recovery journal target differs from configured destination")
     if saved.get("state") in TERMINAL:
         return {"state": "no_recovery_needed", "last_release": saved["state"]}
-    if saved.get("state") not in {"preparing", "migrating", "deploying", "promoting", "rolling_back", "rollback_failed_manual_recovery_required"}:
+    if saved.get("state") not in RECOVERABLE:
         raise ValueError("Unknown recovery journal state; manual review required")
     plan_id = saved.get("plan_id", "")
     if not re.fullmatch(r"[a-f0-9]{32}", plan_id):
@@ -460,7 +502,8 @@ def retire_candidate(adapter, record):
                           "not ready until the next successful release; requests are served by the previous revision.")
 
 
-def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=None, labels=None, image_path=None, attempt=1, provenance=None):
+def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=None, labels=None, image_path=None, attempt=1, provenance=None,
+            bake_seconds=0, lint=None, sleep=time.sleep, clock=time.time):
     if not re.fullmatch(r"[a-f0-9]{32}", plan_id):
         raise ValueError("Invalid plan ID")
     if not IMAGE_DIGEST.fullmatch(image):
@@ -475,6 +518,10 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
     receipt = {"plan_id": plan_id, "image": image, "previous_traffic": allocations, "state": "preparing", "target": target, "phases": [], "candidate": revision}
     if provenance:
         receipt["provenance"] = provenance  # github, cosign-kms, or unavailable when the operator's exception was set
+    if lint is not None:
+        receipt["dockerfile_lint"] = lint  # hadolint's findings from the build job; they inform, they did not stop this release
+    if not 0 <= int(bake_seconds) <= MAX_BAKE_SECONDS:
+        raise ValueError(f"bake_seconds must be between 0 and {MAX_BAKE_SECONDS}")
     def save():
         # Each state change is timestamped so the controller can show how long every phase took.
         if not receipt["phases"] or receipt["phases"][-1]["state"] != receipt["state"]:
@@ -510,8 +557,17 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
         receipt["state"] = "promoting"
         save()
         adapter.traffic({revision: 100})
+        switched_at = clock()
         if not adapter.health(candidate["url"], candidate["url"], spec.health_path):
             raise RuntimeError("Post-promotion health check failed")
+        if bake_seconds:
+            # The new revision serves everyone now; watch what it does with real traffic before calling the release done.
+            receipt["state"] = "baking"
+            save()
+            if callable(getattr(adapter, "revision_requests", None)) and callable(getattr(adapter, "revision_system_logs", None)):
+                receipt["bake"] = bake(adapter, revision, allocations, spec.health_path, int(bake_seconds), switched_at, sleep=sleep, clock=clock)
+            else:
+                receipt["bake"] = {"seconds": int(bake_seconds), "result": "unobserved", "notes": ["this runner cannot read Cloud Run logs"]}
         receipt.update(state="succeeded", revision=revision, url=candidate["url"])
         save()
     except (Exception, KeyboardInterrupt, SystemExit) as error:
@@ -522,7 +578,9 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
             receipt["cancelled"] = True
             receipt["error"] = "the run was cancelled"
         else:
-            receipt["error"] = str(error)[:400] if isinstance(error, MigrationFailed) else describe_error(error)
+            receipt["error"] = str(error)[:400] if isinstance(error, (MigrationFailed, BakeFailed)) else describe_error(error)
+        if isinstance(error, BakeFailed):
+            receipt["bake"] = error.report
         failed_phase = receipt["failed_phase"] = receipt["state"]
         if failed_phase == "migrating":
             receipt["migration_logs"] = getattr(error, "logs", [])
@@ -537,7 +595,7 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
             print(f"Traffic restoration failed: {receipt['restore_error']}", file=sys.stderr)
         if receipt["state"] == "traffic_restored":
             retire_candidate(adapter, receipt)
-        if failed_phase in ("deploying", "promoting"):  # before deploying (a pre-check, the migration) no candidate exists
+        if failed_phase in ("deploying", "promoting", "baking"):  # before deploying (a pre-check, the migration) no candidate exists
             try:
                 # Best effort: the candidate's own last lines explain most startup failures.
                 receipt["candidate_logs"] = adapter.revision_logs(revision)
@@ -560,6 +618,23 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
             receipt["tag_warning"] = f"Serving-tag update failed: {describe_error(tag_error)}"
     save()
     return receipt
+
+
+def lint_summary(path):
+    """hadolint's findings for the receipt: counts by level and the first few, or None when this release built nothing."""
+    try:
+        findings = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(findings, list):
+        return None
+    counts = {}
+    for finding in findings:
+        level = str(finding.get("level", "unknown")) if isinstance(finding, dict) else "unknown"
+        counts[level] = counts.get(level, 0) + 1
+    first = [{"code": f.get("code"), "level": f.get("level"), "line": f.get("line"), "message": str(f.get("message", ""))[:200]}
+             for f in findings[:10] if isinstance(f, dict)]
+    return {"tool": "hadolint", "counts": counts, "findings": first}
 
 
 def main():
@@ -598,8 +673,12 @@ def main():
     if re.fullmatch(r"[a-f0-9]{40}", os.environ.get("COMMIT_SHA", "")):
         labels["lab-deploy-commit"] = os.environ["COMMIT_SHA"]
     attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "1")
+    bake_seconds = os.environ.get("BAKE_SECONDS") or str(DEFAULT_BAKE_SECONDS)
+    if not re.fullmatch(r"[0-9]{1,4}", bake_seconds) or int(bake_seconds) > MAX_BAKE_SECONDS:
+        raise ValueError(f"BAKE_SECONDS must be a whole number of seconds between 0 and {MAX_BAKE_SECONDS}")
     rollout(adapter, os.environ["IMAGE_DIGEST"], spec, os.environ["PLAN_ID"], "release-receipt.json", journal, target.model_dump(), labels, image_path,
-            attempt=int(attempt) if attempt.isdigit() else 1, provenance=os.environ["PROVENANCE_MODE"])
+            attempt=int(attempt) if attempt.isdigit() else 1, provenance=os.environ["PROVENANCE_MODE"], bake_seconds=int(bake_seconds),
+            lint=lint_summary(Path(os.environ.get("LINT_FILE", "bundle/hadolint.json"))))
 
 
 if __name__ == "__main__":

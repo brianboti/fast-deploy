@@ -60,6 +60,11 @@ def test_app_root_rejects_values_outside_the_platform_rules(bad):
         app_root(name, **arguments)
 
 
+# What the service module sets on a Cloud SQL instance (infra/gcp/modules/service/needs.tf); the policy requires each of these.
+PROTECTED_SETTINGS = {"user_labels": {"lab-deploy-app": "demo"}, "deletion_protection_enabled": True, "backup_configuration": [{"enabled": True}],
+                      "ip_configuration": [{"ipv4_enabled": False, "ssl_mode": "ENCRYPTED_ONLY"}]}
+
+
 def test_check_plan_flags_each_policy_and_passes_a_clean_plan():
     plan = {"resource_changes": [
         change("module.service.google_service_account_key.k", "google_service_account_key", ["create"], {"service_account_id": "x"}),
@@ -70,7 +75,7 @@ def test_check_plan_flags_each_policy_and_passes_a_clean_plan():
         change("module.service.google_project_iam_member.sneaky", "google_project_iam_member", ["create"],
                {"role": "roles/run.admin", "member": "serviceAccount:lab-deploy-infra-apply@p.iam.gserviceaccount.com"}),
         change("module.service.google_sql_database_instance.db", "google_sql_database_instance", ["create"],
-               {"region": "us-central1", "deletion_protection": True, "settings": [{"user_labels": {"lab-deploy-app": "demo"}, "ip_configuration": [{"ipv4_enabled": True}]}]}),
+               {"region": "us-central1", "deletion_protection": True, "settings": [{**PROTECTED_SETTINGS, "ip_configuration": [{"ipv4_enabled": True, "ssl_mode": "ENCRYPTED_ONLY"}]}]}),
         change("module.service.google_cloud_run_v2_service.app", "google_cloud_run_v2_service", ["create"], {"location": "us-central1", "labels": {}}),
     ]}
     rules = sorted(v["rule"] for v in check_plan(plan))

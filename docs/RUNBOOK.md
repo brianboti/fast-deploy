@@ -76,6 +76,32 @@ and, if any service or instance could not be closed, the alert **Lab Deploy: spe
    (`gcloud sql instances patch NAME --remove-labels lab-deploy-cap-lifted`), or the cap no longer protects that service.
 4. If billing was detached (`detach_billing = true`), re-link the project in the Billing console; every API in it stopped.
 
+## The native spend cap tripped
+
+How you know: every Cloud Run service in the project answers 5xx at once, the Cloud Run console's overview shows an
+enforcement banner, and Cloud Billing emailed at 50%, 80% and 100% of the cap. Releases fail too: the candidate cannot
+start. Nothing was deleted, and Cloud SQL, buckets and topics kept running (and billing).
+
+1. Decide whether the spend is real: `get_cost_report` and the billing export say what cost what. A runaway service is
+   better stopped by lowering its `scaling.maximum` or pausing it before lifting the cap.
+2. To resume before the month ends, open Cloud Billing, Budgets & alerts, the budget "Lab Deploy: Cloud Run spend cap",
+   and choose **Lift spend cap** (or raise its amount). Services can take up to an hour to recover. A lifted cap does not
+   trip again this month unless the amount is raised; it re-arms on the first of the next month by itself.
+3. If the platform's own cap also fired, follow the section above for the services it closed.
+
+## Drift reported
+
+The issue **Lab Deploy: infrastructure drift** on the platform repository, or a watchdog notification, names the root,
+the resources and a category. "An apply that did not finish" is as likely as an edit by hand: check the newest
+Infrastructure apply run for the root first.
+
+1. For IAM, networking or exposure, find out who changed what before anything else: Cloud Audit Logs in the console
+   (Logging, `protoPayload.methodName:"SetIamPolicy"` for grants), and the issue's list of addresses.
+2. To put the code's version back, dispatch **Infrastructure apply** with the root's name (or merge any change to it). The
+   plan comment on that run shows exactly what it reverts.
+3. If the change was deliberate, make it in the code instead: render the root (`propose_infrastructure`) after editing
+   `platform.yaml` or the controller configuration, and merge; the next drift check is clean and closes the issue.
+
 ## A release is stuck
 
 | Status says | Meaning | Do |
@@ -83,6 +109,8 @@ and, if any service or instance could not be closed, the alert **Lab Deploy: spe
 | `dispatch_lost` | GitHub never showed a run for the dispatch within two minutes (or the plan expired first) | Create a new plan and deploy again; auto-deploy retries on its own after thirty minutes. |
 | `migrating` for longer than ten minutes | The migration job is still running or the runner was lost in that phase | `gcloud run jobs executions list --job SERVICE-migrate --region us-central1`; wait for it to finish or cancel it. The recovery workflow marks the checkpoint recovered with traffic untouched; then deploy again. |
 | `failed` with `release_failed_health_unconfirmed` | The candidate never became healthy; traffic stayed on the previous revision | Read the candidate's log lines in the status; fix the app; deploy again. The service reports not Ready until a good release lands. |
+| `baking` for longer than twenty minutes | The runner was lost while the new revision was being watched | The recovery workflow restores the previous split from the checkpoint, as for `promoting`; deploy again once it has. |
+| `traffic_restored` after `baking` | The new revision served everyone, then crashed or answered too many 5xx; the previous split is back | Read the bake's numbers and the new revision's log lines in the status; fix the app; deploy again. |
 | `rollback_failed_manual_recovery_required` | Traffic could not be restored | `gcloud run services describe SERVICE --region us-central1` for the live split, then `gcloud run services update-traffic SERVICE --to-revisions=PREVIOUS=100`. |
 | recovery workflow failing on schedule | The checkpoint names revisions that no longer match live traffic | Investigate the manual change; `rollback_staging` refuses by design; deploy the wanted commit instead. |
 
@@ -130,5 +158,6 @@ set `database: none` in `platform.yaml`, and merge the re-rendered root. The two
 - `get_controller_status` and the last watchdog findings; the backup bucket has copies from the last day.
 - The cost report issue on each app repository: spend against the budget, drift, proposals.
 - Any `lab-deploy-cap-lifted` label left from the previous month (`gcloud run services list --format="table(name,labels)"`).
+- The native spend cap still exists (`scripts/spend-cap.sh check PROJECT`) and the drift issue on the platform repository is closed.
 - Dependabot pull requests on the platform repository; `pip-audit` runs every Monday in CI.
 - The GitHub token's expiry in the watchdog findings.
