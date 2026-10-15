@@ -16,18 +16,18 @@ change, the custom role); no workflow regeneration is needed.
    user's `password_wo_version` now follows the URL's secret version number, so every new version (the first, a rotation
    through `password_version`, a retry) sets the user to the same run's password in place. A user is never dropped for
    this, because it may own the application's tables; a new instance writes the URL again.
-1. **A Compose file's database reaches the draft.** A web service that depends on a Postgres service in the Compose
+2. **A Compose file's database reaches the draft.** A web service that depends on a Postgres service in the Compose
    file is drafted with `needs.database: postgres`, and with `database_auth: password` when its `environment` sets
    `DATABASE_URL` (both the list and the mapping forms of `depends_on` and `environment`); the part says why in
    `needs_from`. Before, the live test repository's admin service was drafted with `database: none`.
-2. **The infrastructure pull request says who asked.** Its description, written by the controller, ends with
+3. **The infrastructure pull request says who asked.** Its description, written by the controller, ends with
    `Requested by <identity>`, and with `through the onboarding of <application>` when onboarding opened it, so the chain
    reads request, pull request, plan run, apply run (roadmap 12.1). The plan comment's code-rendered block is unchanged.
-3. **An open draft is named as possibly stale.** When `propose_configuration` (or any platform pull request) finds a pull
+4. **An open draft is named as possibly stale.** When `propose_configuration` (or any platform pull request) finds a pull
    request already open on its branch, it still leaves it as it is, and now says so: it may hold a person's edits or
    predate the request, and closing it lets the platform open a fresh one. The live run had returned `changed: []` and
    the open 1.10.0 draft that still said `my-service`.
-4. A progress message no longer ends with two full stops ("in progress..").
+5. A progress message no longer ends with two full stops ("in progress..").
 
 Platform tests: 459 pass; `terraform validate` passes for the foundation and the live `mono-admin` root.
 
