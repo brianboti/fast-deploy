@@ -656,3 +656,64 @@ def test_hadolint_is_pinned_identically_in_the_template_and_ci():
     pins = {path: re.findall(r"hadolint/releases/download/(v[0-9.]+)/hadolint-linux-x86_64\n.*?([a-f0-9]{64})", Path(path).read_text(), re.S)
             for path in ("templates/deploy-gcp.yml", ".github/workflows/ci.yml")}
     assert all(len(found) == 1 for found in pins.values()) and len({found[0] for found in pins.values()}) == 1
+
+
+def test_a_missing_drift_report_is_not_remembered(setup):
+    import datetime
+
+    from labdeploy.config import Platform
+    controller, principal, github = setup
+    controller.config.platform = Platform(repository="lab/platform")
+    answers = [None, {"run_url": "https://run", "report": {"checked_at": datetime.datetime.now(datetime.UTC).isoformat(), "drifted": [],
+                                                            "serious": [], "failed": [], "applications": []}}]
+    github.drift_report = lambda repository: answers.pop(0)
+    assert controller.drift_status()["status"] == "not_run"
+    assert controller.drift_status()["status"] == "clean"  # asked again, not served the remembered "none"
+
+
+def test_the_spend_cap_script_uses_the_update_google_accepts():
+    from pathlib import Path
+    script = Path("scripts/spend-cap.sh").read_text()
+    assert script.count("updateMask=amount.specifiedAmount,spendCap.inputState") == 1 and 'updateMask=amount"' not in script
+    assert '"spendCap": {"inputState": "AWAITING_NEXT_PERIOD"}' in script and "LAB_DEPLOY_APPLY_CONFIRMED" in script
+
+
+# ---- found in the live exercise: an outage the service's own metrics cannot see
+def test_the_health_view_reports_failing_uptime_checks(tmp_path):
+    from conftest import FakeGitHub
+    from test_phase5 import OBSERVER, FakeObserver, config
+
+    from labdeploy.controller import Controller, Store
+
+    class Paused(FakeObserver):
+        def metrics(self, target, minutes=60):
+            return {**super().metrics(target, minutes), "uptime_checks_passed": 0.75}
+
+    cfg = config(tmp_path, observer={"service_account": OBSERVER})
+    health = Controller(cfg, FakeGitHub(), Store(cfg.database), Paused()).service_health(cfg.principals[0], "demo")
+    assert any("uptime check reached the health path in only 75%" in note and "native spend cap" in note for note in health["notes"])
+    calm = Controller(cfg, FakeGitHub(), Store(cfg.database), FakeObserver()).service_health(cfg.principals[0], "demo")
+    assert not any("uptime check" in note for note in calm["notes"])
+
+
+def test_the_observer_asks_monitoring_for_the_uptime_checks(tmp_path):
+    import time
+
+    import httpx
+    from test_phase5 import OBSERVER, config
+
+    from labdeploy.cloud import Observer
+    seen = []
+
+    def handler(request):
+        params = request.url.params
+        seen.append((params["filter"], params["aggregation.perSeriesAligner"]))
+        value = 0.75 if "uptime_check/check_passed" in params["filter"] else 1
+        return httpx.Response(200, json={"timeSeries": [{"points": [{"value": {"doubleValue": value}}]}]})
+
+    observer = Observer(config(tmp_path, observer={"service_account": OBSERVER}), client=httpx.Client(transport=httpx.MockTransport(handler)), runner=lambda args: "t")
+    observer.until, observer.cached = time.time() + 999, "t"
+    metrics = observer.metrics(config(tmp_path).applications["demo"].target, 15)
+    assert metrics["uptime_checks_passed"] == 0.75
+    assert any('metric.type="monitoring.googleapis.com/uptime_check/check_passed"' in f and 'resource.labels.service_name="demo"' in f and a == "ALIGN_FRACTION_TRUE"
+               for f, a in seen)

@@ -390,3 +390,48 @@ Platform tests: 359 passed; ruff and zizmor clean.
 Found on the way, for the operator: `lab-demo` and `lab-notebook` still lack the provenance key 1.8.6 planned for their
 roots' next apply. Dispatching **Infrastructure apply** for both closes that difference, which the first drift report will
 otherwise list.
+
+## Live exercise of 1.9.0 (2026-10-14 evening, Central time; 2026-10-15 UTC)
+
+Run after the operator merged brianboti/lab-deploy#39 and applied the foundation; everything else by Claude through the
+platform's own tools, scripts and workflows.
+
+| Step | Run, pull request or plan | Observed |
+|---|---|---|
+| Foundation apply (operator) | `scripts/apply-foundation.sh` | 2 to add, 1 to change: the plan provider's new condition (Google accepted the `in [...]` list) and the federation grants for `schedule` and `workflow_dispatch`; the four `INFRA_*` variables unchanged |
+| Controller on 1.9.0 | `scripts/start.sh` in a terminal tab | Version 1.9.0 locally and through the tunnel; the status listed the project as missing a native spend cap and the drift check as not yet run |
+| The native spend cap | `scripts/spend-cap.sh create` | The operator had already created it with the script (USD 20, Cloud Run, the staging project, `CONFIGURED`); the second run found it and created nothing; recorded under `cloud_run_spend_caps`, the status's `missing` list then empty |
+| Drift found | A hand edit (`lab-deploy-managed=drift-test` on the demo's uploads bucket), then run 38676874089 from `main` | The plan identity signed in through the new federation; issue brianboti/lab-deploy#41 opened listing the demo's bucket (`data`) and the provenance key and its two grants still missing from `lab-demo` and `lab-notebook` (`data`, `iam`); Sophia clean. The restarted controller's status showed both apps as drifted, and its watchdog's first pass named both ("infrastructure drift in data, iam"); no webhook is configured, so nothing was posted |
+| Drift repaired | Infrastructure apply run 38677116709 (`apps=lab-demo,lab-notebook`) | Both applies succeeded: the keys `lab-demo-provenance` and `lab-notebook-provenance` and their grants created, the bucket label back to `true` |
+| Drift clean | Run 38677243349 | "No drift"; the issue closed itself as completed |
+| Planted violations refused | Draft brianboti/lab-deploy#40 (a public, force-destroyable bucket, a secret version with `secret_data`, a Cloud SQL instance without backups, encryption-only connections or deletion protection) | **Policy: blocked** with six violations: `no_secret_in_state`, `protected_database`, `database_backups`, `encrypted_connections`, `private_bucket`, `no_force_destroy`; the plan job failed as designed; closed unmerged, branch deleted |
+| Re-pin | lab-demo-app#17, lab-notebook#9, sophia#12 (platform c7fb636) | Merged; Sophia's two failing checks are the ones already failing on its `main` (its security audit and the ask-sophia typecheck); `platform.minimum_commit` raised to c7fb636, every pin still supported |
+| The bake passes | Plan e60a9a36 (auto-deploy of the re-pin, run 38677620624), 85 authenticated page requests sent during the bake | Phases `preparing, deploying, promoting, baking, succeeded`; baking 03:44:52 to 03:49:51; 5 checks; 85 requests, none 5xx, p95 5.7 ms; 7 health requests left out; latency not compared (the previous revision served no requests besides the health path in the hour before, which the receipt says); `dockerfile_lint`: no findings |
+| The bake restores | lab-demo-app#18 (`FAULT_EVERY: "4"`, every 4th page request answers 500), plan ac2975c0, run 38678400332 | Promoted 03:53:37, baking 03:53:52; at the first check, 72 seconds after promotion, 4 of 20 requests answered 5xx (20%, above 5%): `traffic_restored` with `failed_phase: baking` at 03:55:05, 100% back on `lab-demo-re60a9a36c53347fc`, the new revision's last 50 log lines in the receipt; the status said "failed its bake after promotion"; the recovery run that followed found nothing to do. The client saw 5 of 75 requests fail: the faulty revision served for about a minute |
+| The bake with no traffic | lab-demo-app#19 (the switch removed), plan 7cdb7009 | `bake inconclusive: 0 requests in 300 s, too few to judge` (5 health requests left out); the release succeeded and the status said only the probes vouch for it |
+| The native spend cap trips | The cap lowered to USD 0.01 at 04:07:37 UTC (October's gross Cloud Run cost: USD 0.05) | `ENFORCED` by 04:09:55; the demo and Sophia answered Google's "503 Server Error" page by 04:11:56, lab-notebook by 04:12:47; an edit while enforced refused ("Only spend cap state can be updated when spend cap is enforced"). The controller's health view still showed open ingress and no server errors: found, and fixed in 1.9.1 (below) |
+| Lifted and re-armed | `scripts/spend-cap.sh lift` at 04:13:12, `scripts/spend-cap.sh amount ... 20` at 04:17:31 | `AWAITING_NEXT_PERIOD`; a 500 at 04:15:20, every service 200 by 04:17:21 (about four minutes); back to USD 20, `CONFIGURED` |
+| The health view on 1.9.1 | `get_service_health` for the demo, an hour that included the trial | `uptime_checks_passed: 0.915` and the note that the uptime check reached the health path in only 92% of its probes although the service's own metrics may look normal |
+
+What the exercise found, fixed in 1.9.1 the same night: the controller remembered "no drift report yet" for an hour
+(its status said `not_run` after the first report existed); the health view could not see an outage that stops requests
+before the container (it now reports the uptime checks' pass rate); and the Budget API refuses an amount change unless it
+uses the mask `amount.specifiedAmount,spendCap.inputState` with the whole budget (the script's new `amount` and `lift`
+commands do this; both ran in the trial).
+
+What it measured about cost, from the billing export for October (gross, before credits; credits brought every line to
+zero this month):
+
+| Service | Gross this month |
+|---|---|
+| Image vulnerability scanning (Artifact Analysis) | USD 9.88, 38 scans |
+| Cloud SQL (the September and October trials) | USD 0.11 |
+| Cloud Run, every staging service | USD 0.05 |
+
+Scanning is nearly all of the project's gross cost: each fresh build is a USD 0.26 scan, so a busy release week costs
+more in scans than a year of this lab's Cloud Run. Turning automatic scanning off for staging (`image_vulnerability_scanning
+= false` in the foundation), or releasing reused images more often, is the operator's choice: the scan is also a
+security control.
+
+Platform tests on 1.9.1: 364 passed; ruff and zizmor clean.
+

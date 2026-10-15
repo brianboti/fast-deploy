@@ -78,15 +78,19 @@ and, if any service or instance could not be closed, the alert **Lab Deploy: spe
 
 ## The native spend cap tripped
 
-How you know: every Cloud Run service in the project answers 5xx at once, the Cloud Run console's overview shows an
-enforcement banner, and Cloud Billing emailed at 50%, 80% and 100% of the cap. Releases fail too: the candidate cannot
+How you know: every Cloud Run service in the project answers 5xx at once (Google's own "503 Server Error" page), the
+Cloud Run console's overview shows an enforcement banner, `get_service_health` notes that the uptime check passes less
+than 100% of its probes while the service's own metrics look normal, and Cloud Billing emailed at 50%, 80% and 100% of
+the cap. `scripts/spend-cap.sh check PROJECT` says `ENFORCED`. In the live exercise the pause reached every service within
+five minutes of the cap being exceeded. Releases fail too: the candidate cannot
 start. Nothing was deleted, and Cloud SQL, buckets and topics kept running (and billing).
 
 1. Decide whether the spend is real: `get_cost_report` and the billing export say what cost what. A runaway service is
    better stopped by lowering its `scaling.maximum` or pausing it before lifting the cap.
-2. To resume before the month ends, open Cloud Billing, Budgets & alerts, the budget "Lab Deploy: Cloud Run spend cap",
-   and choose **Lift spend cap** (or raise its amount). Services can take up to an hour to recover. A lifted cap does not
-   trip again this month unless the amount is raised; it re-arms on the first of the next month by itself.
+2. To resume before the month ends: `scripts/spend-cap.sh lift PROJECT`, or in Cloud Billing, Budgets & alerts, the budget
+   "Lab Deploy: Cloud Run spend cap", **Lift spend cap**. Services can take up to an hour to recover. A lifted cap does
+   not trip again this month until it is re-armed with `scripts/spend-cap.sh amount PROJECT N` (an amount above this
+   month's spend); it re-arms on the first of the next month by itself.
 3. If the platform's own cap also fired, follow the section above for the services it closed.
 
 ## Drift reported

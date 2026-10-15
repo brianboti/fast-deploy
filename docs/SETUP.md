@@ -352,7 +352,9 @@ in Cloud Billing (up to an hour to recover); while it is enforced the budget can
 
    or in the console: Billing, Budgets & alerts, Create budget, **Spend cap enforcement**, the project, the Cloud Run
    service, the amount, Finish. Terraform cannot do it yet: the Google provider has no spend-cap argument.
-3. Check it: `scripts/spend-cap.sh check PROJECT` lists the caps on the project's Cloud Run.
+3. Check it: `scripts/spend-cap.sh check PROJECT` lists the caps on the project's Cloud Run. `scripts/spend-cap.sh amount
+   PROJECT N` changes the amount (and re-arms a cap lifted this month); `scripts/spend-cap.sh lift PROJECT` lifts an
+   enforced cap. Both wait for a typed `yes`.
 4. Record it in the controller configuration so plans, `estimate_cost`, `get_cost_report` and `get_controller_status`
    name it (until then they carry the warning `no_native_spend_cap`):
 

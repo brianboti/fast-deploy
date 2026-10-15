@@ -146,7 +146,14 @@ class Observer:
         def peak(metric, aligner, extra=None):
             values = monitoring.query(metric, aligner, "REDUCE_MAX", start, end, whole, " AND ".join(filter(None, (service, extra))))
             return max(values) if values else None
+
+        def passed():
+            # Google's uptime check calls the health path from outside every minute: it sees an outage the service's own
+            # metrics cannot, such as requests a spend cap or the front end refuses before they reach the container.
+            values = monitoring.query("monitoring.googleapis.com/uptime_check/check_passed", "ALIGN_FRACTION_TRUE", "REDUCE_MEAN", start, end, whole, service)
+            return round(min(values), 3) if values else None
         return {"window_minutes": minutes, "requests": total("run.googleapis.com/request_count"),
+                "uptime_checks_passed": passed(),
                 "server_errors": total("run.googleapis.com/request_count", 'metric.labels.response_code_class="5xx"'),
                 "request_latency_ms_p95": peak("run.googleapis.com/request_latencies", "ALIGN_PERCENTILE_95"),
                 "max_active_instances": peak("run.googleapis.com/container/instance_count", "ALIGN_MAX", 'metric.labels.state="active"'),
