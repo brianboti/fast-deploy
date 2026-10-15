@@ -272,7 +272,7 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
     @mcp.tool(title="Propose configuration (draft PR)", annotations=CREATES_RECORD, structured_output=True)
     @plain_errors
     def propose_configuration(application: str | None = None, repository: str | None = None, path: str | None = None) -> dict[str, Any]:
-        """Open a draft pull request with the files docs/DEVELOPER-CONTRACT.md asks for that the service lacks (Dockerfile, .dockerignore,
+        """Open a draft pull request (trial edit) with the files docs/DEVELOPER-CONTRACT.md asks for that the service lacks (Dockerfile, .dockerignore,
         requirements-dev.txt, a hash-locked requirements.lock, a health test, platform.yaml with reviewed: false, CI, SECURITY.md,
         Dependabot), never one that exists. Give a registered `application`, or a `repository` link and its `path` before onboarding.
         The platform never merges it."""
