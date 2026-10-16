@@ -1,0 +1,11 @@
+# Imported by Fast Deploy from brianboti/lab-demo-two at b09b399490db on 2026-10-16, read as it is: the pull request that added
+# this file lists every choice and where it came from. Merging is the review (docs/ROADMAP.md D32); a release moves source.commit.
+source:
+  repository: brianboti/lab-demo-two
+  commit: b09b399490dba5450fcbc7ae4cc6b06b6964dae2
+name: lab-demo-two
+needs:
+  buckets:
+  - uploads
+  topics:
+  - events
