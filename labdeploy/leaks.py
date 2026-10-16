@@ -13,6 +13,15 @@ import os
 import sys
 from pathlib import Path
 
+# Where an image holds what the application installed rather than wrote: packages, the system's own files, the buildpacks'
+# layers. An unconfirmed finding there is a pattern in someone else's code (found live: URL patterns in httpx, pip and
+# pandas tests, two in dpkg's lists); a working key is reported wherever it is.
+THIRD_PARTY = ("/usr/", "/var/lib/", "/lib/", "/opt/conda/", "/layers/", "site-packages/", "dist-packages/")
+
+
+def third_party(path):
+    return any(marker in path if marker.endswith("-packages/") else path.startswith(marker) for marker in THIRD_PARTY)
+
 
 def findings(lines, strip=""):
     """The findings of a TruffleHog JSON report, without the secrets: detector, verified, file, line, layer."""
@@ -65,7 +74,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     found = findings(Path(args.report).read_text(errors="replace").splitlines(), args.strip)
     blocking, verified = decide(found, args.trust)
+    installed = [item for item in found if not item["verified"] and third_party(item["file"])]
     for item in found:
+        if item in installed:
+            continue
         where = item["file"] or "(unknown file)"
         kind = "error" if item["verified"] and blocking else "warning" if item["verified"] else "notice"
         state = "a key that works right now" if item["verified"] else "a possible secret, not confirmed"
@@ -73,13 +85,15 @@ def main(argv=None):
         print(f"::{kind} {place + ',' if place else ''}title={escape('Secret scan (' + args.where + '): ' + item['detector'], True)}::"
               f"{escape(f'{state} in {where}' + (' (layer ' + item['layer'][:19] + ')' if item.get('layer') else ''))}")
     line = (f"Secret scan of the {args.where} ({args.trust}): {len(found)} finding{'s' if len(found) != 1 else ''}, {len(verified)} verified"
+            + (f", {len(installed)} unconfirmed in installed packages or system files" if installed else "")
             + ("; verified keys stop a release of code nobody has reviewed" if blocking else ""))
     print(line)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
             summary.write(line + "\n")
     if args.json:
-        Path(args.json).write_text(json.dumps({"where": args.where, "trust": args.trust, "findings": found, "blocking": blocking}, indent=2) + "\n")
+        Path(args.json).write_text(json.dumps({"where": args.where, "trust": args.trust, "findings": found, "blocking": blocking,
+                                               "installed": len(installed)}, indent=2) + "\n")
     if blocking:
         many = len(verified) != 1
         print(f"::error title=Secret scan::{len(verified)} working credential{'s' if many else ''} in the {args.where}: remove "

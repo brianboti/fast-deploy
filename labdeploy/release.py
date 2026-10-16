@@ -576,7 +576,8 @@ def build_checks(folder="bundle"):
         scan = read(name)
         if isinstance(scan, dict):
             findings = scan.get("findings") or []
-            checks[key] = {"findings": len(findings), "verified": sum(1 for f in findings if f.get("verified"))}
+            checks[key] = {"findings": len(findings), "verified": sum(1 for f in findings if f.get("verified")),
+                           "in_installed_packages": int(scan.get("installed") or 0)}
     from .sbom import summary as sbom_summary
     sbom = sbom_summary(Path(folder, "sbom.cdx.json"))
     if sbom:

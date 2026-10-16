@@ -167,7 +167,7 @@ def test_the_parts_list_is_summarised_for_the_receipt(tmp_path):
     (tmp_path / "secrets-image.json").write_text(json.dumps({"findings": [{"verified": False}, {"verified": True}]}))
     checks = build_checks(tmp_path)
     assert checks["dockerfile_policy"] == {"refused": 0, "reported": 1, "trivy_high_or_critical": 1}
-    assert checks["secrets_in_image"] == {"findings": 2, "verified": 1} and checks["sbom"]["components"] == 2
+    assert checks["secrets_in_image"] == {"findings": 2, "verified": 1, "in_installed_packages": 0} and checks["sbom"]["components"] == 2
     assert build_checks(tmp_path / "nothing") == {}
 
 
@@ -261,3 +261,46 @@ def test_the_reader_refuses_a_dockerfile_that_breaks_the_policy_and_notes_intern
     assert any("runs as root" in item["problem"] for item in reader.read(sorted(rooted), rooted, "")["refusals"])
     calling = {"main.py": FASTAPI, "requirements.txt": "fastapi\nopenai==1.0\n"}
     assert any("egress: internet" in note for note in reader.read(sorted(calling), calling, "")["notes"])
+
+
+# ---- 1.16.1: what the live trial of 1.16.0 showed
+def test_an_image_is_reused_when_its_inputs_match_whatever_fields_a_later_version_added():
+    from labdeploy.controller import same_image_inputs
+    spec = AppSpec.model_validate({"name": "demo", "build": {"recipe": "buildpacks", "entrypoint": "uvicorn app:app"}})
+    recorded = {"build": {"context": "service", "recipe": "buildpacks", "entrypoint": "uvicorn app:app"}, "python": "3.12"}  # 1.15's dump
+    assert same_image_inputs(recorded, spec)  # found live: build.network (1.16.0) made every first release build again
+    assert not same_image_inputs({**recorded, "python": "3.13"}, spec)
+    assert not same_image_inputs({"build": {"recipe": "repository"}, "python": "3.12"}, spec) and not same_image_inputs(None, spec)
+
+
+def test_refusals_with_the_same_fix_are_told_once():
+    from labdeploy import chat
+    fix = "remove it and rotate what it held"
+    refusals = [{"file": "env.prod", "problem": "looks like a committed secret", "fix": fix},
+                {"file": "env.yaml", "problem": "looks like a committed secret", "fix": fix},
+                {"file": "Dockerfile:1", "problem": "the final image runs as root", "fix": "add USER 65532:65532 (a numeric user)"}]
+    text = chat.contract_import({"repository": "lab/x", "refusals": refusals})
+    assert text.count(fix) == 1 and "1. `env.prod`, `env.yaml` looks like a committed secret. Fix: remove it and rotate what it held." in text
+    assert "2. `Dockerfile:1` the final image runs as root. Fix: add USER 65532:65532 (a numeric user)." in text
+
+
+def test_the_scan_answer_says_whether_the_gate_stopped_the_release():
+    from labdeploy import chat
+    base = {"analysis_status": "FINISHED_SUCCESS", "by_severity": {"CRITICAL": 0, "HIGH": 5}, "fixable_by_severity": {"CRITICAL": 0, "HIGH": 0}}
+    # Found live: 1.16.0 said "it blocked the release" for every unknown app, since its gate is always on.
+    assert chat.scan_line({**base, "trust": "unknown", "blocking": True, "blocked": False}).endswith("the gate let it through, since none can be fixed yet")
+    assert chat.scan_line({**base, "trust": "unknown", "blocking": True, "blocked": True}).endswith("it stopped the release")
+    assert chat.scan_line({**base, "trust": "reviewed", "blocking": False, "blocked": False}).endswith("not blocking")
+    assert chat.scan_line({**base, "blocking": True}).endswith("not blocking")  # before 1.16.1: blocking stopped only critical findings
+
+
+def test_unconfirmed_patterns_in_installed_packages_are_counted_not_listed(tmp_path, capsys):
+    lines = [json.dumps({"DetectorName": "URI", "Verified": False, "SourceMetadata": {"Data": {"Docker": {"file": path}}}})
+             for path in ("/usr/local/lib/python3.12/site-packages/httpx/_urls.py", "/var/lib/dpkg/available", "/app/settings.py")]
+    lines.append(json.dumps({"DetectorName": "AWS", "Verified": True, "SourceMetadata": {"Data": {"Docker": {"file": "/usr/local/lib/x/creds.py"}}}}))
+    report = tmp_path / "image.jsonl"
+    report.write_text("\n".join(lines))
+    assert leaks.main([str(report), "--trust", "unknown", "--where", "image", "--json", str(tmp_path / "s.json")]) == 1
+    out = capsys.readouterr().out
+    assert "httpx" not in out and "dpkg" not in out and "/app/settings.py" in out and "/usr/local/lib/x/creds.py" in out  # a working key anywhere
+    assert "2 unconfirmed in installed packages or system files" in out and json.loads((tmp_path / "s.json").read_text())["installed"] == 2

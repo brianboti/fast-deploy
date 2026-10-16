@@ -135,6 +135,8 @@ def main():
         with open(summary_path, "a") as handle:
             handle.write("## " + lines[0] + "\n\n" + "\n".join(lines[1:]) + "\n")
     reason = verdict(summary, trust, blocking)
+    summary["blocked"] = reason is not None
+    Path("vulnerability-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     if reason:
         sys.exit(reason[0].upper() + reason[1:])
 
