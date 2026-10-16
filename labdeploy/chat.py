@@ -203,7 +203,16 @@ def scan_line(vulnerabilities):
     fix = fixable.get("CRITICAL", 0) + fixable.get("HIGH", 0)
     fixes = "all fixable" if fix == critical + high else "none fixable yet" if not fix else f"{fix} fixable"
     found_words = " and ".join(part for part in (f"{critical} critical" if critical else "", f"{high} high" if high else "") if part)
-    return f"Image scan: {found_words} findings ({fixes}); {'it blocked the release' if vulnerabilities.get('blocking') else 'not blocking'}"
+    blocked = vulnerabilities.get("blocked")
+    if blocked is None:  # a summary from before 1.16.1 says only whether blocking was on
+        blocked = bool(vulnerabilities.get("blocking")) and critical > 0
+    if blocked:
+        verdict = "it stopped the release"
+    elif vulnerabilities.get("trust") == "unknown":
+        verdict = "the gate let it through, since none can be fixed yet" if not fix else "the gate let it through"
+    else:
+        verdict = "not blocking"
+    return f"Image scan: {found_words} findings ({fixes}); {verdict}"
 
 
 def gates_line(checks):
@@ -216,7 +225,7 @@ def gates_line(checks):
         parts.append("Dockerfile rules passed" + (f" ({policy['reported']} noted)" if policy.get("reported") else ""))
     found = [checks.get(key) or {} for key in ("secrets_in_checkout", "secrets_in_image")]
     verified = sum(item.get("verified", 0) for item in found)
-    possible = sum(item.get("findings", 0) for item in found) - verified
+    possible = sum(item.get("findings", 0) - item.get("in_installed_packages", 0) for item in found) - verified
     if any(found):
         parts.append(f"{plural(verified, 'working key')} found" if verified else "no working keys found"
                      + (f" ({plural(possible, 'possible secret')} to check)" if possible else ""))
@@ -402,9 +411,18 @@ def check(result):
                      + (next_line if next_line.startswith("I ") else next_line[0].lower() + next_line[1:]))
         return compose(f"**Not ready to deploy as it stands: {where}.** {plural(len(missing), 'required item')} missing:", facts, next_line, block=block)
     if as_is.get("refusals"):
-        block += "\n\nAs it is, it is refused too: " + "; ".join(f"`{item['file']}` {item['problem']} (fix: {item['fix']})"
-                                                                for item in as_is["refusals"][:3]) + "."
+        block += "\n\nAs it is, it is refused too: " + "; ".join(f"{files} {problem} (fix: {fix})"
+                                                                for files, problem, fix in grouped_refusals(as_is["refusals"])[:3]) + "."
     return compose(f"**Not ready yet: {where}.** {plural(len(missing), 'required item')} missing:", [], next_line, block=block)
+
+
+def grouped_refusals(refusals):
+    """Refusals in words, the ones with the same problem and fix told once with every file they name (found live: two
+    committed environment files repeated the same long fix)."""
+    groups = {}
+    for item in refusals or []:
+        groups.setdefault((item.get("problem"), item.get("fix")), []).append(f"`{item.get('file')}`")
+    return [(", ".join(files), problem, fix) for (problem, fix), files in groups.items()]
 
 
 def choice_lines(choices, limit=6):
@@ -427,7 +445,7 @@ def contract_import(view):
     where = f"`{view.get('repository')}`" + (f", folder `{view['path']}`" if view.get("path") else "")
     refusals = view.get("refusals") or []
     if refusals:
-        block = "\n".join(f"{number}. `{item['file']}` {item['problem']}. Fix: {item['fix']}." for number, item in enumerate(refusals, 1))
+        block = "\n".join(f"{number}. {files} {problem}. Fix: {fix}." for number, (files, problem, fix) in enumerate(grouped_refusals(refusals), 1))
         return compose(f"**{where} can't be taken as it is yet.** {plural(len(refusals), 'thing')} to fix in the repository:", [],
                        "the developer fixes them (nothing was opened); then ask me again.", block=block)
     if view.get("existing"):

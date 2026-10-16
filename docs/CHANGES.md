@@ -1,3 +1,21 @@
+# 1.16.1: what the live trial of 1.16.0 showed
+
+Found on 2026-10-16 in the live exercise of Phase 14 (`docs/VALIDATION.md`); nothing here changes what is deployed.
+
+1. **An image is reused when its inputs match**, comparing what the build section and the Python set rather than raw
+   dumps: 1.16.0's new `build.network` made every application's first release after the upgrade build again.
+2. **The scan's line says whether the gate stopped the release**: since every unknown app's gate is on, 1.16.0's answer
+   said "it blocked the release" for one the gate had let through (none of its five high findings could be fixed yet).
+   The scan now records `blocked`.
+3. **Unconfirmed patterns in installed packages are counted, not listed**: the image of a real application held fourteen,
+   all in third-party files (URL patterns in httpx, pip and pandas tests, two in the system's package lists). A working key
+   is still reported, and still stops unknown code, wherever it is.
+4. **Refusals that share a fix are told once**, with every file they name (two committed environment files repeated the
+   same long fix).
+
+Tests: 564 pass (4 new); ruff clean.
+
+
 # 1.16.0: safety for code nobody has reviewed (Phase 14)
 
 Asked for on 2026-10-16 with the default of D35: code nobody has reviewed (a repository taken as it is) is built and run

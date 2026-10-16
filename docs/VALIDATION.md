@@ -554,3 +554,27 @@ review, D32), every infrastructure pull request by the controller under `auto_me
 Not exercised live: a release pull request that moves `source.commit` (neither repository's `main` moved), `uv.lock`
 export and Compose (no public repository of the operator has them; covered by tests), and the GitHub App token (not set
 up; public repositories are read with the run's own token).
+
+
+## Live exercise of 1.16.0: code nobody has reviewed (2026-10-16)
+
+Asked for by the operator after the merge of #71 (828881d). No contract changed with the merge, so nothing released on
+its own: the controller read both kept contracts at the merge commit and left them.
+
+| Trial | What was done | Observed |
+|---|---|---|
+| The plan says it | `create_deployment_plan` for `lab-demo-two` (a contract the platform keeps) | Two notes ("Code nobody has reviewed: ...", "No internet: ...") and the approval block's `containment`: trust `unknown`, egress `private`, `gen2`, "blocks fixable critical and high findings" |
+| The vulnerability gate stops it | Plan faf8bba0, run 38960957930: lab-demo-two's buildpacks build | Every build gate passed (scanners checked against their SHA-256, the checkout's and the image's secret scans, the parts list); the scan found critical 2, high 11, all fixable, and the gate stopped the release before any change: "13 critical or high findings with a fix available, in code nobody has reviewed". The previous revision kept serving |
+| It runs contained | Plan f1b2ddbc, run 38960985349: `llm-debate-backend` | Its new revision: `run.googleapis.com/execution-environment: gen2`, `vpc-access-egress: all-traffic`, network `lab-deploy`, subnet `lab-deploy-run`, tag `lab-deploy-contained` (the revision before it had none of these) |
+| It reaches no internet | A one-off Cloud Run job `egress-proof` from the same image and runtime identity, with the same network settings, opening `https://example.com/` and `https://storage.googleapis.com/` | "internet: NOT reached (URLError: Network is unreachable)" at once; "Google API (Private Google Access): reached, HTTP 400". The job stays in the project for the next proof; it costs nothing at rest |
+| A Dockerfile that breaks the rules is refused | `check_repository` of `brianboti/Conversational-AI-Agent` | As it is: "Dockerfile:1 the final image runs as root" with its fix, beside its committed `env.prod` and `env.yaml` |
+| The contained release finishes | Plan f1b2ddbc | Live in 11 minutes; the receipt's `containment` (unknown, private, gen2) and `build_checks`: no working key in the checkout or the image, 14 unconfirmed patterns in the image, all in installed packages and system files (now counted apart, 1.16.1), a parts list of 138 components |
+| Every gate on a repository's own Dockerfile | #72 (`apps/lab-demo-two/platform.yaml` back to its Dockerfile), merged by the operator at 20:20:53; the `contracts` job released it at 20:21:57 (plan 693801c2, run 38961646093) | "Dockerfile policy (unknown): passed"; "Secret scan of the checkout (unknown): 0 findings, 0 verified"; "Secret scan of the image (unknown): 6 findings, 0 verified"; "Parts list (SBOM): 103 components, CycloneDX 1.7", attested with the application's Cloud KMS key; provenance verified; the scan: high 5, none fixable, so the gate let it through; released contained in 8 minutes |
+
+Found on the way, fixed in 1.16.1: every first release after the upgrade built again (the reuse check compared raw
+dumps that 1.16.0's `build.network` had grown); the answer said "it blocked the release" for releases the gate had let
+through; installed packages' patterns were listed one by one; two refusals with the same fix repeated it.
+
+Not exercised: Binary Authorization, a project of its own, data-file inspection and threat detection (Phase 14's open
+items, and the operator's switch), and a working key in a build: the gate was checked locally with TruffleHog's own
+canary key, which cannot go into a repository.

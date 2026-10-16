@@ -225,6 +225,20 @@ class Store:
         return [dict(zip(keys, row, strict=True)) for row in rows]
 
 
+def same_image_inputs(recorded, spec):
+    """Whether an earlier release's image was made the way this specification would make it (its build section and Python),
+    comparing what was set rather than raw dumps, so a field a later version added with its default changes nothing (found
+    live: 1.16.0's build.network made every first release after the upgrade build again)."""
+    from .models import Build
+    if not isinstance(recorded, dict):
+        return False
+    try:
+        earlier = Build.model_validate(recorded.get("build") or {}).model_dump(exclude_defaults=True)
+    except ValueError:
+        return False
+    return earlier == spec.build.model_dump(exclude_defaults=True) and recorded.get("python", "3.12") == spec.python
+
+
 IMAGE_RESCAN_DAYS = 30  # Artifact Analysis stops analysing an image this long after its push (docs/ROADMAP.md 14.4)
 
 
@@ -959,7 +973,7 @@ class Controller:
         receipt = (prior or {}).get("receipt") or {}
         image = receipt.get("image") if receipt.get("provenance") != "unavailable" else None
         prefix = f"{app.target.region}-docker.pkg.dev/{app.target.project_id}/{app.target.registry}/{app.target.service}@sha256:"
-        same_build = (prior or {}).get("spec", {}).get("build") == spec.model_dump()["build"] and (prior or {}).get("spec", {}).get("python") == spec.python
+        same_build = same_image_inputs((prior or {}).get("spec"), spec)
         if app.provenance == "unavailable":
             plan["warnings"].append("The operator's exception provenance: unavailable is set for this application: the image is built fresh and released "
                                     "without signed provenance. Remove it from the controller configuration once the cause is fixed.")
