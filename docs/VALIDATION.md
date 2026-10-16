@@ -492,9 +492,16 @@ requests and the review flag of a draft the platform wrote stay with the operato
 | The exit dry run | `scripts/export-app.sh demo DEST --dry-run` on `main` | Every command printed (the Knative-format service, the serving image by digest, the state pull, the uploads bucket), none run |
 | The restore drill | `python -m labdeploy.cli restore-drill` | Passed: newest backup 2.0 hours old (0.9 MB), integrity ok, 56 plans, 835 audit events, 2 registered applications, 2 onboarding records; the configuration copy loads (1 application in the file, the others registered in the database); next due by 2027-01-15 |
 
-Still to do after 1.12.1's merge and foundation apply: dispatch the infrastructure apply for `mono-admin`, let its onboarding
-continue (the migration job, the first release reading `DATABASE_URL`), then delete the trial database; the bare
-repository's release (and the same repository without a Dockerfile through the buildpack path) once a person has
-reviewed its draft; Sophia's copy from `backend/`.
+The second service after 1.12.1 (2026-10-16 UTC; the operator merged brianboti/lab-deploy#52 and applied the foundation:
+the custom role 1 to change):
 
-Cost: the Cloud SQL instance of `mono-admin` is billed from 18:31 UTC at about USD 0.012 per hour until it is deleted.
+| Step | Run, pull request or plan | Observed |
+|---|---|---|
+| The merge's apply | Infrastructure apply run 38845880542 (all five roots) | `mono-admin`'s first attempt at 03:31:09 was still refused `secretmanager.versions.destroy` (the role change had not yet reached the apply identity); the workflow's retry 60 seconds later destroyed the failed version, created a new one and updated the `app` user in place (1 added, 1 changed, 1 destroyed): the user and the URL got the same run's password, which 1.12.1 makes certain. The four other roots: no changes |
+| Onboarding continues | `onboard_application` (`services/admin`) again | It found the successful apply on its own, published `staging-mono-admin`'s variables, opened and merged lab-monorepo#2 (pinned to 65bde30, 1.12.1) and dispatched the first release |
+| First release with a migration | Plan fad21c53, run 38846088674 | `preparing, migrating, deploying, promoting, baking, succeeded`; the migration job `mono-admin-migrate` ran from 03:35:23 to 03:37:19; the approval block said `data-bearing` ("the migration changes the database; a rollback restores traffic only") and the needs floor USD 8.57 a month; bake inconclusive (no traffic) |
+| The service reads its database | Authenticated requests to `mono-admin` | `/` answered with the shared code from `lib/` (the repository-root build); `POST /visits` inserted a row through `DATABASE_URL` and counted 1, then 2 (the migration's table, the password from the secret); without a token, 403 |
+| The trial database stopped | `gcloud sql instances patch mono-admin --activation-policy=NEVER` | `STOPPED`: from about 03:48 UTC only its 10 GB of storage is billed (about USD 1 a month). Cloud SQL ran about 9 hours of the trial, about USD 0.11 at list price. Retiring it follows the runbook's "Retire a database deliberately", which deletes data and stays with the operator |
+
+Still to do: the bare repository's release (and the same repository without a Dockerfile through the buildpack path) once
+a person has reviewed its draft (brianboti/lab-bare#2); Sophia's copy from `backend/`; the review by a second person.

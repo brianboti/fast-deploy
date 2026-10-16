@@ -266,7 +266,7 @@ Cost effect: none; the bake reads logs and metrics within the free allotment.
 
 ## Phase 10: one repository, several services (about four and a half days) → version 1.10.0
 
-Status: shipped on 2026-10-15 as 1.10.0 (pull request #44); live on 2026-10-15 (`docs/VALIDATION.md`): the first service of a two-service repository onboarded with one sentence and released; the second, with Postgres by password, found a missing permission fixed in 1.12.1, and finishes after that release's foundation apply; Sophia's copy from `backend/` is still to do. Planned on 2026-10-14 (research items 2 and 3, and the gaps the Sophia copy exposed). This phase removes the root-Dockerfile requirement Sophia's copy needed and gives the contract its answer for front-ends, caches, queues and workers.
+Status: shipped on 2026-10-15 as 1.10.0 (pull request #44); live on 2026-10-15 (`docs/VALIDATION.md`): the first service of a two-service repository onboarded with one sentence and released; the second, with Postgres by password, found a missing permission fixed in 1.12.1, then migrated, released and served rows through its `DATABASE_URL`; Sophia's copy from `backend/` is still to do. Planned on 2026-10-14 (research items 2 and 3, and the gaps the Sophia copy exposed). This phase removes the root-Dockerfile requirement Sophia's copy needed and gives the contract its answer for front-ends, caches, queues and workers.
 
 | Item | Change | Where |
 |---|---|---|
