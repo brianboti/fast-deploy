@@ -26,6 +26,10 @@ class FakeGitHub:
     receipt = None
     recovery = None
 
+    @classmethod
+    def from_config(cls, config, client=None):
+        return cls()
+
     def head(self, app):
         return self.sha
 

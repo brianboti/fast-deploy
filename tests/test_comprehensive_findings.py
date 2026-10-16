@@ -312,7 +312,8 @@ def test_the_health_view_shows_whether_the_postgres_database_runs(tmp_path):
     (unreadable,) = observer.needs(target, {"database": "postgres"})
     assert unreadable["exists"] is None and "not allowed" in unreadable["unreadable"]
     roles = Path("infra/gcp/modules/project/main.tf").read_text()
-    assert '"roles/cloudsql.viewer"' in roles[roles.index('resource "google_project_iam_member" "observer_roles"'):][:600]
+    assert "for_each = toset(local.observer_roles)" in roles[roles.index('resource "google_project_iam_member" "observer_roles"'):][:200]
+    assert '"roles/cloudsql.viewer"' in roles[roles.index("observer_roles = ["):][:600]
 
 
 def test_an_invalid_platform_yaml_is_explained_in_plain_words():

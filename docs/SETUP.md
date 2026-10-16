@@ -138,19 +138,50 @@ The recovery workflow runs after every completed release workflow and, as a safe
 
 ## 4. GitHub credentials for the controller
 
-Prefer a GitHub App installed only on allowed app repositories. Set these environment variables on the controller host:
+The controller's machine (section 7m) signs in to GitHub as a **GitHub App** (decision D14): an installation token per
+repository, minted for an hour at a time with the App's private key, which the controller reads from Secret Manager
+through the machine's own identity and keeps in memory only. A laptop can use the same App (its key read with your gcloud
+sign-in) or a fine-grained token.
 
-- `GITHUB_APP_ID`
-- `GITHUB_INSTALLATION_ID`
-- `GITHUB_APP_PRIVATE_KEY_FILE`: a secret-mounted private key path
+Create the App once, on the account that owns the repositories (GitHub: Settings, Developer settings, GitHub Apps, New
+GitHub App):
 
-Minimum repository permissions for analyze/plan/dispatch/status: **Contents read**, **Actions write**, and metadata read. If enabling `propose_configuration` or `update_app_workflows`, additionally allow **Contents write**, **Pull requests write** and, for workflow files, **Workflows write**. Branch protection must prevent the App from bypassing review on `main`; the proposal tool only creates a new branch and draft PR.
+1. Name: anything unique, for example `fast-deploy-YOUR-ACCOUNT`; Homepage URL: the platform repository's address.
+2. Webhook: clear **Active**. The controller asks GitHub; GitHub never calls it.
+3. Repository permissions, exactly what onboarding needs and nothing else: **Actions** read and write, **Administration**
+   read and write (environments are created through it), **Contents** read and write, **Environments** read and write,
+   **Metadata** read-only, **Pull requests** read and write, **Variables** read and write, **Workflows** read and write.
+   No organization or account permissions.
+4. Where can this GitHub App be installed: **Only on this account**. Create it and note its **App ID**.
+5. **Generate a private key** (a `.pem` file downloads). Put it into the secret the foundation apply created, then delete
+   the file; the key never goes into the repository, Terraform or a chat:
 
-For a local pilot, `GITHUB_TOKEN` may hold a fine-grained token with the same restricted repository permissions. It takes precedence over App credentials. Never return this token to Claude or reuse it as the MCP bearer token. App installation tokens refresh in the server; no client credential is passed through to GitHub.
+   ```bash
+   gcloud secrets versions add FAST_DEPLOY_GITHUB_APP_KEY --project PROJECT --data-file=KEY.pem
+   ```
+
+6. **Install App** on the account: all repositories, or the platform repository and every application repository.
+7. The configuration names the App and the secret (`scripts/install-machine.sh` writes this into the machine's own):
+
+   ```yaml
+   github_app:
+     app_id: "123456"
+     private_key_secret: projects/PROJECT/secrets/FAST_DEPLOY_GITHUB_APP_KEY
+   ```
+
+A repository the App is not installed on can still be read (public data only); anything else there is refused with what
+to install. The secret's name starts with an uppercase letter on purpose: application runtime identities may read the
+secrets named `<service>-NAME`, and no service name can reach this one. `main` stays protected as before: the App merges
+only what the required checks passed, and it never merges a contract (merging one is the review, D32).
+
+On a laptop without the App, `GITHUB_TOKEN` may hold a fine-grained token with the same permissions (section 7g;
+`scripts/start.sh` keeps it in the Keychain). It takes precedence over the App. A container can mount a key file instead
+and set `GITHUB_APP_ID`, `GITHUB_INSTALLATION_ID` and `GITHUB_APP_PRIVATE_KEY_FILE`. Never return any of these to Claude or
+reuse one as the MCP bearer token.
 
 ## 5. Host MCP and connect Claude
 
-Start locally first as described in README. For Claude Chat, host the controller on a reachable **HTTPS** endpoint behind your organization's trusted TLS proxy. A localhost URL is not reachable by Claude's hosted connector.
+Start locally first as described in README. For Claude Chat, host the controller on a reachable **HTTPS** endpoint: the controller's own machine (section 7m) is the standard host since 1.17.0, and a laptop with the ngrok tunnel (`scripts/start.sh`) is the fallback. A localhost URL is not reachable by Claude's hosted connector.
 
 - Keep one controller instance for this MVP, backed by persistent storage for SQLite.
 - In a container, mount the config read-only at `/config/config.yaml`, the database directory at `/data`, and the GitHub private key as a secret. Set the config `database: /data/deployments.db`.
@@ -235,6 +266,37 @@ An app has one `database`. Changing its type means retiring the old database fir
 - **Watchdog**: set `notify_webhook_url` (Slack or Discord) to receive the daily findings: an expiring GitHub credential, a paused or stale schedule, an unsupported platform pin, a newest release attempt that failed, a configuration file that could not be loaded, or, with `backup_bucket` set, a quarterly restore drill that is due (`python -m labdeploy.cli restore-drill`, `docs/RUNBOOK.md`). `python -m labdeploy.cli watchdog` runs it now.
 - **Backups**: the database is copied nightly next to itself (`backup_dir` to change), fourteen copies kept, and, with `backup_bucket` set to the foundation's `backup_bucket` output (`PROJECT-lab-deploy-backups`), the copy and the configuration file go to that private versioned bucket as well, using the operator's own gcloud sign-in. `python -m labdeploy.cli backup` runs it now; `get_controller_status` shows the last run. Restoring is `docs/RUNBOOK.md`, "Restore the controller on another machine", rehearsed on 2026-10-12.
 - **Is the controller up?** Set the repository variable `CONTROLLER_HEALTH_URL` on the platform repository to `https://YOUR_HOST/healthz`; its controller-watch workflow pings it every thirty minutes and fails loudly when it does not answer.
+
+## 7m. The controller's own machine (Phase 15)
+
+One Always Free `e2-micro` in the staging project runs the controller around the clock behind Caddy and Let's Encrypt,
+with Litestream copying its database to the backup bucket (decision D36; the runbook's "The controller's machine" is
+the day-to-day side). It costs the external IPv4 address, about $3.65 a month. The steps, once:
+
+1. **A DNS name** the lab owns for it (decision D6: a university subdomain if IT gives one, otherwise a cheap domain), for
+   example `deploy.lab.example.edu`.
+2. **The foundation apply** with the machine in `infra/gcp/project/terraform.tfvars`, then `scripts/apply-foundation.sh PROJECT`:
+
+   ```hcl
+   controller = {
+     domain         = "deploy.lab.example.edu"
+     install_commit = "FULL-40-CHARACTER-COMMIT-ON-MAIN"  # what a fresh disk installs first
+     acme_email     = "you@example.edu"                    # optional: Let's Encrypt's certificate notices
+   }
+   ```
+
+   It creates the machine, its own network and firewall (HTTPS and HTTP for Let's Encrypt; SSH only through
+   Identity-Aware Proxy), the reserved address, the machine's identity `lab-deploy-controller`, the empty secret
+   `FAST_DEPLOY_GITHUB_APP_KEY`, the uptime check on `/healthz` and its alert. `terraform output controller` (or the apply's
+   output) shows the address.
+3. **The A record**: the DNS name to that address, at the registrar; or set `dns_zone` to a Cloud DNS zone of the project
+   and the apply writes it.
+4. **The GitHub App** (section 4), with its key in that secret.
+5. **The move**: stop the laptop's controller, then `scripts/install-machine.sh DOMAIN APP_ID`. It checks the name points
+   at the machine, copies the database and the configuration rewritten for the machine through Identity-Aware Proxy,
+   imports them, waits for `https://DOMAIN/healthz`, records `machine_url` in `config.local.yaml` (so `start.sh` keeps the
+   laptop off while the machine answers) and points `CONTROLLER_HEALTH_URL` at the machine.
+6. **Claude**: remove the old connector and add `https://DOMAIN/mcp`, then sign in with your operator token.
 
 ## 7b. Steer after a release
 

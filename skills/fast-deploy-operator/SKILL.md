@@ -95,7 +95,8 @@ changes until a person merges. **Act** tools change the cloud.
 
 If none of these tools is available, the connector is off or needs a new sign-in: say so and point the operator to
 Customize → Connectors. If only one tool is missing, the controller runs an older version than this playbook; tell the
-operator to restart it with the current code (`scripts/start.sh` on the laptop).
+operator to update it to the current code (`scripts/machine.sh update COMMIT` for the machine; `scripts/start.sh` on a
+laptop).
 
 ## Before you act
 
@@ -143,8 +144,8 @@ operator to restart it with the current code (`scripts/start.sh` on the laptop).
      end).
    - Anywhere else: explain the error and the fix it names. After the fix, calling `onboard_application` again with the
      same link continues from that step.
-   - "Set the onboarding block" or "needs applications ['*']": the controller's configuration on the operator's laptop
-     must change; that is the operator's job, not the developer's.
+   - "Set the onboarding block" or "needs applications ['*']": the controller's configuration must change (on the
+     machine through `scripts/machine.sh config-get` and `config-put`); that is the operator's job, not the developer's.
 
 ### 2. "Is this repo ready?" or "What do developers need to give me?"
 
@@ -201,8 +202,8 @@ ready, say that `onboard_application` will deploy it. For "what do developers ne
 - `exposure: lab-members`: people open the pages after a Google sign-in, and only listed accounts get through.
 - Open to anyone (public) is refused.
 
-The lists of who may open `lab-members` apps live in the controller's configuration on the operator's laptop (the
-lab's list plus the app's own `viewers`). You cannot edit them from chat. After the operator edits them:
+The lists of who may open `lab-members` apps live in the controller's configuration (the lab's list plus the app's own
+`viewers`), which the operator edits on the controller's machine. You cannot edit them from chat. After the operator edits them:
 `propose_infrastructure`, merge the pull request, and access works about a minute later. `get_service_health` shows the
 current `access`: the exposure, whether the sign-in is on, and who is listed.
 
@@ -236,7 +237,7 @@ Always pass on the status's own `next_action` too; it is written for exactly thi
 | A plan `expired` or refused | Too old, or it broke a rule | Make a new plan |
 | "Platform pin unsupported" | The app's workflow files are too old | `update_app_workflows`, then merge the pull request |
 | "Policy: blocked" | A cloud change breaks a safety rule | Read the rule in the pull request comment |
-| The connector cannot be reached | The laptop is asleep or its tunnel is down | The operator wakes it and runs `scripts/start.sh` |
+| The connector cannot be reached | The controller is down on its machine (or a laptop controller sleeps) | The operator runs `scripts/machine.sh status` and `logs` (a laptop: `scripts/start.sh`) |
 | Sign-in required | The chat session ended | Sign in again from Customize → Connectors |
 
 ## Hard limits

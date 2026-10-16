@@ -19,3 +19,13 @@ output "pipeline" {
 output "network" { value = google_compute_network.lab.id }
 output "subnet" { value = google_compute_subnetwork.run.id }
 output "kms_key_ring" { value = google_kms_key_ring.provenance.id }
+output "controller" {
+  value = local.controller_enabled ? {
+    name                  = google_compute_instance.controller[0].name
+    zone                  = google_compute_instance.controller[0].zone
+    address               = google_compute_address.controller[0].address
+    domain                = var.controller.domain
+    service_account       = google_service_account.controller[0].email
+    github_app_key_secret = google_secret_manager_secret.github_app_key[0].id
+  } : null
+}

@@ -6,8 +6,10 @@ daily reference; `docs/SETUP.md` covers the one-time setup and `docs/RUNBOOK.md`
 
 ## Before the first conversation
 
-1. The laptop that runs the controller is awake and `scripts/start.sh` is running (or the launch agent is installed).
-2. In Claude: Customize → Connectors → Add custom connector → `https://YOUR-DOMAIN.ngrok-free.dev/mcp`, **Sign in now**,
+1. The controller runs: on its own machine since 1.17.0 (`scripts/machine.sh status` from the laptop), or on the laptop
+   with `scripts/start.sh` as the fallback.
+2. In Claude: Customize → Connectors → Add custom connector → `https://DOMAIN/mcp` (the lab's DNS name for the machine;
+   the ngrok address while a laptop is the controller), **Sign in now**,
    **Register automatically**, **Connect**. The browser opens the controller's own page; paste the operator token there,
    never into the chat. The sign-in lasts thirty days; when Claude says the connector needs attention, sign in again.
 3. Ask: *"What is the controller status?"* Claude calls `get_controller_status` and reports the version, whether
@@ -183,7 +185,7 @@ bake's numbers and the revision's log lines are in the status. A bake with too l
 
 | Claude says | Meaning | Do |
 |---|---|---|
-| The connector cannot be reached | The laptop is asleep or the tunnel is down | Wake it, run `scripts/start.sh`; `docs/RUNBOOK.md` "The laptop is off or asleep" |
+| The connector cannot be reached | The machine's controller is down (on a laptop: asleep, or the tunnel is down) | `scripts/machine.sh status` and `logs`; `docs/RUNBOOK.md` "The controller's machine" (a laptop: "The laptop is off or asleep") |
 | Sign in required | The session ended or the operator token changed | Sign in again on the controller's page |
 | Platform pin unsupported | The app's workflows pin a platform commit older than `platform.minimum_commit` | "Re-pin APP to the current platform", merge the pull request |
 | Policy: blocked | An infrastructure plan violates a rule | Read the rule in the pull request comment; change `platform.yaml` or the configuration, render again |

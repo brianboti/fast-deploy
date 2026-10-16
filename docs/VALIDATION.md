@@ -578,3 +578,18 @@ through; installed packages' patterns were listed one by one; two refusals with 
 Not exercised: Binary Authorization, a project of its own, data-file inspection and threat detection (Phase 14's open
 items, and the operator's switch), and a working key in a build: the gate was checked locally with TruffleHog's own
 canary key, which cannot go into a repository.
+
+## 1.17.0 before the merge: what was checked (2026-10-16)
+
+The controller's machine is not created yet: the live move waits for the lab's DNS name (D6), the GitHub App and the
+foundation apply. What was checked without them:
+
+| Check | Observed |
+|---|---|
+| Tests and lint | 583 pass (19 new for Phase 15); ruff clean |
+| The foundation root | `terraform fmt -check` and `validate` (Terraform 1.13.5, google provider 7.46.1): valid. The `controller` variable takes `deploy.lab.example.edu` with a full commit (zone defaults to us-central1-a) and refuses a name with an underscore, a short commit and a zone outside us-central1 |
+| The pinned tools | Caddy 2.11.7: the SHA-512 in Caddy's own checksum list. Litestream 0.5.17: the SHA-256 in its checksum list, equal to the digest GitHub reports for the asset. Both released more than ten days ago; Litestream's archive has its binary at the top, as the script extracts it |
+| Debian 13 on Compute Engine | `debian-13-trixie-v20261014` in the `debian-13` family (Python 3.13); the controller's `requirements.lock` resolves with its hashes for Linux x86-64 on Python 3.13 (`uv pip install --dry-run`) |
+| Litestream 0.5.17's configuration | read from its source at the tag: `replica.url` with `gs://` (Google's default credentials, so the machine's metadata server), `sync-interval`, `levels`, `snapshot`, `l0-retention`, `l0-retention-check-interval`; `restore -if-replica-exists -integrity-check quick -o` |
+| The copy the move takes | A `VACUUM INTO` copy of a WAL database is in rollback-journal mode and passes `sqlite3 -readonly ... PRAGMA quick_check` without creating files, so the machine checks it before it replaces anything |
+| `main`'s protection and the App | `main` requires the `test` and `terraform` checks and no approvals, with no bypass for admins: the controller's merges never relied on an admin's rights, so the App can make them too |

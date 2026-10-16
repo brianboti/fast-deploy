@@ -243,7 +243,7 @@ class Authenticate:
 def build_app(config, github=None, config_path=None, observer_factory=Observer, background=False):
     config = config if isinstance(config, LiveConfig) else LiveConfig(config, config_path)
     store = Store(config.database)
-    adapter = github or GitHub()
+    adapter = github or GitHub.from_config(config)
     observer = observer_factory(config) if config.observer else None
     controller = Controller(config, adapter, store, observer)
     started = time.time()
@@ -521,9 +521,10 @@ def create_app():
     config = load_config(path)
     if config.log_file:
         attach_log_file(config.log_file)
-    app = build_app(config, config_path=path, background=True)
+    github = GitHub.from_config(config)
+    app = build_app(config, github, config_path=path, background=True)
     try:
-        credential = GitHub().credential_status()
+        credential = github.credential_status()
     except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as exc:
         log.warning("GitHub credential check failed at startup: %s", explain(exc) or exc)
     else:
