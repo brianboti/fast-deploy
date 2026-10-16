@@ -134,6 +134,29 @@ def test_the_checker_drafts_only_what_is_missing_as_a_draft_pull_request(tmp_pat
     assert again["pull_request"] is None and gh.opened == [] and "Nothing to draft" in again["note"]
 
 
+def test_a_file_over_64_kib_is_skipped_and_named_never_the_end_of_the_draft(tmp_path, monkeypatch):
+    # Sophia's backend, live on 2026-10-16: a 241 KB module and a 190 KB test among the files read for hints stopped the draft.
+    class LargeFiles(DraftingGitHub):
+        def contents(self, repository, ref, path):
+            if path.endswith(("big.py", "test_big.py")):
+                raise ValueError("Repository input exceeds 64 KiB")
+            return super().contents(repository, ref, path)
+    c, brian, _ = make(tmp_path)
+    c.github = LargeFiles({"backend/app/main.py": "from fastapi import FastAPI\napp = FastAPI()\n\n@app.get('/health')\ndef health():\n    return {}\n",
+                           "backend/app/big.py": "x", "backend/tests/test_big.py": "x", "backend/requirements.txt": "fastapi==0.143.1\n"})
+    monkeypatch.setattr(scaffold, "compile_lock", lambda text, python, runner=None, path="": {"text": None, "command": "uv ...", "error": "no Docker"})
+    result = c.propose_config(brian, repository="lab/sophia", path="backend")
+    assert result["pull_request"]["number"] == 3 and "backend/platform.yaml" in result["files"]
+    note = next(line for line in result["review"] if line.startswith("Not read, over 64 KiB"))
+    assert "backend/app/big.py" in note and "backend/tests/test_big.py" in note
+    with pytest.raises(ValueError, match="Expected regular"):  # any other GitHub refusal still stops it
+        class Odd(DraftingGitHub):
+            def contents(self, repository, ref, path):
+                raise ValueError("Expected regular, base64-encoded GitHub file")
+        c.github = Odd({"app.py": "x"})
+        c.propose_config(brian, repository="lab/odd")
+
+
 def test_drafting_for_an_unregistered_repository_needs_an_onboarding_identity(tmp_path):
     c, _, _ = make(tmp_path / "narrow", principal_apps=("demo",))
     narrow = c.config.principals[0]
