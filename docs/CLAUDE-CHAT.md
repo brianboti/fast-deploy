@@ -175,6 +175,9 @@ bake's numbers and the revision's log lines are in the status. A bake with too l
   cap pauses Cloud Run in the project as a second, independent layer once the operator has created it.
 - Every release is watched for five minutes after it takes over; a crash or 5xx answers bring the previous version back.
 - A weekly drift check reports anything changed outside the pipeline; `get_controller_status` shows it.
+- Code nobody has reviewed (a repository taken as it is) is built and run under stricter rules (since 1.16.0): a working
+  key in it or a fixable serious vulnerability stops it, and it reaches no internet unless its reviewed contract says
+  `egress: internet` (`docs/DEVELOPER-CONTRACT.md` 5a).
 
 ## When something is off
 

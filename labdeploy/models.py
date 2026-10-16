@@ -116,6 +116,8 @@ class Build(StrictModel):
     context: Literal["service", "repository"] = "service"
     recipe: Literal["repository", "platform", "buildpacks"] = "repository"
     entrypoint: str | None = Field(default=None, max_length=400, pattern=ENTRYPOINT)
+    # none: the image builds with no network at all, for a repository that vendors its dependencies (docs/ROADMAP.md 14.3).
+    network: Literal["default", "none"] = "default"
 
     @model_validator(mode="after")
     def coherent(self):
@@ -182,6 +184,14 @@ class AppSpec(StrictModel):
     # Buckets, topics and a database the platform provisions for the app (docs/SETUP.md 6b); variables are derived.
     needs: Needs = Field(default_factory=Needs)
     build: Build = Field(default_factory=Build)
+    # Who has read the code (docs/ROADMAP.md D35): reviewed, a person of the lab; unknown, nobody (a repository taken as it
+    # is). Left unset it is reviewed in a repository's own platform.yaml and unknown in a contract the platform keeps.
+    # Unknown code is contained: the vulnerability gate blocks, a working key found in it stops the build, it runs in the
+    # second-generation environment and reaches no internet unless `egress` says so.
+    trust: Literal["reviewed", "unknown"] | None = None
+    # Where the service may connect: internet, anywhere; private, Google's APIs and the lab's private network only (all its
+    # traffic goes into the lab's network, which has no way out). Left unset: private for unknown code, internet otherwise.
+    egress: Literal["internet", "private"] | None = None
     reviewed: bool = False
 
     @model_validator(mode="after")
@@ -244,12 +254,27 @@ def parse_spec(text: str) -> AppSpec:
     return AppSpec.model_validate(yaml.load(text, Loader=UniqueLoader))  # noqa: S506 - UniqueLoader subclasses SafeLoader
 
 
+CONTAINED_TAG = "lab-deploy-contained"  # the network tag of a service whose egress is private, for a firewall rule to name
+
+
+def containment(spec: AppSpec, default_trust: str = "reviewed") -> dict:
+    """How the platform treats a service's code (docs/ROADMAP.md D35): its trust level, where it may connect, its execution
+    environment and whether the gates block. `default_trust` is what an unset `trust` means where the contract lives:
+    reviewed for a repository's own platform.yaml, unknown for a contract the platform keeps."""
+    trust = spec.trust or (default_trust if default_trust in ("reviewed", "unknown") else "reviewed")
+    egress = spec.egress or ("private" if trust == "unknown" else "internet")
+    unknown = trust == "unknown"
+    return {"trust": trust, "egress": egress, "execution_environment": "gen2" if unknown else "default",
+            "vulnerability_gate": "blocks fixable critical and high findings" if unknown else "reports",
+            "secret_scan": "a working key stops the build" if unknown else "reports", "runs_as_root": "refused" if unknown else "reported"}
+
+
 def draft_dump(spec: AppSpec) -> dict:
     """The specification as a draft shows it: every field, except the options of a repository taken as it is left unset (no
     command or args, the repository's own recipe, no entrypoint), so drafts for repositories that follow the contract read
     as they always did."""
     data = spec.model_dump()
-    for key in ("command", "args"):
+    for key in ("command", "args", "trust", "egress"):
         if data.get(key) is None:
             data.pop(key, None)
     build = data.get("build") or {}
@@ -257,6 +282,8 @@ def draft_dump(spec: AppSpec) -> dict:
         build.pop("entrypoint", None)
     if build.get("recipe") == "repository":
         build.pop("recipe", None)
+    if build.get("network") == "default":
+        build.pop("network", None)
     return data
 
 

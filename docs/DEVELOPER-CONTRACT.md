@@ -314,8 +314,31 @@ needs:
   migrate: []             # e.g. [alembic, upgrade, head]: a job from the same image, before traffic moves
 build:
   context: service        # service (the folder holding platform.yaml) or repository (shared code in a monorepo; section 4a)
+  network: default        # or none: the image builds with no network at all, for dependencies vendored in the repository
+trust: reviewed           # who has read the code: reviewed (the lab) or unknown (nobody); unset, reviewed here (section 5a)
+egress: internet          # where it may connect: internet, or private (Google's APIs and the lab's network only); unset, by trust
 reviewed: true            # set by the person who reviewed the file
 ```
+
+### 5a. Code nobody has reviewed
+
+A repository taken as it is (its contract kept in the platform repository) is code nobody has reviewed: `trust:
+unknown` unless its contract says `trust: reviewed`, which only a person can merge (docs/ROADMAP.md D35). Since 1.16.0
+the platform treats it as follows; the lab's own code keeps everything but the first two rules as reports:
+
+| | Code nobody has reviewed | The lab's own code |
+|---|---|---|
+| Dockerfile rules: no `curl \| sh`, no `sudo`, no `ADD` of a URL without `--checksum`, no disabled TLS or signature checks, no `RUN --security` or `--network=host`, no copied `.env`, keys or `.git` | refused, with the line and the fix | refused |
+| A final image running as root (no `USER`, or `USER root`) | refused | reported |
+| A key that works right now, found in the files or in the built image (TruffleHog checks each one with its provider) | stops the build | reported |
+| Fixable critical or high vulnerabilities, or a scan that did not finish | stop the release | reported (the operator's switch blocks critical ones) |
+| A known malicious package | stops the release | stops the release |
+| Where it may connect | Google's APIs and the lab's private network, never the internet, unless `egress: internet` | anywhere |
+| Where it runs | Cloud Run's second-generation environment (a microVM) | Cloud Run's default |
+
+Every image also gets a parts list (a CycloneDX SBOM), attested next to its provenance, and no release ever uses a build
+cache. A repository without a `.dockerignore` gets the platform's deny-list for its build (never committed), and a build
+context over 1 GiB is refused: data belongs in a bucket.
 
 Costs the developer controls: `scaling.minimum: 0` costs nothing idle, `1` about 9 dollars a month per warm
 instance; Cloud SQL about 9 a month; Firestore, buckets and topics nothing at rest within the free tiers. Every plan

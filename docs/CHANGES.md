@@ -1,3 +1,53 @@
+# 1.16.0: safety for code nobody has reviewed (Phase 14)
+
+Asked for on 2026-10-16 with the default of D35: code nobody has reviewed (a repository taken as it is) is built and run
+under stricter rules; the lab's own code keeps its behaviour, with reports where unknown code gets refusals.
+
+1. **Trust levels** (D35): `trust` (reviewed | unknown) and `egress` (internet | private) in the contract. Unset, trust
+   follows where the contract lives (reviewed in a repository's own `platform.yaml`, unknown in one the platform keeps)
+   and egress follows trust, so no existing contract changes and nothing releases again on its own. Plans, their approval
+   block and the release receipt say how the code is contained.
+2. **The Dockerfile policy gate** (14.1, `labdeploy/dockerpolicy.py`), before anything of the repository runs: a download
+   piped into a shell, `sudo`, `ADD` of a URL without `--checksum`, disabled TLS or signature checks (curl -k, pip
+   --trusted-host, apt --allow-unauthenticated and their kin), `RUN --security` or `--network=host`, a copied `.git`,
+   environment file or key, and, for unknown code, a final image running as root; each refused with its line and the
+   fix. The build never passes `--allow`. Trivy 0.74.0's configuration findings (high and critical) are reported beside.
+   The reader applies the same policy before a contract is proposed.
+3. **Secret scans** (14.2, `labdeploy/leaks.py`): TruffleHog 3.97.4 on the checkout before the tests and on the built image,
+   checking each finding with its provider; a key that works right now stops the build of unknown code and is reported for
+   the lab's own; the values never leave the scanner (the annotations name the detector, the file and the line). A
+   repository's own Dockerfile without a `.dockerignore` gets the platform's deny-list for its build, never committed; a
+   build context over 1 GiB is refused. One scanner where the roadmap named two: TruffleHog covers the checkout as gitleaks
+   would, and only it can tell a working key from a pattern.
+4. **No cache** (14.3): every `docker build` says `--no-cache`, no workflow restores a cache (a test asserts both);
+   `build.network: none` builds with no network at all for vendored dependencies.
+5. **The vulnerability gate** (14.4): for unknown code a fixable critical or high finding, or a scan that did not finish
+   in five minutes, stops the release; a known malicious package (OSV's MAL- advisories) stops every release; the lab's
+   own code keeps the operator's switch for critical findings. An image over 30 days old is never reused: the release
+   builds it again, so it is scanned again.
+6. **Containment at run time** (14.5, 14.6): unknown code sends all its traffic into the lab's network, which has Private
+   Google Access and no Cloud NAT, so it reaches Google's APIs and the lab's private network and never the internet unless
+   its reviewed contract says `egress: internet`; its revisions and migration jobs carry the network tag
+   `lab-deploy-contained` and run in the second-generation environment. The infrastructure policy refuses a NAT, a router
+   or an internet route in an application root. Threat detection (Security Command Center Premium) is the operator's
+   switch, documented in the runbook.
+7. **The parts list** (14.7, `labdeploy/sbom.py`): Trivy makes a CycloneDX SBOM of every new image; it is attested next to
+   the provenance (with the application's Cloud KMS key, or GitHub's attestation for a public repository's own pipeline)
+   and summarised in the receipt.
+8. **Answers**: a finished release says what the checks before the build found and whether the code ran contained.
+
+Open from Phase 14, each for a reason: Binary Authorization (14.8) reads only its own attestations under one project-wide
+rule for Cloud Run, so the per-application keys need a shared attestor or another signing step (the research's open point,
+to settle in a dry run of its own); a project of its own (14.9) shares the second-project machinery Phase 16 builds;
+inspecting data files with Sensitive Data Protection (14.10) needs credentials in a step that never runs the
+application's code, before files reach the registry, which is a design of its own.
+
+Re-pinning the applications' workflows brings the gates to the lab's own repositories; their behaviour changes only where
+they now report. The platform repository's pipeline has them at once.
+
+Tests: 560 pass (34 new in `tests/test_phase14.py`); ruff and zizmor clean.
+
+
 # 1.15.1: what the first live trial of a repository as it is showed
 
 Found on 2026-10-16 while taking `llm-debate-agent` (its `backend/` folder) and `lab-demo-two` as they are, through the
