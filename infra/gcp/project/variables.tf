@@ -79,6 +79,7 @@ variable "pipeline" {
     platform_repository_id = string
     platform_owner_id      = string
     environment            = optional(string, "infra")
+    former_repositories    = optional(list(string), []) # owner/name before a rename, accepted while workflows move
   })
   default     = null
   description = "The platform repository (owner/name with its numeric repository and owner ids) whose Actions may plan and apply application roots, and the GitHub environment that applies."

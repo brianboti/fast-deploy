@@ -78,7 +78,7 @@ region     = "us-central1"
 # observer_impersonators = ["user:you@example.edu"]
 
 # The infrastructure pipeline (section 7f); omit until the platform repository exists on GitHub.
-# pipeline = { platform_repository = "YOUR_ORG/lab-deploy", platform_repository_id = "NUMERIC_ID", platform_owner_id = "NUMERIC_OWNER_ID" }
+# pipeline = { platform_repository = "YOUR_ORG/fast-deploy", platform_repository_id = "NUMERIC_ID", platform_owner_id = "NUMERIC_OWNER_ID" }
 ```
 
 Then, using your administrator login:
