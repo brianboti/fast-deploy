@@ -1,7 +1,7 @@
 # What a repository must contain (short version)
 
 A condensed copy of the lab's standard (`docs/DEVELOPER-CONTRACT.md` in the platform repository,
-https://github.com/brianboti/lab-deploy/blob/main/docs/DEVELOPER-CONTRACT.md). Use it to check a repository by hand,
+https://github.com/brianboti/fast-deploy/blob/main/docs/DEVELOPER-CONTRACT.md). Use it to check a repository by hand,
 to answer "what do developers need to give me?", and to write the "why" lines of a message for a developer. The full
 page is the authority; if the two ever disagree, trust the full page and say so.
 

@@ -254,4 +254,4 @@ one line of "why" per item. The "why" comes from the checklist and `references/d
 > 2. **reviewed: true in platform.yaml**: confirms a person has read the settings (size, cost, access).
 >
 > When these are on main, tell me and I will run it again; it continues where it stopped. The full standard:
-> https://github.com/brianboti/lab-deploy/blob/main/docs/DEVELOPER-CONTRACT.md
+> https://github.com/brianboti/fast-deploy/blob/main/docs/DEVELOPER-CONTRACT.md

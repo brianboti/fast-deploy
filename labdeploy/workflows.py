@@ -34,10 +34,13 @@ def render(template_text, platform_repository, platform_sha, app=None):
 
 
 def pinned_commit(workflow_text, platform_repository):
-    """The platform commit a rendered workflow pins: the ref that follows the platform repository checkout."""
+    """The platform commit a rendered workflow pins: the ref that follows the platform repository checkout. Several names
+    may be given (the repository's own, then the ones it had before a rename); GitHub compares them without case."""
+    names = [platform_repository] if isinstance(platform_repository, str) else list(platform_repository)
+    wanted = {f"repository: {name}".lower() for name in names}
     lines = workflow_text.splitlines()
     for index, line in enumerate(lines):
-        if line.strip() == f"repository: {platform_repository}":
+        if line.strip().lower() in wanted:
             for follow in lines[index + 1:index + 6]:
                 match = re.match(r"\s*ref:\s*([a-f0-9]{40})\s*$", follow)
                 if match:

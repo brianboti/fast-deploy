@@ -11,6 +11,7 @@ variable "pipeline" {
     platform_repository_id = string
     platform_owner_id      = string
     environment            = optional(string, "infra")
+    former_repositories    = optional(list(string), []) # owner/name before a rename, accepted while workflows move
   })
   default     = null
   description = "The platform repository allowed to plan and apply application roots through Workload Identity Federation; null creates no pipeline identities."

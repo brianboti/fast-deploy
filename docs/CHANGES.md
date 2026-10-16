@@ -1,3 +1,23 @@
+# 1.14.1: the repository is brianboti/fast-deploy
+
+Asked for on 2026-10-16: the platform repository follows the new name. GitHub keeps a renamed repository's numeric id
+and redirects the old name, but two things carried the name itself. The pipeline's sign-in providers check the workflow
+paths (`OWNER/NAME/.github/workflows/infra-plan.yml@...`) besides the ids, and the controller reads an app's platform pin
+by the line `repository: OWNER/NAME` in its workflow. Both now accept former names during a move, and the runbook gains
+"Rename the platform repository" with the order that keeps everything working.
+
+1. **`pipeline.former_repositories`** (Terraform, default empty): the plan, drift and apply providers accept the workflow
+   paths under the repository's name and each former one; the repository and owner ids stay the anchor.
+2. **`platform.former_repositories`** (controller configuration, default empty): an app pinned under a former name keeps
+   its platform pin; `update_app_workflows` rewrites an app pinned to the current commit under a former name, so the re-pin
+   moves it to the new name. Pins are compared without case, as GitHub compares names.
+3. The current documents and the playbook link to `brianboti/fast-deploy`; the history keeps the old links, which GitHub
+   redirects.
+
+Tests: 478 pass (4 new in `tests/test_rename.py`). The foundation applies twice: once with the old name listed, once
+after the move without it.
+
+
 # 1.14.0: Lab Deploy is now Fast Deploy
 
 Asked for on 2026-10-16. Everything people see carries the new name: what Claude chat reads when it connects (the

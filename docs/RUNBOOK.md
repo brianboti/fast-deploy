@@ -44,7 +44,7 @@ clear text, the GitHub token, the ngrok credentials.
 
 1. Install Python 3.12 or newer, Docker (for foundation applies), the Google Cloud CLI and ngrok; sign in with
    `gcloud auth login` as the project owner.
-2. `git clone https://github.com/brianboti/lab-deploy ~/Downloads/lab-deploy && cd ~/Downloads/lab-deploy &&
+2. `git clone https://github.com/brianboti/fast-deploy ~/Downloads/lab-deploy && cd ~/Downloads/lab-deploy &&
    python3 -m venv .venv && .venv/bin/pip install --require-hashes -r requirements.lock`.
 3. Fetch the newest copies: `gcloud storage ls gs://PROJECT-lab-deploy-backups/controller/` and
    `gcloud storage cp gs://PROJECT-lab-deploy-backups/controller/deployments-STAMP.db ~/.local/share/lab-deploy/deployments.db`
@@ -263,6 +263,23 @@ with anything that misled them (then fix this runbook):
 - [ ] Finds both spend caps (`scripts/spend-cap.sh check PROJECT`, the budget's cap workflow) and says how to lift each.
 - [ ] Runs `scripts/export-app.sh demo --dry-run` and explains what the real run would copy.
 - [ ] Pauses and resumes one application through the configuration file.
+
+## Rename the platform repository
+
+Done once on 2026-10-16 (`brianboti/lab-deploy` became `brianboti/fast-deploy`, 1.14.1). GitHub keeps the repository's
+numeric id and redirects the old name, and the pipeline's sign-in is anchored on the ids, but the workflow paths it checks
+and the apps' pins carry the name, so the order matters:
+
+1. In `infra/gcp/project/terraform.tfvars`, set `pipeline.platform_repository` to the new name and list the old one under
+   `pipeline.former_repositories`; `scripts/apply-foundation.sh PROJECT` (2 to change: the two sign-in providers). The
+   pipeline now signs in under either name.
+2. Rename the repository on GitHub (`gh repo rename NEW --repo OWNER/OLD`), then on this machine
+   `git remote set-url origin https://github.com/OWNER/NEW.git`.
+3. In `config.local.yaml`, set `platform.repository` to the new name and `platform.former_repositories: [OWNER/OLD]`;
+   restart the controller. Apps still pinned under the old name stay supported.
+4. Re-pin every application (`update_app_workflows`, or `python -m labdeploy.cli update-workflows --all`) and merge the
+   pull requests; prove one release and one run of the drift workflow.
+5. Remove the old name from both `former_repositories` and apply the foundation again (2 to change).
 
 ## Monthly checklist
 

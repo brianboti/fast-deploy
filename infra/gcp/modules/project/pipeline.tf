@@ -5,8 +5,13 @@
 # for deployment pipelines shows this ref and workflow pinning.
 locals {
   pipeline_enabled = var.pipeline != null
-  pipeline_repo    = local.pipeline_enabled ? var.pipeline.platform_repository : ""
   pipeline_ids     = local.pipeline_enabled ? "assertion.repository_id == '${var.pipeline.platform_repository_id}' && assertion.repository_owner_id == '${var.pipeline.platform_owner_id}'" : ""
+  # The workflow paths carry the repository's name: its name now, and any it had before a rename (GitHub keeps the ids and
+  # redirects the old name), so the pipeline keeps signing in while everything moves to the new name. The ids are the anchor.
+  pipeline_names  = local.pipeline_enabled ? concat([var.pipeline.platform_repository], var.pipeline.former_repositories) : []
+  plan_workflows  = join(" || ", [for name in local.pipeline_names : "assertion.workflow_ref.startsWith('${name}/.github/workflows/infra-plan.yml@')"])
+  drift_workflows = join(", ", [for name in local.pipeline_names : "'${name}/.github/workflows/infra-drift.yml@refs/heads/main'"])
+  apply_workflows = join(", ", [for name in local.pipeline_names : "'${name}/.github/workflows/infra-apply.yml@refs/heads/main'"])
 }
 resource "google_iam_workload_identity_pool" "platform" {
   count                     = local.pipeline_enabled ? 1 : 0
@@ -27,7 +32,7 @@ resource "google_iam_workload_identity_pool_provider" "plan" {
   }
   # A pull request's plan runs the plan workflow from the pull request's own ref, which is why only the file path is pinned.
   # The drift check runs from main only, so its workflow is pinned with the ref.
-  attribute_condition = "${local.pipeline_ids} && ((assertion.event_name == 'pull_request' && assertion.workflow_ref.startsWith('${local.pipeline_repo}/.github/workflows/infra-plan.yml@')) || (assertion.event_name in ['schedule', 'workflow_dispatch'] && assertion.ref == 'refs/heads/main' && assertion.workflow_ref == '${local.pipeline_repo}/.github/workflows/infra-drift.yml@refs/heads/main'))"
+  attribute_condition = "${local.pipeline_ids} && ((assertion.event_name == 'pull_request' && (${local.plan_workflows})) || (assertion.event_name in ['schedule', 'workflow_dispatch'] && assertion.ref == 'refs/heads/main' && assertion.workflow_ref in [${local.drift_workflows}]))"
   oidc { issuer_uri = "https://token.actions.githubusercontent.com" }
 }
 resource "google_iam_workload_identity_pool_provider" "apply" {
@@ -41,7 +46,7 @@ resource "google_iam_workload_identity_pool_provider" "apply" {
     "attribute.repository_owner_id" = "assertion.repository_owner_id"
     "attribute.environment"         = "assertion.environment"
   }
-  attribute_condition = "${local.pipeline_ids} && assertion.ref == 'refs/heads/main' && assertion.environment == '${var.pipeline.environment}' && assertion.workflow_ref == '${local.pipeline_repo}/.github/workflows/infra-apply.yml@refs/heads/main'"
+  attribute_condition = "${local.pipeline_ids} && assertion.ref == 'refs/heads/main' && assertion.environment == '${var.pipeline.environment}' && assertion.workflow_ref in [${local.apply_workflows}]"
   oidc { issuer_uri = "https://token.actions.githubusercontent.com" }
 }
 resource "google_service_account" "infra_plan" {

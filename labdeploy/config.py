@@ -165,6 +165,16 @@ class Platform(StrictModel):
     branch: str = Field(default="main", pattern=r"^[A-Za-z0-9_/-]+$")
     # Apps pinned to an older platform commit than this are refused at dispatch until their workflows are regenerated.
     minimum_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")
+    # Names the repository had before a rename (GitHub keeps redirecting them): app workflows that still pin the platform
+    # under one are read as pinned until they are regenerated under the new name, so no release stops while they move.
+    former_repositories: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def former_names(self):
+        for name in self.former_repositories:
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", name) or name.lower() == self.repository.lower():
+                raise ValueError(f"platform.former_repositories: {name!r} must be another owner/name than platform.repository")
+        return self
 
 
 class ObserverIdentity(StrictModel):

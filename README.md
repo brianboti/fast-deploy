@@ -1,7 +1,8 @@
 # Fast Deploy
 
-*Formerly Lab Deploy.* Only what people see was renamed (1.14.0): the Python package `labdeploy`, the command
-`lab-deploy`, this repository's name and the Google Cloud resources keep their old names, so nothing running had to move.
+*Formerly Lab Deploy.* What people see was renamed in 1.14.0 and this repository in 1.14.1 (`brianboti/fast-deploy`;
+GitHub redirects the old `brianboti/lab-deploy`). The Python package `labdeploy`, the command `lab-deploy`, the local
+folder and the Google Cloud resources keep their old names, so nothing running had to move.
 
 A working first implementation of the lab deployment platform: Claude calls authenticated MCP tools; the Python controller creates reviewed configuration proposals and immutable deployment plans; GitHub Actions tests, builds, and deploys to GCP Cloud Run.
 

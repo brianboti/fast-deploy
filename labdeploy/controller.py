@@ -659,7 +659,7 @@ class Controller:
         platform = self.config.platform
         if platform is None:
             return None
-        pin = self.pinned_platform(app, platform.repository)
+        pin = self.pinned_platform(app, [platform.repository, *platform.former_repositories])
         result = {"commit": pin, "supported": None, "note": None}
         if pin is None:
             result.update(supported=False, note=f"The app has no {app.workflow} pinned to this platform; run update_app_workflows.")
@@ -882,10 +882,11 @@ class Controller:
             return found
         return principal.name, self.store.get(principal.name, plan_id)
 
-    def pinned_platform(self, app, repository):
-        """The platform commit the app's deploy workflow pins today, or None when the workflow is absent."""
+    def pinned_platform(self, app, repositories):
+        """The platform commit the app's deploy workflow pins today (under the platform's name or a former one), or None
+        when the workflow is absent."""
         found = self.github.contents(app.repository, app.branch, f".github/workflows/{app.workflow}")
-        return pinned_commit(found["text"], repository) if found else None
+        return pinned_commit(found["text"], repositories) if found else None
 
     def update_workflows(self, principal, app_id, platform_sha=None, allow_writes=False):
         """Regenerate the app's three workflows against a platform commit and open one pull request. Review and merge stay human."""
@@ -898,8 +899,10 @@ class Controller:
         sha = platform_sha or platform.commit or self.github.branch_head(platform.repository, platform.branch)
         if not re.fullmatch(r"[a-f0-9]{40}", sha or ""):
             raise ValueError("The platform commit must be a full 40-character SHA")
-        current = self.pinned_platform(app, platform.repository)
-        if current == sha:
+        current = self.pinned_platform(app, [platform.repository, *platform.former_repositories])
+        # Pinned to this commit under the platform's current name: nothing to do. Under a former name, the files are rewritten
+        # so the app follows the rename.
+        if current == sha and self.pinned_platform(app, [platform.repository]) == sha:
             return {"application": app_id, "platform_commit": sha, "current_pin": current, "pull_request": None, "note": "Already pinned to this platform commit."}
         files = {}
         for name, kind in zip(TEMPLATES, ("deploy", "recover", "rightsize"), strict=True):

@@ -547,7 +547,8 @@ def test_the_drift_workflow_only_plans_and_the_identity_admits_it_only_from_main
     assert workflow["jobs"]["report"]["permissions"] == {"contents": "read", "issues": "write"}
     pipeline = Path("infra/gcp/modules/project/pipeline.tf").read_text()
     assert ("assertion.event_name in ['schedule', 'workflow_dispatch'] && assertion.ref == 'refs/heads/main' && "
-            "assertion.workflow_ref == '${local.pipeline_repo}/.github/workflows/infra-drift.yml@refs/heads/main'") in pipeline
+            "assertion.workflow_ref in [${local.drift_workflows}]") in pipeline
+    assert "'${name}/.github/workflows/infra-drift.yml@refs/heads/main'" in pipeline  # every accepted name, from main only
     assert 'toset(["schedule", "workflow_dispatch"])' in pipeline
 
 
