@@ -797,9 +797,17 @@ class Controller:
         paths = self.github.tree(target.repository, sha)
         if folder and folder not in paths:
             raise ValueError(f"{target.repository} has no folder {folder} on {target.branch}")
-        texts = {}
+        texts, too_large = {}, []
         for item in scaffold.files_to_read(paths, folder):
-            found = self.github.contents(target.repository, sha, item)
+            try:
+                found = self.github.contents(target.repository, sha, item)
+            except ValueError as exc:
+                # A real project has large files among the ones read for hints (a 241 KB module, a 190 KB test, a hashed lock):
+                # one of them is skipped and named, it never stops the draft.
+                if "exceeds 64 KiB" not in str(exc):
+                    raise
+                too_large.append(item)
+                continue
             if found is not None:
                 texts[item] = found["text"]
         requirements, locked = (f"{folder}/requirements.txt", f"{folder}/requirements.lock") if folder else ("requirements.txt", "requirements.lock")
@@ -809,6 +817,8 @@ class Controller:
         # Before registration the repository's own name is the last resort for the service's name (after the folder and
         # pyproject.toml), so the draft is not left saying my-service.
         result = scaffold.draft_files(paths, texts, folder, name, lock_text=lock["text"], fallback_name=target.repository.split("/")[1])
+        if too_large:
+            result["review"].append("Not read, over 64 KiB each, so the draft could not use them as hints: " + ", ".join(too_large) + ".")
         if lock["error"]:
             result["review"].append(f"requirements.lock was not compiled on the controller's machine ({lock['error']}): run `{lock['command']}` "
                                     "and commit the file.")

@@ -1,3 +1,12 @@
+# 1.12.2: the checker drafts for a real project with large files
+
+Found live on 2026-10-16: `propose_configuration` for Sophia's `backend/` stopped with "Repository input exceeds 64 KiB".
+Among the up to 40 files it reads for hints (the configuration, the Python files most likely to hold the application, a
+few tests) were a 241 KB module and a 190 KB test. Such a file is now skipped and named in the draft's review list ("Not
+read, over 64 KiB each"); any other refusal from GitHub still stops the draft. The 64 KiB limit itself is unchanged.
+Nothing to apply or regenerate; restart the controller.
+
+
 # 1.12.1: what the 1.12.0 live exercise found
 
 The live exercise of 1.10.0 to 1.12.0 (`docs/VALIDATION.md`, 2026-10-15) onboarded two services of one repository, a
