@@ -138,6 +138,14 @@ class Store:
                               "revision": receipt.get("revision") if state == "succeeded" else None})
         return summaries
 
+    def in_flight(self, limit=10):
+        """Plans whose run has not been seen to end, newest first, with their application: the background follow-up asks
+        GitHub about them, so an outcome is recorded even when nobody asks."""
+        with self.connect() as db:
+            rows = db.execute("SELECT id, json_extract(payload, '$.application') FROM plans WHERE state IN ('dispatching', 'dispatched', 'dispatch_unknown') "
+                              "ORDER BY rowid DESC LIMIT ?", (limit,)).fetchall()
+        return [(row[0], row[1]) for row in rows]
+
     def latest_plan(self, application, sha=None):
         """The newest plan of any state for an application, optionally for one commit; rollback records excluded."""
         query = "SELECT state, payload FROM plans WHERE json_extract(payload, '$.application')=? AND json_extract(payload, '$.kind') IS NULL"
@@ -343,6 +351,24 @@ class Controller:
         files, complete = self.github.changed_files(app.repository, base, head)
         own = {f".github/workflows/{name}" for name in app.workflows.values()}
         return not complete or any(name.startswith(f"{app.path}/") or name in own for name in files)
+
+    FOLLOW_IDENTITY = "follow-up"
+
+    def follow_tick(self, limit=10):
+        """One pass: refresh every release still on its way, so its outcome is recorded even when nobody asks (an auto-deploy,
+        an onboarding's first release, a release whose status Claude did not follow). The application list, the watchdog
+        and the chat's summaries then never show a finished release as still dispatched (found live on 2026-10-16: demo's
+        auto-deploy of the 15th had succeeded, and the list still showed the release before it)."""
+        principal = Principal(name=self.FOLLOW_IDENTITY, token_sha256="0" * 64, applications=["*"], can_deploy=True)
+        results = {}
+        for plan_id, app_id in self.store.in_flight(limit):
+            if app_id not in self.config.applications:
+                continue  # an application unregistered since: its plans stay as history
+            try:
+                results[plan_id[:8]] = self.refresh(principal, plan_id)["state"]
+            except Exception as exc:  # noqa: BLE001 - one plan's trouble must not stop the others; the next pass asks again
+                results[plan_id[:8]] = f"error: {(explain(exc) or str(exc))[:120]}"
+        return results
 
     def auto_deploy_tick(self):
         """One pass: for every app with auto_deploy, release the tip of main when it is neither live nor already attempted."""

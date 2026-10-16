@@ -1,4 +1,4 @@
-"""Background work inside the controller process: auto-deploy, the daily watchdog, nightly backups.
+"""Background work inside the controller process: auto-deploy, following unfinished releases, the daily watchdog, nightly backups.
 
 One daemon thread wakes every fifteen seconds and runs whichever job is due. Each job is a plain method on the
 controller, so tests call it directly, and every outcome lands in the audit trail and in get_controller_status.
@@ -25,6 +25,7 @@ class Scheduler(threading.Thread):
             "watchdog": (controller.watchdog_tick, lambda: 86_400, 120),
             "backup": (controller.backup_tick, lambda: 86_400, 300),
             "onboarding": (controller.onboarding_tick, lambda: 60, 30),
+            "follow": (controller.follow_tick, lambda: 60, 45),
         }
         self.state = {name: {"next_run": started + first, "last_run": None, "last_result": None, "last_error": None} for name, (_, _, first) in self.jobs.items()}
 

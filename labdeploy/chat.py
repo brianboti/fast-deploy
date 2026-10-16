@@ -458,7 +458,7 @@ def health(result):
     serving = (service.get("traffic") or [{}])[0]
     p95 = metrics.get("request_latency_ms_p95")
     facts = [(f"Last {window} min: {plural(requests, 'request')}, {plural(errors or 0, 'server error')}"
-              + (f", 95% answered within {p95:g} ms" if p95 is not None else "")) if requests is not None else f"Last {window} min: no traffic data",
+              + (f", 95% answered within {round(float(p95), 1):g} ms" if p95 is not None else "")) if requests is not None else f"Last {window} min: no traffic data",
              f"Uptime checks: {percent(uptime)} passed" if uptime is not None else None,
              (f"Serving: {version(serving.get('commit'))}" + (" (the release the controller recorded)" if result.get("agreement")
               else " (not the release the controller recorded; ask me to compare)")) if serving.get("commit") else None,

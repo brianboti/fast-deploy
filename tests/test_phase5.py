@@ -151,6 +151,24 @@ def test_auto_deploy_releases_new_commits_once_and_respects_pauses(tmp_path):
     assert c.auto_deploy_tick() == {}
 
 
+def test_the_controller_follows_every_unfinished_release_to_its_end(tmp_path):
+    # Found live on 2026-10-16: an auto-deploy had succeeded the day before, but nobody asked for its status, so the
+    # application list still showed the release before it and "1 new commit" waiting.
+    cfg = config(tmp_path)
+    cfg.applications["demo"].auto_deploy = True
+    gh = FakeGitHub()
+    c = Controller(cfg, gh, Store(cfg.database))
+    plan_id = c.auto_deploy_tick()["demo"].split("plan ")[1].split(" ")[0]
+    gh.receipt = {"release": {"plan_id": plan_id, "state": "succeeded", "revision": "demo-r1", "image": "i"}, "vulnerabilities": None}
+    assert c.store.latest_success("demo") is None and c.store.in_flight() == [(plan_id, "demo")]
+    demo = cfg.applications.pop("demo")
+    assert c.follow_tick() == {}  # an application unregistered since is left alone
+    cfg.applications["demo"] = demo
+    assert c.follow_tick() == {plan_id[:8]: "succeeded"}
+    assert c.store.latest_success("demo")["id"] == plan_id and c.store.in_flight() == [] and c.follow_tick() == {}
+    assert c.auto_deploy_tick()["demo"] == "up to date"
+
+
 def test_watchdog_reports_problems_and_posts_them(tmp_path):
     posted = []
 
@@ -213,7 +231,7 @@ def test_scheduler_runs_due_jobs_and_records_outcomes(tmp_path):
     cfg = config(tmp_path)
     c = Controller(cfg, FakeGitHub(), Store(cfg.database))
     scheduler = Scheduler(c, cfg)
-    assert set(scheduler.state) == {"auto_deploy", "watchdog", "backup", "onboarding"} and all(e["last_run"] is None for e in scheduler.state.values())
+    assert set(scheduler.state) == {"auto_deploy", "watchdog", "backup", "onboarding", "follow"} and all(e["last_run"] is None for e in scheduler.state.values())
     entry = scheduler.run_job("auto_deploy")
     assert entry["last_result"] == {} and entry["last_error"] is None and entry["next_run"] > time.time() + 200
     scheduler.jobs["backup"] = (lambda: (_ for _ in ()).throw(RuntimeError("disk full")), lambda: 10, 0)
