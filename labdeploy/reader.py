@@ -67,7 +67,10 @@ CONFIG_PATTERNS = (
     re.compile(r"""(?<![\w.])config\(\s*["']([A-Z][A-Z0-9_]{1,63})["']"""),  # python-decouple
     re.compile(r"""(?<![\w.])env(?:\.\w+)?\(\s*["']([A-Z][A-Z0-9_]{1,63})["']"""),  # django-environ
 )
-SECRET_NAME = re.compile(r"(SECRET|PASSWORD|TOKEN|PRIVATE|CREDENTIAL|API_KEY|_KEY$|DSN)")
+# A setting that holds a secret by its name: one whose last part says so. Flags and limits (CORS_ALLOW_CREDENTIALS,
+# MAX_OUTPUT_TOKENS, found live) are not secrets, whatever words they contain.
+SECRET_NAME = re.compile(r"(^|_)(SECRET|PASSWORD|PASSWD|TOKEN|KEY|DSN|CREDENTIALS?)$|^DATABASE_URL$")
+NOT_SECRET = re.compile(r"(^|_)(ALLOW|ENABLE|ENABLED|DISABLE|MAX|MIN|TTL|TIMEOUT|COUNT|LENGTH|SIZE|TYPE|FILE|PATH|DIR|ID)(_|$)")
 TEST_TOOLS = {"httpx": re.compile(r"\bhttpx\b|TestClient"), "pytest-asyncio": re.compile(r"pytest\.mark\.asyncio|pytest_asyncio")}
 ROTATE_AND_REMOVE = ("remove it from the repository (and from its history), rotate whatever it held, and give the values to the service as "
               "Secret Manager secrets named under secrets in the contract")
@@ -665,6 +668,7 @@ def read(paths, texts, path="", name=None, fallback_name=None, sizes=None):
     if not any(item.endswith(".py") for item in local) and not any(repo.has(n) for n in ("requirements.txt", "pyproject.toml", "Pipfile", *CONDA_FILES)):
         ladder.refuse(where, "no Python code or dependency manifest", "the platform deploys Python web services only; give the folder that holds one")
         return result
+    name_given = name
     name, name_note = name_for(name, repo, fallback_name)
     result["service"] = name
     if name_note:
@@ -700,7 +704,7 @@ def read(paths, texts, path="", name=None, fallback_name=None, sizes=None):
             ladder.choose("Contract", "the repository's platform.yaml, imported as the draft", repo.at("platform.yaml"))
         except Exception as exc:  # noqa: BLE001 - an invalid file is set aside, never half-used
             ladder.ignore(repo.at("platform.yaml"), f"not valid ({str(exc).splitlines()[0][:160]}); the reader drafts the contract instead")
-    if base.get("name"):
+    if base.get("name") and name_given is None:
         name = result["service"] = base["name"]
     compose = compose_entry(repo, ladder)
     if compose:
@@ -824,7 +828,7 @@ def read(paths, texts, path="", name=None, fallback_name=None, sizes=None):
     health = health_ladder(repo, ladder, base, compose, sources)
     names = configuration_names(repo, compose, sources)
     if names:
-        secret = [n for n in names if SECRET_NAME.search(n)]
+        secret = [n for n in names if SECRET_NAME.search(n) and not NOT_SECRET.search(n)]
         ladder.note("The code reads these settings: " + ", ".join(names[:20]) + ". Before merging, give plain values under env and name secrets "
                     "under secrets (Secret Manager secrets called <service>-NAME); nothing was added."
                     + (f" These look like secrets: {', '.join(secret[:10])}." if secret else ""))

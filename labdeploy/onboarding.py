@@ -19,6 +19,7 @@ from .analyzer import TEST_PATH
 from .config import SERVICE_PATH, Application, Principal
 from .github import explain
 from .models import AppSpec
+from .reader import GENERIC_FOLDERS, slug_of
 from .scaffold import SERVICE_NAME
 
 STEPS = ("validating", "contract", "merging_contract", "registering", "infrastructure", "planning", "applying", "environment", "workflows",
@@ -265,7 +266,11 @@ class Onboarder:
         _ = self.settings  # fail early when the block is missing
         repository = normalize_repository(repository)
         path = normalize_path(path)
-        app_id = slug(app_id or (path.rsplit("/", 1)[-1] if path else repository.split("/")[1]))
+        folder = path.rsplit("/", 1)[-1] if path else None
+        if not app_id and as_is and folder and folder.lower() in GENERIC_FOLDERS:
+            # Found live: llm-debate-agent's backend/ would have become a service called "backend".
+            app_id = slug_of(f"{repository.split('/')[1]}-{folder}") or folder
+        app_id = slug(app_id or folder or repository.split("/")[1])
         record = self.c.store.onboarding(app_id)
         if record is None:
             record = {"application": app_id, "repository": repository, "path": path, "principal": principal.name, "auto_deploy": bool(auto_deploy),

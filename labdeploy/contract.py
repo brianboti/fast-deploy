@@ -185,8 +185,8 @@ class Contracts:
     def body(self, view, files):
         """The import pull request's text: what the reader chose and from where, what it set aside, what to check."""
         result = view["read"]
-        where = view["repository"] + (f", folder `{view['path']}`" if view["path"] else "")
-        lines = [f"Fast Deploy read `{where}` at `{view['head'][:12]}` as it is and drafted its contract. Nothing was added to that repository.",
+        where = f"`{view['repository']}`" + (f", folder `{view['path']}`" if view["path"] else "")
+        lines = [f"Fast Deploy read {where} at `{view['head'][:12]}` as it is and drafted its contract. Nothing was added to that repository.",
                  "", "**Merging this pull request is the review** (docs/ROADMAP.md D32): the controller never merges it, and the contract says "
                  "nothing about `reviewed`. After the merge, the platform's own pipeline builds and releases exactly what it says.", "",
                  "| What | Chosen | From |", "|---|---|---|"]
