@@ -199,6 +199,8 @@ def test_the_reader_reads_compose_for_port_health_needs_and_command():
 @pytest.mark.parametrize(("files", "fragment"), [
     ({".env": "", "main.py": FASTAPI, "requirements.txt": "fastapi\n"}, "committed secret"),
     ({"keys/server.pem": "", "main.py": FASTAPI, "requirements.txt": "fastapi\n"}, "committed secret"),
+    ({"env.prod": "", "main.py": FASTAPI, "requirements.txt": "fastapi\n"}, "committed secret"),  # found live, with env.yaml
+    ({"env.yaml": "", "main.py": FASTAPI, "requirements.txt": "fastapi\n"}, "committed secret"),
     ({"Dockerfile": "FROM python:3.10-slim\n", "main.py": FASTAPI, "requirements.txt": "fastapi\n"}, "outside the supported 3.11 to 3.15"),
     ({".python-version": "3.9\n", "main.py": FASTAPI, "requirements.txt": "fastapi\n"}, "outside the supported 3.11 to 3.15"),
     ({"environment.yml": "dependencies:\n  - python=3.12\n  - gdal\n", "main.py": FASTAPI}, "conda packages"),
@@ -587,3 +589,9 @@ def test_service_names_are_cut_at_a_dash_and_never_a_generic_folder():
 def test_a_root_without_a_manifest_points_at_the_folder_that_has_one():
     result = read({"README.md": "x", "backend/requirements.txt": "flask\n", "backend/app.py": "from flask import Flask\napp = Flask(__name__)\n"})
     assert result["refusals"][0]["fix"].startswith("the service lives in backend: take that folder (path backend)")
+
+
+def test_a_readiness_route_is_offered_to_the_reviewer_never_chosen():
+    flask = "from flask import Flask\napp = Flask(__name__)\n\n@app.get('/ready')\ndef ready():\n    return 'ok'\n"
+    result = read({"app.py": flask, "requirements.txt": "flask\n"})
+    assert result["spec"].health_path is None and any("/ready" in note and "set health_path" in note for note in result["notes"])

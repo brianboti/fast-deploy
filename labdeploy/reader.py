@@ -46,10 +46,13 @@ LARGE_FILE = 100 * 1024 * 1024
 # Committed secrets, recognized by name only: environment files (but not their documented examples), private keys and key
 # stores, cloud credentials and Terraform state. Never opened.
 SECRET_FILE = re.compile(r"(?i)(^|/)(\.env(\.[^/]+)?|[^/]+\.(pem|key|p12|pfx|jks|keystore)|id_(rsa|dsa|ecdsa|ed25519)|credentials\.json|"
-                         r"service[-_]?account[^/]*\.json|[^/]+\.tfstate(\.backup)?)$")
+                         r"service[-_]?account[^/]*\.json|[^/]+\.tfstate(\.backup)?|"
+                         # Environment files by other names (found live: env.prod and env.yaml, gcloud's --env-vars-file format).
+                         r"env\.(prod|production|stage|staging|local|dev|development|secret|secrets|ya?ml)|[^/]+\.env|secrets?\.(json|ya?ml|toml))$")
 EXAMPLE_ENV = re.compile(r"(?i)(^|/)\.env\.(example|sample|template|dist|defaults?|test)$")
 ENVIRONMENTS = re.compile(r"(^|/)(\.?venv|env|site-packages|node_modules)/")
 SYSTEM_PACKAGES = ("apt.txt", "Aptfile", "packages.txt", "bindep.txt", "apt-packages.txt")
+READINESS = re.compile(r"""["'](/(?:ready|readiness|live|liveness|ping|status))/?["']""")
 CONDA_FILES = ("environment.yml", "environment.yaml")
 LOCK_FILES = ("requirements.lock", "uv.lock", "poetry.lock", "Pipfile.lock", "pylock.toml")
 TEST_REQUIREMENTS = ("requirements-dev.txt", "requirements-test.txt", "test-requirements.txt", "dev-requirements.txt",
@@ -586,6 +589,12 @@ def health_ladder(repo, ladder, base, compose, sources):
         if candidate in seen:
             ladder.choose("Health", candidate, repo.at(seen[candidate]))
             return candidate
+    readiness = sorted({path for text in sources.values() for path in READINESS.findall(text)})
+    if readiness:
+        # Found live: a Flask app answering /ready and / without a /health. Such a route may call other services, so the reader
+        # never picks it; a person who knows it answers at once can set health_path in the review.
+        ladder.note(f"The code routes {', '.join(readiness[:3])}: if one answers 200 at once without calling other services, set health_path "
+                    "to it in the review, and the release checks HTTP instead of TCP")
     reserved = next((candidate for candidate in RESERVED_HEALTH if candidate in seen), None)
     if reserved:
         ladder.note(f"{repo.at(seen[reserved])} routes {reserved}, which Cloud Run keeps for itself (requests from outside never reach the "

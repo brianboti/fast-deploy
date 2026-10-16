@@ -55,11 +55,13 @@ applications render unchanged. Re-pinning the existing applications' workflows i
 behave as before for them, except that a buildpacks image now leaves out secrets, tests and caches, and tests without
 a `requirements-dev.txt` get the platform's pytest instead of failing.
 
-Read-only before the merge, the reader took four of the operator's own public repositories: one ready as it is, one ready
-from its `backend/` folder, two refused with the reason (a batch pipeline and a training pipeline, no web app); names
-are now cut at a dash and never a generic folder (`backend`, `api`, `src`).
+Read-only before the merge, the reader took four of the operator's own public repositories, and they improved it: names
+are cut at a dash and never a generic folder (`backend`, `api`, `src`); a root without a manifest names the folder
+that has one; environment files by other names (`env.prod`, `env.yaml`, `*.env`, `secrets.json`) are refused by name,
+never opened; a readiness route (`/ready`, `/ping`) is offered to the reviewer, never chosen. One repository is ready
+from its `backend/` folder; one is refused for its environment files; two are refused for having no web app.
 
-Tests: 518 pass (40 new in `tests/test_phase13.py`); ruff and zizmor clean.
+Tests: 521 pass (43 new in `tests/test_phase13.py`); ruff and zizmor clean.
 
 
 # 1.14.1: the repository is brianboti/fast-deploy
