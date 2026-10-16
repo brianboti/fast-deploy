@@ -277,7 +277,7 @@ def test_render_build_copies_through_the_deny_list_and_writes_the_platforms_dock
     with pytest.raises(ValueError, match="neither requirements.lock nor requirements.txt"):
         scaffold.render_build(tmp_path / "empty", tmp_path / "out2", spec)
     descriptor = scaffold.descriptor()
-    assert 'schema-version = "0.2"' in descriptor and '".env"' in descriptor and '"tests"' in descriptor and '"Dockerfile"' not in descriptor
+    assert 'schema-version = "0.2"' in descriptor and '".env"' in descriptor and '"tests"' in descriptor and '"Dockerfile"' in descriptor
     assert scaffold.main(["descriptor"]) == 0
 
 
@@ -603,3 +603,35 @@ def test_a_src_folder_that_is_a_package_keeps_its_name():
     assert package["spec"].build.entrypoint == "uvicorn src.app:app --host 0.0.0.0 --port 8080"  # found live: relative imports
     layout = read({"src/web/__init__.py": "", "src/web/main.py": app, "requirements.txt": "fastapi\nuvicorn\n"})
     assert layout["spec"].build.entrypoint == "uvicorn web.main:app --host 0.0.0.0 --port 8080 --app-dir src"  # the src layout
+
+
+# ---- 1.15.1: what the live trial showed
+def test_only_names_that_end_like_a_secret_are_called_secrets():
+    code = ("import os\nKEYS = [os.environ['OPENAI_API_KEY'], os.getenv('CORS_ALLOW_CREDENTIALS'), os.getenv('MAX_OUTPUT_TOKENS'),\n"
+            "        os.getenv('SECRET_KEY'), os.getenv('DATABASE_URL'), os.getenv('GITHUB_TOKEN'), os.getenv('PROMPTS_DIR')]\n")
+    note = next(note for note in read({"main.py": FASTAPI + code, "requirements.txt": "fastapi\n"})["notes"] if "look like secrets" in note)
+    secrets = note.split("These look like secrets: ")[1].rstrip(".").split(", ")
+    assert sorted(secrets) == ["DATABASE_URL", "GITHUB_TOKEN", "OPENAI_API_KEY", "SECRET_KEY"]
+
+
+def test_an_explicit_name_wins_over_the_one_in_the_repositorys_platform_yaml():
+    files = {"Dockerfile": "FROM python:3.12-slim\n", "platform.yaml": "name: legacy\nreviewed: true\n", "main.py": FASTAPI, "requirements.txt": "fastapi\n"}
+    assert read(files)["spec"].name == "legacy" and read(files, name="renamed")["spec"].name == "renamed"
+
+
+def test_an_as_is_onboarding_of_a_generic_folder_gets_a_telling_name(tmp_path):
+    c, brian, gh, _ = controller_with(tmp_path)
+    gh.repos["lab/asis"]["files"] = {f"backend/{name}": text for name, text in gh.repos["lab/asis"]["files"].items()}
+    first = c.onboard(brian, "lab/asis", path="backend", as_is=True)
+    assert first["application"] == "asis-backend" and first["service"] == "asis-backend"
+    body = next(pr for pr in gh.prs.values() if pr["branch"] == "lab-deploy/contract-asis-backend")
+    assert body["title"] == "Contract for asis-backend, taken as it is from lab/asis"
+
+
+def test_the_check_answer_gives_the_fix_of_an_as_is_refusal():
+    text = chat.check({"repository": "lab/x", "checklist": [{"item": "Dockerfile", "ok": False}], "as_it_is": {
+        "ready": False, "refusals": [{"file": "the repository root", "problem": "no dependency manifest", "fix": "the service lives in backend: take that folder"}]}})
+    assert "(fix: the service lives in backend: take that folder)" in text
+    ready = chat.check({"repository": "lab/x", "checklist": [{"item": "Dockerfile", "ok": False, "platform_writes": True}],
+                        "as_it_is": {"ready": True, "choices": [{"what": "Python", "value": "3.12", "from": ".python-version"}]}})
+    assert ", or I can open a draft pull request" in ready

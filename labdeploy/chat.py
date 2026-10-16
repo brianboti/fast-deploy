@@ -371,10 +371,11 @@ def check(result):
     if as_is.get("ready"):
         facts = ["Or take it as it is, adding nothing to the repository: " + "; ".join(choice_lines(as_is.get("choices"), 3))]
         next_line = ("say “deploy it as it is” and I'll propose its contract to the platform repository (a person's merge is the review), or "
-                     + next_line[0].lower() + next_line[1:])
+                     + (next_line if next_line.startswith("I ") else next_line[0].lower() + next_line[1:]))
         return compose(f"**Not ready to deploy as it stands: {where}.** {plural(len(missing), 'required item')} missing:", facts, next_line, block=block)
     if as_is.get("refusals"):
-        block += "\n\nAs it is, it is refused too: " + "; ".join(f"`{item['file']}` {item['problem']}" for item in as_is["refusals"][:4]) + "."
+        block += "\n\nAs it is, it is refused too: " + "; ".join(f"`{item['file']}` {item['problem']} (fix: {item['fix']})"
+                                                                for item in as_is["refusals"][:3]) + "."
     return compose(f"**Not ready yet: {where}.** {plural(len(missing), 'required item')} missing:", [], next_line, block=block)
 
 

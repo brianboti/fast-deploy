@@ -923,7 +923,7 @@ def render_build(app_dir, out_dir, spec):
 def descriptor():
     """The buildpacks' project descriptor (project.toml, schema 0.2) the platform builds with: the same deny-list, so a
     buildpacks image never carries secrets, tests, notebooks or caches either."""
-    patterns = ",\n".join(f'  "{pattern}"' for pattern in BUILD_EXCLUDE if pattern not in ("Dockerfile", "Dockerfile.*", ".dockerignore"))
+    patterns = ",\n".join(f'  "{pattern}"' for pattern in BUILD_EXCLUDE)  # a Dockerfile is no input of the buildpacks either
     return ('# Written by Fast Deploy for the buildpacks (docs/ROADMAP.md 13.3); a project.toml of the repository\'s own is not read.\n'
             '[_]\nschema-version = "0.2"\n\n[io.buildpacks]\nexclude = [\n' + patterns + "\n]\n")
 

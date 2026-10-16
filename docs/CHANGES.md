@@ -1,3 +1,25 @@
+# 1.15.1: what the first live trial of a repository as it is showed
+
+Found on 2026-10-16 while taking `llm-debate-agent` (its `backend/` folder) and `lab-demo-two` as they are, through the
+running controller; nothing here changes what is deployed or how.
+
+1. Settings are called secrets only when their last part says so (`OPENAI_API_KEY`, `SECRET_KEY`, `GITHUB_TOKEN`,
+   `DATABASE_URL`); flags and limits such as `CORS_ALLOW_CREDENTIALS` and `MAX_OUTPUT_TOKENS` no longer are.
+2. An application name given to `import_contract` or `onboard_application` wins over the name in the repository's own
+   `platform.yaml`.
+3. Onboarding as it is, without a name, of a folder with a generic name (`backend`, `api`, `src`) names the service after
+   the repository and the folder (`llm-debate-agent-backend` would be cut at a dash), never `backend`.
+4. The contract pull request's first line names the repository and the folder with intact formatting.
+5. `check_repository`'s answer gives the fix of an as-is refusal ("the service lives in backend: take that folder"),
+   and keeps "I can" capitalised.
+6. A buildpacks image leaves out the repository's `Dockerfile` and `.dockerignore` too (found in lab-demo-two's image).
+
+The live exercise of 1.15.0 is recorded in `docs/VALIDATION.md`: two repositories released as they are by the platform's
+own pipeline, a contract change released by its merge, refusals on four real repositories.
+
+Tests: 526 pass (4 new); ruff clean.
+
+
 # 1.15.0: a repository as it is (Phase 13)
 
 Asked for on 2026-10-16 with the defaults of D31 to D34: deploy a repository without adding anything to it. The contract,
