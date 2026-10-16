@@ -319,7 +319,9 @@ class GitHub:
         try:
             self.request("POST", path + "/deployment-branch-policies", json={"name": branch, "type": "branch"})
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code != 422:  # 422: the policy for this branch already exists
+            # The policy for this branch already exists: GitHub answers 303 See Other (pointing at it), and once answered 422.
+            # A repository onboarded again (Sophia's copy from backend/, 2026-10-16) meets it.
+            if exc.response.status_code not in (303, 422):
                 raise
 
     def set_environment_variables(self, repository, name, variables):
