@@ -516,3 +516,20 @@ The last three, on 2026-10-16 (UTC), after the operator reviewed the drafts:
 | Claude chat can reach the controller | `https://<tunnel>/.well-known/oauth-authorization-server` | 200 through the tunnel, with the controller on 1.12.3 |
 
 Still to do: the review by a second person (Phase 12), once there is one.
+
+
+## The rename to Fast Deploy and brianboti/fast-deploy (2026-10-16)
+
+Asked for by the operator. 1.14.0 renamed what people see; 1.14.1 prepared the repository's move, done in the order of the
+runbook's "Rename the platform repository", every step with the operator's approval of the exact command.
+
+| Step | Observed |
+|---|---|
+| Sign-in accepts both names | `terraform.tfvars`: `platform_repository = "brianboti/fast-deploy"`, `former_repositories = ["brianboti/lab-deploy"]`; the foundation plan showed 2 to change (the two providers), applied; the apply provider's condition listed both workflow paths |
+| The rename | `gh repo rename fast-deploy`: the same repository id (1415112615); `brianboti/lab-deploy` answers with `brianboti/fast-deploy`; the local remote set to the new URL |
+| The controller | `platform.repository: brianboti/fast-deploy` with the old name under `former_repositories`; restarted on 1.14.1; all six apps' pins still read and supported through the former name |
+| Re-pin under the new name | lab-demo-app#21, lab-notebook#11, sophia#16, lab-monorepo#3 and #4, lab-bare#5 at 65b325a, merged; their workflows check out `brianboti/fast-deploy` |
+| The plan side signs in | The drift workflow run by hand (run 38927173627): all six plans and the report succeeded |
+| An app release | `lab-bare` (plan 7a35596f) succeeded; its log shows `Syncing repository: brianboti/fast-deploy` |
+| Cleanup | The former name removed from the controller and from `terraform.tfvars`; the foundation applied again (2 to change); both providers now name only `brianboti/fast-deploy`; `platform.minimum_commit` raised to 65b325a, every pin supported |
+| The apply side signs in | The apply workflow run by hand for `lab-bare` (run 38929179969): "No changes", "Apply complete! Resources: 0 added, 0 changed, 0 destroyed" |
