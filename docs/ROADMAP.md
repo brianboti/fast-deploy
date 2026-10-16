@@ -3,6 +3,7 @@
 Written 2026-10-12 from three reviews of version 0.4.0: general gaps, versioning and redeploys, and monitoring.
 Every item below was a gap found in those reviews when this was written; the status lines under each phase say what has shipped since (Phases 0 to 6 by 2026-10-12, with the always-on machine of 5.1 deferred).
 Phases 9 to 12 were added on 2026-10-14 from the research review `docs/RESEARCH-2026-10-14.md`; their decisions are D21 to D30.
+Phases 13 to 17 were added on 2026-10-16 from the research review `docs/RESEARCH-2026-10-16.md` (a repository as it is; production level); their decisions are D31 to D40.
 
 Order of phases is by value per effort with cost first, then control, then scope, then the always-on move.
 Each phase ships as one platform version with tests, lint, `docs/CHANGES.md`, and a live staging exercise.
@@ -314,11 +315,143 @@ Live exercise: an infrastructure pull request whose comment shows the rendered b
 Requires regeneration of app workflows: no. Terraform apply: no.
 Cost effect: none.
 
-## Later, unscheduled (research item 13)
+## Decisions the operator makes before Phases 13 to 17
 
-`cache: valkey` behind operator approval with its floor in every plan (two days plus a trial; Memorystore never scales to zero); `gpu: l4` with one instance, zonal redundancy off, weights on a read-only bucket volume and the cap able to stop it (three days plus a trial; instance-based billing); the container-only runtime for the first non-Python application (two days); Firebase Hosting for a public front-end only if the lab ever allows public exposure.
+Planned on 2026-10-16 from the research review `docs/RESEARCH-2026-10-16.md` (its section 6 ranks the items). The order
+is the roadmap's rule: value per effort, cost first. Phase 13 answers "a repository as it is"; Phase 14 makes an
+unreviewed repository safe to build and run; Phase 15 takes the controller off the laptop; Phase 16 adds a production
+target; Phase 17 is the tier for protected health information, which needs decisions outside the code. What stays human
+whatever the decisions: the review of an imported contract, secret values, the foundation applies, the production
+approvals, the business associate agreement, and the organization steps of Phase 17.
 
-Not planned, because the evidence is against it for this lab: a second cloud or a cloud-agnostic layer; Score, Radius, the Open Application Model, Dapr, Crossplane or TOSCA; Compose as a deployment unit; multi-architecture image builds; worker pools or Memorystore by default; Kubernetes; model-written Terraform; autonomous remediation; and, for now, metric canary analysis, SBOMs, Binary Authorization and OpenTelemetry.
+| # | Decision | Needed by | Default if nothing is said |
+|---|---|---|---|
+| D31 | Where the contract of a repository taken as it is lives | Phase 13 | `apps/<id>/platform.yaml` in the platform repository with a `source` block (`repository`, `commit`); one authoritative contract per app, recorded in the registry as `contract: platform` or `contract: repository`; a `platform.yaml` found in the repository is imported once as the draft of the external one; repositories that follow the contract keep today's in-repository mode |
+| D32 | What "reviewed" means for an external contract | Phase 13 | The pull request's approval on the platform repository under CODEOWNERS (`apps/**`); `reviewed: true` is written by the merge, never by the controller; a release is a pull request that moves `source.commit` and nothing else, opened by the controller and merged by a person, or merged by the controller when the application's `auto_merge` allows it and the policy passes |
+| D33 | Where the pipeline of a repository taken as it is runs | Phase 13 | `deploy.yml`, `recover.yml` and `rightsize.yml` in the platform repository, started by `workflow_dispatch` with the application and commit; the application repository is checked out read-only at that commit with a GitHub App installation token narrowed to that repository; the Workload Identity condition names the platform repository's id, `refs/heads/main` and the environment `staging-<app>`; the run signs a custom attestation (repository, commit, contract commit, Dockerfile and lock hashes) with the application's Cloud KMS key and verifies it before deploying; the platform repository is named in the runbook as the lab's single control point |
+| D34 | What the reader refuses rather than guesses | Phase 13 | Several frameworks or several candidate application objects; Django without `WSGI_APPLICATION`; no dependency manifest at all; conda-only or system packages; a Python version outside 3.11 to 3.15; a committed secret value; a notebook or a file over 100 MiB as the application; every refusal names the file and the fix |
+| D35 | Trust levels and their defaults | Phase 14 | `reviewed` for a repository the lab owns and has read; `unknown` for one taken as it is: the vulnerability gate blocks, egress is denied unless the contract opts in, the second-generation environment is used, secret scanning fails the build on a verified hit, no build cache; `project: own` moves an application into a project of its own (unknown or data-bearing) |
+| D36 | Where the controller runs | Phase 15 | One Always Free `e2-micro` in us-central1 with a 30 GB standard disk, Caddy with Let's Encrypt on a DNS name the lab owns (D6), a systemd unit, the observer service account attached, the GitHub App's private key in Secret Manager; Litestream replication of the database to the backup bucket on by default; Cloud Run with a scheduler job as the fallback if the free VM is withdrawn |
+| D37 | The production project and who approves a promotion | Phase 16 | A second project (`prod`) in the same billing account with its own foundation, state and per-app identities, applied only from the `production` environment; a promotion deploys the digest staging released, never a rebuild; the approval is a required reviewer on the platform repository's `production-<app>` environment (public repository, so free) with self-review prevented; where that is unavailable, the code-rendered approval block and a ruleset requiring the staging deployment to have succeeded |
+| D38 | The production release | Phase 16 | Deploy with no traffic and a tag, probe the tag, then 10, 50 and 100 percent, each step held for the bake's rules (D22); a crash, errors above five percent or latency above three times the baseline restores the previous split; a change of configuration or of a secret's version goes through the same path; the bake's "inconclusive on no traffic" still passes with a note |
+| D39 | Production reliability and its paid options | Phase 16 | One SLO per application (99.5 percent of health and request successes over 30 days) with Cloud Monitoring's fast and slow burn-rate alerts and a 60-second uptime check from three regions; Postgres in production is a single-zone `db-f1-micro` with automated backups, point-in-time recovery and deletion protection, declared in the contract as "no SLA"; high availability and the SLA-covered shape are per-app opt-ins with their floor in the approval block; a custom domain is a per-app opt-in through a global load balancer, with Cloud Armor, both with their floor shown; a warm instance is a per-app opt-in |
+| D40 | The tier for protected health information | Phase 17 | See Phase 17: the organization, the agreement and the controls it lists, each marked as the operator's, the institution's or the platform's |
+
+## Phase 13: a repository as it is (about six days) → version 1.15.0
+
+Status: planned on 2026-10-16 (research review sections 4.1 to 4.4 and 4.6). Nothing is added to an application
+repository; the contract, the build inputs and the pipeline move to the platform.
+
+| Item | Change | Where |
+|---|---|---|
+| 13.1 | The external contract (D31, D32): `apps/<id>/platform.yaml` with `source`, validated by the same model; the registry records which contract is authoritative; `import_contract` reads an in-repository `platform.yaml`, a Compose file or the reader's draft into the external file as a pull request; `create_deployment_plan` binds the external contract's commit and the source commit, and the approval block shows both | labdeploy/config.py, labdeploy/controller.py, labdeploy/onboarding.py, labdeploy/infra.py, apps/ |
+| 13.2 | The central pipeline (D33): the three workflows in the platform repository taking `application` and `commit`; checkout of the application at the commit with a GitHub App installation token (contents read, one hour, revoked); the Workload Identity condition per environment `staging-<app>`; the custom attestation signed with the application's key and verified before `gcloud run deploy`; the release's identifier chain carries the platform run and the application commit; one GitHub environment per application in the platform repository | .github/workflows/deploy.yml, recover.yml, rightsize.yml, infra/gcp/modules/service/main.tf, labdeploy/github.py, labdeploy/provenance.py |
+| 13.3 | Build inputs from outside: the platform's Dockerfile applied with `docker build -f-` or `--build-context` and its own `.dockerignore`; the lock compiled by the platform into `apps/<id>/requirements.lock` and installed with `--require-hashes`; the buildpack path driven by `GOOGLE_ENTRYPOINT`, `GOOGLE_PYTHON_VERSION` and a platform `project.toml` with `pack --descriptor`; the builder pinned by digest | templates/, .github/workflows/deploy.yml, labdeploy/scaffold.py |
+| 13.4 | Run-time defaults: the contract's `command` and `args` override the image's entrypoint; `port` sets `PORT`; a service without a health route starts under the TCP startup probe and the release says the HTTP probe is off; the migration job's command fixed from the contract | infra/gcp/modules/service/main.tf, labdeploy/release.py, labdeploy/models.py |
+| 13.5 | The reader (D34): the precedence ladders of the review's section 4.4 for the Python version, the lock, the entrypoint, the port, the health route, configuration names, needs and tests; one service per Compose build or per folder with a manifest and an entry file; every refusal names the file and the fix; `check_repository` reports the ladder's choices and the files it ignored | labdeploy/analyzer.py, labdeploy/scaffold.py, labdeploy/onboarding.py |
+| 13.6 | Documents: the contract page opens with "what the platform assumes when you give it nothing"; CLAUDE-CHAT's "Deploy it as it is"; the runbook names the platform repository as the single control point and the rule that its protection never loosens; the handoff | docs/DEVELOPER-CONTRACT.md, docs/CLAUDE-CHAT.md, docs/RUNBOOK.md, PROJECT_HANDOFF.md, skills/ |
+
+Live exercise: a lab repository with a Dockerfile and nothing else deployed with no file added; the bare repository with
+its Dockerfile removed built through the buildpacks from an external entrypoint; a repository with `pyproject.toml` and
+`uv.lock` locked by the platform; a two-service repository read from its Compose file; one repository refused with the
+list; the custom attestation verified and shown in the release; the Workload Identity condition proved by a plan run and
+an apply run from the platform repository.
+Requires regeneration of app workflows: no (the central workflows are new; repositories that follow the contract keep
+theirs). Terraform apply: by the pipeline (the trust condition per service).
+Cost effect: none at idle; the central runs bill the platform repository, which is public.
+
+## Phase 14: safety for code nobody has reviewed (about four days) → version 1.16.0
+
+Status: planned on 2026-10-16 (research review section 4.5, controls 1 to 10).
+
+| Item | Change | Where |
+|---|---|---|
+| 14.1 | The Dockerfile policy gate before any build: refuse `RUN --security`, `--network=host`, `ADD` from a URL without `--checksum`, piping a download into a shell, disabled TLS or signature checks, `sudo`, and `COPY` of `.git`, `.env` or key files; require an explicit non-root `USER`; the build never passes `--allow`; Trivy's configuration scanner beside hadolint, pinned by digest | templates/deploy-gcp.yml, .github/workflows/deploy.yml, labdeploy/analyzer.py |
+| 14.2 | Secret scanning: gitleaks on the checkout and TruffleHog on the built image, failing on a verified hit; a deny-list `.dockerignore` synthesised when the repository has none; a cap on the build context | templates/, .github/workflows/deploy.yml |
+| 14.3 | No build cache in release workflows (a test asserts it); `--network none` for the build when the contract says the dependencies are vendored | templates/, tests/ |
+| 14.4 | The vulnerability gate in the industry's wording: fixable critical and high findings and any malicious-package finding block, on by default for `unknown` (D35); images older than 30 days are re-scanned before a redeploy | labdeploy/scan.py, templates/deploy-gcp.yml |
+| 14.5 | Egress default-deny for `unknown`: Direct VPC egress with an egress-deny firewall rule keyed on the service identity, Private Google Access for Google APIs, `egress: internet` as the contract's opt-in | infra/gcp/modules/service/main.tf, infra/gcp/modules/project/, labdeploy/models.py |
+| 14.6 | The second-generation environment for `unknown` and, as the operator's switch, Cloud Run threat detection through Security Command Center Premium at project level (the Billing Catalog prices it at $0.0071 per vCPU-hour) | infra/gcp/modules/service/main.tf, docs/SETUP.md |
+| 14.7 | SBOM and provenance attestations attached to every image (`--sbom --provenance`) and recorded in the release | templates/deploy-gcp.yml, labdeploy/release.py |
+| 14.8 | Binary Authorization on Cloud Run requiring the application's Cosign attestation, dry-run first, then enforced per project (no Cloud Run SKU exists in the catalog) | infra/gcp/modules/project/, infra/gcp/modules/service/, docs/SETUP.md |
+| 14.9 | `project: own` (D35): a foundation and a root in a project of the application's own, for unknown or data-bearing applications; the registry carries the project; the cap and the drift check cover it | labdeploy/config.py, labdeploy/onboarding.py, infra/gcp/, scripts/apply-foundation.sh |
+| 14.10 | A Sensitive Data Protection inspection of data files over a size threshold before they can enter an image, reported in the plan (first GiB a month free) | labdeploy/analyzer.py, templates/deploy-gcp.yml |
+
+Live exercise: planted violations (a Dockerfile piping a download into a shell, a committed `.env`, an unsigned image, an
+outbound connection from an `unknown` app) each refused or blocked, recorded in VALIDATION; one unknown repository in a
+project of its own; threat detection switched on for a day and its findings read.
+Requires regeneration of app workflows: yes (the gates run in the build). Terraform apply: by the pipeline; the foundation
+once for Binary Authorization.
+Cost effect: none at idle; scans unchanged at $0.26 per fresh image.
+
+## Phase 15: the controller off the laptop (about three days) → version 1.17.0
+
+Status: planned on 2026-10-16 (research review section 5.3); it completes roadmap item 5.1 and 7.3.
+
+| Item | Change | Where |
+|---|---|---|
+| 15.1 | GitHub App authentication (D14, 7.3): installation tokens per repository with the permissions onboarding needs; the private key read from Secret Manager through the attached identity; the fine-grained token stays the fallback on a laptop | labdeploy/github.py, scripts/start.sh, docs/SETUP.md |
+| 15.2 | The machine (D36): Terraform for the `e2-micro`, its standard disk, the attached observer identity, a firewall that opens 80 and 443 and keeps SSH behind IAP; a startup script that installs Caddy, the controller and two systemd units with `Restart=always`; configuration, database and backups on the disk; `scripts/install-machine.sh` for the one-time steps | infra/gcp/modules/project/controller.tf, scripts/, docs/SETUP.md |
+| 15.3 | Durability: Litestream replication of the SQLite file to the backup bucket beside the nightly copy; the restore drill extended to restore from it; `VACUUM INTO` for the nightly copy | labdeploy/drill.py, scripts/, docs/RUNBOOK.md |
+| 15.4 | Reachability: a Cloud Monitoring uptime check on `/healthz` every minute from three regions with an alert, beside the GitHub ping; the connector's name moved to the lab's DNS name; the tunnel retired | infra/gcp/modules/project/, docs/CLAUDE-CHAT.md |
+| 15.5 | The move: export the laptop's database and configuration, import on the machine, switch DNS, re-register the connector; the runbook section "The controller's machine" (restart, update, restore, rotate) | docs/RUNBOOK.md, docs/SETUP.md, PROJECT_HANDOFF.md |
+
+Live exercise: Claude chat through the new name; the machine power-cycled and the controller back within a minute; a
+restore from Litestream on a fresh machine; a GitHub App token used for an onboarding.
+Requires regeneration of app workflows: no. Terraform apply: the foundation once (the machine).
+Cost effect: about $3.65 a month (the IPv4 address) to $4.04; $6.11 more if the free tier ends.
+
+## Phase 16: a production target (about six days) → version 1.18.0
+
+Status: planned on 2026-10-16 (research review sections 5.1, 5.2 and 5.5).
+
+| Item | Change | Where |
+|---|---|---|
+| 16.1 | The production project (D37): a second foundation, state and identities; each application's registry entry gains `environments` (`staging`, `production`) with its own target; the production root rendered from the same contract with production's defaults; the `production` GitHub environment with its Workload Identity condition | infra/gcp/, labdeploy/config.py, labdeploy/infra.py, labdeploy/onboarding.py |
+| 16.2 | Promotion (`promote_to_production`): a plan bound to the digest of a staging release that succeeded, approved through the platform repository's `production-<app>` environment (required reviewer, no self-review), released by the same runner; the approval block shows the digest, both environments' floors and who approved | labdeploy/controller.py, labdeploy/server.py, .github/workflows/, schema/tools.sha256.json |
+| 16.3 | The split release (D38): tag, probe, 10, 50 and 100 percent with the bake's rules at each step and restore of the previous split; changes of configuration and of secret versions through the same path; a rollback drill | labdeploy/release.py, labdeploy/bake.py, templates/, docs/RUNBOOK.md |
+| 16.4 | Reliability (D39): an SLO per application with fast and slow burn-rate alerts and the 60-second uptime check; a production readiness checklist rendered by code at the first promotion (probes, alerts, runbook entry, backup, capacity, rollback path); `get_service_health` shows the error budget | infra/gcp/modules/service/, labdeploy/cloud.py, labdeploy/chat.py |
+| 16.5 | Production data: Postgres defaults (backups, point-in-time recovery, deletion protection; the contract says "no SLA"); `database_ha: true` and the SLA shape as opt-ins with their floors; migrations checked by squawk with a lock timeout; a release never contracts a schema; the restore drill covers production | infra/gcp/modules/service/needs.tf, labdeploy/cost.py, templates/, docs/DEVELOPER-CONTRACT.md |
+| 16.6 | Reach: `domain:` as a per-app opt-in through a global load balancer with a Google-managed certificate and Cloud Armor, ingress restricted to the balancer, the floor in the approval block; IAP stays the default for people | infra/gcp/modules/service/domain.tf, labdeploy/cost.py, labdeploy/models.py |
+| 16.7 | Operations: release tags per promotion; an incident procedure for one operator (detect, mitigate first, communicate, review); a cap-fire drill for production; the weekly cost report and the drift check cover both projects | docs/RUNBOOK.md, labdeploy/scheduler.py, .github/workflows/infra-drift.yml |
+
+Live exercise: the demo promoted to production by digest with an approval; a planted failure restored at 10 percent; the
+SLO alert fired by a test; a configuration change released through the split; one application given a domain and the
+floor seen in its approval block; the rollback and cap-fire drills recorded.
+Requires regeneration of app workflows: yes (the split release). Terraform apply: the production foundation once by the
+operator, then by the pipeline.
+Cost effect: about $0.06 a month at idle for the project; about $10 a month per production Postgres; a domain with Cloud
+Armor about $25 a month per application and an SLA database about $100 a month, only where chosen.
+
+## Phase 17: the tier for protected health information (about four days, plus the institution's steps) → version 1.19.0
+
+Status: planned on 2026-10-16 (research review section 5.4). Every service the platform uses is on Google's BAA list
+(2025-09-17); what the tier adds is mostly organisational, with cheap technical controls behind it. It is planned now so
+that nothing built in Phases 15 and 16 has to be undone: the production project is created under the organization from
+the start, the audit logs and their locked copy exist from day one, and the logs tool is gated for data-bearing apps.
+
+| Item | Change | Where |
+|---|---|---|
+| 17.1 | The organization: the production project created under `mail-mboti-org` (created 2026-07-27, so the seven baseline constraints apply on their own), an Assured Workloads folder with the free "US Data Boundary for Healthcare and Life Sciences" package, Security Command Center Standard at organization level, Access Transparency and Access Approval; the organization policies of the review's section 5.4 as Terraform (`sql.restrictPublicIp`, `storage.publicAccessPrevention`, `run.allowedIngress`, `run.managed.requireInvokerIam`, `run.allowedBinaryAuthorizationPolicies`, `gcp.resourceLocations`, `iam.workloadIdentityPoolProviders`) | infra/gcp/org/, docs/SETUP.md |
+| 17.2 | The agreement and the status: the BAA accepted by someone authorised to bind the institution, the lab's status (covered entity, hybrid entity or business associate) recorded; `phi: true` in an application's contract turns the tier on, and the policy refuses for such an application any resource or feature outside Google's covered-product list and anything pre-GA | labdeploy/infra.py, labdeploy/models.py, docs/DEVELOPER-CONTRACT.md, docs/RUNBOOK.md |
+| 17.3 | Logs and keys: Data Access audit logs on Cloud SQL, Firestore, Cloud Storage and Secret Manager, routed to the locked bucket; customer-managed keys with automatic rotation on the data stores, the registry and the Cloud Run service of a `phi: true` application | infra/gcp/modules/project/, infra/gcp/modules/service/ |
+| 17.4 | The perimeter: VPC Service Controls around the production project, dry run first, with the access level for the pipeline's federated identity, then enforced; the egress deny of 14.5 is the default for `phi: true` | infra/gcp/org/, docs/SETUP.md |
+| 17.5 | PHI out of the control plane: `get_recent_logs` refused for a `phi: true` application until its lines pass through Sensitive Data Protection's de-identification; a test that plans, receipts, summaries and the audit trail carry no application data; no third party between the controller and Claude (Phase 15) | labdeploy/controller.py, labdeploy/cloud.py, labdeploy/chat.py, tests/ |
+| 17.6 | The duties, written down: the 60-day breach-notification clock and who is told; the asset inventory and network map printed from the registry and the Terraform state; the 72-hour restore proved by the drills; the controls reviewed every six months; the handoff | docs/RUNBOOK.md, labdeploy/cli.py, PROJECT_HANDOFF.md |
+
+Live exercise: a `phi: true` demo with no real data in the production project under the organization; the perimeter in
+dry run, then enforced, with the pipeline still applying; a Data Access log entry found in the locked bucket; a logs call
+refused; a planted resource outside the covered list refused by the policy; the inventory printed.
+Requires regeneration of app workflows: no. Terraform apply: the organization and the production foundation once, by
+the operator.
+Cost effect: about $1 to $5 a month (key versions and Data Access logs); the Assured Workloads package, VPC Service
+Controls, Access Transparency and Security Command Center Standard have no charge.
+
+## Later, unscheduled (research item 13 of 2026-10-14; review of 2026-10-16)
+
+`cache: valkey` behind operator approval with its floor in every plan (two days plus a trial; Memorystore never scales to zero); `gpu: l4` with one instance, zonal redundancy off, weights on a read-only bucket volume and the cap able to stop it (three days plus a trial; instance-based billing); the container-only runtime for the first non-Python application (two days); Firebase Hosting for a public front-end only if the lab ever allows public exposure; Cloud Deploy pipelines with approvals and automated canaries, if the runner's split release of Phase 16 ever proves too little (the first pipeline is free, each further one $5 a month); SLSA Build Level 3 by isolating the signing job in the central pipeline; OpenTelemetry when an application needs traces beyond Cloud Run's own.
+
+Not planned, because the evidence is against it for this lab: a second cloud or a cloud-agnostic layer; Score, Radius, the Open Application Model, Dapr, Crossplane or TOSCA; Compose as a deployment unit; multi-architecture image builds; worker pools or Memorystore by default; Kubernetes; model-written Terraform; autonomous remediation; forks or mirrors of application repositories; an LLM that sets up environments without a person's review; Cloud Run domain mapping or the preview custom URLs for production; statistical canary analysis; multi-region failover; Cloud SQL Enterprise Plus; Cloud Armor Enterprise; an always-on instance-based controller or application; chaos experiments in production; image debloating; Cloud Run sandboxes for the application itself. SBOMs and Binary Authorization, deferred on 2026-10-14, are now Phase 14.
 
 ## Totals
 
@@ -337,5 +470,10 @@ Not planned, because the evidence is against it for this lab: a second cloud or 
 | 10 | about four and a half days | yes | by the pipeline |
 | 11 | about five days | yes | no |
 | 12 | about three days | no | no |
+| 13 | about six days | no (new central workflows) | by the pipeline |
+| 14 | about four days | yes | by the pipeline; the foundation once |
+| 15 | about three days | no | the foundation once (the machine) |
+| 16 | about six days | yes | the production foundation once, then by the pipeline |
+| 17 | about four days, plus the institution's steps | no | the organization and the production foundation once |
 
-About nine and a half days of work for Phases 0 to 5, plus the live exercises, which take an hour or two per phase. Phase 6 adds about eleven days and a trial per resource type. Phases 9 to 12 add about fifteen and a half days, planned on 2026-10-14 from `docs/RESEARCH-2026-10-14.md`.
+About nine and a half days of work for Phases 0 to 5, plus the live exercises, which take an hour or two per phase. Phase 6 adds about eleven days and a trial per resource type. Phases 9 to 12 add about fifteen and a half days, planned on 2026-10-14 from `docs/RESEARCH-2026-10-14.md`. Phases 13 to 17 add about twenty-three days, planned on 2026-10-16 from `docs/RESEARCH-2026-10-16.md`; their idle cost is about $4 a month for the controller's machine and about $0.06 for the production project, everything else being a per-app or per-tier choice shown on the approval block.
