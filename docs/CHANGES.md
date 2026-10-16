@@ -1,3 +1,11 @@
+# 1.12.3: a repository onboarded again keeps its environment
+
+Found live on 2026-10-16, re-onboarding Sophia's copy from `backend/` under its old name: the step that prepares the GitHub
+environment stopped with "GitHub answered HTTP 303". The environment's `main` branch policy already existed from the first
+onboarding, and GitHub now answers 303 See Other for an existing policy where it once answered 422. Both mean the policy
+is in place; any other answer still stops the step. Nothing to apply or regenerate; restart the controller.
+
+
 # 1.12.2: the checker drafts for a real project with large files
 
 Found live on 2026-10-16: `propose_configuration` for Sophia's `backend/` stopped with "Repository input exceeds 64 KiB".

@@ -87,3 +87,25 @@ def test_the_pipeline_s_secret_writer_can_enable_and_replace_a_version_but_never
     for permission in ("versions.add", "versions.enable", "versions.disable", "versions.destroy"):
         assert f"secretmanager.{permission}" in role
     assert "versions.access" not in role.split("permissions")[1]  # the apply identity never reads a value back
+
+
+def test_an_environment_whose_branch_policy_exists_is_accepted_as_github_answers_today(monkeypatch):
+    # Sophia's copy onboarded again from backend/ (1.12.3): GitHub answered 303 See Other for the existing `main` policy.
+    monkeypatch.setenv("GITHUB_TOKEN", "github_pat_test")
+    import httpx
+    import pytest
+
+    from labdeploy.github import GitHub
+
+    for answer in (200, 303, 422):
+        def handler(request, answer=answer):
+            if request.method == "PUT":
+                return httpx.Response(200, json={})
+            assert request.url.path.endswith("/environments/staging/deployment-branch-policies")
+            return httpx.Response(answer, json={}, headers={"location": "https://api.github.com/x"} if answer == 303 else {})
+        GitHub(httpx.Client(base_url="https://api.github.com", transport=httpx.MockTransport(handler))).ensure_environment("lab/app", "staging", "main")
+
+    def refused(request):
+        return httpx.Response(200 if request.method == "PUT" else 404, json={})
+    with pytest.raises(httpx.HTTPStatusError):  # anything else still stops the step
+        GitHub(httpx.Client(base_url="https://api.github.com", transport=httpx.MockTransport(refused))).ensure_environment("lab/app", "staging", "main")
