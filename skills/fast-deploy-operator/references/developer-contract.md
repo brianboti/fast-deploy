@@ -14,6 +14,7 @@ page is the authority; if the two ever disagree, trust the full page and say so.
 5. Pages for people
 6. Not supported
 7. The short list for developers
+8. A repository taken as it is
 
 ## 1. What `onboard_application` checks automatically
 
@@ -132,3 +133,14 @@ platform drafts as one draft pull request: `check_repository` lists what is miss
 repository link (and `path`) drafts it. A person reads the drafted `platform.yaml`, sets `reviewed: true` and merges.
 Work happens on `main`; no passwords or keys in the repository (send secret values to the operator separately, never in
 chat or in Git).
+
+## 8. A repository taken as it is
+
+When the developer will not or should not change their repository, `onboard_application` with `as_is: true` (or
+`import_contract` for the pull request alone) adds nothing to it. The platform reads it by fixed rules (Dockerfile, then
+Procfile, then its own Dockerfile; the Python the repository names, else 3.12; its lock, else one the platform compiles;
+the start command, port and health route it finds, else 8080 and the TCP check) and proposes the contract as
+`apps/NAME/platform.yaml` in the platform repository; a person's merge is the review. It refuses rather than guesses,
+naming the file and the fix: several apps or frameworks in one service, Django without `WSGI_APPLICATION`, no
+dependency list, conda-only or system packages, a Python outside 3.11 to 3.15, a committed secret, a notebook or a huge
+file as the app, and any private repository while the platform repository is public.

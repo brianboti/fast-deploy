@@ -9,10 +9,11 @@ import uuid
 
 from .analyzer import COMPOSE_FILES, FILES, analyze
 from .config import Application, Principal
+from .contract import Contracts, contract_path
 from .cost import estimate, findings
 from .github import explain
 from .infra import BOOTSTRAP_IMAGE, app_root
-from .models import enforce, needs_env, parse_spec, spec_hash
+from .models import enforce, needs_env, parse_contract, parse_spec, spec_hash
 from .rightsize import SETTINGS, apply_settings
 from .status import TERMINAL, advice, release_phases, summarize
 from .workflows import TEMPLATES, pinned_commit, render
@@ -32,6 +33,8 @@ class Store:
             db.execute("CREATE INDEX IF NOT EXISTS events_at ON events (at)")
             db.execute("CREATE TABLE IF NOT EXISTS applications (id TEXT PRIMARY KEY, created REAL NOT NULL, payload TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS onboardings (id TEXT PRIMARY KEY, updated REAL NOT NULL, payload TEXT NOT NULL)")
+            # The newest release pull request of each application whose contract the platform keeps (docs/ROADMAP.md D32).
+            db.execute("CREATE TABLE IF NOT EXISTS release_requests (id TEXT PRIMARY KEY, updated REAL NOT NULL, payload TEXT NOT NULL)")
             db.execute("PRAGMA journal_mode=WAL")  # readers never block the scheduler's and the request handlers' writes
 
     # ---- applications registered by onboarding, and the onboarding records themselves
@@ -63,6 +66,16 @@ class Store:
     def onboardings(self):
         with self.connect() as db:
             return [json.loads(row[0]) for row in db.execute("SELECT payload FROM onboardings ORDER BY updated").fetchall()]
+
+    def release_request(self, app_id):
+        with self.connect() as db:
+            row = db.execute("SELECT payload FROM release_requests WHERE id=?", (app_id,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_release_request(self, app_id, record):
+        record["updated_at"] = time.time()
+        with self.connect() as db:
+            db.execute("INSERT OR REPLACE INTO release_requests VALUES (?, ?, ?)", (app_id, record["updated_at"], json.dumps(record)))
 
     @contextlib.contextmanager
     def connect(self):
@@ -223,7 +236,7 @@ def release_approval(plan, requested_by=None):
     reversibility = ({"tier": "data-bearing", "detail": "the migration changes the database; a rollback restores traffic only"} if migrates
                      else {"tier": "reversible", "detail": "traffic rollback in seconds"})
     requester = requested_by or ""
-    return {
+    block = {
         "commit": {"sha": plan.get("sha"), "message": lines[0][:100] if lines else None},
         "spec_hash": plan.get("spec_hash"),
         "target": {"project_id": target.get("project_id"), "region": target.get("region"), "service": target.get("service"),
@@ -238,6 +251,12 @@ def release_approval(plan, requested_by=None):
         "identifiers": {"plan": plan.get("id"), "commit": plan.get("sha"), "requested_by": requested_by,
                         "onboarding": plan.get("application") if requester.startswith("onboarding:") else None, "run": None, "run_url": None},
     }
+    if plan.get("contract"):
+        # An application taken as it is (docs/ROADMAP.md 13.1) also names its source and the platform commit whose contract describes it.
+        contract = plan["contract"]
+        block["contract"] = {"repository": contract["repository"], "commit": contract["commit"], "path": contract["path"],
+                             "source": {"repository": plan.get("repository"), "commit": plan.get("sha")}}
+    return block
 
 
 def link_run(plan):
@@ -254,6 +273,7 @@ class Controller:
         self._cache = {}
         self._onboarding_lock = threading.Lock()
         self.config, self.github, self.store, self.observer = config, github, store, observer
+        self.contracts = Contracts(self)
         self.refresh_registry()
 
     def refresh_registry(self):
@@ -268,10 +288,34 @@ class Controller:
         return [app_id for app_id in principal.applications if app_id in self.config.applications]
 
     # ---- one sentence: a repository that follows the contract becomes a running service
-    def onboard(self, principal, repository, app_id=None, auto_deploy=False, path=None):
+    def onboard(self, principal, repository, app_id=None, auto_deploy=False, path=None, as_is=False):
         from .onboarding import Onboarder
         with self._onboarding_lock:
-            return Onboarder(self).start(principal, repository, app_id, auto_deploy, path)
+            return Onboarder(self).start(principal, repository, app_id, auto_deploy, path, as_is=as_is)
+
+    def import_contract(self, principal, repository, path=None, name=None):
+        """Read one service of a repository as it is and open the pull request that adds its contract to the platform
+        repository (docs/ROADMAP.md 13.1); nothing is added to the repository itself, and merging is the review."""
+        from .onboarding import normalize_path, normalize_repository
+        result = self.contracts.propose(principal, normalize_repository(repository), normalize_path(path), name)
+        view = {key: result.get(key) for key in ("repository", "path", "head", "service", "files", "pull_request", "existing", "note")}
+        read = result["read"]
+        view.update(service=view.get("service") or read["service"], choices=read["choices"], refusals=read["refusals"], ignored=read["ignored"],
+                    notes=read["notes"])
+        if read["refusals"]:
+            view["next_action"] = "Nothing was opened: fix what each refusal names in the repository, then ask again."
+        elif result.get("pull_request") == "disabled":
+            view["next_action"] = "Writes are disabled (live_dispatch: false): the contract above was drafted and not proposed."
+        elif result.get("pull_request"):
+            view["next_action"] = (f"A person reviews and merges the pull request: merging it is the review. Then onboard_application with {view['repository']}"
+                                   + (f" and path {view['path']}" if view["path"] else "") + " as it is, or it continues by itself when onboarding opened it.")
+        else:
+            view["next_action"] = view.get("note") or "Nothing to import."
+        return view
+
+    def contract_tick(self):
+        """The scheduler's pass over contracts the platform keeps: release pull requests, and merged contracts not released."""
+        return self.contracts.tick()
 
     def check_repository(self, principal, repository, path=None):
         """The contract's checklist for a repository, or one service folder of it, before anything is registered or created:
@@ -288,9 +332,20 @@ class Controller:
         view = {key: result[key] for key in ("repository", "path", "branch", "ready", "checklist", "recommended")}
         writable = [entry["item"] for entry in result["checklist"] + result["recommended"] if entry["platform_writes"]]
         view["platform_can_draft"] = writable
+        # As it is (docs/ROADMAP.md 13.5): what the reader would choose without changing the repository, and what it refuses.
+        try:
+            seen = self.contracts.inspect(repository, path)
+            read = seen["read"]
+            view["as_it_is"] = {"ready": not read["refusals"] and read["spec"] is not None, "service": read["service"], "choices": read["choices"],
+                                "refusals": read["refusals"], "ignored": read["ignored"], "notes": read["notes"], "services": seen["services"]}
+        except Exception as exc:  # noqa: BLE001 - the checklist stands on its own
+            view["as_it_is"] = {"ready": False, "error": (explain(exc) or str(exc))[:300]}
         if result["ready"]:
             view["next_action"] = (f"Ready to deploy: onboard_application with {repository}" + (f" and path {path}" if path else "")
                                    + (". The platform can still draft the recommended " + ", ".join(writable) + " with propose_configuration." if writable else "."))
+        elif view["as_it_is"].get("ready"):
+            view["next_action"] = (missing_message(result["checklist"]) + " Or deploy it as it is, adding nothing to the repository: onboard_application "
+                                   "with as_is true (its contract is kept in the platform repository).")
         else:
             view["next_action"] = missing_message(result["checklist"])
         return view
@@ -349,7 +404,7 @@ class Controller:
         if self.spec_at(app, head).build.context == "repository":
             return True
         files, complete = self.github.changed_files(app.repository, base, head)
-        own = {f".github/workflows/{name}" for name in app.workflows.values()}
+        own = set() if app.central else {f".github/workflows/{name}" for name in app.workflows.values()}
         return not complete or any(name.startswith(f"{app.path}/") or name in own for name in files)
 
     FOLLOW_IDENTITY = "follow-up"
@@ -383,6 +438,23 @@ class Controller:
                 continue
             try:
                 head = self.github.head(app)
+                if app.central:
+                    # docs/ROADMAP.md D32: the release of a new commit is the pull request that moves source.commit; its merge
+                    # (by a person, or by the controller under auto_merge) releases it through contract_tick.
+                    current = self.contracts.require(app)["source"].commit
+                    if current == head or (app.path and not self.touched_since(app, current, head)):
+                        results[app_id] = "up to date: the contract names the tip of main" if current == head else f"up to date: nothing under {app.path} changed"
+                        continue
+                    pending = self.store.release_request(app_id)
+                    if pending and pending.get("target") == head and pending.get("state") in ("open", "merged"):
+                        results[app_id] = f"release pull request #{pending['pull_request']} for {head[:12]} is {pending['state']}"
+                        continue
+                    principal = Principal(name=self.AUTO_DEPLOY_IDENTITY, token_sha256="0" * 64, applications=[app_id], can_deploy=True)
+                    record = self.contracts.request_release(principal, app_id, app, head)
+                    self.store.record_event("auto_deploy", name=app_id, identity=self.AUTO_DEPLOY_IDENTITY, application=app_id, outcome=record["state"],
+                                            detail=f"{head[:12]} release pull request #{record.get('pull_request')}")
+                    results[app_id] = f"release pull request #{record.get('pull_request')} for {head[:12]}: {record['state']}"
+                    continue
                 live = self.store.latest_success(app_id)
                 if live and live["sha"] == head:
                     results[app_id] = "up to date"
@@ -659,6 +731,8 @@ class Controller:
         platform = self.config.platform
         if platform is None:
             return None
+        if app.central:
+            return {"commit": None, "supported": True, "note": "Released by the platform repository's own pipeline (deploy.yml); there is no pin."}
         pin = self.pinned_platform(app, [platform.repository, *platform.former_repositories])
         result = {"commit": pin, "supported": None, "note": None}
         if pin is None:
@@ -712,8 +786,11 @@ class Controller:
         return {"commit_sha": sha, "path": app.path, **analyze(files, app.service, self.service_paths(app, paths))}
 
     def spec_at(self, app, sha):
-        """The reviewed specification at a commit, with a plain explanation when the app has none yet."""
+        """The reviewed specification at a commit, with a plain explanation when the app has none yet. For an application taken
+        as it is, the contract on the platform repository's main, whatever the commit."""
         import httpx
+        if app.central:
+            return self.contracts.require(app)["spec"]
         try:
             text = self.github.file(app, sha, app.repo_path("platform.yaml"))
         except httpx.HTTPStatusError as exc:
@@ -739,6 +816,8 @@ class Controller:
         app = self.app(principal, app_id)
         self.require_active(app_id)
         behind = 0
+        if app.central:
+            return self.plan_contract(principal, app_id, app, cloud, environment, commit_sha)
         if commit_sha:
             if not re.fullmatch(r"[a-f0-9]{40}", commit_sha):
                 raise ValueError("Give the full 40-character commit SHA to deploy a specific commit")
@@ -800,6 +879,65 @@ class Controller:
         self.store.add(principal.name, plan)
         return {**plan, "state": "planned", "live_dispatch_enabled": self.config.live_dispatch, "next_action": advice({"state": "planned"})}
 
+    def plan_contract(self, principal, app_id, app, cloud, environment, commit_sha=None):
+        """A plan for an application taken as it is: exactly the commit and specification its contract on the platform
+        repository's main names, bound to that contract commit (docs/ROADMAP.md 13.1)."""
+        found = self.contracts.require(app)
+        sha = found["source"].commit
+        if commit_sha and commit_sha != sha:
+            raise ValueError(f"The contract {found['path']} runs {sha[:12]}; another commit is released by the pull request that moves "
+                             "source.commit: deploy_latest opens it for the tip of main")
+        behind = self.ancestor_of_branch(app, sha)
+        describe = getattr(self.github, "commit", None)
+        commit = describe(app, sha) if callable(describe) else {"sha": sha}
+        spec = found["spec"]
+        enforce(spec, cloud, environment)
+        if spec.name != app.service:
+            raise ValueError("Spec service name does not match operator registry")
+        cost = self.cost_policy(app, spec)
+        platform = self.config.platform
+        plan = {
+            "id": uuid.uuid4().hex, "application": app_id, "repository": app.repository,
+            "branch": app.branch, "sha": sha, "commit": commit, "spec_hash": spec_hash(spec),
+            "spec": spec.model_dump(), "cloud": cloud, "environment": environment,
+            "target": app.target.model_dump(), "expires_at": time.time() + 900, "cost": cost,
+            "checks": {"config_policy": "passed", "tests": "pending_in_ci", "dependency_scan": "pending_in_ci", "health": "pending_after_deployment"},
+            "pinned_commit": True, "behind_branch_by": behind, "provenance": app.provenance, "bake_seconds": app.bake_seconds,
+            "layout": {"path": app.path, "workflow": app.workflow, "github_environment": app.environment},
+            "contract": {"repository": platform.repository, "commit": found["commit"], "path": found["path"]},
+            "warnings": [],
+        }
+        if behind:
+            plan["warnings"].append(f"The contract runs a commit {behind} behind the tip of main; deploy_latest opens the pull request that moves it.")
+        if not app.bake_seconds:
+            plan["warnings"].append("bake_seconds is 0 for this application: nothing watches the new revision after its final probe.")
+        if spec.tests == "none":
+            plan["checks"]["tests"] = "skipped_by_config"
+            plan["warnings"].append("The contract declares tests: none, so nothing checks this app's behaviour before a release; only the health probe guards it.")
+        if spec.health_path is None:
+            plan["warnings"].append("No health route: Cloud Run's TCP startup probe gates the start, and the HTTP health probe is off.")
+        if spec.secrets:
+            plan["warnings"].append("References secrets " + ", ".join(f"{app.service}-{name}" for name in spec.secrets) + "; each must exist in Secret Manager with an enabled version.")
+        derived = needs_env(spec, app.target.project_id, app.target.region)
+        if derived:
+            plan["needs"] = {"buckets": list(spec.needs.buckets), "topics": list(spec.needs.topics), "database": spec.needs.database, "env": derived}
+        prior = self.store.latest_success(app_id, sha, include_rolled_back=True, signed=True)
+        receipt = (prior or {}).get("receipt") or {}
+        image = receipt.get("image") if receipt.get("provenance") != "unavailable" else None
+        prefix = f"{app.target.region}-docker.pkg.dev/{app.target.project_id}/{app.target.registry}/{app.target.service}@sha256:"
+        same_build = (prior or {}).get("spec", {}).get("build") == spec.model_dump()["build"] and (prior or {}).get("spec", {}).get("python") == spec.python
+        if app.provenance == "unavailable":
+            plan["warnings"].append("The operator's exception provenance: unavailable is set for this application: the image is built fresh and released "
+                                    "without signed provenance. Remove it from the controller configuration once the cause is fixed.")
+        elif image and image.startswith(prefix) and same_build:
+            # The same commit built the same way was released before: reuse its attested image.
+            plan["reuse_image"] = image
+            plan["reused_from_plan"] = prior["id"]
+            plan["checks"].update(tests="passed_in_earlier_release", dependency_scan="passed_in_earlier_release")
+        plan["approval"] = release_approval(plan, principal.name)
+        self.store.add(principal.name, plan)
+        return {**plan, "state": "planned", "live_dispatch_enabled": self.config.live_dispatch, "next_action": advice({"state": "planned"})}
+
     def propose_config(self, principal, app_id=None, repository=None, path=None):
         """D26: one draft pull request with the files docs/DEVELOPER-CONTRACT.md asks for and the service lacks, never one that
         exists, for a registered application or, before registration, for a repository link and folder. The lock is compiled
@@ -811,6 +949,9 @@ class Controller:
         if app_id:
             app = self.app(principal, app_id, write=True)
             self.require_active(app_id)
+            if app.central:
+                raise ValueError(f"{app_id} is taken as it is: nothing is added to its repository, and its contract is "
+                                 f"{contract_path(app.service)} in the platform repository")
             target, folder, name = SimpleNamespace(repository=app.repository, branch=app.branch), app.path, app.service
         else:
             if not repository:
@@ -894,6 +1035,9 @@ class Controller:
         platform = self.config.platform
         if platform is None:
             raise ValueError("Set platform.repository in the controller configuration before updating app workflows")
+        if app.central:
+            return {"application": app_id, "platform_commit": None, "current_pin": None, "pull_request": None,
+                    "note": "This application is taken as it is: the platform repository's own pipeline releases it, so it has no workflows to update."}
         if not allow_writes and not self.config.live_dispatch:
             raise ValueError("Writes are disabled (live_dispatch: false); enable them, or run the command on the controller host")
         sha = platform_sha or platform.commit or self.github.branch_head(platform.repository, platform.branch)
@@ -916,7 +1060,10 @@ class Controller:
         """The app's Terraform root as the pipeline will plan it: literal inputs from the configuration, the reviewed spec and GitHub's ids."""
         app = self.app(principal, app_id, write=True)
         target = app.target
-        ids = self.github.repository_ids(app.repository)
+        # The deploy identity trusts the workflows that release the app: its own repository's, or the platform repository's
+        # pipeline in the environment staging-<service> for an application taken as it is (docs/ROADMAP.md D33).
+        trusted = self.config.platform.repository if app.central else app.repository
+        ids = self.github.repository_ids(trusted)
         note, needs, exposure = None, None, "authenticated"
         try:
             spec = self.spec_at(app, self.github.head(app))
@@ -924,9 +1071,10 @@ class Controller:
         except ValueError as exc:
             health_path, note = "/health", f"Defaults used until the app has a reviewed platform.yaml: {exc}"
         files = app_root(target.service, project_id=target.project_id, region=target.region, state_bucket=state_bucket or f"{target.project_id}-tfstate",
-                         github_repository=app.repository, github_repository_id=ids["repository_id"], github_owner_id=ids["owner_id"],
+                         github_repository=trusted, github_repository_id=ids["repository_id"], github_owner_id=ids["owner_id"],
                          bootstrap_image=bootstrap_image or BOOTSTRAP_IMAGE, health_path=health_path, settings={**app.infra, **(settings or {})}, needs=needs,
-                         exposure=exposure, viewers=self.viewers(app), github_environment=app.environment, workflow_files=list(app.workflows.values()))
+                         exposure=exposure, viewers=self.viewers(app), github_environment=app.environment, workflow_files=list(app.workflows.values()),
+                         pipeline="platform" if app.central else "repository")
         return {"application": app_id, "service": target.service, "directory": f"infra/gcp/apps/{target.service}", "files": files, "note": note}
 
     def viewers(self, app):
@@ -1039,9 +1187,19 @@ class Controller:
         return {"commit_sha": sha, "spec_hash": spec_hash(spec), "reviewed": spec.reviewed,
                 **self.cost_summary(app, spec, requests_per_month, average_request_seconds)}
 
+    @staticmethod
+    def artifact_name(app, name):
+        """An artifact of the application's runs: the platform repository's pipeline names one per service."""
+        return f"{name}-{app.service}" if app.central else name
+
+    @classmethod
+    def artifact_names(cls, app, name):
+        """The artifact's name as a keyword, given only when it differs from the default an application's own workflows use."""
+        return {"name": cls.artifact_name(app, name)} if app.central else {}
+
     def cost_report(self, principal, app_id):
         app = self.app(principal, app_id)
-        result = self.github.cost_report(app, workflow=app.workflows["rightsize"])
+        result = self.github.cost_report(app, workflow=app.workflows["rightsize"], **self.artifact_names(app, "cost-report"))
         if isinstance(result, dict):
             result["spending_guards"] = self.spending_guards(app)
         return result
@@ -1052,7 +1210,7 @@ class Controller:
         self.require_active(app_id)
         if not self.config.live_dispatch:
             raise ValueError("Writes are disabled (live_dispatch: false); enable them before proposing changes")
-        latest = self.github.cost_report(app, workflow=app.workflows["rightsize"])
+        latest = self.github.cost_report(app, workflow=app.workflows["rightsize"], **self.artifact_names(app, "cost-report"))
         report = latest.get("report")
         if not report:
             raise ValueError("No cost report yet; the right-sizing workflow runs weekly, or dispatch it in GitHub Actions")
@@ -1060,12 +1218,17 @@ class Controller:
                      if p.get("setting") in SETTINGS and isinstance(p.get("recommended"), int) and not isinstance(p.get("recommended"), bool)]
         if not proposals:
             return {"application": app_id, "pull_request": None, "changes": [], "note": "The latest report proposes no concrete setting change."}
-        head = self.describe_head(app)
-        text = self.github.file(app, head["sha"], app.repo_path("platform.yaml"))
-        new_text, applied, regenerated = apply_settings(text, {p["setting"]: p["recommended"] for p in proposals})
+        if app.central:
+            # The contract the platform keeps (its source block survives a regeneration: the file is read and written as data).
+            text = self.contracts.require(app)["text"]
+            new_text, applied, regenerated = apply_settings(text, {p["setting"]: p["recommended"] for p in proposals})
+        else:
+            head = self.describe_head(app)
+            text = self.github.file(app, head["sha"], app.repo_path("platform.yaml"))
+            new_text, applied, regenerated = apply_settings(text, {p["setting"]: p["recommended"] for p in proposals})
         if new_text == text:
-            return {"application": app_id, "pull_request": None, "changes": [], "note": "platform.yaml already matches the proposals."}
-        spec = parse_spec(new_text)
+            return {"application": app_id, "pull_request": None, "changes": [], "note": "The contract already matches the proposals."}
+        spec = parse_contract(new_text)[0] if app.central else parse_spec(new_text)
         enforce(spec)  # a proposal can never take the app outside the staging policy
         before, after = self.cost_summary(app, parse_spec(text)), self.cost_summary(app, spec)
         if after["ceiling_policy"]["status"] == "exceeds_limit":
@@ -1082,8 +1245,14 @@ class Controller:
                 + ("The file was regenerated from the model because a proposed key was missing, so comments were not kept.\n\n" if regenerated else "")
                 + "Review, adjust and merge through the normal process; the next release applies it. Nothing is merged or deployed by this pull request itself.")
         branch = f"lab-deploy/rightsize-{(report.get('generated_at') or '')[:10].replace('-', '') or uuid.uuid4().hex[:8]}"
-        pull_request = self.github.open_pull_request(app, branch + app.suffix, {app.repo_path("platform.yaml"): new_text}, "Right-size platform.yaml from measured usage", body,
-                                                     "Apply measured right-sizing proposals to platform.yaml")
+        if app.central:
+            # The contract lives in the platform repository: the proposal is a pull request there, and its merge releases it.
+            platform = self.config.platform
+            pull_request = self.github.open_platform_pull_request(platform.repository, platform.branch, f"{branch}-{app.service}", {contract_path(app.service): new_text},
+                                                                  f"Right-size {app.service} from measured usage", body, f"Apply measured right-sizing proposals to {app.service}")
+        else:
+            pull_request = self.github.open_pull_request(app, branch + app.suffix, {app.repo_path("platform.yaml"): new_text}, "Right-size platform.yaml from measured usage", body,
+                                                         "Apply measured right-sizing proposals to platform.yaml")
         return {"application": app_id, "changes": applied, "estimated_monthly_saving_usd": round(savings, 4),
                 "cost": {"worst_case_before_usd_month": before["compute_ceiling_usd_month"], "worst_case_after_usd_month": after["compute_ceiling_usd_month"],
                          "idle_floor_before_usd_month": before["idle_floor_usd_month"], "idle_floor_after_usd_month": after["idle_floor_usd_month"]},
@@ -1109,10 +1278,14 @@ class Controller:
             raise ValueError("The application's folder or workflow names changed since this plan; create a new plan")
         if plan.get("provenance", "required") != app.provenance:
             raise ValueError("The application's provenance setting changed since this plan; create a new plan")
+        if bool(plan.get("contract")) != app.central:
+            raise ValueError("The application's contract moved between its repository and the platform's since this plan; create a new plan")
         if plan.get("pinned_commit"):
             self.ancestor_of_branch(app, plan["sha"])
         elif self.github.head(app) != plan["sha"]:
             raise ValueError("Branch moved; create a new plan")
+        if app.central and self.contracts.require(app)["source"].commit != plan["sha"]:
+            raise ValueError("The contract moved to another commit since this plan; create a new plan")
         spec = self.spec_at(app, plan["sha"])
         enforce(spec, plan["cloud"], plan["environment"])
         if spec_hash(spec) != plan["spec_hash"] or spec.name != app.service:
@@ -1148,9 +1321,26 @@ class Controller:
         return status
 
     def deploy_latest(self, principal, app_id):
-        """Plan the tip of main and dispatch it in one step when every policy passes."""
-        plan = self.plan(principal, app_id)
-        return self.deploy(principal, plan["id"])
+        """Plan the tip of main and dispatch it in one step when every policy passes. For an application taken as it is, the tip
+        is released through the pull request that moves source.commit (docs/ROADMAP.md D32): merged at once when the gate
+        allows and the checks have passed, else it waits for them or for a person, and the merge releases it."""
+        app = self.app(principal, app_id, write=True)
+        if not app.central:
+            plan = self.plan(principal, app_id)
+            return self.deploy(principal, plan["id"])
+        self.require_active(app_id)
+        if not self.config.live_dispatch:
+            raise ValueError("Dispatch is disabled (live_dispatch: false); nothing can be released from here")
+        request = self.contracts.request_release(principal, app_id, app)
+        if request["state"] in ("current", "merged"):
+            result = self.contracts.release_now(principal, app_id)
+            if request["state"] == "merged":
+                result = {**result, "release_request": request}
+            return result
+        return {"application": app_id, "state": "release_requested", "release_request": request, "sha": request["target"],
+                "next_action": (f"Release pull request #{request['pull_request']} moves {app.service} to {request['target'][:12]}: "
+                                + (f"waiting for {request['waiting']}." if request.get("waiting") else "it merges once the checks pass.")
+                                + " Merging it starts the release within a minute; ask for list_plans or the application's status then.")}
 
     def rollback(self, principal, app_id):
         """Move traffic back to the split that served before the live release, through the recovery workflow. No build."""
@@ -1255,7 +1445,7 @@ class Controller:
         """A finished run is stored once with its receipt, so history survives GitHub's artifact retention."""
         if plan.get("kind") == "rollback":
             fetch = getattr(self.github, "artifact_json", None)
-            files = fetch(app, workflow["id"], "recovery-receipt", ("recovery-receipt.json",)) if callable(fetch) and workflow.get("id") else None
+            files = fetch(app, workflow["id"], self.artifact_name(app, "recovery-receipt"), ("recovery-receipt.json",)) if callable(fetch) and workflow.get("id") else None
             plan["receipt"] = (files or {}).get("recovery-receipt.json")
             if plan["state"] == "succeeded" and (plan["receipt"] or {}).get("state") == "rolled_back":
                 self.store.mark(plan["from_plan"], rolled_back=True, rolled_back_by=plan["id"])
@@ -1281,7 +1471,7 @@ class Controller:
         lookup = getattr(self.github, "recovery_after", None)
         if not callable(lookup) or not (plan.get("workflow") or {}).get("id"):
             return
-        plan["recovery_run"] = lookup(app, plan["workflow"], workflow=app.workflows["recover"])
+        plan["recovery_run"] = lookup(app, plan["workflow"], workflow=app.workflows["recover"], **self.artifact_names(app, "recovery-receipt"))
         if persist and (plan["recovery_run"] or {}).get("conclusion"):
             self.persist(owner, plan)
 

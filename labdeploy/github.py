@@ -85,6 +85,16 @@ def parse_expiration(header):
         return None
 
 
+
+def pipeline_of(app):
+    """The repository whose workflows release an application: the platform's for a contract it keeps, else the app's own."""
+    return getattr(app, "pipeline_repo", None) or app.repository
+
+
+def central_of(app):
+    """Whether the platform repository's own pipeline releases this application (docs/ROADMAP.md D33)."""
+    return bool(getattr(app, "central", False))
+
 class GitHub:
     def __init__(self, client=None):
         self.client = client or httpx.Client(base_url="https://api.github.com", timeout=30, follow_redirects=False)
@@ -152,29 +162,34 @@ class GitHub:
 
     def schedule_health(self, app, workflow):
         """Whether GitHub still runs a scheduled workflow and when it last did; GitHub pauses schedules in idle repositories."""
-        state = self.request("GET", f"/repos/{app.repository}/actions/workflows/{workflow}").json().get("state")
-        runs = self.request("GET", f"/repos/{app.repository}/actions/workflows/{workflow}/runs", params={"event": "schedule", "per_page": 1}).json()["workflow_runs"]
+        state = self.request("GET", f"/repos/{pipeline_of(app)}/actions/workflows/{workflow}").json().get("state")
+        runs = self.request("GET", f"/repos/{pipeline_of(app)}/actions/workflows/{workflow}/runs", params={"event": "schedule", "per_page": 1}).json()["workflow_runs"]
         last = runs[0] if runs else None
         return {"workflow": workflow, "state": state, "last_scheduled_run": last and last.get("created_at"), "last_conclusion": last and last.get("conclusion")}
 
     def cancel_run(self, app, run_id):
         """Ask GitHub to cancel a run; the recovery workflow handles whatever the runner had started."""
-        self.request("POST", f"/repos/{app.repository}/actions/runs/{int(run_id)}/cancel")
+        self.request("POST", f"/repos/{pipeline_of(app)}/actions/runs/{int(run_id)}/cancel")
         return {"cancel_requested": True, "workflow_run_id": int(run_id)}
 
     def dispatch_workflow(self, app, workflow, inputs):
-        response = self.request("POST", f"/repos/{app.repository}/actions/workflows/{workflow}/dispatches", json={"ref": app.branch, "inputs": inputs})
+        """Start one of the application's workflows: its own, or the platform repository's for an application whose contract
+        the platform keeps, which also learn the service they act for."""
+        if central_of(app):
+            inputs = {**inputs, "application": app.service}
+        response = self.request("POST", f"/repos/{pipeline_of(app)}/actions/workflows/{workflow}/dispatches",
+                                json={"ref": "main" if central_of(app) else app.branch, "inputs": inputs})
         return response.json() if response.content else {}
 
     def artifact_json(self, app, run_id, name, filenames, limit=1_048_576):
         """Parsed JSON files from one named artifact of a run, or None when the run has no such artifact."""
-        artifacts = self.request("GET", f"/repos/{app.repository}/actions/runs/{int(run_id)}/artifacts", params={"per_page": 100}).json()["artifacts"]
+        artifacts = self.request("GET", f"/repos/{pipeline_of(app)}/actions/runs/{int(run_id)}/artifacts", params={"per_page": 100}).json()["artifacts"]
         artifact = next((a for a in artifacts if a.get("name") == name and not a.get("expired")), None)
         if artifact is None:
             return None
         if artifact.get("size_in_bytes", 0) > limit:
             raise ValueError(f"Artifact {name} exceeds 1 MiB")
-        response = self.client.request("GET", f"/repos/{app.repository}/actions/artifacts/{int(artifact['id'])}/zip", headers=self.headers(self.token()))
+        response = self.client.request("GET", f"/repos/{pipeline_of(app)}/actions/artifacts/{int(artifact['id'])}/zip", headers=self.headers(self.token()))
         if response.status_code == 302:
             # The signed download URL belongs to another host; the GitHub credential is not forwarded.
             response = self.client.get(response.headers["location"])
@@ -198,9 +213,10 @@ class GitHub:
             return None
         return {"release": files.get("release-receipt.json"), "vulnerabilities": files.get("vulnerability-summary.json")}
 
-    def recovery_after(self, app, run, workflow="recover-gcp.yml"):
-        """The newest recovery run started after a deploy run, with its receipt when uploaded; None while nothing has run yet."""
-        runs = self.request("GET", f"/repos/{app.repository}/actions/workflows/{workflow}/runs", params={"branch": app.branch, "per_page": 10}).json()["workflow_runs"]
+    def recovery_after(self, app, run, workflow="recover-gcp.yml", name="recovery-receipt"):
+        """The newest recovery run started after a deploy run, with its receipt when uploaded; None while nothing has run yet.
+        The platform repository's recovery uploads one receipt per service, named recovery-receipt-<service>."""
+        runs = self.request("GET", f"/repos/{pipeline_of(app)}/actions/workflows/{workflow}/runs", params={"branch": "main", "per_page": 10}).json()["workflow_runs"]
         since = run.get("created_at") or ""
         candidates = [r for r in runs if (r.get("created_at") or "") >= since and r.get("id") != run.get("id")]
         if not candidates:
@@ -209,7 +225,7 @@ class GitHub:
         result = {"run_id": latest.get("id"), "status": latest.get("status"), "conclusion": latest.get("conclusion"), "html_url": latest.get("html_url"),
                   "created_at": latest.get("created_at"), "receipt": None}
         if latest.get("status") == "completed":
-            files = self.artifact_json(app, latest["id"], "recovery-receipt", ("recovery-receipt.json",))
+            files = self.artifact_json(app, latest["id"], name, ("recovery-receipt.json",))
             result["receipt"] = (files or {}).get("recovery-receipt.json")
         return result
 
@@ -237,8 +253,9 @@ class GitHub:
             raise ValueError("Repository input exceeds 64 KiB")
         return base64.b64decode(data["content"], validate=False).decode("utf-8")
 
-    def contents(self, repository, ref, path):
-        """A regular file from any repository the credential can read, at a ref; None when it does not exist."""
+    def contents(self, repository, ref, path, limit=65_536):
+        """A regular file from any repository the credential can read, at a ref; None when it does not exist. Lock files may be
+        read up to GitHub's 1 MB contents limit (`limit`); every other input stays within 64 KiB."""
         try:
             response = self.request("GET", f"/repos/{repository}/contents/{quote(path, safe='/')}", params={"ref": ref})
         except httpx.HTTPStatusError as exc:
@@ -248,8 +265,8 @@ class GitHub:
         data = response.json()
         if not isinstance(data, dict) or data.get("type") != "file" or data.get("encoding") != "base64":
             raise ValueError("Expected regular, base64-encoded GitHub file")
-        if data.get("size", 0) > 65_536:
-            raise ValueError("Repository input exceeds 64 KiB")
+        if data.get("size", 0) > min(limit, 1_000_000):
+            raise ValueError(f"Repository input exceeds {min(limit, 1_000_000) // 1024} KiB")
         return {"sha": data.get("sha"), "text": base64.b64decode(data["content"], validate=False).decode("utf-8")}
 
     # ---- onboarding: read a repository's shape, follow its pull requests and runs, prepare its environment
@@ -258,16 +275,32 @@ class GitHub:
         return {"repository_id": str(data["id"]), "owner_id": str(data["owner"]["id"]), "default_branch": data.get("default_branch"),
                 "private": bool(data.get("private")), "url": data.get("html_url"), "full_name": data.get("full_name")}
 
-    def tree(self, repository, ref):
-        """Every path in the repository at a ref (files and directories), for the contract's checks."""
+    def tree(self, repository, ref, sizes=False):
+        """Every path in the repository at a ref (files and directories), for the contract's checks; with `sizes`, a mapping
+        of each file to its size in bytes as well, for the reader's refusal of files over 100 MiB."""
         data = self.request("GET", f"/repos/{repository}/git/trees/{quote(ref, safe='')}", params={"recursive": "1"}).json()
-        return [item["path"] for item in data.get("tree", []) if item.get("type") in ("blob", "tree")]
+        paths = [item["path"] for item in data.get("tree", []) if item.get("type") in ("blob", "tree")]
+        if not sizes:
+            return paths
+        return paths, {item["path"]: int(item.get("size") or 0) for item in data.get("tree", []) if item.get("type") == "blob"}
 
     def pull_request(self, repository, number):
         data = self.request("GET", f"/repos/{repository}/pulls/{number}").json()
         return {"number": number, "state": data["state"], "merged": bool(data.get("merged")), "mergeable_state": data.get("mergeable_state"),
                 "head_sha": data["head"]["sha"], "merge_commit_sha": data.get("merge_commit_sha"), "url": data["html_url"],
-                "merged_by": (data.get("merged_by") or {}).get("login")}
+                "merged_by": (data.get("merged_by") or {}).get("login"), "head_ref": data["head"].get("ref"), "base_sha": data["base"].get("sha")}
+
+    def open_pull_requests(self, repository, prefix):
+        """The open pull requests whose branch starts with `prefix`: the controller's own, found by its branch names."""
+        pulls = self.request("GET", f"/repos/{repository}/pulls", params={"state": "open", "per_page": 100}).json()
+        return [{"number": item["number"], "url": item["html_url"], "branch": item["head"]["ref"], "head_sha": item["head"]["sha"]}
+                for item in pulls if str(item["head"].get("ref", "")).startswith(prefix)]
+
+    def close_pull_request(self, repository, number, comment):
+        """Close a pull request with a comment saying why; it can be reopened, and its branch is kept."""
+        self.request("POST", f"/repos/{repository}/issues/{int(number)}/comments", json={"body": comment})
+        self.request("PATCH", f"/repos/{repository}/pulls/{int(number)}", json={"state": "closed"})
+        return {"number": number, "closed": True}
 
     def pull_request_files(self, repository, number):
         return [item["filename"] for item in self.request("GET", f"/repos/{repository}/pulls/{number}/files", params={"per_page": 100}).json()]
@@ -418,7 +451,11 @@ class GitHub:
         if plan.get("bake_seconds", DEFAULT_BAKE_SECONDS) != DEFAULT_BAKE_SECONDS:
             # Sent only when the operator changed it, for the same reason: a workflow pinned before 1.9.0 has no such input.
             inputs["bake_seconds"] = str(int(plan["bake_seconds"]))
-        response = self.request("POST", f"/repos/{app.repository}/actions/workflows/{app.workflow}/dispatches", json={"ref": app.branch, "inputs": inputs})
+        if central_of(app):
+            # The platform repository's pipeline (docs/ROADMAP.md D33): which application, where its source is, and the
+            # platform commit whose apps/<id>/platform.yaml the plan was made from.
+            inputs.update(application=app.service, repository=app.repository, app_path=app.path, contract_commit=(plan.get("contract") or {})["commit"])
+        response = self.request("POST", f"/repos/{pipeline_of(app)}/actions/workflows/{app.workflow}/dispatches", json={"ref": "main" if central_of(app) else app.branch, "inputs": inputs})
         # Current API returns 200 with run ID; older deployments may still return 204.
         return response.json() if response.content else {}
 
@@ -429,15 +466,16 @@ class GitHub:
         title = f"rollback-{plan['from_plan']}" if rollback else f"deploy-{plan['id']}"
         workflow = app.workflows["recover"] if rollback else app.workflow
         if run_id:
-            run = self.request("GET", f"/repos/{app.repository}/actions/runs/{int(run_id)}").json()
+            run = self.request("GET", f"/repos/{pipeline_of(app)}/actions/runs/{int(run_id)}").json()
         else:
-            runs = self.request("GET", f"/repos/{app.repository}/actions/workflows/{workflow}/runs", params={"event": "workflow_dispatch", "per_page": 100}).json()["workflow_runs"]
+            runs = self.request("GET", f"/repos/{pipeline_of(app)}/actions/workflows/{workflow}/runs", params={"event": "workflow_dispatch", "per_page": 100}).json()["workflow_runs"]
             run = next((r for r in runs if r.get("display_title") == title), None)
         if run is None:
             return {"status": "not_visible_yet", "note": "Do not redispatch; inspect GitHub Actions if this persists."}
         # The unique plan id in the run title is the identity. The head SHA is the branch tip the workflow ran on, which
         # only equals the plan's commit for a plan of the tip itself: rollbacks and plans pinned to older commits differ.
-        tip_only = not rollback and not plan.get("pinned_commit")
+        # A platform-pipeline run's head is the platform's main, never the application's commit.
+        tip_only = not rollback and not plan.get("pinned_commit") and not central_of(app)
         if (tip_only and run.get("head_sha") != plan["sha"]) or run.get("display_title") != title:
             # Observed live: for a second or two after dispatch the run exists but its title and commit are not
             # populated yet. Only a run that has started or finished must prove its identity.
@@ -447,7 +485,7 @@ class GitHub:
         jobs = []
         page = 1
         while True:
-            batch = self.request("GET", f"/repos/{app.repository}/actions/runs/{int(run['id'])}/attempts/{int(run.get('run_attempt', 1))}/jobs",
+            batch = self.request("GET", f"/repos/{pipeline_of(app)}/actions/runs/{int(run['id'])}/attempts/{int(run.get('run_attempt', 1))}/jobs",
                                  params={"per_page": 100, "page": page}).json()["jobs"]
             jobs.extend(batch)
             if len(batch) < 100:
@@ -469,8 +507,8 @@ class GitHub:
 
     def cost_report(self, app, workflow="rightsize-gcp.yml", name="cost-report", limit=1_048_576):
         """The newest cost-report artifact from a successful rightsizing run, or an explicit 'none yet'."""
-        runs = self.request("GET", f"/repos/{app.repository}/actions/workflows/{workflow}/runs",
-                            params={"status": "success", "branch": app.branch, "per_page": 5}).json()["workflow_runs"]
+        runs = self.request("GET", f"/repos/{pipeline_of(app)}/actions/workflows/{workflow}/runs",
+                            params={"status": "success", "branch": "main", "per_page": 5}).json()["workflow_runs"]
         for run in runs:
             files = self.artifact_json(app, run["id"], name, ("cost-report.json",), limit)
             if files and "cost-report.json" in files:

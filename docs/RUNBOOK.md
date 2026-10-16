@@ -14,6 +14,30 @@ platform (`lab-deploy-staging-f29a`, operated from Claude chat by one person); u
 There is no service level objective: this is a staging platform for a lab. The targets below are what the platform is
 built to do, and the watchdog reports when it does not.
 
+## The platform repository is the single control point
+
+Since 1.15.0 the platform repository (`brianboti/fast-deploy`) holds the contracts of the repositories taken as it is
+(`apps/<service>/platform.yaml`) and runs their releases (`deploy.yml`, `recover.yml`, `rightsize.yml`, each in the
+environment `staging-<service>`). Whoever can merge to its `main` can deploy those applications, so **its protection
+never loosens**: `main` keeps requiring a pull request with the `test` and `terraform` checks, administrators included;
+no environment gets a bypass; `.github/CODEOWNERS` covers `/apps/`. Nothing in the repository of such an application
+can release it, and nothing in its own pipeline can reach another application's identity.
+
+- **A contract pull request** (`Contract for NAME, taken as it is from ORG/REPO`): read its table of choices and the
+  "Please check" lines, fill in settings the code reads under `env` and `secrets` (names only; values go into Secret
+  Manager with `gcloud`), then merge. The controller never merges one. Merging is the review, and the first release
+  follows once the cloud setup is applied.
+- **A release pull request** (`Release NAME at <commit>`): it moves `source.commit` and nothing else. The controller
+  merges it itself only under `auto_merge` for that application, when the requester may merge their own requests and
+  the checks have passed; a newer one closes the older one. Merging any change to a contract releases it within a
+  minute (`contract_release` events in `list_events`).
+- **A private application repository** is refused while this repository is public: the build logs and the image the
+  build uploads would be readable by anyone. Making this repository private changes that, and moves the Actions minutes
+  to the lab's bill.
+- **Reading private repositories later** (Phase 15): set the repository variable `APPS_APP_ID` and the secret
+  `APPS_APP_PRIVATE_KEY` of a GitHub App installed on those repositories with contents read; each run then gets a token
+  narrowed to the one repository, valid for an hour. Until then the runs read public repositories with their own token.
+
 ## What "up" means
 
 - `GET /healthz` on the controller answers 200 through the tunnel. The platform repository's **Controller watch**

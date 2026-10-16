@@ -10,6 +10,9 @@ ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 RESERVED_ENV = {"PORT", "K_SERVICE", "K_REVISION", "K_CONFIGURATION", "PATH", "HOME", "PYTHONPATH", "GOOGLE_APPLICATION_CREDENTIALS"}
 
 
+SERVICE_PATH = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*){0,7}$")
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -94,11 +97,51 @@ def needs_secrets(spec):
     return {}
 
 
+# A start command the build can pass on as it is: one line of words, `$PORT` allowed, no quotes or shell operators other
+# than the parentheses of a WSGI factory (gunicorn's "module:create_app()"), which the buildpacks' shell would misread.
+ENTRYPOINT = r"^[A-Za-z0-9_./:=,+@%${}() -]+$"
+
+
 class Build(StrictModel):
-    """How the image is built. service (the default): the service's own folder is the Docker build context. repository:
-    the whole repository is, for a service in a monorepo that copies shared code from elsewhere in it; the Dockerfile still
-    lives in the service's folder and its paths are relative to the repository root."""
+    """How the image is built.
+
+    context: service (the default), the service's own folder is the Docker build context; repository, the whole repository
+    is, for a service in a monorepo that copies shared code from elsewhere in it (the Dockerfile still lives in the
+    service's folder and its paths are relative to the repository root).
+
+    recipe (docs/ROADMAP.md D31, 13.3): repository (the default), the service's own Dockerfile, else its Procfile through
+    Google's buildpacks; platform, the platform's own Dockerfile, rendered at build time beside a copy of the service's files
+    and never committed; buildpacks, Google's buildpacks even when a Dockerfile exists. entrypoint: the command that starts
+    the service when the platform makes the image (the platform Dockerfile's command, the buildpacks' GOOGLE_ENTRYPOINT)."""
     context: Literal["service", "repository"] = "service"
+    recipe: Literal["repository", "platform", "buildpacks"] = "repository"
+    entrypoint: str | None = Field(default=None, max_length=400, pattern=ENTRYPOINT)
+
+    @model_validator(mode="after")
+    def coherent(self):
+        if self.context == "repository" and self.recipe != "repository":
+            raise ValueError("build.context: repository needs the service's own Dockerfile (build.recipe: repository)")
+        if self.recipe == "platform" and not self.entrypoint:
+            raise ValueError("build.recipe: platform needs build.entrypoint, the command that starts the service")
+        if self.recipe == "repository" and self.entrypoint:
+            raise ValueError("build.entrypoint applies to build.recipe: platform or buildpacks; to replace a Dockerfile's start command, use command and args")
+        if self.recipe == "buildpacks" and self.entrypoint and re.search(r"[()]", self.entrypoint):
+            raise ValueError("The buildpacks run build.entrypoint through a shell, which misreads parentheses; use build.recipe: platform for a factory")
+        return self
+
+
+class Source(StrictModel):
+    """Where a contract kept in the platform repository points (docs/ROADMAP.md D31): the application repository, the
+    service's folder in it, and the commit that runs. A release is the pull request that moves `commit` (D32)."""
+    repository: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    path: str = ""
+    commit: str = Field(pattern=r"^[a-f0-9]{40}$")
+
+    @model_validator(mode="after")
+    def plain_path(self):
+        if self.path and (not SERVICE_PATH.fullmatch(self.path) or ".." in self.path.split("/")):
+            raise ValueError("source.path is the service's folder inside the repository: relative, no hidden or parent folders")
+        return self
 
 
 class Scaling(StrictModel):
@@ -111,7 +154,13 @@ class AppSpec(StrictModel):
     name: str = Field(pattern=r"^[a-z][a-z0-9-]{1,19}[a-z0-9]$")  # 3 to 21 characters: what Cloud Run, the registry and the root accept
     runtime: Literal["python-http"] = "python-http"
     port: int = Field(default=8080, ge=1024, le=65535)
-    health_path: str = Field(default="/health", pattern=r"^/[A-Za-z0-9/_-]*$")
+    # null: the service has no health route; Cloud Run's TCP startup probe gates it and the platform's own probes only check
+    # that it answers HTTP at all (docs/ROADMAP.md 13.4). A path is probed for 200.
+    health_path: str | None = Field(default="/health", pattern=r"^/[A-Za-z0-9/_-]*$")
+    # Run-time overrides of the image's ENTRYPOINT (command) and CMD (args), Cloud Run's container command and arguments, for
+    # an image whose own start command does not suit Cloud Run (docs/ROADMAP.md 13.4); args alone keep the ENTRYPOINT.
+    command: list[str] | None = None
+    args: list[str] | None = None
     resources: Resources = Field(default_factory=Resources)
     scaling: Scaling = Field(default_factory=Scaling)
     concurrency: int = Field(default=80, ge=1, le=1000)
@@ -153,6 +202,15 @@ class AppSpec(StrictModel):
                 raise ValueError(f"env value for {name} must be a single line of at most 1024 characters")
         if len(set(self.secrets)) != len(self.secrets) or set(self.secrets) & set(self.env):
             raise ValueError("secrets must be unique and must not repeat an env name")
+        for field, parts in (("command", self.command), ("args", self.args)):
+            if parts is None:
+                continue
+            if not parts and field == "command":
+                raise ValueError("command needs at least one word, or leave it out")
+            if len(parts) > 32 or not all(isinstance(p, str) and 0 < len(p) <= 200 and p.isprintable() and "," not in p for p in parts):
+                raise ValueError(f"{field} is a list of at most 32 printable words of at most 200 characters, without commas")
+        if (self.command is not None or self.args is not None) and self.build.recipe == "buildpacks":
+            raise ValueError("command and args replace the image's start command, which on a buildpacks image bypasses its launcher; use build.entrypoint")
         derived = {**needs_env(self, "project"), **needs_secrets(self)}
         taken = set(self.env) | set(self.secrets)
         for name in derived:
@@ -184,6 +242,52 @@ def parse_spec(text: str) -> AppSpec:
     if len(text.encode()) > 32_768:
         raise ValueError("platform.yaml exceeds 32 KiB")
     return AppSpec.model_validate(yaml.load(text, Loader=UniqueLoader))  # noqa: S506 - UniqueLoader subclasses SafeLoader
+
+
+def draft_dump(spec: AppSpec) -> dict:
+    """The specification as a draft shows it: every field, except the options of a repository taken as it is left unset (no
+    command or args, the repository's own recipe, no entrypoint), so drafts for repositories that follow the contract read
+    as they always did."""
+    data = spec.model_dump()
+    for key in ("command", "args"):
+        if data.get(key) is None:
+            data.pop(key, None)
+    build = data.get("build") or {}
+    if build.get("entrypoint") is None:
+        build.pop("entrypoint", None)
+    if build.get("recipe") == "repository":
+        build.pop("recipe", None)
+    return data
+
+
+def parse_contract(text: str) -> tuple[AppSpec, Source]:
+    """A contract kept in the platform repository (apps/<service>/platform.yaml, docs/ROADMAP.md D31): the specification
+    plus a `source` block naming the application repository, the service's folder in it and the commit that runs.
+
+    D32: what makes it reviewed is its merge into the platform repository's main under the code owners' review, never a
+    field anybody writes, so the file must not carry `reviewed`; read from main, it is reviewed, and the returned
+    specification says so. Every reader (the controller's plan, the pipeline's checks) therefore hashes the same thing."""
+    if len(text.encode()) > 32_768:
+        raise ValueError("The contract exceeds 32 KiB")
+    data = yaml.load(text, Loader=UniqueLoader)  # noqa: S506 - UniqueLoader subclasses SafeLoader
+    if not isinstance(data, dict) or "source" not in data:
+        raise ValueError("A contract in the platform repository needs a `source` block (repository, path, commit)")
+    if "reviewed" in data:
+        raise ValueError("Leave `reviewed` out of a contract kept in the platform repository: merging it is the review (docs/ROADMAP.md D32)")
+    source = Source.model_validate(data.pop("source"))
+    return AppSpec.model_validate({**data, "reviewed": True}), source
+
+
+def spec_text(spec: AppSpec) -> str:
+    """The specification as platform.yaml text, defaults left out, keys in the model's order; what the pipeline hashes."""
+    return yaml.safe_dump(spec.model_dump(exclude_defaults=True), sort_keys=False, default_flow_style=False)
+
+
+def contract_text(spec: AppSpec, source: Source, header: str | None = None) -> str:
+    """The external contract as a file: an optional comment, the source block, then the specification without `reviewed`."""
+    fields = {key: value for key, value in spec.model_dump(exclude_defaults=True).items() if key != "reviewed"}
+    body = yaml.safe_dump({"source": source.model_dump(exclude_defaults=True), **fields}, sort_keys=False, default_flow_style=False)
+    return (header.rstrip("\n") + "\n" if header else "") + body
 
 
 def spec_hash(spec: AppSpec) -> str:

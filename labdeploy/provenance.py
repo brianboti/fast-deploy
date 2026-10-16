@@ -26,7 +26,8 @@ PREDICATE_TYPE = "https://slsa.dev/provenance/v1"
 STATEMENT_TYPES = ("https://in-toto.io/Statement/v0.1", "https://in-toto.io/Statement/v1")
 PAYLOAD_TYPE = "application/vnd.in-toto+json"
 WORKFLOW_PATH = ".github/workflows/deploy-gcp.yml"  # a repository's first service; a further one has deploy-gcp-<service>.yml
-DEPLOY_WORKFLOW = re.compile(r"^deploy-gcp(-[a-z][a-z0-9-]{1,19}[a-z0-9])?\.yml$")
+# deploy.yml is the platform repository's own pipeline, which builds applications whose contract it keeps (docs/ROADMAP.md D33).
+DEPLOY_WORKFLOW = re.compile(r"^deploy(-gcp(-[a-z][a-z0-9-]{1,19}[a-z0-9])?)?\.yml$")
 REF = "refs/heads/main"
 KEY_RING = "lab-deploy"
 # github: GitHub's attestation (public repositories). cosign-kms: this module's path. unavailable: the operator's exception.
@@ -70,9 +71,25 @@ def workflow_path(name=None):
     return f".github/workflows/{name}"
 
 
+INPUT_KEYS = {"recipe": re.compile(r"^(repository|platform|buildpacks)$"), "dockerfile_sha256": re.compile(r"^[a-f0-9]{64}$"),
+              "lock_sha256": re.compile(r"^[a-f0-9]{64}$"), "lock_source": re.compile(r"^(repository|platform)$"),
+              "builder": re.compile(r"^gcr\.io/buildpacks/builder@sha256:[a-f0-9]{64}$")}
+
+
+def build_inputs(data):
+    """The build job's record of what the image was made from, kept only where every value has the expected form."""
+    if not isinstance(data, dict):
+        return None
+    inputs = {key: value for key, value in data.items() if key in INPUT_KEYS and isinstance(value, str) and INPUT_KEYS[key].fullmatch(value)}
+    return inputs or None
+
+
 def predicate(*, repository, commit, plan_id, spec_hash, run_id, run_attempt, repository_id, owner_id, workflow_ref,
-              server="https://github.com", event_name="workflow_dispatch", runner_environment="github-hosted", path=WORKFLOW_PATH):
-    """What the release claims about the image: which repository and commit, through which workflow and run."""
+              server="https://github.com", event_name="workflow_dispatch", runner_environment="github-hosted", path=WORKFLOW_PATH,
+              source_repository=None, contract_commit=None, application=None, inputs=None):
+    """What the release claims about the image: which repository and commit, through which workflow and run. When the
+    platform's own pipeline builds an application (docs/ROADMAP.md D33), the builder is the platform repository and the
+    source is the application's: `source_repository` names it, `contract_commit` the platform commit the contract came from."""
     _require(REPOSITORY, repository, "repository")
     _require(COMMIT, commit, "commit")
     _require(PLAN, plan_id, "plan id")
@@ -83,27 +100,40 @@ def predicate(*, repository, commit, plan_id, spec_hash, run_id, run_attempt, re
     # The statement only ever names the workflow that is really running, so it can never claim a builder it is not.
     if workflow_ref != f"{repository}/{path}@{REF}":
         raise ProvenanceError(f"Provenance is signed only by {path} on main; this run is {workflow_ref!r}")
-    source = f"{server}/{repository}"
+    builder = f"{server}/{repository}"
+    source = builder
+    lab_deploy = {"plan_id": plan_id, "spec_hash": spec_hash}
+    if source_repository is not None:
+        _require(REPOSITORY, source_repository, "source repository")
+        _require(COMMIT, contract_commit, "contract commit")
+        _require(NAME, application, "application")
+        source = f"{server}/{source_repository}"
+        lab_deploy.update(application=application, contract={"repository": builder, "commit": contract_commit,
+                                                              "path": f"apps/{application}/platform.yaml"})
+    inputs = build_inputs(inputs)
+    if inputs:
+        lab_deploy["inputs"] = inputs  # docs/ROADMAP.md D33: the recipe, the Dockerfile's and the lock's hashes
     return {
         "buildDefinition": {
             "buildType": BUILD_TYPE,
-            "externalParameters": {"workflow": {"ref": REF, "repository": source, "path": path}},
+            "externalParameters": {"workflow": {"ref": REF, "repository": builder, "path": path}},
             "internalParameters": {
                 "github": {"event_name": event_name, "repository_id": repository_id, "repository_owner_id": owner_id,
                            "runner_environment": runner_environment},
-                "lab_deploy": {"plan_id": plan_id, "spec_hash": spec_hash},
+                "lab_deploy": lab_deploy,
             },
             "resolvedDependencies": [{"uri": f"git+{source}@{REF}", "digest": {"gitCommit": commit}}],
         },
         "runDetails": {
-            "builder": {"id": f"{source}/{path}@{REF}"},
-            "metadata": {"invocationId": f"{source}/actions/runs/{run_id}/attempts/{run_attempt}"},
+            "builder": {"id": f"{builder}/{path}@{REF}"},
+            "metadata": {"invocationId": f"{builder}/actions/runs/{run_id}/attempts/{run_attempt}"},
         },
     }
 
 
-def _mismatch(statement, *, image_name, digest, source, commit, path=WORKFLOW_PATH):
+def _mismatch(statement, *, image_name, digest, source, commit, path=WORKFLOW_PATH, builder=None, contract_commit=None):
     """Why a statement does not describe this image from this commit and workflow, or None when it does."""
+    builder = builder or source
     if not isinstance(statement, dict) or statement.get("_type") not in STATEMENT_TYPES:
         return "not an in-toto statement"
     if statement.get("predicateType") != PREDICATE_TYPE:
@@ -117,28 +147,40 @@ def _mismatch(statement, *, image_name, digest, source, commit, path=WORKFLOW_PA
     run = body.get("runDetails") if isinstance(body.get("runDetails"), dict) else {}
     if build.get("buildType") != BUILD_TYPE:
         return "an unknown build type"
-    if (build.get("externalParameters") or {}).get("workflow") != {"ref": REF, "repository": source, "path": path}:
+    if (build.get("externalParameters") or {}).get("workflow") != {"ref": REF, "repository": builder, "path": path}:
         return "built by a different repository, workflow or branch"
     dependencies = build.get("resolvedDependencies") if isinstance(build.get("resolvedDependencies"), list) else []
     if not any(isinstance(d, dict) and d.get("uri") == f"git+{source}@{REF}" and isinstance(d.get("digest"), dict)
                and d["digest"].get("gitCommit") == commit for d in dependencies):
         return "built from a different commit"
-    if (run.get("builder") or {}).get("id") != f"{source}/{path}@{REF}":
+    if (run.get("builder") or {}).get("id") != f"{builder}/{path}@{REF}":
         return "a different builder"
+    if contract_commit is not None:
+        contract = ((build.get("internalParameters") or {}).get("lab_deploy") or {}).get("contract") or {}
+        if contract.get("commit") != contract_commit or contract.get("repository") != builder:
+            return "made from a different contract"
     return None
 
 
-def verify(output, *, image_name, digest, repository, commit, server="https://github.com", path=WORKFLOW_PATH):
+def verify(output, *, image_name, digest, repository, commit, server="https://github.com", path=WORKFLOW_PATH,
+           source_repository=None, contract_commit=None):
     """The statement from `cosign verify-attestation` output that describes this image, repository and commit.
 
     Cosign prints only envelopes whose signature the application's key verified; this checks what they say. One matching
-    statement is enough (a reused image can carry several, all signed by the same key); none raises."""
+    statement is enough (a reused image can carry several, all signed by the same key); none raises. With a
+    `source_repository`, the builder is `repository` (the platform) and the image must come from the source at `commit`
+    through the contract at `contract_commit`."""
     _require(IMAGE_NAME, image_name, "image name")
     _require(DIGEST, digest, "image digest")
     _require(REPOSITORY, repository, "repository")
     _require(COMMIT, commit, "commit")
     _require(SERVER, server, "server URL")
-    source = f"{server}/{repository}"
+    builder = f"{server}/{repository}"
+    source = builder
+    if source_repository is not None:
+        _require(REPOSITORY, source_repository, "source repository")
+        _require(COMMIT, contract_commit, "contract commit")
+        source = f"{server}/{source_repository}"
     reasons = []
     for line in output.splitlines():
         if not line.strip():
@@ -152,12 +194,24 @@ def verify(output, *, image_name, digest, repository, commit, server="https://gi
         except (ValueError, KeyError, TypeError, binascii.Error):
             reasons.append("unreadable")
             continue
-        reason = _mismatch(statement, image_name=image_name, digest=digest, source=source, commit=commit, path=path)
+        reason = _mismatch(statement, image_name=image_name, digest=digest, source=source, commit=commit, path=path, builder=builder,
+                           contract_commit=contract_commit if source_repository is not None else None)
         if reason is None:
             return statement
         reasons.append(reason)
     found = "; ".join(sorted(set(reasons))) if reasons else "Cosign returned no verified attestation"
-    raise ProvenanceError(f"No signed provenance shows {image_name}@{digest} was built from {repository} at {commit[:12]} by {path} on main ({found})")
+    raise ProvenanceError(f"No signed provenance shows {image_name}@{digest} was built from {source_repository or repository} at {commit[:12]} "
+                          f"by {repository}/{path} on main ({found})")
+
+
+def read_inputs(name):
+    """bundle/inputs.json from the build job, or None (a reused image has no bundle; its first release signed them)."""
+    if not name or not Path(name).is_file():
+        return None
+    try:
+        return json.loads(Path(name).read_text())
+    except ValueError:
+        return None
 
 
 def main(argv=None):
@@ -174,14 +228,17 @@ def main(argv=None):
                 repository_id=env.get("GITHUB_REPOSITORY_ID"), owner_id=env.get("GITHUB_REPOSITORY_OWNER_ID"),
                 workflow_ref=env.get("GITHUB_WORKFLOW_REF"), server=env.get("GITHUB_SERVER_URL", "https://github.com"),
                 event_name=env.get("GITHUB_EVENT_NAME", "workflow_dispatch"), runner_environment=env.get("RUNNER_ENVIRONMENT", "github-hosted"),
-                path=path), indent=2, sort_keys=True))
+                path=path, source_repository=env.get("SOURCE_REPOSITORY") or None, contract_commit=env.get("CONTRACT_COMMIT") or None,
+                application=env.get("APPLICATION") or None, inputs=read_inputs(env.get("INPUTS_FILE"))), indent=2, sort_keys=True))
         elif len(args) == 2 and args[0] == "verify":
             statement = verify(Path(args[1]).read_text(), image_name=env.get("IMAGE_NAME"), digest=env.get("IMAGE_SHA256"),
                                repository=env.get("GITHUB_REPOSITORY"), commit=env.get("COMMIT_SHA"),
-                               server=env.get("GITHUB_SERVER_URL", "https://github.com"), path=path)
+                               server=env.get("GITHUB_SERVER_URL", "https://github.com"), path=path,
+                               source_repository=env.get("SOURCE_REPOSITORY") or None, contract_commit=env.get("CONTRACT_COMMIT") or None)
             run = statement["predicate"]["runDetails"].get("metadata", {}).get("invocationId", "an earlier run")
-            print(f"Provenance verified: {env['IMAGE_NAME']}@{env['IMAGE_SHA256']} was built from {env['GITHUB_REPOSITORY']} at "
-                  f"{env['COMMIT_SHA'][:12]} by {path} on main ({run}); signed with the application's Cloud KMS key")
+            built_from = env.get("SOURCE_REPOSITORY") or env["GITHUB_REPOSITORY"]
+            print(f"Provenance verified: {env['IMAGE_NAME']}@{env['IMAGE_SHA256']} was built from {built_from} at "
+                  f"{env['COMMIT_SHA'][:12]} by {env['GITHUB_REPOSITORY']}/{path} on main ({run}); signed with the application's Cloud KMS key")
         else:
             print(__doc__, file=sys.stderr)
             return 2

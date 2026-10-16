@@ -339,8 +339,9 @@ approvals, the business associate agreement, and the organization steps of Phase
 
 ## Phase 13: a repository as it is (about six days) → version 1.15.0
 
-Status: planned on 2026-10-16 (research review sections 4.1 to 4.4 and 4.6). Nothing is added to an application
-repository; the contract, the build inputs and the pipeline move to the platform.
+Status: planned on 2026-10-16 (research review sections 4.1 to 4.4 and 4.6) and built the same day as version 1.15.0
+with the defaults of D31 to D34 (`docs/CHANGES.md`); the live exercise follows the merge. Nothing is added to an
+application repository; the contract, the build inputs and the pipeline move to the platform.
 
 | Item | Change | Where |
 |---|---|---|

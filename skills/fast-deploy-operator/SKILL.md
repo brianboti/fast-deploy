@@ -84,13 +84,14 @@ changes until a person merges. **Act** tools change the cloud.
 | `create_deployment_plan` | Record | A plan for one exact commit already on main; it expires after 15 minutes |
 | `propose_configuration` | Record | A draft pull request with the contract files a service lacks (never one that exists), for a registered app or a repository link before onboarding |
 | `propose_infrastructure` | Record | The app's cloud setup (Terraform) as a pull request on the platform repository; merging applies it |
+| `import_contract` | Record | Take a repository as it is: its contract (`apps/NAME/platform.yaml`) as a pull request on the platform repository; nothing is added to the repository |
 | `update_app_workflows` | Record | Re-pin the app's three workflow files to the current platform, as a pull request |
 | `propose_rightsizing` | Record | The weekly report's measured proposals as a pull request on `platform.yaml` |
 | `deploy_staging` | Act | Release an existing plan |
 | `deploy_latest` | Act | Plan the tip of main and release it, in one call |
 | `rollback_staging` | Act | Send visitors back to the version that served before the live one: seconds, no build |
 | `cancel_deployment` | Act | Stop a running release; the recovery workflow puts visitors back if the release had started moving them |
-| `onboard_application` | Act | From a repository link to a running service, unattended |
+| `onboard_application` | Act | From a repository link to a running service, unattended; `as_is: true` takes the repository as it is |
 
 If none of these tools is available, the connector is off or needs a new sign-in: say so and point the operator to
 Customize → Connectors. If only one tool is missing, the controller runs an older version than this playbook; tell the
@@ -128,7 +129,13 @@ operator to restart it with the current code (`scripts/start.sh` on the laptop).
 3. Follow it with `get_onboarding_status`, at most once a minute. It is fine to say: "Ask me 'where is REPO's
    onboarding?' in a few minutes."
 4. When it is complete, follow the first release with `get_deployment_status` and the plan id it gives (job 3, step 3).
-5. When it is blocked:
+5. **As it is.** When the operator wants the repository left untouched ("deploy it as it is", "don't change their repo"),
+   or `check_repository` says it can be taken as it is, pass `as_is: true`. The platform reads the repository, opens a
+   pull request adding its contract (`apps/NAME/platform.yaml`) to the platform repository, and waits: **a person's merge
+   is the review**, never the controller's. Then it continues as above, without workflows in the repository: the
+   platform's own pipeline releases it. When it is refused, each refusal names a file and its fix (a committed `.env`, a
+   Python outside 3.11 to 3.15, no dependency list, several candidate apps): turn them into the developer message.
+6. When it is blocked:
    - At the repository check: nothing was created. Turn the checklist into a message for the developer (template at the
      end).
    - Anywhere else: explain the error and the fix it names. After the fix, calling `onboard_application` again with the
@@ -149,7 +156,9 @@ ready, say that `onboard_application` will deploy it. For "what do developers ne
 
 1. `compare_with_live`: summarize what changed and the cost before and after.
 2. `deploy_latest`. For an older commit already on main, use `create_deployment_plan` with `commit_sha`, then
-   `deploy_staging`; a commit released before is redeployed from its saved image, without a rebuild.
+   `deploy_staging`; a commit released before is redeployed from its saved image, without a rebuild. For an app taken
+   as it is, `deploy_latest` opens a release pull request that moves its contract's commit: it merges itself when the
+   app's auto-merge is on and the checks pass, otherwise a person merges it; the merge starts the release within a minute.
 3. Follow it with `get_deployment_status` and `wait_seconds: 45`, a few times. A small app takes three to four
    minutes. Narrate in plain words: tests, a security check of the libraries, the build, the signature, the image scan,
    the new version started beside the old one, the safety check, visitors moved, checked again.

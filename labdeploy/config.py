@@ -27,6 +27,12 @@ class Application(StrictModel):
     # deploy-gcp.yml); each further application of the same repository gets names suffixed with its service
     # (staging-<service>, deploy-gcp-<service>.yml), so their variables, identities, schedules and queues never mix (D24).
     environment: str = "staging"
+    # Where the contract lives and where the pipeline runs (docs/ROADMAP.md D31, D33). repository: platform.yaml and the
+    # three workflows are in the application repository (the default). platform: the contract is apps/<id>/platform.yaml
+    # in the platform repository and the pipeline is the platform repository's own deploy.yml, recover.yml and
+    # rightsize.yml, run in the environment staging-<service> there; nothing is added to the application repository.
+    contract: Literal["repository", "platform"] = "repository"
+    pipeline_repository: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
     target: Target
     # Refuse plans whose worst-case monthly compute (every allowed instance busy all month) exceeds this many USD.
     cost_ceiling_usd: float | int | None = None
@@ -55,11 +61,18 @@ class Application(StrictModel):
             raise ValueError("MVP workflow and identity trust are restricted to main")
         if self.path and (not SERVICE_PATH.fullmatch(self.path) or ".." in self.path.split("/")):
             raise ValueError("path is the service's folder inside the repository, such as services/api: relative, no hidden or parent folders")
-        plain = self.workflow == "deploy-gcp.yml" and self.environment == "staging"
-        suffixed = self.workflow == f"deploy-gcp-{self.service}.yml" and self.environment == f"staging-{self.service}"
-        if not (plain or suffixed):
-            raise ValueError("The workflow and environment are deploy-gcp.yml with staging, or, for a further application of the same repository, "
-                             f"deploy-gcp-{self.service}.yml with staging-{self.service}")
+        if self.contract == "platform":
+            if not self.pipeline_repository or self.workflow != "deploy.yml" or self.environment != f"staging-{self.service}":
+                raise ValueError("A contract kept in the platform repository runs the platform's own pipeline: pipeline_repository set, "
+                                 f"workflow deploy.yml and environment staging-{self.service}")
+        else:
+            if self.pipeline_repository:
+                raise ValueError("pipeline_repository applies to contract: platform only")
+            plain = self.workflow == "deploy-gcp.yml" and self.environment == "staging"
+            suffixed = self.workflow == f"deploy-gcp-{self.service}.yml" and self.environment == f"staging-{self.service}"
+            if not (plain or suffixed):
+                raise ValueError("The workflow and environment are deploy-gcp.yml with staging, or, for a further application of the same repository, "
+                                 f"deploy-gcp-{self.service}.yml with staging-{self.service}")
         if self.cost_ceiling_usd is not None and self.cost_ceiling_usd <= 0:
             raise ValueError("cost_ceiling_usd must be a positive amount")
         check_viewers(self.viewers)
@@ -74,13 +87,26 @@ class Application(StrictModel):
 
     @property
     def suffix(self):
-        """'' for the first application of a repository, '-<service>' for a further one (D24)."""
+        """'' for the first application of a repository, '-<service>' for a further one (D24); the platform pipeline's
+        environments are always suffixed, since every application shares the platform repository."""
         return "" if self.workflow == "deploy-gcp.yml" else f"-{self.service}"
 
     @property
     def workflows(self):
-        """The three workflow files this application owns in its repository, by kind."""
+        """The three workflow files that release, recover and right-size this application, by kind: its own in its
+        repository, or the platform repository's (contract: platform)."""
+        if self.contract == "platform":
+            return {kind: f"{kind}.yml" for kind in KINDS}
         return {kind: f"{kind}-gcp{self.suffix}.yml" for kind in KINDS}
+
+    @property
+    def pipeline_repo(self):
+        """The repository whose workflows run for this application: the platform's for contract: platform, else its own."""
+        return self.pipeline_repository or self.repository
+
+    @property
+    def central(self):
+        return self.contract == "platform"
 
     def repo_path(self, name):
         """A file of this service, as a path from the repository's root."""

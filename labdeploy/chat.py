@@ -43,6 +43,12 @@ ONBOARDING_STEPS = (("validating", "check the repository"), ("registering", "reg
                     ("applying", "build the cloud setup"), ("environment", "prepare its GitHub environment"),
                     ("workflows", "add the release workflows (a pull request)"), ("merging_workflows", "merge the release workflows"),
                     ("releasing", "start the first release"))
+# Taken as it is (docs/ROADMAP.md D31 to D33): its contract is proposed to the platform repository instead of workflows to its own.
+AS_IS_STEPS = (("validating", "read the repository as it is"), ("contract", "propose its contract (a pull request on the platform)"),
+               ("merging_contract", "wait for a person to merge the contract"), ("registering", "register the app"),
+               ("infrastructure", "prepare its cloud setup (a pull request)"), ("planning", "plan the cloud setup and check the safety rules"),
+               ("applying", "build the cloud setup"), ("environment", "prepare its GitHub environment"), ("releasing", "start the first release"))
+CHOICE_ORDER = ("Build", "Python", "Dependencies", "Application", "Start command", "Port", "Health", "Needs", "Tests")
 FRAMEWORKS = {"fastapi": "FastAPI", "flask": "Flask", "django": "Django", "starlette": "Starlette", "litestar": "Litestar", "bottle": "Bottle"}
 CHANGE_WORDS = {"application_code": "application code", "dependencies": "dependencies", "dockerfile": "the Dockerfile",
                 "platform_config": "platform.yaml (settings)", "workflows": "the release workflows"}
@@ -273,6 +279,15 @@ def release(plan):
         return compose(f"**Release stopped for `{app}`: the previous version {serving}.**", facts, fix, foot)
     if state == "dispatch_lost":
         return compose(f"**The release never started for `{app}`**: GitHub never ran it, so nothing changed.", [], "ask me for a new release.", foot)
+    if state == "release_requested":
+        request = plan.get("release_request") or {}
+        number = link(f"#{request.get('pull_request')}", request.get("url"))
+        waiting = request.get("waiting") or ""
+        person = waiting.startswith(("a person", "another operator"))
+        return compose(f"**Release requested for `{app}`**: pull request {number} moves its contract to {version(plan.get('sha'))}.",
+                       [f"Waiting for {clip(waiting, 200)}" if waiting else "It merges itself once the platform's checks pass",
+                        "Nothing is live yet: merging it starts the release within a minute"],
+                       "a person reviews and merges it." if person else "nothing to do; I'll release it once it merges.")
     if state == "dispatch_unknown":
         return compose(f"**It is unclear whether GitHub received the release for `{app}`.**", [],
                        "I'll check GitHub for a run with this plan before trying again.", foot)
@@ -308,10 +323,11 @@ def rollback(plan):
 def onboarding(view):
     """onboard_application and get_onboarding_status."""
     app, state, steps = view.get("application") or "the app", view.get("state"), view.get("steps") or {}
-    where = f"`{view.get('repository')}`" + (f", folder `{view['path']}`" if view.get("path") else "")
-    names, order = dict(ONBOARDING_STEPS), [key for key, _ in ONBOARDING_STEPS]
+    where = f"`{view.get('repository')}`" + (f", folder `{view['path']}`" if view.get("path") else "") + (", as it is" if view.get("as_is") else "")
+    listed = AS_IS_STEPS if view.get("as_is") else ONBOARDING_STEPS
+    names, order = dict(listed), [key for key, _ in listed]
     prs = [link(f"#{(steps.get(key) or {})['pull_request']}", (steps.get(key) or {}).get("url"))
-           for key in ("infrastructure", "workflows") if (steps.get(key) or {}).get("pull_request")]
+           for key in ("contract", "infrastructure", "workflows") if (steps.get(key) or {}).get("pull_request")]
     pull_requests = "Pull requests: " + ", ".join(prs) if prs else None
     if state == "complete":
         measures = view.get("measures") or {}
@@ -351,7 +367,56 @@ def check(result):
     can = [item["item"] for item in missing if item.get("platform_writes")]
     next_line = ("I can open a draft pull request with " + ", ".join(f"`{name}`" for name in can) + " and the other files the platform can "
                  "write; a person reviews it, sets `reviewed: true` and merges." if can else "the developer adds them; I can write them a short message.")
+    as_is = result.get("as_it_is") or {}
+    if as_is.get("ready"):
+        facts = ["Or take it as it is, adding nothing to the repository: " + "; ".join(choice_lines(as_is.get("choices"), 3))]
+        next_line = ("say “deploy it as it is” and I'll propose its contract to the platform repository (a person's merge is the review), or "
+                     + next_line[0].lower() + next_line[1:])
+        return compose(f"**Not ready to deploy as it stands: {where}.** {plural(len(missing), 'required item')} missing:", facts, next_line, block=block)
+    if as_is.get("refusals"):
+        block += "\n\nAs it is, it is refused too: " + "; ".join(f"`{item['file']}` {item['problem']}" for item in as_is["refusals"][:4]) + "."
     return compose(f"**Not ready yet: {where}.** {plural(len(missing), 'required item')} missing:", [], next_line, block=block)
+
+
+def choice_lines(choices, limit=6):
+    """The reader's choices in plain words, most telling first: what builds it, which Python, how it starts, its health check."""
+    by_kind = {}
+    for item in choices or []:
+        by_kind.setdefault(item.get("what"), item)
+    lines = []
+    for kind in CHOICE_ORDER:
+        item = by_kind.get(kind)
+        if item:
+            source = str(item.get("from") or "")
+            where = f" (from `{clip(source, 60)}`)" if "/" in source or "." in source.split(" ")[0] else ""
+            lines.append(f"{kind}: {clip(str(item.get('value')), 100)}{where}")
+    return lines[:limit] or ["Nothing was chosen yet"]
+
+
+def contract_import(view):
+    """import_contract."""
+    where = f"`{view.get('repository')}`" + (f", folder `{view['path']}`" if view.get("path") else "")
+    refusals = view.get("refusals") or []
+    if refusals:
+        block = "\n".join(f"{number}. `{item['file']}` {item['problem']}. Fix: {item['fix']}." for number, item in enumerate(refusals, 1))
+        return compose(f"**{where} can't be taken as it is yet.** {plural(len(refusals), 'thing')} to fix in the repository:", [],
+                       "the developer fixes them (nothing was opened); then ask me again.", block=block)
+    if view.get("existing"):
+        return compose(f"**The platform already keeps `{view.get('service')}`'s contract** (`{view['existing']}`).", [],
+                       "say “deploy it as it is” and I'll onboard it.")
+    pr = view.get("pull_request")
+    facts = choice_lines(view.get("choices"), 5)
+    facts += [f"To check before merging: {clip(note, 200)}" for note in (view.get("notes") or [])[:2]]
+    if pr == "disabled":
+        return compose(f"**Contract drafted for {where}, not proposed**: the controller's writes are switched off.", facts,
+                       "the operator turns writes on in the controller's configuration.")
+    if not isinstance(pr, dict) or not pr.get("number"):
+        return compose(f"**No contract pull request for {where}**: {clip(view.get('next_action') or 'nothing to import', 220)}")
+    number = link(f"#{pr['number']}", pr.get("url"))
+    if not pr.get("changed"):
+        return compose(f"**A contract pull request is already open for {where}**: {number}.", facts, "review and merge it; merging is the review.")
+    return compose(f"**Contract proposed for {where}**: {number}, service `{view.get('service')}`. Nothing was added to the repository.", facts,
+                   "a person reviews and merges it (merging is the review); then I onboard it as it is.")
 
 
 def detected_words(found):

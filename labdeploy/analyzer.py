@@ -5,7 +5,7 @@ from typing import get_args
 
 import yaml
 
-from .models import AppSpec
+from .models import AppSpec, draft_dump
 
 FILES = ("requirements.txt", "pyproject.toml", "Dockerfile", "package.json", "platform.yaml")
 COMPOSE_FILES = ("compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml")
@@ -113,7 +113,7 @@ def analyze(files: dict[str, str], name: str, paths: list[str] | None = None) ->
                       "requirements.txt, requirements.lock and requirements-dev.txt as docs/DEVELOPER-CONTRACT.md section 1a shows.")
     review.append("List configuration as env (plain values) and secrets (names of Secret Manager secrets called <service>-NAME); "
                   "nothing else reaches the container.")
-    result = {"supported_candidate": python, "evidence": evidence, "draft_spec": draft.model_dump(),
+    result = {"supported_candidate": python, "evidence": evidence, "draft_spec": draft_dump(draft),
               "suggested_needs": suggested, "review_required": review}
     if files.get("compose"):
         result["compose"] = compose_drafts(files["compose"])
@@ -211,7 +211,7 @@ def compose_drafts(text, limit=20):
                 needs = compose_needs(body, kinds)
                 draft = AppSpec(name=name if len(name) >= 3 else f"{name}-svc", port=port if 1024 <= port <= 65535 else 8080,
                                 build={"context": build_context}, needs=needs)
-                part.update(kind="http", port=port, draft_spec=draft.model_dump(),
+                part.update(kind="http", port=port, draft_spec=draft_dump(draft),
                             advice=f"Its own Cloud Run service: onboard it with path {path or '(the root)'}; this draft needs review like any other.")
                 if needs:
                     part["needs_from"] = ("It depends on the Compose file's Postgres service" + (" and reads DATABASE_URL" if "database_auth" in needs else "")

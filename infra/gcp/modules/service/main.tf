@@ -322,9 +322,10 @@ resource "google_monitoring_uptime_check_config" "health" {
       }
     }
     dynamic "accepted_response_status_codes" {
-      for_each = local.pages_for_people ? [1] : []
+      for_each = local.pages_for_people || !var.health_probe ? [1] : []
       content {
-        status_class = "STATUS_CLASS_3XX"
+        # People's pages answer the check with a sign-in redirect; a service without a health route with whatever / says.
+        status_class = local.pages_for_people ? "STATUS_CLASS_3XX" : "STATUS_CLASS_ANY"
       }
     }
   }

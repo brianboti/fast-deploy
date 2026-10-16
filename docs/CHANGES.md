@@ -1,3 +1,63 @@
+# 1.15.0: a repository as it is (Phase 13)
+
+Asked for on 2026-10-16 with the defaults of D31 to D34: deploy a repository without adding anything to it. The contract,
+the build inputs and the pipeline move into the platform; repositories that follow `docs/DEVELOPER-CONTRACT.md` keep
+everything as before.
+
+1. **The reader** (`labdeploy/reader.py`, 13.5, D34): one service of a repository read by the precedence ladders of the
+   2026-10-16 review (how it is built, the Python version, the lock, the start command, the port, the health route, the
+   settings it reads, its needs, its tests, its Compose service), each choice with the file it came from and the files it
+   set aside. It refuses rather than guesses: several candidate apps or frameworks, Django without `WSGI_APPLICATION`, no
+   dependency list, conda-only or system packages for a build the platform makes, a Python outside 3.11 to 3.15, a
+   committed secret (recognized by its name, never opened), a notebook or a file over 100 MiB (or in Git LFS) as the
+   app; each refusal names the file and the fix. `check_repository` reports what it would do as `as_it_is`, with the
+   services a repository holds (one per Compose build, else one per folder with a manifest and an entry file).
+2. **The contract the platform keeps** (13.1, D31, D32): `apps/<service>/platform.yaml` in the platform repository, the
+   same model plus `source` (`repository`, `path`, `commit`), recorded in the registry as `contract: platform`.
+   `import_contract` (a new tool) opens the pull request with it and the locks the platform made: `uv export` of a
+   `uv.lock`, `poetry.lock` and `Pipfile.lock` read at their locked versions and hashes, anything else compiled once with
+   uv in a container of the app's Python, the server that starts it added when the repository does not list it, and a
+   lock of the service with its test tools. A `platform.yaml` in the repository is imported once as the draft. Merging is
+   the review: the file never carries `reviewed`, and the controller never merges it. `onboard_application` with
+   `as_is: true` runs the whole path, waiting for that merge. Plans bind the contract commit and the source commit, and
+   the approval block shows both.
+3. **Releases are pull requests** (D32): `deploy_latest` opens one that moves `source.commit` and nothing else; the
+   controller merges it only under the application's `auto_merge`, when the requester may merge their own requests, the
+   change is exactly that line and the checks passed. A newer request closes the older one. A new scheduler job
+   (`contracts`, every minute) releases what any merge to a contract put on main, once. `auto_deploy` opens the pull
+   request when main moves.
+4. **The platform's own pipeline** (13.2, D33): `.github/workflows/deploy.yml` is generated from `templates/deploy-gcp.yml`
+   (a test keeps them equal), with the application, its repository, folder and the contract commit as inputs; the
+   application is checked out read-only at its commit, with a GitHub App installation token narrowed to that repository
+   when `APPS_APP_ID` is set, else the run's own token (public repositories). `recover.yml` and `rightsize.yml` run once
+   per service under `apps/`. Each runs in the environment `staging-<service>`, and the service module's federation
+   trusts exactly those three workflows of the platform repository on `main` in that environment. The provenance is signed
+   with the application's Cloud KMS key and names the source repository and commit, the contract commit, the recipe and
+   the Dockerfile's and the lock's SHA-256; it is verified before the release. The receipt carries the platform run, the
+   application commit and the contract commit. Private repositories are refused while the platform repository is public.
+5. **Builds from outside** (13.3): `build.recipe` is `repository` (the default: the service's Dockerfile, else its
+   Procfile), `platform` (the platform's own Dockerfile, rendered at build time beside a copy of the service made through
+   a deny-list of secrets, tests, notebooks and caches) or `buildpacks`; `build.entrypoint` is the start command the
+   platform builds in (`GOOGLE_ENTRYPOINT` for the buildpacks). Every buildpacks build now uses the platform's project
+   descriptor with the same deny-list. Without test tools of its own, a service's tests get the platform's pinned pytest
+   (`tests.lock`).
+6. **Run-time defaults** (13.4): `command` and `args` replace the image's ENTRYPOINT and CMD (never on a buildpacks
+   image, whose launcher they would bypass); `health_path: null` starts the service under Cloud Run's TCP startup probe,
+   the release probes accept any answer below 500, the uptime check any answer, and the receipt and the plan say the HTTP
+   probe is off.
+7. **Documents**: the contract page opens with what the platform assumes when given nothing; `docs/CLAUDE-CHAT.md`
+   "Deploy it as it is"; the runbook names the platform repository as the single control point whose protection never
+   loosens; the playbook skill knows `import_contract` and `as_is`. CI answers in seconds for a pull request that only
+   changes `apps/`.
+
+Drafts for repositories that follow the contract read exactly as before (`draft_dump`), and Terraform roots of existing
+applications render unchanged. Re-pinning the existing applications' workflows is optional: the template's new steps
+behave as before for them, except that a buildpacks image now leaves out secrets, tests and caches, and tests without
+a `requirements-dev.txt` get the platform's pytest instead of failing.
+
+Tests: 516 pass (38 new in `tests/test_phase13.py`); ruff and zizmor clean.
+
+
 # 1.14.1: the repository is brianboti/fast-deploy
 
 Asked for on 2026-10-16: the platform repository follows the new name. GitHub keeps a renamed repository's numeric id
