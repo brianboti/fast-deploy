@@ -266,7 +266,7 @@ Cost effect: none; the bake reads logs and metrics within the free allotment.
 
 ## Phase 10: one repository, several services (about four and a half days) → version 1.10.0
 
-Status: shipped on 2026-10-15 as 1.10.0 (pull request #44); live on 2026-10-15 (`docs/VALIDATION.md`): the first service of a two-service repository onboarded with one sentence and released; the second, with Postgres by password, found a missing permission fixed in 1.12.1, then migrated, released and served rows through its `DATABASE_URL`; Sophia's copy from `backend/` is still to do. Planned on 2026-10-14 (research items 2 and 3, and the gaps the Sophia copy exposed). This phase removes the root-Dockerfile requirement Sophia's copy needed and gives the contract its answer for front-ends, caches, queues and workers.
+Status: shipped on 2026-10-15 as 1.10.0 (pull request #44); live on 2026-10-15 (`docs/VALIDATION.md`): the first service of a two-service repository onboarded with one sentence and released; the second, with Postgres by password, found a missing permission fixed in 1.12.1, then migrated, released and served rows through its `DATABASE_URL`; on 2026-10-16 Sophia's copy was onboarded again from `backend/` without its root files and released (1.12.3 fixed what that found). Planned on 2026-10-14 (research items 2 and 3, and the gaps the Sophia copy exposed). This phase removes the root-Dockerfile requirement Sophia's copy needed and gives the contract its answer for front-ends, caches, queues and workers.
 
 | Item | Change | Where |
 |---|---|---|
@@ -284,7 +284,7 @@ Cost effect: none at idle; a second service in a repository is another scale-to-
 
 ## Phase 11: easy, the platform writes the boilerplate (about five days) → version 1.11.0
 
-Status: shipped on 2026-10-15 as 1.11.0; the buildpack comparison ran locally (D28 decided); live on 2026-10-15: the checker and its draft on a bare repository, Compose drafts, onboarding measures; the bare repository's release and the buildpack release wait for a person to review its draft. Planned on 2026-10-14 (research items 5, 6 and 11).
+Status: shipped on 2026-10-15 as 1.11.0; the buildpack comparison ran locally (D28 decided); live on 2026-10-15: the checker and its draft on a bare repository, Compose drafts, onboarding measures; on 2026-10-16 the bare repository was onboarded with one sentence after a person merged the draft, and released again without a Dockerfile through buildpacks (203 MB against 53 MB). Planned on 2026-10-14 (research items 5, 6 and 11).
 
 | Item | Change | Where |
 |---|---|---|

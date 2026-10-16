@@ -18,6 +18,43 @@ daily reference; `docs/SETUP.md` covers the one-time setup and `docs/RUNBOOK.md`
    `skills/`. It tells Claude when to ask before acting, how to read each status, what costs to show, and how to write
    a "what is missing" message for a developer.
 
+## What answers look like
+
+Every answer has the same three parts, so it reads at a glance:
+
+1. **One bold line with the outcome**: live, in progress, stopped, ready, not ready, healthy.
+2. **A few bullets** with what matters: the version, the address, the checks, how long it took, the cost.
+3. **Next:** what happens next, or the one thing you do.
+
+The controller writes the core of it. Most tools return a `summary` built by code from the real result
+(`labdeploy/chat.py`), and Claude answers from it, so the wording and the numbers are the same every time and never
+invented. Claude adds detail only when you ask for it ("show me the steps", "why did it fail?", "show the log lines").
+
+> **`lab-bare` is live** with `dede786` (Merge pull request #4 from brianboti/buildpack-trial).
+>
+> - Address: https://lab-bare-42n6s5wp5q-uc.a.run.app (needs a Google sign-in token; not open in a browser)
+> - Checks: tests passed · library audit passed · health check passed
+> - Took 10 min
+>
+> **Next:** nothing to do. To undo it, say “roll lab-bare back”.
+
+> **Release stopped for `lab-notebook`: the previous version is still serving.**
+>
+> - Why: the database migration failed, so nothing new was deployed
+> - Error: `relation "experiment_typo" does not exist`
+>
+> **Next:** fix the migration (check whether part of it ran), then release again.
+
+> **Onboarding `api`, step 4 of 9: plan the cloud setup and check the safety rules.**
+>
+> - From `brianboti/lab-monorepo`, folder `services/api`
+> - Waiting for the infrastructure plan run
+>
+> **Next:** nothing to do; it continues on its own every minute.
+
+If an answer comes back as a wall of text or raw JSON, the playbook skill is probably missing or old: re-upload it
+(step 4 above).
+
 ## What you can ask for
 
 **Looking** (Claude calls these without asking):
@@ -57,7 +94,9 @@ daily reference; `docs/SETUP.md` covers the one-time setup and `docs/RUNBOOK.md`
 
 ## Deploy a repository with one sentence
 
-For a repository that follows `docs/DEVELOPER-CONTRACT.md`, say: *"Deploy https://github.com/ORG/REPO on GCP."*
+Not sure the repository is ready? Ask *"Is https://github.com/ORG/REPO ready?"* first: Claude checks it, and can draft the
+missing files as a pull request for a person to review. For a repository that follows `docs/DEVELOPER-CONTRACT.md`, say:
+*"Deploy https://github.com/ORG/REPO on GCP."*
 Claude calls `onboard_application`, which does everything the five onboarding steps did by hand:
 
 1. Checks the repository against the contract and stops with a checklist if something is missing (nothing is created before the contract holds).
@@ -68,7 +107,7 @@ Claude calls `onboard_application`, which does everything the five onboarding st
 6. Plans and dispatches the first release.
 
 The first answer comes back within seconds with the step reached; the controller continues on its own every minute,
-about ten minutes in all. *"Where is REPO's onboarding?"* calls `get_onboarding_status`; when it says complete, *"Where is
+usually 4 to 15 minutes in all. *"Where is REPO's onboarding?"* calls `get_onboarding_status`; when it says complete, *"Where is
 my release?"* follows the first deployment. If a step blocks, the status names the reason and the fix, and the same
 sentence continues from that step once it is fixed. Every merge is a pull request the controller opened itself, on the
 application's own files only, after the policy and the checks passed; set `auto_merge: false` in the configuration to

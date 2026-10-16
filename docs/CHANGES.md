@@ -1,3 +1,31 @@
+# 1.13.0: clear, consistent answers in Claude chat
+
+Asked for on 2026-10-16: chatting with Lab Deploy should be easy, understandable and professional, with formatted
+answers. Until now Claude read each tool's full result (a release status is about 21 KB of JSON, the application list
+19 KB) and worded every answer its own way. Nothing here changes what any tool does or costs; no apply or regeneration.
+
+## Added
+
+1. **A summary written by code** (`labdeploy/chat.py`). The main tools' results now start with `summary`: a few Markdown
+   lines built from that result alone, never from Claude's words, in one shape: a bold outcome, the facts that matter
+   (version, address, checks, time, cost), then one **Next:** line. Releases (planned, started, running, live, stopped
+   with the previous version serving, failed at a named step, rolled back, needing a person), onboarding (step N of 9,
+   what it waits for, who acts), repository checks and drafts, the application table, health, logs, cost, the
+   comparison with the live release, pull requests and the controller status. Plain words throughout: "running the
+   tests", "watching the new version with real traffic", "the previous version is still serving". A renderer that fails
+   leaves the tool's answer as it was, and a result that already has a `summary` keeps it.
+2. **How to answer, in the server's instructions.** What Claude chat reads when it connects now starts with the answer
+   rules: build on `summary` and keep its lines as written, one shape for every answer, plain words, short ids, Markdown
+   links, a table for three or more items, no raw JSON or secrets, one question at most with the recommendation first, and
+   one combined answer when several tools ran.
+3. **The playbook skill** (`skills/lab-deploy-operator`): "How to answer" with the same rules and two worked examples;
+   its facts brought up to date (a service in a folder, a Procfile instead of a Dockerfile, Postgres by password,
+   `check_repository` before onboarding when unsure, 4 to 15 minutes). Re-upload it in Claude (docs/CLAUDE-CHAT.md).
+4. **docs/CLAUDE-CHAT.md, "What answers look like"**, with three real answers.
+
+Platform tests: 473 pass (12 new in `tests/test_chat.py`); the tool descriptions are unchanged (`schema/tools.sha256.json`).
+
+
 # 1.12.3: a repository onboarded again keeps its environment
 
 Found live on 2026-10-16, re-onboarding Sophia's copy from `backend/` under its old name: the step that prepares the GitHub
