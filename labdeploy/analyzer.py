@@ -152,6 +152,26 @@ def compose_port(ports):
     return None
 
 
+def compose_names(value):
+    """The names in a Compose `depends_on` or `environment`, from either form: a list, or a mapping."""
+    if isinstance(value, dict):
+        return [str(key) for key in value]
+    if isinstance(value, list):
+        return [str(item).split("=", 1)[0] for item in value]
+    return []
+
+
+def compose_needs(body, kinds):
+    """What a built service's Compose entry says it needs from the platform: Postgres when it depends on a Postgres service,
+    by password when it reads a DATABASE_URL (the platform's password sign-in delivers exactly that variable)."""
+    if not any(kinds.get(name) == "postgres" for name in compose_names(body.get("depends_on"))):
+        return {}
+    needs = {"database": "postgres"}
+    if "DATABASE_URL" in compose_names(body.get("environment")):
+        needs["database_auth"] = "password"
+    return needs
+
+
 def compose_drafts(text, limit=20):
     """A Compose file read as a description of the app's parts: one platform.yaml draft per HTTP service it builds, and the
     component rule for everything else. Compose is never the deployment unit; nothing here is deployed."""
@@ -162,6 +182,8 @@ def compose_drafts(text, limit=20):
     services = document.get("services") if isinstance(document, dict) else None
     if not isinstance(services, dict):
         return {"error": "The Compose file has no services"}
+    kinds = {str(name): "postgres" for name, body in services.items()
+             if isinstance(body, dict) and re.search(IMAGE_KINDS[0][1], str(body.get("image") or ""), re.I)}
     parts = []
     for service_name, body in list(services.items())[:limit]:
         body = body if isinstance(body, dict) else {}
@@ -186,10 +208,14 @@ def compose_drafts(text, limit=20):
                     path, build_context = own, "repository"
             part["path"] = path
             if port:
+                needs = compose_needs(body, kinds)
                 draft = AppSpec(name=name if len(name) >= 3 else f"{name}-svc", port=port if 1024 <= port <= 65535 else 8080,
-                                build={"context": build_context})
+                                build={"context": build_context}, needs=needs)
                 part.update(kind="http", port=port, draft_spec=draft.model_dump(),
                             advice=f"Its own Cloud Run service: onboard it with path {path or '(the root)'}; this draft needs review like any other.")
+                if needs:
+                    part["needs_from"] = ("It depends on the Compose file's Postgres service" + (" and reads DATABASE_URL" if "database_auth" in needs else "")
+                                          + ": the draft asks for the platform's Postgres instead; add needs.migrate if the schema is created by a command.")
             else:
                 part.update(kind="worker", advice=WORKER)
         else:

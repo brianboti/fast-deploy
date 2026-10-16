@@ -350,7 +350,9 @@ class GitHub:
         owner = app.repository.split("/")[0]
         open_prs = self.request("GET", f"/repos/{app.repository}/pulls", params={"head": f"{owner}:{branch}", "state": "open"}).json()
         if open_prs:
-            return {"number": open_prs[0]["number"], "url": open_prs[0]["html_url"], "branch": branch, "changed": [], "note": "A pull request on this branch is already open."}
+            return {"number": open_prs[0]["number"], "url": open_prs[0]["html_url"], "branch": branch, "changed": [],
+                    "note": "A pull request on this branch is already open and was left as it is (it may hold a person's edits, and it may predate "
+                            "this request); close it to have the platform open a fresh one."}
         base = self.head(app)
         if not self.fresh_branch(app.repository, branch, base):
             # The branch is left over from an earlier pull request (after a squash merge its history no longer matches the

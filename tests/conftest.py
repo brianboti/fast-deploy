@@ -40,7 +40,7 @@ class FakeGitHub:
     platform_prs = []
 
     def open_platform_pull_request(self, repository, base_branch, branch, files, title, body, message):
-        self.platform_prs.append({"repository": repository, "base": base_branch, "branch": branch, "files": dict(files), "title": title})
+        self.platform_prs.append({"repository": repository, "base": base_branch, "branch": branch, "files": dict(files), "title": title, "body": body})
         return {"number": 7, "url": f"https://github.com/{repository}/pull/7", "branch": branch, "changed": sorted(files)}
 
     def commit(self, app, ref=None):
