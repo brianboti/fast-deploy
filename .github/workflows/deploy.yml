@@ -453,7 +453,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install --require-hashes -r platform/requirements.lock
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: inputs.image_digest == ''
         with:
           name: release-bundle
@@ -679,7 +679,7 @@ jobs:
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       REPOSITORY: ${{ inputs.repository }}
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         continue-on-error: true
         with:
           name: release-receipt
