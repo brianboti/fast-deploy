@@ -12,6 +12,10 @@ running controller; nothing here changes what is deployed or how.
 4. The contract pull request's first line names the repository and the folder with intact formatting.
 5. `check_repository`'s answer gives the fix of an as-is refusal ("the service lives in backend: take that folder"),
    and keeps "I can" capitalised.
+6. A buildpacks image leaves out the repository's `Dockerfile` and `.dockerignore` too (found in lab-demo-two's image).
+
+The live exercise of 1.15.0 is recorded in `docs/VALIDATION.md`: two repositories released as they are by the platform's
+own pipeline, a contract change released by its merge, refusals on four real repositories.
 
 Tests: 526 pass (4 new); ruff clean.
 

@@ -277,7 +277,7 @@ def test_render_build_copies_through_the_deny_list_and_writes_the_platforms_dock
     with pytest.raises(ValueError, match="neither requirements.lock nor requirements.txt"):
         scaffold.render_build(tmp_path / "empty", tmp_path / "out2", spec)
     descriptor = scaffold.descriptor()
-    assert 'schema-version = "0.2"' in descriptor and '".env"' in descriptor and '"tests"' in descriptor and '"Dockerfile"' not in descriptor
+    assert 'schema-version = "0.2"' in descriptor and '".env"' in descriptor and '"tests"' in descriptor and '"Dockerfile"' in descriptor
     assert scaffold.main(["descriptor"]) == 0
 
 
