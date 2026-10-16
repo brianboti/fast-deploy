@@ -50,6 +50,10 @@ everything as before.
    loosens; the playbook skill knows `import_contract` and `as_is`. CI answers in seconds for a pull request that only
    changes `apps/`.
 
+A fix found on the way: the plan of this change wanted to start `mono-admin`'s database again, stopped on purpose two
+days before. Terraform owned its activation policy, so any apply undid a stop by the spending cap or the operator. The
+module now leaves the activation policy to them (`ignore_changes`); creating an instance still starts it.
+
 Drafts for repositories that follow the contract read exactly as before (`draft_dump`), and Terraform roots of existing
 applications render unchanged. Re-pinning the existing applications' workflows is optional: the template's new steps
 behave as before for them, except that a buildpacks image now leaves out secrets, tests and caches, and tests without

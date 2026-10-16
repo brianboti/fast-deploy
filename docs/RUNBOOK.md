@@ -124,6 +124,7 @@ and, if any service or instance could not be closed, the alert **Lab Deploy: spe
 2. To reopen one service for the rest of the month: `gcloud run services update SERVICE --region us-central1 --ingress=all --update-labels lab-deploy-cap-lifted=true`.
    A stopped database: `gcloud sql instances patch NAME --activation-policy=ALWAYS --update-labels lab-deploy-cap-lifted=true`.
    Without the label the next budget notification closes it again; a release also reopens ingress and is closed again.
+   A stopped database stays stopped through later infrastructure applies (since 1.15.0): only that command starts it.
 3. When the new month starts, remove the labels: `gcloud run services update SERVICE --region us-central1 --remove-labels lab-deploy-cap-lifted`
    (`gcloud sql instances patch NAME --remove-labels lab-deploy-cap-lifted`), or the cap no longer protects that service.
 4. If billing was detached (`detach_billing = true`), re-link the project in the Billing console; every API in it stopped.
