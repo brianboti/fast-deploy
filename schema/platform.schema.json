@@ -1,5 +1,46 @@
 {
   "$defs": {
+    "Build": {
+      "additionalProperties": false,
+      "description": "How the image is built.\n\ncontext: service (the default), the service's own folder is the Docker build context; repository, the whole repository\nis, for a service in a monorepo that copies shared code from elsewhere in it (the Dockerfile still lives in the\nservice's folder and its paths are relative to the repository root).\n\nrecipe (docs/ROADMAP.md D31, 13.3): repository (the default), the service's own Dockerfile, else its Procfile through\nGoogle's buildpacks; platform, the platform's own Dockerfile, rendered at build time beside a copy of the service's files\nand never committed; buildpacks, Google's buildpacks even when a Dockerfile exists. entrypoint: the command that starts\nthe service when the platform makes the image (the platform Dockerfile's command, the buildpacks' GOOGLE_ENTRYPOINT).",
+      "properties": {
+        "context": {
+          "default": "service",
+          "enum": [
+            "service",
+            "repository"
+          ],
+          "title": "Context",
+          "type": "string"
+        },
+        "recipe": {
+          "default": "repository",
+          "enum": [
+            "repository",
+            "platform",
+            "buildpacks"
+          ],
+          "title": "Recipe",
+          "type": "string"
+        },
+        "entrypoint": {
+          "anyOf": [
+            {
+              "maxLength": 400,
+              "pattern": "^[A-Za-z0-9_./:=,+@%${}() -]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entrypoint"
+        }
+      },
+      "title": "Build",
+      "type": "object"
+    },
     "Needs": {
       "additionalProperties": false,
       "description": "What the application needs besides its container. Names are short; the platform derives the real resource names.",
@@ -34,6 +75,15 @@
           },
           "title": "Migrate",
           "type": "array"
+        },
+        "database_auth": {
+          "default": "iam",
+          "enum": [
+            "iam",
+            "password"
+          ],
+          "title": "Database Auth",
+          "type": "string"
         }
       },
       "title": "Needs",
@@ -109,10 +159,47 @@
       "type": "integer"
     },
     "health_path": {
+      "anyOf": [
+        {
+          "pattern": "^/[A-Za-z0-9/_-]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
       "default": "/health",
-      "pattern": "^/[A-Za-z0-9/_-]*$",
-      "title": "Health Path",
-      "type": "string"
+      "title": "Health Path"
+    },
+    "command": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Command"
+    },
+    "args": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Args"
     },
     "resources": {
       "$ref": "#/$defs/Resources"
@@ -198,6 +285,9 @@
     },
     "needs": {
       "$ref": "#/$defs/Needs"
+    },
+    "build": {
+      "$ref": "#/$defs/Build"
     },
     "reviewed": {
       "default": false,

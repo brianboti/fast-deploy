@@ -20,7 +20,7 @@ from typing import get_args
 import yaml
 
 from .analyzer import TEST_PATH, analyze
-from .models import AppSpec
+from .models import AppSpec, draft_dump
 
 TEMPLATES = Path(__file__).resolve().parent.parent / "templates" / "repo"
 PYTHONS = get_args(AppSpec.model_fields["python"].annotation)
@@ -264,11 +264,13 @@ def detect_python(repo, spec):
 
 
 # ---- the application
-def module_of(relative):
-    """("", "app.main") for app/main.py; ("src", "pkg.main") for src/pkg/main.py; None when it is not importable by name."""
+def module_of(relative, src_package=False):
+    """("", "app.main") for app/main.py; ("src", "pkg.main") for src/pkg/main.py; None when it is not importable by name.
+    When src/ is itself a package (it has an __init__.py), its modules are src.<module>: they may import each other
+    relatively, which only works under that name (found live: llm-debate-agent's backend/src)."""
     parts = relative[:-3].split("/")
     app_dir = ""
-    if parts[0] == "src" and len(parts) > 1:
+    if parts[0] == "src" and len(parts) > 1 and not src_package:
         app_dir, parts = "src", parts[1:]
     if parts[-1] == "__init__":
         parts = parts[:-1]
@@ -295,11 +297,14 @@ def classify(call):
     return None
 
 
-def find_applications(sources):
-    """Module-level application objects (constructed, or made by a factory call) and, separately, factory functions."""
+def find_applications(sources, src_package=None):
+    """Module-level application objects (constructed, or made by a factory call) and, separately, factory functions.
+    `src_package`: whether src/__init__.py exists (read from the tree; when unknown, from the files read)."""
     objects, factories = [], []
+    if src_package is None:
+        src_package = "src/__init__.py" in sources
     for relative in sorted(sources, key=rank):
-        located = module_of(relative)
+        located = module_of(relative, src_package)
         if not located:
             continue
         text = sources[relative]
@@ -425,7 +430,7 @@ def find_application(repo, sources, dependencies):
                      application_file=module.replace(".", "/") + ".py")
         return found, notes
     notes = []
-    objects, factories = find_applications(sources)
+    objects, factories = find_applications(sources, "src/__init__.py" in repo.local_paths)
     chosen = None
     if objects:
         chosen = dict(objects[0])
@@ -639,7 +644,7 @@ def platform_draft(repo, name, found, dockerfile_text, planned):
     if found["interface"] == "wsgi":
         draft["concurrency"] = min(draft["concurrency"], 8)  # one gunicorn worker with eight threads serves eight requests at once
     spec = AppSpec.model_validate(draft)
-    return fill(template("platform.yaml.tmpl"), SPEC=yaml.safe_dump(spec.model_dump(), sort_keys=False).rstrip("\n")), analysis
+    return fill(template("platform.yaml.tmpl"), SPEC=yaml.safe_dump(draft_dump(spec), sort_keys=False).rstrip("\n")), analysis
 
 
 def health_test(found):
@@ -859,3 +864,151 @@ def pull_request_body(result):
         lines += ["", "For `platform.yaml`:"] + [f"- {note}" for note in result["analysis"]["review_required"]]
     lines += ["", "The platform never merges this pull request."]
     return "\n".join(lines) + "\n"
+
+
+# ---- builds from outside (docs/ROADMAP.md 13.3): the image of a repository taken as it is, made without touching it
+# What the platform never copies into an image it makes: what the drafted allow-list keeps out, written as a deny-list,
+# because the platform cannot know in advance which of a repository's files the service reads at run time.
+BUILD_EXCLUDE = (".git", ".github", ".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "id_rsa*", "id_dsa*", "id_ecdsa*",
+                 "id_ed25519*", "credentials.json", "*.tfstate", "*.tfstate.*", "*.tf", "*.tfvars", ".venv", "venv", "node_modules",
+                 "__pycache__", "*.py[cod]", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox", "htmlcov", ".coverage",
+                 "tests", "test", "test_*.py", "*_test.py", "conftest.py", "*.ipynb", ".ipynb_checkpoints", ".DS_Store", "Dockerfile",
+                 "Dockerfile.*", ".dockerignore", "platform.yaml", "compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml")
+
+
+def excluded(relative):
+    """Whether a path inside the service's folder stays out of an image the platform makes (any segment may match)."""
+    import fnmatch
+    return any(fnmatch.fnmatch(part, pattern) for part in relative.split("/") for pattern in BUILD_EXCLUDE)
+
+
+def start_command(entrypoint):
+    """build.entrypoint as an exec-form command: its words, or a shell running it when it reads a variable ($PORT)."""
+    return ["sh", "-c", f"exec {entrypoint}"] if "$" in entrypoint else shlex.split(entrypoint)
+
+
+def platform_dockerfile(spec, locked):
+    """The platform's own Dockerfile for a contract with build.recipe: platform: the drafted Dockerfile's steps (python:X.Y-slim
+    by digest, dependencies before the code, a numeric non-root user) with the contract's entrypoint as its command."""
+    if spec.build.recipe != "platform" or not spec.build.entrypoint:
+        raise ValueError("The platform makes a Dockerfile only for build.recipe: platform with build.entrypoint")
+    text = dockerfile({"python": spec.python, "port": spec.port, "command": start_command(spec.build.entrypoint)}, locked)
+    body = text[re.search(r"(?m)^FROM ", text).start():].replace("# Only what .dockerignore lets in is copied.",
+                                                                  "# Only what passed the platform's deny-list was copied into this build context.")
+    return ("# Made by Fast Deploy at build time from the contract (build.recipe: platform, docs/ROADMAP.md 13.3); never committed.\n"
+            f"# python:{spec.python}-slim by its multi-architecture index digest, resolved {BASE_IMAGES_RESOLVED}.\n" + body)
+
+
+def render_build(app_dir, out_dir, spec):
+    """Copy the service's files into a fresh build context through the deny-list, then write the platform's Dockerfile beside
+    them. Symbolic links are left out, so nothing outside the service's folder can enter. Returns the copied paths."""
+    import shutil
+    source, target = Path(app_dir).resolve(strict=True), Path(out_dir)
+    target.mkdir(parents=True, exist_ok=False)
+    copied = []
+    for path in sorted(source.rglob("*")):
+        relative = path.relative_to(source).as_posix()
+        if path.is_symlink() or not path.is_file() or excluded(relative):
+            continue
+        (target / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target / relative)
+        copied.append(relative)
+    locked = (target / "requirements.lock").is_file()
+    if not locked and not (target / "requirements.txt").is_file():
+        raise ValueError("The service has neither requirements.lock nor requirements.txt, and the contract names no lock the platform made")
+    (target / "Dockerfile").write_text(platform_dockerfile(spec, locked))
+    return copied
+
+
+def descriptor():
+    """The buildpacks' project descriptor (project.toml, schema 0.2) the platform builds with: the same deny-list, so a
+    buildpacks image never carries secrets, tests, notebooks or caches either."""
+    patterns = ",\n".join(f'  "{pattern}"' for pattern in BUILD_EXCLUDE if pattern not in ("Dockerfile", "Dockerfile.*", ".dockerignore"))
+    return ('# Written by Fast Deploy for the buildpacks (docs/ROADMAP.md 13.3); a project.toml of the repository\'s own is not read.\n'
+            '[_]\nschema-version = "0.2"\n\n[io.buildpacks]\nexclude = [\n' + patterns + "\n]\n")
+
+
+def export_container(python_version, dev=False):
+    """The docker command that exports uv.lock as a hash-locked requirements file in a container of the application's Python:
+    pyproject.toml and uv.lock arrive base64-encoded on stdin, uv is installed by hash, and nothing is resolved again."""
+    pin = f"uv=={UV_VERSION} " + " ".join(f"--hash=sha256:{digest}" for digest in UV_HASHES)
+    groups = "--all-groups" if dev else "--no-dev"
+    script = "; ".join((
+        "set -eu",
+        "base64 -d > input.tar",
+        "mkdir project && tar -xf input.tar -C project",
+        f"printf '%s\\n' {shlex.quote(pin)} > uv-requirements.txt",
+        "python -m venv uv-venv",
+        "uv-venv/bin/pip install --quiet --disable-pip-version-check --no-cache-dir --only-binary=:all: --require-hashes -r uv-requirements.txt",
+        f"cd project && ../uv-venv/bin/uv export --frozen {groups} --no-emit-project --no-emit-workspace --format requirements-txt --quiet -o ../requirements.lock",
+        "cat ../requirements.lock",
+    ))
+    return ["docker", "run", "--rm", "-i", "--user", "65532:65532", "-e", f"HOME={CONTAINER_HOME}", "-e", "UV_NO_CACHE=1", "-w", CONTAINER_HOME,
+            base_image(python_version), "sh", "-c", script]
+
+
+def export_uv_lock(pyproject_text, uv_lock_text, python_version=DEFAULT_PYTHON, runner=docker_runner, dev=False):
+    """uv.lock as a hash-locked requirements file, exported without resolving again (`uv export --frozen`): the main
+    dependencies, or every group when `dev` (for the tests). Returns {"text", "error"} like compile_lock."""
+    import base64
+    import io
+    import tarfile
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for name, text in (("pyproject.toml", pyproject_text), ("uv.lock", uv_lock_text)):
+            data = text.encode()
+            info = tarfile.TarInfo(name)
+            info.size, info.mode = len(data), 0o644
+            archive.addfile(info, io.BytesIO(data))
+    try:
+        output = runner(export_container(python_version, dev), base64.b64encode(buffer.getvalue()).decode())
+    except FileNotFoundError:
+        return {"text": None, "error": "Docker is not installed on this machine"}
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip().splitlines()
+        return {"text": None, "error": f"uv export failed: {detail[-1][:300] if detail else exc}"}
+    except Exception as exc:  # noqa: BLE001 - a timeout or a daemon that is not running is reported the same way
+        return {"text": None, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    if "uv export" not in output or ("==" in output and "--hash=sha256:" not in output):
+        return {"text": None, "error": "the container did not return a hash-locked requirements file"}
+    return {"text": output, "error": None}
+
+
+def main(argv=None):
+    """The build steps' entry points (templates/deploy-gcp.yml): render-build, platform-dockerfile and descriptor."""
+    import argparse
+    import os
+    import sys
+
+    from .models import parse_spec
+    parser = argparse.ArgumentParser(prog="python -m labdeploy.scaffold")
+    commands = parser.add_subparsers(dest="command", required=True)
+    build = commands.add_parser("render-build", help="copy the service through the deny-list and write the platform's Dockerfile")
+    build.add_argument("app_dir")
+    build.add_argument("out_dir")
+    build.add_argument("--spec", required=True)
+    show = commands.add_parser("platform-dockerfile", help="print the platform's Dockerfile for a contract")
+    show.add_argument("app_dir")
+    show.add_argument("--spec", required=True)
+    commands.add_parser("descriptor", help="print the buildpacks' project descriptor")
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "descriptor":
+            print(descriptor(), end="")
+            return 0
+        spec = parse_spec(Path(args.spec).read_text())
+        if args.command == "render-build":
+            copied = render_build(args.app_dir, args.out_dir, spec)
+            print(f"Build context: {len(copied)} files copied through the platform's deny-list, and the platform's Dockerfile", file=sys.stderr)
+        else:
+            lock = os.environ.get("PLATFORM_LOCK")
+            locked = (Path(args.app_dir) / "requirements.lock").is_file() or bool(lock and Path(lock).is_file())
+            print(platform_dockerfile(spec, locked), end="")
+    except ValueError as exc:
+        print(f"::error::{exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

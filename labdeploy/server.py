@@ -140,7 +140,10 @@ INSTRUCTIONS = (
     "How to work. A new repository: check_repository first; propose_configuration opens a draft pull request with the files the "
     "platform can write, which a person reviews, marks reviewed: true and merges; then onboard_application (with path for a service "
     "in a folder, one call per service) runs on its own: follow it with get_onboarding_status, then its first release with "
-    "get_deployment_status. An app already live: compare_with_live, deploy_latest, then get_deployment_status. 'dispatched' means "
+    "get_deployment_status. A repository the lab wants to keep as it is: onboard_application with the as-it-is switch on adds "
+    "nothing to it; its contract becomes a pull request on the platform repository (import_contract alone opens just that), a "
+    "person's merge is the review, and every later release is a pull request that moves the contract's commit. An app already "
+    "live: compare_with_live, deploy_latest, then get_deployment_status. 'dispatched' means "
     "GitHub accepted the job, not that anything is live, and a check passed only when it says passed. A problem: get_service_health "
     "and get_recent_logs; rollback_staging moves visitors back to the previous version in seconds but does not undo data changes. "
     "Databases, buckets, topics and migrations are supported: the app declares them under needs in platform.yaml through a reviewed "
@@ -294,13 +297,24 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
 
     @mcp.tool(title="Onboard a repository (one sentence)", annotations=CHANGES_CLOUD, structured_output=True)
     @plain_errors
-    def onboard_application(repository: str, application: str | None = None, auto_deploy: bool = False, path: str | None = None) -> dict[str, Any]:
+    def onboard_application(repository: str, application: str | None = None, auto_deploy: bool = False, path: str | None = None,
+                            as_is: bool = False) -> dict[str, Any]:
         """From a repository link to a running service, for a repository that follows docs/DEVELOPER-CONTRACT.md: validate it, register it,
         open and (when the policy and checks pass) merge its infrastructure and workflow pull requests, wait for the pipeline, create the
         GitHub environment with its variables, and release the first commit. `path`: the service's folder when it is not the repository
-        root (a monorepo, e.g. services/api); call once per service. Resumable: call again to continue, or after fixing what blocked it.
-        Changes cloud resources."""
-        return chat.attach(chat.onboarding, controller.onboard(identity.get(), repository, application, auto_deploy, path))
+        root (a monorepo, e.g. services/api); call once per service. `as_is`: take the repository as it is, adding nothing to it: the
+        platform reads it, proposes its contract as a pull request on the platform repository (a person's merge is the review) and
+        releases it with the platform's own pipeline. Resumable: call again to continue, or after fixing what blocked it. Changes cloud
+        resources."""
+        return chat.attach(chat.onboarding, controller.onboard(identity.get(), repository, application, auto_deploy, path, as_is=as_is))
+
+    @mcp.tool(title="Import a contract (pull request)", annotations=CREATES_RECORD, structured_output=True)
+    @plain_errors
+    def import_contract(repository: str, path: str | None = None, application: str | None = None) -> dict[str, Any]:
+        """Read one service of a repository as it is and open the pull request that adds its contract (apps/<service>/platform.yaml,
+        with the locks the platform made) to the platform repository: every choice and the file it came from, the files set aside,
+        and what it refuses and how to fix it. Nothing is added to the repository itself; a person's merge is the review."""
+        return chat.attach(chat.contract_import, controller.import_contract(identity.get(), repository, path, application))
 
     @mcp.tool(title="Check a repository", annotations=READ_ONLY, structured_output=True)
     @plain_errors

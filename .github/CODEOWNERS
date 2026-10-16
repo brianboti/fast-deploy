@@ -6,6 +6,8 @@
 # Once a second operator exists, list them here as well and turn on "Require review from Code Owners" (docs/SETUP.md 7l),
 # so the person who asked is never the one who approves (docs/ROADMAP.md D29).
 /infra/gcp/apps/**        @brianboti
+# Contracts of repositories taken as they are (docs/ROADMAP.md D31, D32): merging one is its review and releases it.
+/apps/                    @brianboti
 /labdeploy/infra.py       @brianboti
 /.github/workflows/       @brianboti
 /.github/CODEOWNERS       @brianboti

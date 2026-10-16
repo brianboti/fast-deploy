@@ -603,7 +603,15 @@ def report():
         except Exception as exc:  # noqa: BLE001 - the export is optional; the report says why it is missing
             result["actual_spend"] = {"warning": f"Could not read the billing export: {str(exc)[:200]}"}
     repository = os.environ.get("GITHUB_REPOSITORY")
-    if repository:
+    if os.environ.get("SPEC_FILE"):
+        # The platform repository's right-sizing (docs/ROADMAP.md D33): the reviewed contract is apps/<service>/platform.yaml
+        # in its own checkout, not a file of the application's repository.
+        try:
+            from .models import parse_contract
+            result["drift"] = drift(result["live_settings"], parse_contract(Path(os.environ["SPEC_FILE"]).read_text())[0])
+        except Exception as exc:  # noqa: BLE001 - drift is best effort; the report says why it is missing
+            result["drift"] = {"warning": f"Could not compare with the contract: {str(exc)[:200]}"}
+    elif repository:
         try:
             result["drift"] = drift(result["live_settings"], reviewed_spec_from_github(repository, os.environ.get("GITHUB_REF_NAME", "main"), os.environ.get("GH_TOKEN"),
                                                                                 os.environ.get("APP_PATH", ".")))

@@ -120,6 +120,24 @@ The first keeps the plain workflow names and the `staging` environment; the seco
 `compose.yaml`, *"Analyze REPO"* turns it into one draft per web service and says where the database, cache and
 workers go; nothing from Compose is deployed as such.
 
+## Deploy it as it is
+
+For a repository the lab should not change (someone else's project, a paper's code, a repository with a messy layout),
+say: *"Deploy https://github.com/ORG/REPO as it is."* Nothing is added to that repository (since 1.15.0):
+
+1. The platform reads it: how it is built, which Python, its packages, what starts it, its port and health check, its
+   tests. Each choice names the file it came from; what it cannot read safely, it refuses, and says the file and the fix.
+2. It opens one pull request on the platform repository with the contract (`apps/NAME/platform.yaml`) and the locks it
+   made. **A person reviews and merges it: that merge is the review.** The controller never merges a contract.
+3. Then the usual steps run on their own: the cloud setup, the GitHub environment (`staging-NAME`, in the platform
+   repository), the first release by the platform's own pipeline.
+
+*"Is REPO ready?"* also says whether it can be taken as it is, and *"Import the contract of REPO"* opens only the pull
+request. Later releases work like this: *"Deploy the latest NAME"* opens a pull request that moves the contract's commit
+and nothing else; it merges itself when the app's auto-merge is on and the checks pass, otherwise a person merges it,
+and the merge starts the release within a minute. A change to any other line of the contract is reviewed the same way,
+and merging it releases it too.
+
 ## Pages for people
 
 An app whose `platform.yaml` says `exposure: lab-members` gets a Google sign-in page in front of it. Who may open it is

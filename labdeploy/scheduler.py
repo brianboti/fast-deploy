@@ -26,6 +26,8 @@ class Scheduler(threading.Thread):
             "backup": (controller.backup_tick, lambda: 86_400, 300),
             "onboarding": (controller.onboarding_tick, lambda: 60, 30),
             "follow": (controller.follow_tick, lambda: 60, 45),
+            # Contracts the platform keeps (docs/ROADMAP.md D32): release pull requests, and merged contracts not yet released.
+            "contracts": (controller.contract_tick, lambda: 60, 50),
         }
         self.state = {name: {"next_run": started + first, "last_run": None, "last_result": None, "last_error": None} for name, (_, _, first) in self.jobs.items()}
 

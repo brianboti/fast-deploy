@@ -1,4 +1,7 @@
 """One sentence: from a repository that follows docs/DEVELOPER-CONTRACT.md to a running service, as a resumable state machine.
+With `as_is`, from a repository taken as it is (docs/ROADMAP.md D31 to D33): the reader drafts its contract, a pull request
+adds it to the platform repository, a person's merge is the review, and the platform repository's own pipeline releases it;
+nothing is added to the repository itself.
 
 Every step looks at what already exists and continues from there, so a second call finishes an interrupted first one.
 Steps that wait on GitHub or the pipeline (a plan, an apply, a build) end the call; the scheduler's tick or the next call
@@ -16,9 +19,11 @@ from .analyzer import TEST_PATH
 from .config import SERVICE_PATH, Application, Principal
 from .github import explain
 from .models import AppSpec
+from .scaffold import SERVICE_NAME
 
-STEPS = ("validating", "registering", "infrastructure", "planning", "applying", "environment", "workflows", "merging_workflows", "releasing", "complete")
-WAITING = {"planning", "applying", "merging_workflows"}
+STEPS = ("validating", "contract", "merging_contract", "registering", "infrastructure", "planning", "applying", "environment", "workflows",
+         "merging_workflows", "releasing", "complete")
+WAITING = {"merging_contract", "planning", "applying", "merging_workflows"}
 ACTIVE = set(STEPS) - {"complete"}
 REQUIRED_FILES = (("Dockerfile", "the build recipe"), ("platform.yaml", "the application's contract"), ("requirements.txt", "pinned runtime dependencies"))
 # What the contract recommends and why; found() below says where each may live, with the scaffold's own rules (any CI
@@ -57,6 +62,8 @@ PLATFORM_WRITES = frozenset({"Dockerfile", ".dockerignore", "requirements-dev.tx
                              ".github/workflows/ci.yml", "SECURITY.md", ".github/dependabot.yml"})
 WHAT_NEXT = {
     "validating": "checking the repository against the contract",
+    "contract": "opening the pull request that adds the contract to the platform repository",
+    "merging_contract": "waiting for a person to review and merge the contract pull request (merging it is the review)",
     "registering": "registering the application with the controller",
     "infrastructure": "rendering the Terraform root and opening its pull request on the platform repository",
     "planning": "waiting for the infrastructure plan and its policy verdict, then merging",
@@ -202,6 +209,7 @@ def describe(record):
     state = record["state"]
     view = {k: record.get(k) for k in ("application", "repository", "path", "service", "state", "plan_id", "auto_deploy", "created_at", "updated_at",
                                        "completed_at", "measures")}
+    view["as_is"] = bool(record.get("as_is"))
     view["requested_by"] = record.get("principal")
     view["steps"] = record.get("steps", {})
     if state == "complete":
@@ -249,7 +257,7 @@ class Onboarder:
         return None
 
     # ---- entry points
-    def start(self, principal, repository, app_id=None, auto_deploy=False, path=None):
+    def start(self, principal, repository, app_id=None, auto_deploy=False, path=None, as_is=False):
         if "*" not in principal.applications:
             raise ValueError("Onboarding needs an identity that may see every application: applications: ['*'] in the controller configuration")
         if not principal.can_deploy:
@@ -261,12 +269,15 @@ class Onboarder:
         record = self.c.store.onboarding(app_id)
         if record is None:
             record = {"application": app_id, "repository": repository, "path": path, "principal": principal.name, "auto_deploy": bool(auto_deploy),
-                      "state": "validating", "steps": {}, "created_at": time.time()}
+                      "as_is": bool(as_is), "state": "validating", "steps": {}, "created_at": time.time()}
             self.c.store.record_event("onboarding", name=app_id, identity=principal.name, application=app_id, outcome="started",
                                       detail=repository + (f" ({path})" if path else ""))
         elif record["repository"].lower() != repository.lower() or record.get("path", "") != path:
             where = record["repository"] + (f" at {record['path']}" if record.get("path") else "")
             raise ValueError(f"Application {app_id} is being onboarded from {where}; give another application id for this repository or folder")
+        elif bool(record.get("as_is")) != bool(as_is) and record["state"] != "complete":
+            how = "as it is (its contract kept by the platform)" if record.get("as_is") else "with its own workflows (it follows the contract)"
+            raise ValueError(f"Application {app_id} is being onboarded {how}; finish that, or give another application id")
         elif record["state"] == "complete":
             return describe(record)
         elif record["state"] == "blocked":
@@ -302,6 +313,8 @@ class Onboarder:
 
     # ---- the steps
     def step_validating(self, record):
+        if record.get("as_is"):
+            return self.validate_as_is(record)
         result = contract_check(self.c.github, record["repository"], record.get("path", ""))
         record["repository"] = result["repository"]
         record["steps"]["validating"] = {"checklist": result["checklist"], "recommended": result["recommended"],
@@ -312,10 +325,82 @@ class Onboarder:
         record["needs"] = result["spec"].needs.model_dump()
         record["state"] = "registering"
 
+    def validate_as_is(self, record):
+        """The reader instead of the checklist (docs/ROADMAP.md 13.5): its choices and refusals, and whether the platform
+        already keeps a contract for this service."""
+        contracts = self.c.contracts
+        name = record["application"] if SERVICE_NAME.fullmatch(record["application"]) else None
+        view = contracts.inspect(record["repository"], record.get("path", ""), name)
+        read = view["read"]
+        record["repository"] = view["repository"]
+        record["steps"]["validating"] = {"as_is": True, "choices": read["choices"], "ignored": read["ignored"], "notes": read["notes"],
+                                         "refusals": read["refusals"], "head": view["head"], "repository_id": view["repository_id"],
+                                         "owner_id": view["owner_id"]}
+        if read["refusals"] or read["spec"] is None:
+            raise Blocked("It cannot be taken as it is: " + "; ".join(f"{item['file']} {item['problem']} (fix: {item['fix']})" for item in read["refusals"][:6]))
+        record["service"] = read["spec"].name
+        record["needs"] = read["spec"].needs.model_dump()
+        existing = contracts.read(record["service"])
+        if existing is None:
+            record["state"] = "contract"
+            return
+        self.adopt(record, existing)
+
+    def adopt(self, record, found):
+        """A contract on the platform's main for this service: it must point at this repository and folder."""
+        source = found["source"]
+        if source.repository.lower() != record["repository"].lower() or source.path != record.get("path", ""):
+            raise Blocked(f"{found['path']} already holds {record['service']} for {source.repository}" + (f" ({source.path})" if source.path else "")
+                          + "; give this service another application id")
+        record["needs"] = found["spec"].needs.model_dump()
+        record["steps"]["contract_on_main"] = {"path": found["path"], "commit": found["commit"], "source_commit": source.commit}
+        record["state"] = "registering"
+
+    def step_contract(self, record):
+        result = self.c.contracts.propose(self.principal(record), record["repository"], record.get("path", ""), record["service"])
+        read = result["read"]
+        if read["refusals"] or read["spec"] is None:
+            raise Blocked("It cannot be taken as it is: " + "; ".join(f"{item['file']} {item['problem']} (fix: {item['fix']})" for item in read["refusals"][:6]))
+        if result.get("existing"):
+            self.adopt(record, self.c.contracts.read(record["service"]))
+            return
+        pull_request = result.get("pull_request")
+        if pull_request == "disabled":
+            raise Blocked("Writes are disabled (live_dispatch: false), so the contract pull request was not opened")
+        if not pull_request or pull_request.get("number") is None:
+            raise Blocked(f"The contract pull request could not be opened: {(pull_request or {}).get('note')}")
+        record["steps"]["contract"] = {"pull_request": pull_request["number"], "url": pull_request["url"], "files": result.get("files")}
+        record["state"] = "merging_contract"
+
+    def step_merging_contract(self, record):
+        """Only a person merges a contract: the merge is the review (docs/ROADMAP.md D32). The controller waits for it."""
+        platform = self.c.config.platform
+        opened = record["steps"].get("contract") or {}
+        if not opened.get("pull_request"):
+            record["state"] = "contract"
+            return
+        pr = self.c.github.pull_request(platform.repository, opened["pull_request"])
+        step = record["steps"].setdefault("merging_contract", {})
+        if pr["merged"]:
+            found = self.c.contracts.read(record["service"])
+            if found is None:
+                step.update(waiting="the merge to show on the platform repository's main")
+                return
+            step.update(merged_by=pr.get("merged_by"), merge_sha=pr.get("merge_commit_sha"), waiting=None)
+            self.adopt(record, found)
+            return
+        if pr["state"] == "closed":
+            record["steps"].pop("contract", None)
+            raise Blocked(f"The contract pull request {pr['url']} was closed without merging; ask again to draft a fresh one")
+        step.update(waiting=f"a person to review and merge {pr['url']}: merging it is the review, and the controller never merges a contract")
+
     def step_registering(self, record):
         app_id, service, folder = record["application"], record["service"], record.get("path", "")
         if app_id in self.c.config.applications:
             app = self.c.config.applications[app_id]
+            if app.central != bool(record.get("as_is")):
+                raise Blocked(f"Application {app_id} is already registered " + ("as it is" if app.central else "with its own workflows")
+                              + "; give another application id, or unregister it first (lab-deploy unregister " + app_id + ")")
             if app.repository.lower() != record["repository"].lower() or app.service != service or app.path != folder:
                 raise Blocked(f"Application {app_id} is already registered for {app.repository}" + (f" at {app.path}" if app.path else "")
                               + f" as service {app.service}; give another application id, or unregister it first (lab-deploy unregister {app_id})")
@@ -326,10 +411,17 @@ class Onboarder:
             # The first application of a repository keeps the plain names; a further one gets its own (D24), so the two never
             # share workflows, an environment's variables, a deploy identity's trust or a release queue.
             # GitHub's names ignore case, so lab/Mono and lab/mono are one repository with one set of workflow files.
-            sibling = any(other.repository.lower() == record["repository"].lower() for other in self.c.config.applications.values())
+            sibling = any(other.repository.lower() == record["repository"].lower() and not other.central for other in self.c.config.applications.values())
             suffix = f"-{service}" if sibling else ""
+            layout = {"workflow": f"deploy-gcp{suffix}.yml", "environment": f"staging{suffix}"}
+            if record.get("as_is"):
+                # The platform repository's pipeline in its own environment staging-<service> (docs/ROADMAP.md D33).
+                platform = self.c.config.platform
+                if platform is None:
+                    raise ValueError("Set platform.repository in the controller configuration before onboarding repositories")
+                layout = {"workflow": "deploy.yml", "environment": f"staging-{service}", "contract": "platform", "pipeline_repository": platform.repository}
             entry = {"repository": record["repository"], "branch": "main", "service": service, "auto_deploy": record["auto_deploy"],
-                     "path": folder, "workflow": f"deploy-gcp{suffix}.yml", "environment": f"staging{suffix}",
+                     "path": folder, **layout,
                      "target": {"project_id": project, "region": region, "service": service, "registry": service,
                                 "deploy_service_account": f"{service}-deploy@{project}.iam.gserviceaccount.com",
                                 "probe_service_account": f"{service}-probe@{project}.iam.gserviceaccount.com",
@@ -437,12 +529,18 @@ class Onboarder:
             variables["BILLING_EXPORT_TABLE"] = settings.billing_export_table
         if settings.iap_client_id:
             variables["IAP_CLIENT_ID"] = settings.iap_client_id
-        self.c.github.ensure_environment(app.repository, app.environment, app.branch)
-        self.c.github.set_environment_variables(app.repository, app.environment, variables)
-        record["steps"]["environment"] = {"environment": app.environment, "variables": sorted(variables)}
+        # An application taken as it is runs in its own environment of the platform repository (docs/ROADMAP.md D33).
+        repository, branch = (app.pipeline_repo, "main") if app.central else (app.repository, app.branch)
+        self.c.github.ensure_environment(repository, app.environment, branch)
+        self.c.github.set_environment_variables(repository, app.environment, variables)
+        record["steps"]["environment"] = {"repository": repository, "environment": app.environment, "variables": sorted(variables)}
         record["state"] = "workflows"
 
     def step_workflows(self, record):
+        if self.c.config.applications[record["application"]].central:
+            record["steps"]["workflows"] = {"note": "none: the platform repository's own pipeline releases it"}
+            record["state"] = "releasing"
+            return
         platform = self.c.config.platform
         sha = platform.commit or self.c.github.branch_head(platform.repository, platform.branch)
         result = self.c.update_workflows(self.principal(record), record["application"], sha, allow_writes=True)
@@ -484,7 +582,11 @@ class Onboarder:
     def step_releasing(self, record):
         app_id = record["application"]
         self.c._cache.pop(("pin", app_id), None)  # the pin just changed; do not trust the cached answer
-        result = self.c.deploy_latest(self.principal(record), app_id)
+        if self.c.config.applications[app_id].central:
+            # Exactly what the merged contract names, not a newer commit (that would be a release pull request of its own).
+            result = self.c.contracts.release_now(self.principal(record), app_id)
+        else:
+            result = self.c.deploy_latest(self.principal(record), app_id)
         record["plan_id"] = result["id"]
         record["steps"]["releasing"] = {"plan_id": result["id"], "state": result["state"], "sha": result["sha"]}
         record["completed_at"] = time.time()
@@ -494,6 +596,6 @@ class Onboarder:
         # The weekly cost issue repeats it, so the lab sees how long onboarding took without asking (docs/ROADMAP.md 11.5).
         app = self.c.config.applications[app_id]
         try:
-            self.c.github.set_environment_variables(app.repository, app.environment, {"ONBOARDING_SUMMARY": summary(record)})
+            self.c.github.set_environment_variables(app.pipeline_repo, app.environment, {"ONBOARDING_SUMMARY": summary(record)})
         except Exception as exc:  # noqa: BLE001 - a measure is never worth failing an onboarding that has finished
             record["steps"]["releasing"]["note"] = f"The onboarding summary was not written to the environment: {plain(exc)[:200]}"

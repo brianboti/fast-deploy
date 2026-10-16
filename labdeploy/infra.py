@@ -78,15 +78,21 @@ PLAIN_WORKFLOWS = ("deploy-gcp.yml", "recover-gcp.yml", "rightsize-gcp.yml")
 GITHUB_ENVIRONMENT = re.compile(r"^staging(-[a-z][a-z0-9-]{1,19}[a-z0-9])?$")
 
 
+CENTRAL_WORKFLOWS = ("deploy.yml", "recover.yml", "rightsize.yml")  # the platform repository's own pipeline (docs/ROADMAP.md D33)
+
+
 def app_root(name, *, project_id, region, state_bucket, github_repository, github_repository_id, github_owner_id,
              bootstrap_image, health_path="/health", environment="staging", settings=None, needs=None, exposure="authenticated", viewers=(),
-             github_environment="staging", workflow_files=PLAIN_WORKFLOWS):
-    """The three files of an application's Terraform root, with every input a literal so a reviewer sees the truth."""
+             github_environment="staging", workflow_files=PLAIN_WORKFLOWS, pipeline="repository"):
+    """The three files of an application's Terraform root, with every input a literal so a reviewer sees the truth.
+    `pipeline`: repository when the application's own workflows release it (github_repository is the application's);
+    platform when the platform repository's pipeline does (github_repository and the ids are the platform's, the
+    environment is staging-<service> there, and the workflow files are deploy.yml, recover.yml and rightsize.yml)."""
     checks = [
         (NAME, name, "application name"), (PROJECT, project_id, "project id"), (BUCKET, state_bucket, "state bucket"),
         (REPOSITORY, github_repository, "GitHub repository"), (DIGITS, github_repository_id, "GitHub repository id"),
         (DIGITS, github_owner_id, "GitHub owner id"), (IMAGE, bootstrap_image, "bootstrap image"),
-        (HEALTH_PATH, health_path, "health path"), (ENVIRONMENT, environment, "environment"),
+        (HEALTH_PATH, health_path or "/", "health path"), (ENVIRONMENT, environment, "environment"),
     ]
     for pattern, value, what in checks:
         if not isinstance(value, str) or not pattern.fullmatch(value):
@@ -103,10 +109,17 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
         raise ValueError("exposure: lab-members needs at least one viewer (onboarding.default_viewers or the application's viewers)")
     # A further application of a repository runs in its own GitHub environment with its own workflow files (D24); the
     # deploy identity's federation trusts exactly those, so the repository's other service cannot release this one.
+    if pipeline not in ("repository", "platform"):
+        raise ValueError("pipeline is repository or platform")
     suffix = "" if github_environment == "staging" else github_environment.removeprefix("staging")
-    expected = tuple(f"{kind}-gcp{suffix}.yml" for kind in ("deploy", "recover", "rightsize"))
-    if not GITHUB_ENVIRONMENT.fullmatch(github_environment) or (suffix and suffix != f"-{name}") or tuple(workflow_files) != expected:
-        raise ValueError("The GitHub environment and workflow files are staging with the plain names, or staging-<service> with names suffixed by the service")
+    if pipeline == "platform":
+        # Every application the platform pipeline releases runs in its own environment of the platform repository.
+        if github_environment != f"staging-{name}" or tuple(workflow_files) != CENTRAL_WORKFLOWS:
+            raise ValueError("The platform pipeline runs in the environment staging-<service> of the platform repository with deploy.yml, recover.yml and rightsize.yml")
+    else:
+        expected = tuple(f"{kind}-gcp{suffix}.yml" for kind in ("deploy", "recover", "rightsize"))
+        if not GITHUB_ENVIRONMENT.fullmatch(github_environment) or (suffix and suffix != f"-{name}") or tuple(workflow_files) != expected:
+            raise ValueError("The GitHub environment and workflow files are staging with the plain names, or staging-<service> with names suffixed by the service")
     merged = dict(DEFAULT_SETTINGS)
     for key, value in (settings or {}).items():
         if key not in DEFAULT_SETTINGS:
@@ -156,8 +169,10 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
     inputs = {
         "project_id": project_id, "region": region, "service": name, "github_repository": github_repository,
         "github_repository_id": github_repository_id, "github_owner_id": github_owner_id, "bootstrap_image": bootstrap_image,
-        "health_path": health_path,
+        "health_path": health_path or "/",
     }
+    if health_path is None:  # no health route (docs/ROADMAP.md 13.4): the uptime check accepts any answer; other roots stay as they were
+        inputs["health_probe"] = False
     inputs.update(merged)
     inputs["exposure"] = exposure
     inputs["viewers"] = viewers

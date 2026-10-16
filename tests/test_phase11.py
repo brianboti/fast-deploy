@@ -169,7 +169,8 @@ def test_drafting_for_an_unregistered_repository_needs_an_onboarding_identity(tm
 def test_without_a_dockerfile_the_build_uses_pinned_buildpacks():
     steps = yaml.safe_load(lay_out(Path("templates/deploy-gcp.yml").read_text()))["jobs"]["build"]["steps"]
     lint = next(step for step in steps if step.get("name") == "Lint the Dockerfile")["run"]
-    assert lint.index('if [ ! -f "$APP_DIR/Dockerfile" ]') < lint.index("curl")  # nothing to download or lint without one
+    # The platform's own Dockerfile or the service's are linted; a buildpacks build has none, so nothing is downloaded for it.
+    assert lint.index('elif [ "$RECIPE" = "repository" ] && [ -f "$APP_DIR/Dockerfile" ]') < lint.index("nothing to lint") < lint.index("curl")
     build = next(step for step in steps if step.get("name") == "Build without cloud credentials")
     run = build["run"]
     assert build["env"]["PYTHON_VERSION"] == "${{ steps.policy.outputs.python }}"
@@ -177,6 +178,6 @@ def test_without_a_dockerfile_the_build_uses_pinned_buildpacks():
     # Both builders and run images by digest; 3.11 and 3.12 need the Ubuntu 22.04 one.
     assert run.count("gcr.io/buildpacks/builder@sha256:") == 2 and "google-22/run@sha256:" in run and "google-24/run@sha256:" in run
     assert "3.11|3.12)" in run and '--env "GOOGLE_PYTHON_VERSION=$PYTHON_VERSION.x"' in run and "--platform linux/amd64" in run
-    assert "No Dockerfile and no Procfile" in run and "build.context: repository needs a Dockerfile" in run
+    assert "No Dockerfile, no Procfile and no build.entrypoint" in run and "build.context: repository needs a Dockerfile" in run
     assert 'cp "$SOURCE/requirements.lock" "$SOURCE/requirements.txt"' in run  # pip installs the audited lock, with its hashes
     assert "--exclude=./.git" in run

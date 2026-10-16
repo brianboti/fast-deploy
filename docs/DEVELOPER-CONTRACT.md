@@ -5,6 +5,36 @@ with one request in Claude chat; the platform provides everything else (identiti
 databases, monitoring, cost control, signed images, rollback). `examples/demo-app` in the platform repository is a
 complete reference.
 
+## What the platform assumes when you give it nothing
+
+A repository can also be deployed **as it is**, with nothing added to it (since 1.15.0; `docs/ROADMAP.md` D31 to D34).
+The platform reads it, and each answer below comes from the first place in its row that says it. Where reading would
+turn into guessing, it refuses and names the file to fix. The contract it writes is kept in the platform repository
+(`apps/<service>/platform.yaml`), and a person's merge there is the review.
+
+| Question | Where the answer comes from, first match wins | When nothing says |
+|---|---|---|
+| How is the image built? | your `Dockerfile`; a `Procfile` (Google's buildpacks) | the platform's own Dockerfile, made at build time and never committed |
+| Which Python? | the Dockerfile's `FROM python:X.Y`; `.python-version`; `runtime.txt`; `Pipfile.lock`; `requires-python` (3.12 when it allows it) | 3.12 |
+| Which packages? | `requirements.lock`; a hashed `requirements.txt`; `uv.lock`; `poetry.lock`; `Pipfile.lock`; the pip part of `environment.yml`; `requirements.txt`; `pyproject.toml` dependencies | refused: there is no list of dependencies |
+| What starts it? | the Dockerfile's `CMD`; the Procfile's `web:`; Compose's `command`; `[tool.fastapi] entrypoint`; Django's `WSGI_APPLICATION`; one `app = FastAPI()` or `Flask(...)` object, or one `create_app()` | refused: say the start command |
+| Which port? | Compose `ports` (the container side); one `EXPOSE`; `--port` in the start command | 8080, passed in as `PORT` |
+| Health check? | a Compose `healthcheck`; a `/health` route in the code | none: Cloud Run's TCP check, and the release says the HTTP check is off |
+| Settings and needs? | names read from the code, Compose and `.env.example`, a Postgres service in Compose | names are listed for a person to fill in; values are never read |
+| Tests? | pytest's configuration, a `tests/` folder, `test_*.py` files | none: said plainly, never invented |
+
+The packages are locked by the platform when the repository has no lock: with uv, in a container of your Python, every
+package pinned with its hashes (`apps/<service>/requirements.lock`); the tests get a lock of their own with pytest.
+
+It **refuses rather than guesses** when a service has several candidate apps or frameworks, a Django project lacks
+`WSGI_APPLICATION`, there is no dependency list, it needs conda-only or system packages (unless your own Dockerfile
+installs them), it asks for a Python outside 3.11 to 3.15, a secret is committed (`.env`, a private key, a credentials
+file), or the app is a notebook or a file over 100 MiB. A private repository is refused while the platform repository
+is public, because the platform's build logs would be public too.
+
+Following the rest of this page is still the better path: your repository then carries its own tests, lock and
+workflows, and every change is reviewed in one place.
+
 ## The three things you do
 
 1. **A web service that listens on `$PORT` and answers its health path.** Start an HTTP server on `0.0.0.0` at the port

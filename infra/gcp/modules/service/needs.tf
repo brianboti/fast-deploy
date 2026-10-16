@@ -146,6 +146,10 @@ resource "google_sql_database_instance" "need" {
   }
   lifecycle {
     prevent_destroy = true
+    # Stopped stays stopped: the spending cap, or the operator, stops an instance by setting its activation policy to NEVER,
+    # and an apply for any other reason must not start it again (found 2026-10-16: a module change planned mono-admin's
+    # stopped instance back to ALWAYS, about $8 a month). Starting it is a deliberate `gcloud sql instances patch`.
+    ignore_changes = [settings[0].activation_policy]
   }
 }
 resource "google_sql_database" "app" {

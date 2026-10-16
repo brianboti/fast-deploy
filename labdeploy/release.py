@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -233,10 +234,20 @@ class CloudRun:
                              f"--project {self.project}")
 
     def deploy(self, image, spec, suffix, labels=None):
-        # Cloud Run gates traffic on this HTTP startup probe (up to 60 s of grace) before the platform's own probes run.
-        probe = (f"httpGet.path={spec.health_path},httpGet.port={spec.port},"
-                 "initialDelaySeconds=0,periodSeconds=5,timeoutSeconds=3,failureThreshold=12")
+        # Cloud Run gates traffic on this startup probe (up to 60 s of grace) before the platform's own probes run: the
+        # health route when the contract names one, else a TCP connect to the port (docs/ROADMAP.md 13.4).
+        if spec.health_path:
+            probe = (f"httpGet.path={spec.health_path},httpGet.port={spec.port},"
+                     "initialDelaySeconds=0,periodSeconds=5,timeoutSeconds=3,failureThreshold=12")
+        else:
+            probe = f"tcpSocket.port={spec.port},initialDelaySeconds=0,periodSeconds=5,timeoutSeconds=3,failureThreshold=12"
         extra = []
+        # The contract's command and args replace the image's ENTRYPOINT and CMD (gcloud takes comma-separated lists; the model
+        # refuses commas inside a word). Without them the image's own start command runs.
+        if spec.command is not None:
+            extra.append("--command=" + ",".join(spec.command))
+        if spec.args is not None:
+            extra.append("--args=" + ",".join(spec.args))
         if labels:
             for key, value in labels.items():
                 if not re.fullmatch(r"[a-z][a-z0-9_-]{0,62}", key) or not re.fullmatch(r"[a-z0-9_-]{0,63}", value):
@@ -351,10 +362,15 @@ class CloudRun:
         opener = urllib.request.build_opener(NoRedirect())
         for attempt in range(6):
             try:
-                req = urllib.request.Request(url + path, headers={"Authorization": f"Bearer {token}"})  # noqa: S310 - https://*.run.app only
+                req = urllib.request.Request(url + (path or "/"), headers={"Authorization": f"Bearer {token}"})  # noqa: S310 - https://*.run.app only
                 with opener.open(req, timeout=15) as response:
-                    if response.status == 200:
+                    if response.status == 200 or path is None:
                         return True
+            except urllib.error.HTTPError as exc:
+                # No health route (docs/ROADMAP.md 13.4): the service answering HTTP at all is what the probe can prove; a
+                # 5xx still fails it, since that is the service, not a missing page.
+                if path is None and exc.code < 500:
+                    return True
             except (OSError, ValueError):
                 pass
             if attempt < 5:
@@ -511,8 +527,24 @@ def retire_candidate(adapter, record):
                           "not ready until the next successful release; requests are served by the previous revision.")
 
 
+def origin_from(env):
+    """The release's identifier chain (docs/ROADMAP.md 13.2): the run that released it and the commit it came from, and for
+    an application taken as it is, the application repository and the platform commit whose contract described it."""
+    server, repository, run_id = env.get("GITHUB_SERVER_URL", "https://github.com"), env.get("GITHUB_REPOSITORY", ""), env.get("GITHUB_RUN_ID", "")
+    origin = {}
+    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) and re.fullmatch(r"[0-9]{1,20}", run_id) and re.fullmatch(r"https://[A-Za-z0-9.-]+", server):
+        origin["run_url"] = f"{server}/{repository}/actions/runs/{run_id}"
+    if re.fullmatch(r"[a-f0-9]{40}", env.get("COMMIT_SHA", "")):
+        origin["commit"] = env["COMMIT_SHA"]
+    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", env.get("SOURCE_REPOSITORY", "")) and re.fullmatch(r"[a-f0-9]{40}", env.get("CONTRACT_COMMIT", "")):
+        origin.update(repository=env["SOURCE_REPOSITORY"], contract={"repository": repository, "commit": env["CONTRACT_COMMIT"]})
+    elif repository:
+        origin["repository"] = repository
+    return origin or None
+
+
 def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=None, labels=None, image_path=None, attempt=1, provenance=None,
-            bake_seconds=0, lint=None, sleep=time.sleep, clock=time.time):
+            bake_seconds=0, lint=None, sleep=time.sleep, clock=time.time, origin=None):
     if not re.fullmatch(r"[a-f0-9]{32}", plan_id):
         raise ValueError("Invalid plan ID")
     if not IMAGE_DIGEST.fullmatch(image):
@@ -529,6 +561,12 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
         receipt["provenance"] = provenance  # github, cosign-kms, or unavailable when the operator's exception was set
     if lint is not None:
         receipt["dockerfile_lint"] = lint  # hadolint's findings from the build job; they inform, they did not stop this release
+    if origin:
+        receipt["origin"] = origin
+    if not spec.health_path:
+        # No health route (docs/ROADMAP.md 13.4): the release says so rather than inventing one.
+        receipt["probe"] = {"kind": "tcp", "note": "No health route: Cloud Run's TCP startup probe gated the start, and the platform's probes only "
+                                                   "checked that the service answers HTTP at all; the HTTP health probe is off."}
     if not 0 <= int(bake_seconds) <= MAX_BAKE_SECONDS:
         raise ValueError(f"bake_seconds must be between 0 and {MAX_BAKE_SECONDS}")
     def save():
@@ -687,7 +725,7 @@ def main():
         raise ValueError(f"BAKE_SECONDS must be a whole number of seconds between 0 and {MAX_BAKE_SECONDS}")
     rollout(adapter, os.environ["IMAGE_DIGEST"], spec, os.environ["PLAN_ID"], "release-receipt.json", journal, target.model_dump(), labels, image_path,
             attempt=int(attempt) if attempt.isdigit() else 1, provenance=os.environ["PROVENANCE_MODE"], bake_seconds=int(bake_seconds),
-            lint=lint_summary(Path(os.environ.get("LINT_FILE", "bundle/hadolint.json"))))
+            lint=lint_summary(Path(os.environ.get("LINT_FILE", "bundle/hadolint.json"))), origin=origin_from(os.environ))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,727 @@
+# Generated from templates/deploy-gcp.yml by labdeploy.workflows.central_deploy; a test keeps them equal. Never edit by hand.
+name: Deploy (platform pipeline)
+run-name: deploy-${{ inputs.plan_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        required: true
+        type: string
+      spec_hash:
+        required: true
+        type: string
+      plan_id:
+        required: true
+        type: string
+      application:
+        description: The service, whose contract is apps/<service>/platform.yaml and whose environment is staging-<service>
+        required: true
+        type: string
+      repository:
+        description: The application's repository (owner/name), checked out read-only at commit_sha
+        required: true
+        type: string
+      app_path:
+        description: The service's folder in that repository; empty for the root
+        required: false
+        default: ''
+        type: string
+      contract_commit:
+        description: The platform commit whose apps/<service>/platform.yaml the plan was made from; must be on main
+        required: true
+        type: string
+      target_json:
+        required: true
+        type: string
+      image_digest:
+        description: Reuse an already-attested image for this commit instead of building again (full digest reference)
+        required: false
+        default: ''
+        type: string
+      provenance:
+        description: required, or unavailable for the operator's exception (staging or an emergency; refused with image_digest)
+        required: false
+        default: required
+        type: choice
+        options: [required, unavailable]
+      bake_seconds:
+        description: Seconds to watch the promoted revision's logs before the release counts as done (0 to 900; a crash or 5xx answers restore the previous traffic)
+        required: false
+        default: '300'
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: gcp-staging-${{ inputs.application }}
+  cancel-in-progress: false
+  queue: max
+env:
+  COMMIT_SHA: ${{ inputs.commit_sha }}
+  SPEC_HASH: ${{ inputs.spec_hash }}
+  PLAN_ID: ${{ inputs.plan_id }}
+  TARGET_JSON: ${{ inputs.target_json }}
+  IMAGE_DIGEST_INPUT: ${{ inputs.image_digest }}
+  PROVENANCE_INPUT: ${{ inputs.provenance }}
+  BAKE_SECONDS: ${{ inputs.bake_seconds }}
+  # Where this service lives in its repository (the checkout is app/; a monorepo service has its own folder) and the file
+  # name of this workflow, which the build provenance names. Rendered per application by the platform; never edit by hand.
+  APP_DIR: ${{ inputs.app_path != '' && format('app/{0}', inputs.app_path) || 'app' }}
+  APP_PATH: ${{ inputs.app_path || '.' }}
+  DEPLOY_WORKFLOW: deploy.yml
+  APPLICATION: ${{ inputs.application }}
+  SOURCE_REPOSITORY: ${{ inputs.repository }}
+  CONTRACT_COMMIT: ${{ inputs.contract_commit }}
+  # Where the reviewed specification is read from: the service's own platform.yaml; the platform repository's pipeline
+  # (docs/ROADMAP.md D31) writes it to contract/platform.yaml from apps/<id>/platform.yaml instead.
+  SPEC_SOURCE: contract/platform.yaml
+  # Locks the platform made for a repository taken as it is (docs/ROADMAP.md 13.3): empty here; in the platform repository's
+  # pipeline apps/<service>/requirements.lock (copied beside the service's files for the tests, the audit and the build when
+  # the service has none) and apps/<service>/requirements-test.lock (the service and its test tools, resolved together).
+  PLATFORM_LOCK: platform/apps/${{ inputs.application }}/requirements.lock
+  PLATFORM_TEST_LOCK: platform/apps/${{ inputs.application }}/requirements-test.lock
+jobs:
+  build:
+    # Skipped when the plan reuses an image this workflow already built and attested for the same commit.
+    if: inputs.image_digest == ''
+    runs-on: ubuntu-24.04
+    # A real application's suite takes minutes on its own (Sophia's 913 tests: about nine on a laptop), before the build.
+    timeout-minutes: 45
+    steps:
+      - name: Validate dispatch inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$SPEC_HASH" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$PLAN_ID" =~ ^[a-f0-9]{32}$ ]]
+          [[ "$BAKE_SECONDS" =~ ^[0-9]{1,3}$ ]] && [ "$BAKE_SECONDS" -le 900 ]
+          test "$GITHUB_REF" = "refs/heads/main"
+          [[ "$APPLICATION" =~ ^[a-z][a-z0-9-]{1,19}[a-z0-9]$ ]]
+          [[ "$SOURCE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          [[ "$CONTRACT_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$APP_PATH" = "." || "$APP_PATH" =~ ^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*){0,7}$ ]]
+          [[ "$APP_PATH" != *..* ]]
+          # The contract commit is this run's commit on main or one of its ancestors: never an unmerged branch.
+          if [ "$CONTRACT_COMMIT" != "$GITHUB_SHA" ]; then
+            STATUS=$(gh api "repos/$GITHUB_REPOSITORY/compare/$CONTRACT_COMMIT...$GITHUB_SHA" --jq .status)
+            [ "$STATUS" = "ahead" ] || [ "$STATUS" = "identical" ]
+          fi
+      # A short-lived token for the application repository: the platform's GitHub App when it is installed (the variable
+      # APPS_APP_ID and the secret APPS_APP_PRIVATE_KEY), else the operator's read-only token APPS_READ_TOKEN, else this
+      # job's own token, which reaches public repositories only.
+      - name: Name the application repository
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "owner=${SOURCE_REPOSITORY%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${SOURCE_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
+      - name: Token for the application repository
+        id: app-token
+        if: vars.APPS_APP_ID != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.APPS_APP_ID }}
+          private-key: ${{ secrets.APPS_APP_PRIVATE_KEY }}
+          owner: ${{ steps.source.outputs.owner }}
+          repositories: ${{ steps.source.outputs.name }}
+          permission-contents: read
+      - name: The commit is on the application's main
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.APPS_READ_TOKEN || github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS=$(gh api "repos/$SOURCE_REPOSITORY/compare/$COMMIT_SHA...main" --jq .status)
+          [ "$STATUS" = "ahead" ] || [ "$STATUS" = "identical" ]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.commit_sha }}
+          token: ${{ steps.app-token.outputs.token || secrets.APPS_READ_TOKEN || github.token }}
+          persist-credentials: false
+          path: app
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: platform
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install trusted platform dependencies
+        run: python -m pip install --require-hashes -r platform/requirements.lock
+      # The contract the plan was made from: apps/<service>/platform.yaml on this run's commit of main (the plan's contract
+      # commit is an ancestor). It must name this repository, folder and commit, and hash to the plan's spec hash; merged,
+      # it is reviewed (docs/ROADMAP.md D32).
+      - name: Read the contract
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, pathlib, re
+          from labdeploy.models import parse_contract, spec_hash, spec_text
+          service = os.environ['APPLICATION']
+          assert re.fullmatch(r'[a-z][a-z0-9-]{1,19}[a-z0-9]', service), 'not a service name'
+          spec, source = parse_contract(pathlib.Path('platform/apps', service, 'platform.yaml').read_text())
+          folder = '' if os.environ['APP_PATH'] == '.' else os.environ['APP_PATH']
+          assert spec.name == service, 'the contract names another service'
+          assert source.repository.lower() == os.environ['SOURCE_REPOSITORY'].lower(), 'the contract names another repository'
+          assert source.path == folder, 'the contract names another folder'
+          assert source.commit == os.environ['COMMIT_SHA'], 'the contract names another commit'
+          assert spec_hash(spec) == os.environ['SPEC_HASH'], 'Spec hash mismatch'
+          pathlib.Path('contract').mkdir(exist_ok=True)
+          pathlib.Path('contract/platform.yaml').write_text(spec_text(spec))
+          PY
+      - name: Validate reviewed specification
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from labdeploy.models import parse_spec, spec_hash, enforce
+          spec = parse_spec(Path(os.environ['SPEC_SOURCE']).read_text())
+          enforce(spec)
+          assert spec_hash(spec) == os.environ['SPEC_HASH'], 'Spec hash mismatch'
+          PY
+      - name: Read the application's test policy
+        id: policy
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          read_spec() { python -c 'import os, sys; from pathlib import Path; from labdeploy.models import parse_spec; spec = parse_spec(Path(os.environ["SPEC_SOURCE"]).read_text()); print({"tests": spec.tests, "python": spec.python, "context": spec.build.context, "recipe": spec.build.recipe, "entrypoint": spec.build.entrypoint or "", "command": "true" if spec.command is not None or spec.args is not None else "false"}[sys.argv[1]])' "$1"; }
+          TESTS=$(read_spec tests)
+          [[ "$TESTS" =~ ^(required|none)$ ]]
+          echo "tests=$TESTS" >> "$GITHUB_OUTPUT"
+          PYTHON=$(read_spec python)
+          [[ "$PYTHON" =~ ^3\.(11|12|13|14|15)$ ]]
+          echo "python=$PYTHON" >> "$GITHUB_OUTPUT"
+          CONTEXT=$(read_spec context)
+          [[ "$CONTEXT" =~ ^(service|repository)$ ]]
+          echo "context=$CONTEXT" >> "$GITHUB_OUTPUT"
+          RECIPE=$(read_spec recipe)
+          [[ "$RECIPE" =~ ^(repository|platform|buildpacks)$ ]]
+          echo "recipe=$RECIPE" >> "$GITHUB_OUTPUT"
+          # The start command the platform builds into the image (build.entrypoint); the model allows one line of words only.
+          ENTRYPOINT=$(read_spec entrypoint)
+          ALLOWED='^[A-Za-z0-9_./:=,+@%${}() -]{0,400}$'
+          [[ "$ENTRYPOINT" =~ $ALLOWED ]] || { echo "::error::build.entrypoint holds characters the build cannot pass on"; exit 1; }
+          echo "entrypoint=$ENTRYPOINT" >> "$GITHUB_OUTPUT"
+          COMMAND=$(read_spec command)
+          echo "command=$COMMAND" >> "$GITHUB_OUTPUT"
+          [ "$TESTS" = "required" ] || echo "::warning::platform.yaml declares tests: none; no automated tests guard this release"
+      # The application's own Python (platform.yaml `python`) for its tests and its dependency audit; the platform's steps
+      # keep theirs on PATH.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: app-python
+        with:
+          python-version: ${{ steps.policy.outputs.python }}
+          update-environment: false
+      # The test environment lives outside the checkout, so it can never reach the image. A service whose build reads the
+      # whole repository (build.context: repository) imports shared code from the repository's root in its tests as well.
+      - name: Run unit tests
+        if: steps.policy.outputs.tests == 'required'
+        working-directory: ${{ inputs.app_path != '' && format('app/{0}', inputs.app_path) || 'app' }}
+        env:
+          APP_PYTHON: ${{ steps.app-python.outputs.python-path }}
+          CONTEXT: ${{ steps.policy.outputs.context }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PLATFORM_LOCK" ] && [ -f "$GITHUB_WORKSPACE/$PLATFORM_LOCK" ] && [ ! -f requirements.lock ]; then cp "$GITHUB_WORKSPACE/$PLATFORM_LOCK" requirements.lock; fi
+          "$APP_PYTHON" -m venv "$RUNNER_TEMP/test-venv"
+          if [ -n "$PLATFORM_TEST_LOCK" ] && [ -f "$GITHUB_WORKSPACE/$PLATFORM_TEST_LOCK" ]; then
+            # A repository taken as it is: the service's dependencies and its test tools, resolved together by the platform.
+            "$RUNNER_TEMP/test-venv/bin/pip" install --require-hashes -r "$GITHUB_WORKSPACE/$PLATFORM_TEST_LOCK"
+          else
+            if [ -f requirements.lock ]; then
+              "$RUNNER_TEMP/test-venv/bin/pip" install --require-hashes -r requirements.lock
+            else
+              "$RUNNER_TEMP/test-venv/bin/pip" install -r requirements.txt
+            fi
+            if [ -f requirements-dev.txt ]; then
+              "$RUNNER_TEMP/test-venv/bin/pip" install -r requirements-dev.txt
+            fi
+            # Without test tools of its own, the platform's pinned pytest (platform/tests.lock).
+            "$RUNNER_TEMP/test-venv/bin/python" -c "import pytest" 2>/dev/null || "$RUNNER_TEMP/test-venv/bin/pip" install --require-hashes -r "$GITHUB_WORKSPACE/platform/tests.lock"
+          fi
+          if [ "$CONTEXT" = "repository" ]; then
+            export PYTHONPATH="$GITHUB_WORKSPACE/app"
+          fi
+          "$RUNNER_TEMP/test-venv/bin/python" -m pytest
+      # On the application's own Python: version markers select what that Python installs, and a pin that exists only for
+      # an older Python (numpy 1.24 on 3.11) is not refused for failing to install on the platform's 3.12.
+      - name: Audit Python dependencies
+        working-directory: ${{ inputs.app_path != '' && format('app/{0}', inputs.app_path) || 'app' }}
+        env:
+          APP_PYTHON: ${{ steps.app-python.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PLATFORM_LOCK" ] && [ -f "$GITHUB_WORKSPACE/$PLATFORM_LOCK" ] && [ ! -f requirements.lock ]; then cp "$GITHUB_WORKSPACE/$PLATFORM_LOCK" requirements.lock; fi
+          "$APP_PYTHON" -m venv "$RUNNER_TEMP/audit-venv"
+          "$RUNNER_TEMP/audit-venv/bin/pip" install --require-hashes --only-binary=:all: -r "$GITHUB_WORKSPACE/platform/audit.lock"
+          if [ -f requirements.lock ]; then
+            # Every locked package at its exact version, read from the lock without installing or building anything.
+            "$RUNNER_TEMP/audit-venv/bin/python" -m pip_audit --disable-pip -r requirements.lock
+          else
+            "$RUNNER_TEMP/audit-venv/bin/python" -m pip_audit -r requirements.txt
+          fi
+      # hadolint checks the Dockerfile against Docker's best practices. Its findings become annotations on this run and travel
+      # with the release receipt; error-level findings stop the release (since 1.10.0) unless the repository variable
+      # HADOLINT_BLOCKING is 'false'. Warnings never do. Downloaded by version and checked against its SHA-256.
+      - name: Lint the Dockerfile
+        env:
+          HADOLINT_BLOCKING: ${{ vars.HADOLINT_BLOCKING || 'true' }}
+          RECIPE: ${{ steps.policy.outputs.recipe }}
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bundle
+          if [ "$RECIPE" = "platform" ]; then
+            # The platform's own Dockerfile for this contract, exactly as the build step renders it.
+            python -m labdeploy.scaffold platform-dockerfile "$APP_DIR" --spec "$SPEC_SOURCE" > "$RUNNER_TEMP/Dockerfile.platform"
+            LINTED="$RUNNER_TEMP/Dockerfile.platform"
+            export SHOWN="Dockerfile (the platform's)"
+          elif [ "$RECIPE" = "repository" ] && [ -f "$APP_DIR/Dockerfile" ]; then
+            LINTED="$APP_DIR/Dockerfile"
+            SHOWN=$(python3 -c 'import os; print(os.path.normpath(os.path.join(os.environ["APP_PATH"], "Dockerfile")))')  # as the repository names it
+            export SHOWN
+          else
+            echo "[]" > bundle/hadolint.json
+            echo "No Dockerfile: the image is built with Google's buildpacks; nothing to lint" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/hadolint" https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-linux-x86_64
+          echo "c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507  $RUNNER_TEMP/hadolint" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/hadolint"
+          "$RUNNER_TEMP/hadolint" --no-fail --format json "$LINTED" > bundle/hadolint.json
+          python3 - <<'PY'
+          import json, os
+          dockerfile = os.environ["SHOWN"]
+          def escape(text, property=False):
+              text = str(text).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              return text.replace(":", "%3A").replace(",", "%2C") if property else text
+          findings = json.load(open("bundle/hadolint.json"))
+          command = {"error": "error", "warning": "warning"}
+          for f in findings:
+              kind = command.get(f.get("level"), "notice")
+              print(f"::{kind} file={escape(dockerfile, True)},line={int(f.get('line') or 1)},title={escape('hadolint ' + str(f.get('code')), True)}::{escape(f.get('message', ''))}")
+          counts = {}
+          for f in findings:
+              counts[str(f.get("level"))] = counts.get(str(f.get("level")), 0) + 1
+          line = "Dockerfile lint (hadolint 2.15.1): " + (", ".join(f"{n} {level}" for level, n in sorted(counts.items())) or "no findings")
+          print(line)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write(line + "\n")
+          if counts.get("error") and os.environ["HADOLINT_BLOCKING"] == "true":
+              raise SystemExit("hadolint found error-level problems; fix the annotated lines (the repository variable HADOLINT_BLOCKING=false turns blocking off)")
+          PY
+      - name: Build without cloud credentials
+        env:
+          CONTEXT: ${{ steps.policy.outputs.context }}
+          PYTHON_VERSION: ${{ steps.policy.outputs.python }}
+          RECIPE: ${{ steps.policy.outputs.recipe }}
+          ENTRYPOINT: ${{ steps.policy.outputs.entrypoint }}
+          HAS_COMMAND: ${{ steps.policy.outputs.command }}
+          PYTHONPATH: ${{ github.workspace }}/platform
+        run: |
+          set -euo pipefail
+          # The image is built from exactly the reviewed commit: whatever the tests left in the checkout (caches, files a
+          # test wrote) is removed first.
+          git -C app clean -ffdxq
+          LOCK_SOURCE=repository
+          if [ -n "$PLATFORM_LOCK" ] && [ -f "$PLATFORM_LOCK" ] && [ ! -f "$APP_DIR/requirements.lock" ]; then
+            cp "$PLATFORM_LOCK" "$APP_DIR/requirements.lock"
+            LOCK_SOURCE=platform
+          fi
+          DOCKERFILE_USED=""
+          BUILDER=""
+          if [ "$RECIPE" = "platform" ]; then
+            # The platform's own Dockerfile (docs/ROADMAP.md D31, 13.3): the service's files are copied through the
+            # platform's deny-list (no .env, keys, tests, caches or notebooks), the Dockerfile is rendered for this contract
+            # beside them, and nothing is written to the repository.
+            python -m labdeploy.scaffold render-build "$APP_DIR" "$RUNNER_TEMP/platform-build" --spec "$SPEC_SOURCE"
+            docker build --platform linux/amd64 -t "lab-app:$COMMIT_SHA" "$RUNNER_TEMP/platform-build"
+            DOCKERFILE_USED="$RUNNER_TEMP/platform-build/Dockerfile"
+          elif [ "$RECIPE" = "repository" ] && [ -f "$APP_DIR/Dockerfile" ]; then
+            DOCKERFILE_USED="$APP_DIR/Dockerfile"
+            # build.context: repository builds from the repository's root (shared code in a monorepo); the Dockerfile stays
+            # in the service's folder. Otherwise the service's folder is the whole build context.
+            if [ "$CONTEXT" = "repository" ]; then
+              docker build --platform linux/amd64 -f "$APP_DIR/Dockerfile" -t "lab-app:$COMMIT_SHA" app
+            else
+              docker build --platform linux/amd64 -t "lab-app:$COMMIT_SHA" "$APP_DIR"
+            fi
+          else
+            # Google's buildpacks (docs/ROADMAP.md D28, 13.3): build.recipe: buildpacks, or no Dockerfile. The start command
+            # is build.entrypoint (GOOGLE_ENTRYPOINT) or the Procfile; the builder and run image are pinned by digest. The
+            # Ubuntu 24.04 builder offers Python 3.13 and later only, so 3.11 and 3.12 use the Ubuntu 22.04 one. A lock,
+            # when present, is what pip installs, with its hashes.
+            if [ ! -f "$APP_DIR/Procfile" ] && [ -z "$ENTRYPOINT" ]; then
+              echo "::error::No Dockerfile, no Procfile and no build.entrypoint for $APP_PATH: the platform cannot build this service"; exit 1
+            fi
+            if [ "$HAS_COMMAND" = "true" ]; then
+              echo "::error::command and args replace the image's start command, which on a buildpacks image bypasses its launcher; use build.entrypoint"; exit 1
+            fi
+            [ "$CONTEXT" = "service" ] || { echo "::error::build.context: repository needs a Dockerfile"; exit 1; }
+            curl -fsSL --retry 3 -o "$RUNNER_TEMP/pack.tgz" https://github.com/buildpacks/pack/releases/download/v0.40.9/pack-v0.40.9-linux.tgz
+            echo "dc0ee1e931cf8a106d7555a01a214864f9acb60b77adf15d69b74df4404758e9  $RUNNER_TEMP/pack.tgz" | sha256sum --check --strict
+            tar -xzf "$RUNNER_TEMP/pack.tgz" -C "$RUNNER_TEMP" pack
+            case "$PYTHON_VERSION" in
+              3.11|3.12)
+                BUILDER=gcr.io/buildpacks/builder@sha256:933e46d1797a479320a2dfa9533f3643cb6af427651ba8f81d1a58429d558a99
+                RUN_IMAGE=gcr.io/buildpacks/google-22/run@sha256:c89d55fe323cb1281f449be0d7bd56dab55612b0b329d5b16793f97c93767eb6 ;;
+              *)
+                BUILDER=gcr.io/buildpacks/builder@sha256:7d56c1ce1d6ecc6d68cbd8820815a834c30a8203e570cae6da5a356505cc87f8
+                RUN_IMAGE=gcr.io/buildpacks/google-24/run@sha256:1689561ff4f22f6a87a108cd841acbcf251801769755ee2efbea8f27fd4eceea ;;
+            esac
+            SOURCE="$RUNNER_TEMP/buildpack-source"
+            mkdir -p "$SOURCE"
+            tar -C "$APP_DIR" --exclude=./.git -cf - . | tar -C "$SOURCE" -xf -
+            if [ -f "$SOURCE/requirements.lock" ]; then cp "$SOURCE/requirements.lock" "$SOURCE/requirements.txt"; fi
+            # The platform's project descriptor keeps secrets, tests, notebooks and caches out of the image (the buildpacks'
+            # answer to .dockerignore); a project.toml of the repository's own is not read.
+            python -m labdeploy.scaffold descriptor > "$RUNNER_TEMP/project.toml"
+            PACK_ENV=(--env "GOOGLE_PYTHON_VERSION=$PYTHON_VERSION.x")
+            if [ -n "$ENTRYPOINT" ]; then PACK_ENV+=(--env "GOOGLE_ENTRYPOINT=$ENTRYPOINT"); fi
+            "$RUNNER_TEMP/pack" build "lab-app:$COMMIT_SHA" --path "$SOURCE" --builder "$BUILDER" --run-image "$RUN_IMAGE" \
+              --descriptor "$RUNNER_TEMP/project.toml" --platform linux/amd64 --trust-builder --pull-policy if-not-present "${PACK_ENV[@]}"
+          fi
+          mkdir -p bundle
+          docker save "lab-app:$COMMIT_SHA" -o bundle/image.tar
+          cp "$SPEC_SOURCE" bundle/platform.yaml
+          # What the image was made from, for the signed provenance (docs/ROADMAP.md D33): the recipe, the Dockerfile's and
+          # the lock's SHA-256 and where the lock came from, and the buildpacks builder when it was used.
+          python3 - "$DOCKERFILE_USED" "$APP_DIR/requirements.lock" "$LOCK_SOURCE" "$RECIPE" "$BUILDER" > bundle/inputs.json <<'PY'
+          import hashlib, json, os, sys
+          dockerfile, lock, lock_source, recipe, builder = sys.argv[1:6]
+          def digest(path):
+              return hashlib.sha256(open(path, "rb").read()).hexdigest() if path and os.path.isfile(path) else None
+          inputs = {"recipe": recipe, "dockerfile_sha256": digest(dockerfile), "lock_sha256": digest(lock),
+                    "lock_source": lock_source if digest(lock) else None, "builder": builder or None}
+          print(json.dumps(inputs, sort_keys=True))
+          PY
+          sha256sum bundle/image.tar | cut -d' ' -f1 > bundle/image.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-bundle
+          path: bundle/
+          retention-days: 3
+          if-no-files-found: error
+  deploy:
+    needs: build
+    # !cancelled(), not always(): it still runs when build is skipped (a reused image), but a cancelled run cancels it.
+    # With always() GitHub kept the job running after a cancel, and the release went on to promote (live, 2026-10-13).
+    if: ${{ !cancelled() && needs.build.result != 'failure' && needs.build.result != 'cancelled' }}
+    runs-on: ubuntu-24.04
+    # Twenty minutes for the release and its migration, plus up to fifteen for the bake (bake_seconds is at most 900).
+    timeout-minutes: 35
+    # GitHub records a deployment for this environment job; the URL below makes it show the released service.
+    environment:
+      name: staging-${{ inputs.application }}
+      url: ${{ steps.url.outputs.url }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+      REGISTRY_NAME: ${{ vars.ARTIFACT_REPOSITORY }}
+      PROBE_SERVICE_ACCOUNT: ${{ vars.PROBE_SERVICE_ACCOUNT }}
+      DEPLOY_SERVICE_ACCOUNT: ${{ vars.DEPLOY_SERVICE_ACCOUNT }}
+      WIF_PROVIDER: ${{ vars.WIF_PROVIDER }}
+      RECOVERY_BUCKET: ${{ vars.RECOVERY_BUCKET }}
+      IAP_CLIENT_ID: ${{ vars.IAP_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: platform
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --require-hashes -r platform/requirements.lock
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: inputs.image_digest == ''
+        with:
+          name: release-bundle
+          path: bundle
+      # The contract the plan was made from: apps/<service>/platform.yaml on this run's commit of main (the plan's contract
+      # commit is an ancestor). It must name this repository, folder and commit, and hash to the plan's spec hash; merged,
+      # it is reviewed (docs/ROADMAP.md D32).
+      - name: Read the contract
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, pathlib, re
+          from labdeploy.models import parse_contract, spec_hash, spec_text
+          service = os.environ['APPLICATION']
+          assert re.fullmatch(r'[a-z][a-z0-9-]{1,19}[a-z0-9]', service), 'not a service name'
+          spec, source = parse_contract(pathlib.Path('platform/apps', service, 'platform.yaml').read_text())
+          folder = '' if os.environ['APP_PATH'] == '.' else os.environ['APP_PATH']
+          assert spec.name == service, 'the contract names another service'
+          assert source.repository.lower() == os.environ['SOURCE_REPOSITORY'].lower(), 'the contract names another repository'
+          assert source.path == folder, 'the contract names another folder'
+          assert source.commit == os.environ['COMMIT_SHA'], 'the contract names another commit'
+          assert spec_hash(spec) == os.environ['SPEC_HASH'], 'Spec hash mismatch'
+          pathlib.Path('contract').mkdir(exist_ok=True)
+          pathlib.Path('contract/platform.yaml').write_text(spec_text(spec))
+          PY
+      # Reuse: the reviewed configuration is the contract; the image was built and attested by an earlier run.
+      - name: Validate dispatch inputs for reuse
+        if: inputs.image_digest != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$SPEC_HASH" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$PLAN_ID" =~ ^[a-f0-9]{32}$ ]]
+          [[ "$BAKE_SECONDS" =~ ^[0-9]{1,3}$ ]] && [ "$BAKE_SECONDS" -le 900 ]
+          test "$GITHUB_REF" = "refs/heads/main"
+          [[ "$CONTRACT_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          if [ "$CONTRACT_COMMIT" != "$GITHUB_SHA" ]; then
+            STATUS=$(gh api "repos/$GITHUB_REPOSITORY/compare/$CONTRACT_COMMIT...$GITHUB_SHA" --jq .status)
+            [ "$STATUS" = "ahead" ] || [ "$STATUS" = "identical" ]
+          fi
+          IMAGE="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT_ID/$REGISTRY_NAME/$SERVICE"
+          [[ "$IMAGE_DIGEST_INPUT" =~ ^"$IMAGE"@sha256:[a-f0-9]{64}$ ]]
+          mkdir -p bundle && cp "$SPEC_SOURCE" bundle/platform.yaml
+          echo "IMAGE_DIGEST=$IMAGE_DIGEST_INPUT" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=$IMAGE" >> "$GITHUB_ENV"
+          echo "IMAGE_SHA256=${IMAGE_DIGEST_INPUT##*@}" >> "$GITHUB_ENV"
+      - name: Validate artifact and deployment configuration
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+          REUSING_IMAGE: ${{ inputs.image_digest != '' }}
+        run: |
+          python - <<'PY'
+          import hashlib, os, re
+          from pathlib import Path
+          from labdeploy.models import parse_spec, spec_hash, enforce
+          from labdeploy.target import verify_target, environment_target
+          verify_target(os.environ['TARGET_JSON'], environment_target())
+          spec = parse_spec(Path('bundle/platform.yaml').read_text())
+          enforce(spec)
+          assert spec_hash(spec) == os.environ['SPEC_HASH']
+          assert spec.name == os.environ['SERVICE']
+          for name in ('GCP_PROJECT_ID', 'GCP_REGION', 'SERVICE', 'REGISTRY_NAME'):
+              assert re.fullmatch(r'[a-z][a-z0-9-]+', os.environ[name]), name
+          assert re.fullmatch(r'[a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com', os.environ['PROBE_SERVICE_ACCOUNT'])
+          if os.environ['REUSING_IMAGE'] != 'true':
+              with open('bundle/image.tar', 'rb') as f:
+                  assert hashlib.file_digest(f, 'sha256').hexdigest() == Path('bundle/image.sha256').read_text().strip()
+          PY
+      # Provenance links this exact digest to this commit and workflow run; the release deploys only a verified digest.
+      # A public repository uses GitHub's attestation. A private one, which GitHub attests only on Enterprise Cloud, signs
+      # with the application's own Cloud KMS key through Cosign. Skipping it is the operator's exception, for a fresh build only.
+      - name: Choose the provenance path
+        id: provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$PROVENANCE_INPUT" = "unavailable" ]; then
+            if [ -n "$IMAGE_DIGEST_INPUT" ]; then
+              echo "::error title=Provenance::the provenance exception is refused for a reused image: only its provenance shows this pipeline built it"
+              exit 1
+            fi
+            MODE=unavailable
+            echo "::warning title=Provenance not recorded::the operator's exception (provenance: unavailable) is set for this application, so this image is deployed without signed provenance"
+          else
+            # The platform pipeline always signs with the application's Cloud KMS key: the statement names the application's
+            # repository and commit and the contract, which GitHub's own attestation of this repository would not.
+            MODE=cosign-kms
+          fi
+          echo "Provenance path: $MODE"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "PROVENANCE_MODE=$MODE" >> "$GITHUB_ENV"
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - name: Configure registry access
+        shell: bash
+        run: gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
+      - name: Recover any interrupted previous release
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+          RECOVERY_ONLY: 'true'
+        run: python -m labdeploy.release
+      - name: Push image and resolve immutable digest
+        if: inputs.image_digest == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker load -i bundle/image.tar
+          IMAGE="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT_ID/$REGISTRY_NAME/$SERVICE"
+          docker tag "lab-app:$COMMIT_SHA" "$IMAGE:$COMMIT_SHA"
+          docker push "$IMAGE:$COMMIT_SHA"
+          # A second, immutable tag per release keeps the digest findable by plan id after the commit tag moves on a rebuild.
+          docker tag "lab-app:$COMMIT_SHA" "$IMAGE:release-$PLAN_ID"
+          docker push "$IMAGE:release-$PLAN_ID"
+          DIGEST=$(gcloud artifacts docker images describe "$IMAGE:$COMMIT_SHA" --format='value(image_summary.digest)')
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "IMAGE_DIGEST=$IMAGE@$DIGEST" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=$IMAGE" >> "$GITHUB_ENV"
+          echo "IMAGE_SHA256=$DIGEST" >> "$GITHUB_ENV"
+      # GitHub's path: signed SLSA provenance stored by GitHub, never a long-lived key.
+      - name: Attest build provenance
+        if: inputs.image_digest == '' && steps.provenance.outputs.mode == 'github'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ env.IMAGE_SHA256 }}
+      - name: Verify build provenance
+        if: steps.provenance.outputs.mode == 'github'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh attestation verify "oci://$IMAGE_DIGEST" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/$DEPLOY_WORKFLOW"
+      # The Cloud KMS path: only this application's deployer may sign with its key, and the deployer is reachable only from
+      # these workflows on main in the staging environment.
+      - name: Install Cosign
+        if: steps.provenance.outputs.mode == 'cosign-kms'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/cosign" https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-amd64
+          echo "4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71  $RUNNER_TEMP/cosign" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/cosign"
+          echo "COSIGN=$RUNNER_TEMP/cosign" >> "$GITHUB_ENV"
+          echo "PROVENANCE_KEY=$(python -m labdeploy.provenance key)" >> "$GITHUB_ENV"
+      # Stored next to the image as its sha256-<digest>.att tag, which the registry keeps. No transparency log: a public log
+      # would publish a private repository's name and commits.
+      - name: Sign build provenance with Cloud KMS
+        if: inputs.image_digest == '' && steps.provenance.outputs.mode == 'cosign-kms'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+          INPUTS_FILE: bundle/inputs.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m labdeploy.provenance predicate > "$RUNNER_TEMP/provenance.json"
+          if ! "$COSIGN" attest --yes --key "$PROVENANCE_KEY" --type slsaprovenance1 --predicate "$RUNNER_TEMP/provenance.json" \
+              --new-bundle-format=false --use-signing-config=false --tlog-upload=false "$IMAGE_DIGEST"; then
+            echo "::error title=Provenance::signing with $PROVENANCE_KEY failed. A missing key means the foundation (scripts/apply-foundation.sh) and then this application's infrastructure need applying"
+            exit 1
+          fi
+      - name: Verify build provenance with Cloud KMS
+        if: steps.provenance.outputs.mode == 'cosign-kms'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$COSIGN" verify-attestation --key "$PROVENANCE_KEY" --type slsaprovenance1 --insecure-ignore-tlog=true "$IMAGE_DIGEST" > "$RUNNER_TEMP/verified.jsonl"
+          python -m labdeploy.provenance verify "$RUNNER_TEMP/verified.jsonl"
+      - name: Summarize image vulnerabilities
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+          BLOCK_ON_CRITICAL_VULNERABILITIES: ${{ vars.BLOCK_ON_CRITICAL_VULNERABILITIES || 'false' }}
+        run: python -m labdeploy.scan
+      - name: Deploy, probe, promote; restore traffic on failure
+        id: release
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+          SPEC_FILE: bundle/platform.yaml
+        shell: bash
+        # exec: the release becomes the step's own process, so a cancelled run's SIGINT and SIGTERM reach it and it restores
+        # traffic itself. Behind a waiting shell they never did: a cancel requested mid-migration let the release promote.
+        run: exec python -m labdeploy.release
+      - name: Record the service URL
+        id: url
+        shell: bash
+        run: echo "url=$(python -c 'import json; print(json.load(open("release-receipt.json")).get("url", ""))')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: release-receipt
+          path: |
+            release-receipt.json
+            vulnerability-summary.json
+          if-no-files-found: warn
+          retention-days: 30
+  notify:
+    # Posts the outcome to the NOTIFY_WEBHOOK_URL secret (Slack or Discord incoming webhook) when it is set; silent otherwise.
+    needs: [build, deploy]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      BUILD_RESULT: ${{ needs.build.result }}
+      DEPLOY_RESULT: ${{ needs.deploy.result }}
+      WEBHOOK: ${{ secrets.NOTIFY_WEBHOOK_URL }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      REPOSITORY: ${{ inputs.repository }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        continue-on-error: true
+        with:
+          name: release-receipt
+          path: receipt
+      - name: Post the result
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$WEBHOOK" ]; then
+            echo "NOTIFY_WEBHOOK_URL is not set; no notification sent"
+            exit 0
+          fi
+          python3 - <<'PY'
+          import json, os, urllib.request
+          receipt = {}
+          try:
+              receipt = json.load(open("receipt/release-receipt.json"))
+          except (OSError, ValueError):
+              pass
+          plan, commit = os.environ["PLAN_ID"], os.environ["COMMIT_SHA"][:12]
+          build, deploy = os.environ["BUILD_RESULT"], os.environ["DEPLOY_RESULT"]
+          bake = receipt.get("bake") or {}
+          if deploy == "success" and receipt.get("state") == "succeeded":
+              line = f"SUCCEEDED: revision {receipt.get('revision')} serves all traffic at {receipt.get('url')}"
+              if bake.get("result") in ("inconclusive", "unobserved", "skipped"):
+                  line += f" (bake {bake['result']}: nothing more than the probes vouches for it)"
+          elif receipt.get("state") == "traffic_restored" and receipt.get("failed_phase") == "baking" and not receipt.get("cancelled"):
+              line = f"FAILED AFTER PROMOTION: the new revision served traffic but failed its bake ({receipt.get('error')}); the previous traffic was restored"
+          elif build not in ("success", "skipped"):
+              line = f"FAILED in the build job ({build}): tests, dependency audit or image build"
+          elif receipt.get("state") == "traffic_restored":
+              line = f"FAILED: the candidate did not pass ({receipt.get('error')}); traffic was restored to the previous revision"
+          elif receipt.get("state") == "rollback_failed_manual_recovery_required":
+              line = f"FAILED AND NOT RESTORED: {receipt.get('restore_error')}; run the recovery workflow now"
+          elif deploy == "cancelled":
+              line = f"CANCELLED at phase '{receipt.get('state', 'unknown')}'; the recovery workflow checks the checkpoint"
+          else:
+              line = f"FAILED in the deploy job ({deploy}) at phase '{receipt.get('state', 'before the release step')}'"
+          text = f"Fast Deploy, {os.environ['REPOSITORY']}, plan {plan[:8]} (commit {commit}): {line}. {os.environ['RUN_URL']}"
+          body = json.dumps({"text": text, "content": text}).encode()
+          request = urllib.request.Request(os.environ["WEBHOOK"], data=body, headers={"Content-Type": "application/json"})
+          with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 - operator-configured webhook secret
+              print("notification sent:", response.status)
+          PY
+

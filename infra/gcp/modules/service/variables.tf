@@ -53,6 +53,11 @@ variable "health_path" {
     error_message = "health_path must start with / and contain only letters, digits, /, _ and -."
   }
 }
+variable "health_probe" {
+  type        = bool
+  default     = true
+  description = "false when the contract names no health route (health_path: null): the uptime check asks / and accepts any HTTP answer, since reaching the service is all it can prove."
+}
 variable "alert_channels" {
   type        = list(string)
   description = "Notification channel ids shared by every app in the project."
@@ -115,7 +120,9 @@ variable "workflow_files" {
   default     = ["deploy-gcp.yml", "recover-gcp.yml", "rightsize-gcp.yml"]
   description = "The deploy, recover and rightsize workflow files the deploy identity trusts, in that order."
   validation {
-    condition     = length(var.workflow_files) == 3 && alltrue([for file in var.workflow_files : can(regex("^(deploy|recover|rightsize)-gcp(-[a-z][a-z0-9-]{1,19}[a-z0-9])?[.]yml$", file))])
+    # The application's own files (deploy-gcp.yml, or suffixed by its service), or the platform repository's pipeline
+    # (deploy.yml, recover.yml, rightsize.yml) when it keeps the contract (docs/ROADMAP.md D33).
+    condition     = length(var.workflow_files) == 3 && alltrue([for file in var.workflow_files : can(regex("^(deploy|recover|rightsize)(-gcp(-[a-z][a-z0-9-]{1,19}[a-z0-9])?)?[.]yml$", file))])
     error_message = "workflow_files are the deploy, recover and rightsize workflow file names."
   }
 }

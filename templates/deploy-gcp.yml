@@ -50,6 +50,14 @@ env:
   APP_DIR: __LAB_APP_DIR__
   APP_PATH: __LAB_APP_PATH__
   DEPLOY_WORKFLOW: deploy-gcp__LAB_SUFFIX__.yml
+  # Where the reviewed specification is read from: the service's own platform.yaml; the platform repository's pipeline
+  # (docs/ROADMAP.md D31) writes it to contract/platform.yaml from apps/<id>/platform.yaml instead.
+  SPEC_SOURCE: __LAB_APP_DIR__/platform.yaml
+  # Locks the platform made for a repository taken as it is (docs/ROADMAP.md 13.3): empty here; in the platform repository's
+  # pipeline apps/<service>/requirements.lock (copied beside the service's files for the tests, the audit and the build when
+  # the service has none) and apps/<service>/requirements-test.lock (the service and its test tools, resolved together).
+  PLATFORM_LOCK: ''
+  PLATFORM_TEST_LOCK: ''
 jobs:
   build:
     # Skipped when the plan reuses an image this workflow already built and attested for the same commit.
@@ -100,7 +108,7 @@ jobs:
           import os
           from pathlib import Path
           from labdeploy.models import parse_spec, spec_hash, enforce
-          spec = parse_spec(Path(os.environ['APP_DIR'], 'platform.yaml').read_text())
+          spec = parse_spec(Path(os.environ['SPEC_SOURCE']).read_text())
           enforce(spec)
           assert spec_hash(spec) == os.environ['SPEC_HASH'], 'Spec hash mismatch'
           PY
@@ -111,7 +119,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          read_spec() { python -c 'import os, sys; from pathlib import Path; from labdeploy.models import parse_spec; spec = parse_spec(Path(os.environ["APP_DIR"], "platform.yaml").read_text()); print({"tests": spec.tests, "python": spec.python, "context": spec.build.context}[sys.argv[1]])' "$1"; }
+          read_spec() { python -c 'import os, sys; from pathlib import Path; from labdeploy.models import parse_spec; spec = parse_spec(Path(os.environ["SPEC_SOURCE"]).read_text()); print({"tests": spec.tests, "python": spec.python, "context": spec.build.context, "recipe": spec.build.recipe, "entrypoint": spec.build.entrypoint or "", "command": "true" if spec.command is not None or spec.args is not None else "false"}[sys.argv[1]])' "$1"; }
           TESTS=$(read_spec tests)
           [[ "$TESTS" =~ ^(required|none)$ ]]
           echo "tests=$TESTS" >> "$GITHUB_OUTPUT"
@@ -121,6 +129,16 @@ jobs:
           CONTEXT=$(read_spec context)
           [[ "$CONTEXT" =~ ^(service|repository)$ ]]
           echo "context=$CONTEXT" >> "$GITHUB_OUTPUT"
+          RECIPE=$(read_spec recipe)
+          [[ "$RECIPE" =~ ^(repository|platform|buildpacks)$ ]]
+          echo "recipe=$RECIPE" >> "$GITHUB_OUTPUT"
+          # The start command the platform builds into the image (build.entrypoint); the model allows one line of words only.
+          ENTRYPOINT=$(read_spec entrypoint)
+          ALLOWED='^[A-Za-z0-9_./:=,+@%${}() -]{0,400}$'
+          [[ "$ENTRYPOINT" =~ $ALLOWED ]] || { echo "::error::build.entrypoint holds characters the build cannot pass on"; exit 1; }
+          echo "entrypoint=$ENTRYPOINT" >> "$GITHUB_OUTPUT"
+          COMMAND=$(read_spec command)
+          echo "command=$COMMAND" >> "$GITHUB_OUTPUT"
           [ "$TESTS" = "required" ] || echo "::warning::platform.yaml declares tests: none; no automated tests guard this release"
       # The application's own Python (platform.yaml `python`) for its tests and its dependency audit; the platform's steps
       # keep theirs on PATH.
@@ -139,13 +157,23 @@ jobs:
           CONTEXT: ${{ steps.policy.outputs.context }}
         run: |
           set -euo pipefail
+          if [ -n "$PLATFORM_LOCK" ] && [ -f "$GITHUB_WORKSPACE/$PLATFORM_LOCK" ] && [ ! -f requirements.lock ]; then cp "$GITHUB_WORKSPACE/$PLATFORM_LOCK" requirements.lock; fi
           "$APP_PYTHON" -m venv "$RUNNER_TEMP/test-venv"
-          if [ -f requirements.lock ]; then
-            "$RUNNER_TEMP/test-venv/bin/pip" install --require-hashes -r requirements.lock
+          if [ -n "$PLATFORM_TEST_LOCK" ] && [ -f "$GITHUB_WORKSPACE/$PLATFORM_TEST_LOCK" ]; then
+            # A repository taken as it is: the service's dependencies and its test tools, resolved together by the platform.
+            "$RUNNER_TEMP/test-venv/bin/pip" install --require-hashes -r "$GITHUB_WORKSPACE/$PLATFORM_TEST_LOCK"
           else
-            "$RUNNER_TEMP/test-venv/bin/pip" install -r requirements.txt
+            if [ -f requirements.lock ]; then
+              "$RUNNER_TEMP/test-venv/bin/pip" install --require-hashes -r requirements.lock
+            else
+              "$RUNNER_TEMP/test-venv/bin/pip" install -r requirements.txt
+            fi
+            if [ -f requirements-dev.txt ]; then
+              "$RUNNER_TEMP/test-venv/bin/pip" install -r requirements-dev.txt
+            fi
+            # Without test tools of its own, the platform's pinned pytest (platform/tests.lock).
+            "$RUNNER_TEMP/test-venv/bin/python" -c "import pytest" 2>/dev/null || "$RUNNER_TEMP/test-venv/bin/pip" install --require-hashes -r "$GITHUB_WORKSPACE/platform/tests.lock"
           fi
-          "$RUNNER_TEMP/test-venv/bin/pip" install -r requirements-dev.txt
           if [ "$CONTEXT" = "repository" ]; then
             export PYTHONPATH="$GITHUB_WORKSPACE/app"
           fi
@@ -158,6 +186,7 @@ jobs:
           APP_PYTHON: ${{ steps.app-python.outputs.python-path }}
         run: |
           set -euo pipefail
+          if [ -n "$PLATFORM_LOCK" ] && [ -f "$GITHUB_WORKSPACE/$PLATFORM_LOCK" ] && [ ! -f requirements.lock ]; then cp "$GITHUB_WORKSPACE/$PLATFORM_LOCK" requirements.lock; fi
           "$APP_PYTHON" -m venv "$RUNNER_TEMP/audit-venv"
           "$RUNNER_TEMP/audit-venv/bin/pip" install --require-hashes --only-binary=:all: -r "$GITHUB_WORKSPACE/platform/audit.lock"
           if [ -f requirements.lock ]; then
@@ -172,22 +201,33 @@ jobs:
       - name: Lint the Dockerfile
         env:
           HADOLINT_BLOCKING: ${{ vars.HADOLINT_BLOCKING || 'true' }}
+          RECIPE: ${{ steps.policy.outputs.recipe }}
+          PYTHONPATH: ${{ github.workspace }}/platform
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p bundle
-          if [ ! -f "$APP_DIR/Dockerfile" ]; then
+          if [ "$RECIPE" = "platform" ]; then
+            # The platform's own Dockerfile for this contract, exactly as the build step renders it.
+            python -m labdeploy.scaffold platform-dockerfile "$APP_DIR" --spec "$SPEC_SOURCE" > "$RUNNER_TEMP/Dockerfile.platform"
+            LINTED="$RUNNER_TEMP/Dockerfile.platform"
+            export SHOWN="Dockerfile (the platform's)"
+          elif [ "$RECIPE" = "repository" ] && [ -f "$APP_DIR/Dockerfile" ]; then
+            LINTED="$APP_DIR/Dockerfile"
+            SHOWN=$(python3 -c 'import os; print(os.path.normpath(os.path.join(os.environ["APP_PATH"], "Dockerfile")))')  # as the repository names it
+            export SHOWN
+          else
             echo "[]" > bundle/hadolint.json
-            echo "No Dockerfile: the image is built with Google's buildpacks from the Procfile; nothing to lint" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "No Dockerfile: the image is built with Google's buildpacks; nothing to lint" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/hadolint" https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-linux-x86_64
           echo "c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507  $RUNNER_TEMP/hadolint" | sha256sum --check --strict
           chmod +x "$RUNNER_TEMP/hadolint"
-          "$RUNNER_TEMP/hadolint" --no-fail --format json "$APP_DIR/Dockerfile" > bundle/hadolint.json
+          "$RUNNER_TEMP/hadolint" --no-fail --format json "$LINTED" > bundle/hadolint.json
           python3 - <<'PY'
           import json, os
-          dockerfile = os.path.normpath(os.path.join(os.environ["APP_PATH"], "Dockerfile"))  # as the repository names it
+          dockerfile = os.environ["SHOWN"]
           def escape(text, property=False):
               text = str(text).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
               return text.replace(":", "%3A").replace(",", "%2C") if property else text
@@ -210,12 +250,31 @@ jobs:
         env:
           CONTEXT: ${{ steps.policy.outputs.context }}
           PYTHON_VERSION: ${{ steps.policy.outputs.python }}
+          RECIPE: ${{ steps.policy.outputs.recipe }}
+          ENTRYPOINT: ${{ steps.policy.outputs.entrypoint }}
+          HAS_COMMAND: ${{ steps.policy.outputs.command }}
+          PYTHONPATH: ${{ github.workspace }}/platform
         run: |
           set -euo pipefail
           # The image is built from exactly the reviewed commit: whatever the tests left in the checkout (caches, files a
           # test wrote) is removed first.
           git -C app clean -ffdxq
-          if [ -f "$APP_DIR/Dockerfile" ]; then
+          LOCK_SOURCE=repository
+          if [ -n "$PLATFORM_LOCK" ] && [ -f "$PLATFORM_LOCK" ] && [ ! -f "$APP_DIR/requirements.lock" ]; then
+            cp "$PLATFORM_LOCK" "$APP_DIR/requirements.lock"
+            LOCK_SOURCE=platform
+          fi
+          DOCKERFILE_USED=""
+          BUILDER=""
+          if [ "$RECIPE" = "platform" ]; then
+            # The platform's own Dockerfile (docs/ROADMAP.md D31, 13.3): the service's files are copied through the
+            # platform's deny-list (no .env, keys, tests, caches or notebooks), the Dockerfile is rendered for this contract
+            # beside them, and nothing is written to the repository.
+            python -m labdeploy.scaffold render-build "$APP_DIR" "$RUNNER_TEMP/platform-build" --spec "$SPEC_SOURCE"
+            docker build --platform linux/amd64 -t "lab-app:$COMMIT_SHA" "$RUNNER_TEMP/platform-build"
+            DOCKERFILE_USED="$RUNNER_TEMP/platform-build/Dockerfile"
+          elif [ "$RECIPE" = "repository" ] && [ -f "$APP_DIR/Dockerfile" ]; then
+            DOCKERFILE_USED="$APP_DIR/Dockerfile"
             # build.context: repository builds from the repository's root (shared code in a monorepo); the Dockerfile stays
             # in the service's folder. Otherwise the service's folder is the whole build context.
             if [ "$CONTEXT" = "repository" ]; then
@@ -224,10 +283,16 @@ jobs:
               docker build --platform linux/amd64 -t "lab-app:$COMMIT_SHA" "$APP_DIR"
             fi
           else
-            # No Dockerfile (docs/ROADMAP.md D28): Google's buildpacks build the image from the Procfile, with the builder and
-            # run image pinned by digest. The Ubuntu 24.04 builder offers Python 3.13 and later only, so 3.11 and 3.12 use
-            # the Ubuntu 22.04 one. A lock, when present, is what pip installs, with its hashes.
-            [ -f "$APP_DIR/Procfile" ] || { echo "::error::No Dockerfile and no Procfile in $APP_PATH: the platform cannot build this service"; exit 1; }
+            # Google's buildpacks (docs/ROADMAP.md D28, 13.3): build.recipe: buildpacks, or no Dockerfile. The start command
+            # is build.entrypoint (GOOGLE_ENTRYPOINT) or the Procfile; the builder and run image are pinned by digest. The
+            # Ubuntu 24.04 builder offers Python 3.13 and later only, so 3.11 and 3.12 use the Ubuntu 22.04 one. A lock,
+            # when present, is what pip installs, with its hashes.
+            if [ ! -f "$APP_DIR/Procfile" ] && [ -z "$ENTRYPOINT" ]; then
+              echo "::error::No Dockerfile, no Procfile and no build.entrypoint for $APP_PATH: the platform cannot build this service"; exit 1
+            fi
+            if [ "$HAS_COMMAND" = "true" ]; then
+              echo "::error::command and args replace the image's start command, which on a buildpacks image bypasses its launcher; use build.entrypoint"; exit 1
+            fi
             [ "$CONTEXT" = "service" ] || { echo "::error::build.context: repository needs a Dockerfile"; exit 1; }
             curl -fsSL --retry 3 -o "$RUNNER_TEMP/pack.tgz" https://github.com/buildpacks/pack/releases/download/v0.40.9/pack-v0.40.9-linux.tgz
             echo "dc0ee1e931cf8a106d7555a01a214864f9acb60b77adf15d69b74df4404758e9  $RUNNER_TEMP/pack.tgz" | sha256sum --check --strict
@@ -244,12 +309,28 @@ jobs:
             mkdir -p "$SOURCE"
             tar -C "$APP_DIR" --exclude=./.git -cf - . | tar -C "$SOURCE" -xf -
             if [ -f "$SOURCE/requirements.lock" ]; then cp "$SOURCE/requirements.lock" "$SOURCE/requirements.txt"; fi
+            # The platform's project descriptor keeps secrets, tests, notebooks and caches out of the image (the buildpacks'
+            # answer to .dockerignore); a project.toml of the repository's own is not read.
+            python -m labdeploy.scaffold descriptor > "$RUNNER_TEMP/project.toml"
+            PACK_ENV=(--env "GOOGLE_PYTHON_VERSION=$PYTHON_VERSION.x")
+            if [ -n "$ENTRYPOINT" ]; then PACK_ENV+=(--env "GOOGLE_ENTRYPOINT=$ENTRYPOINT"); fi
             "$RUNNER_TEMP/pack" build "lab-app:$COMMIT_SHA" --path "$SOURCE" --builder "$BUILDER" --run-image "$RUN_IMAGE" \
-              --platform linux/amd64 --trust-builder --pull-policy if-not-present --env "GOOGLE_PYTHON_VERSION=$PYTHON_VERSION.x"
+              --descriptor "$RUNNER_TEMP/project.toml" --platform linux/amd64 --trust-builder --pull-policy if-not-present "${PACK_ENV[@]}"
           fi
           mkdir -p bundle
           docker save "lab-app:$COMMIT_SHA" -o bundle/image.tar
-          cp "$APP_DIR/platform.yaml" bundle/platform.yaml
+          cp "$SPEC_SOURCE" bundle/platform.yaml
+          # What the image was made from, for the signed provenance (docs/ROADMAP.md D33): the recipe, the Dockerfile's and
+          # the lock's SHA-256 and where the lock came from, and the buildpacks builder when it was used.
+          python3 - "$DOCKERFILE_USED" "$APP_DIR/requirements.lock" "$LOCK_SOURCE" "$RECIPE" "$BUILDER" > bundle/inputs.json <<'PY'
+          import hashlib, json, os, sys
+          dockerfile, lock, lock_source, recipe, builder = sys.argv[1:6]
+          def digest(path):
+              return hashlib.sha256(open(path, "rb").read()).hexdigest() if path and os.path.isfile(path) else None
+          inputs = {"recipe": recipe, "dockerfile_sha256": digest(dockerfile), "lock_sha256": digest(lock),
+                    "lock_source": lock_source if digest(lock) else None, "builder": builder or None}
+          print(json.dumps(inputs, sort_keys=True))
+          PY
           sha256sum bundle/image.tar | cut -d' ' -f1 > bundle/image.sha256
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -325,7 +406,7 @@ jobs:
           fi
           IMAGE="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT_ID/$REGISTRY_NAME/$SERVICE"
           [[ "$IMAGE_DIGEST_INPUT" =~ ^"$IMAGE"@sha256:[a-f0-9]{64}$ ]]
-          mkdir -p bundle && cp "$APP_DIR/platform.yaml" bundle/platform.yaml
+          mkdir -p bundle && cp "$SPEC_SOURCE" bundle/platform.yaml
           echo "IMAGE_DIGEST=$IMAGE_DIGEST_INPUT" >> "$GITHUB_ENV"
           echo "IMAGE_NAME=$IMAGE" >> "$GITHUB_ENV"
           echo "IMAGE_SHA256=${IMAGE_DIGEST_INPUT##*@}" >> "$GITHUB_ENV"
@@ -441,6 +522,7 @@ jobs:
         if: inputs.image_digest == '' && steps.provenance.outputs.mode == 'cosign-kms'
         env:
           PYTHONPATH: ${{ github.workspace }}/platform
+          INPUTS_FILE: bundle/inputs.json
         shell: bash
         run: |
           set -euo pipefail
