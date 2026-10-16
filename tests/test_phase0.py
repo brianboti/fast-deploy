@@ -85,7 +85,7 @@ def test_controller_status_and_handshake_report_the_platform_version(tmp_path):
     with TestClient(build_app(config(tmp_path), Expiring())) as client:
         params = {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}
         init = client.post("/mcp", headers=MCP, json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params}).json()["result"]["serverInfo"]
-        assert init["name"] == "Lab Deploy" and init["version"] == __version__
+        assert init["name"] == "Fast Deploy" and init["version"] == __version__
         status = call(client, "get_controller_status")["structuredContent"]
         assert status["version"] == __version__ and status["applications"] == ["demo"] and status["github_credential"]["days_left"] == 7
         assert "expires in 7" in status["github_credential"]["warning"] and status["pricing_verified"] == PRICING["verified"]

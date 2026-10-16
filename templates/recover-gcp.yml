@@ -127,7 +127,7 @@ jobs:
               line = f"ROLLBACK FAILED ({result}); traffic was not changed, inspect the run log"
           else:
               line = f"RECOVERY FAILED ({result}); inspect the checkpoint and Cloud Run now"
-          text = f"Lab Deploy, {os.environ['REPOSITORY']}: {line}. {os.environ['RUN_URL']}"
+          text = f"Fast Deploy, {os.environ['REPOSITORY']}: {line}. {os.environ['RUN_URL']}"
           body = json.dumps({"text": text, "content": text}).encode()
           request = urllib.request.Request(os.environ["WEBHOOK"], data=body, headers={"Content-Type": "application/json"})
           with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 - operator-configured webhook secret

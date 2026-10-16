@@ -1,4 +1,4 @@
-# The repository standard: what a service must contain to be deployed by Lab Deploy
+# The repository standard: what a service must contain to be deployed by Fast Deploy
 
 Give this page to the developer. A repository that follows it is deployed to the lab's Google Cloud staging project
 with one request in Claude chat; the platform provides everything else (identities, registry, buckets, topics,

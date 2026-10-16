@@ -1,4 +1,4 @@
-# Drafted by Lab Deploy: weekly pull requests that keep the pins current (docs/DEVELOPER-CONTRACT.md, section 4). Each
+# Drafted by Fast Deploy: weekly pull requests that keep the pins current (docs/DEVELOPER-CONTRACT.md, section 4). Each
 # update waits seven days after its release (cooldown), so a broken or malicious release is usually withdrawn before it
 # arrives here. Dependabot updates requirements.txt, not requirements.lock: recompile the lock in the same pull request with
 #   __LOCK_COMMAND__

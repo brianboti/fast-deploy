@@ -37,7 +37,7 @@ def test_real_mcp_initialize_list_and_tool_call(client):
     params = {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}
     init = client.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params})
     assert init.status_code == 200, init.text
-    assert init.json()["result"]["serverInfo"]["name"] == "Lab Deploy"
+    assert init.json()["result"]["serverInfo"]["name"] == "Fast Deploy"
     listed = client.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     assert "deploy_staging" in [t["name"] for t in listed.json()["result"]["tools"]]
     called = client.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "create_deployment_plan", "arguments": {"application": "demo"}}})

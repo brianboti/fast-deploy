@@ -540,7 +540,7 @@ jobs:
               line = f"CANCELLED at phase '{receipt.get('state', 'unknown')}'; the recovery workflow checks the checkpoint"
           else:
               line = f"FAILED in the deploy job ({deploy}) at phase '{receipt.get('state', 'before the release step')}'"
-          text = f"Lab Deploy, {os.environ['REPOSITORY']}, plan {plan[:8]} (commit {commit}): {line}. {os.environ['RUN_URL']}"
+          text = f"Fast Deploy, {os.environ['REPOSITORY']}, plan {plan[:8]} (commit {commit}): {line}. {os.environ['RUN_URL']}"
           body = json.dumps({"text": text, "content": text}).encode()
           request = urllib.request.Request(os.environ["WEBHOOK"], data=body, headers={"Content-Type": "application/json"})
           with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 - operator-configured webhook secret

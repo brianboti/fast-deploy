@@ -415,7 +415,7 @@ release, send it traffic during the bake.
 with the read-only plan identity, without the state lock, and reports each difference from the code on `main`: an edit
 made outside the pipeline, or an apply that did not finish. It needs only the foundation applied with 1.9.0 (the plan
 identity admits the drift workflow from `main`); the `INFRA_*` variables of section 7f already exist. It keeps one issue
-on the platform repository, **Lab Deploy: infrastructure drift**, open while something differs, and uploads the
+on the platform repository, **Fast Deploy: infrastructure drift**, open while something differs, and uploads the
 `drift-report` artifact the controller reads: `get_controller_status` shows it, and the daily watchdog notifies on drift in
 IAM, networking or exposure, on a root whose plan failed, and when the report is more than eight days old. To put the
 code's version back, merge any change to the root or dispatch **Infrastructure apply** with the root's name. Run it by

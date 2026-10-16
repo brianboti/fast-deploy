@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from labdeploy.config import Config
 from labdeploy.server import INSTRUCTIONS, build_app
 
-SKILL = Path("skills/lab-deploy-operator")
+SKILL = Path("skills/fast-deploy-operator")
 STATES = {"rollback_failed_manual_recovery_required"}  # release states the playbook explains, not tools
 TOOL_PREFIX = re.compile(r"\b(?:list|get|create|propose|update|deploy|rollback|cancel|onboard|analyze|compare|estimate)_[a-z_]+\b")
 

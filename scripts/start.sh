@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Lab Deploy on a Mac for Claude chat: starts the controller and the ngrok tunnel. Ctrl+C stops both.
+# Fast Deploy on a Mac for Claude chat: starts the controller and the ngrok tunnel. Ctrl+C stops both.
 # The first run asks for the fine-grained GitHub token at the Keychain's own hidden prompt (the token never appears on
 # a command line or in a shell history) and saves it in the login Keychain as item "lab-deploy-github-token"; later
 # runs read it from there. To forget it:  security delete-generic-password -s lab-deploy-github-token

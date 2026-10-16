@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Optional: start the Lab Deploy controller and tunnel at login and restart them after a crash (macOS launchd).
+# Optional: start the Fast Deploy controller and tunnel at login and restart them after a crash (macOS launchd).
 # Requires the GitHub token already saved in the Keychain by one interactive run of scripts/start.sh.
 # Remove with: launchctl bootout gui/$(id -u)/edu.utsa.lab-deploy && rm ~/Library/LaunchAgents/edu.utsa.lab-deploy.plist
 set -euo pipefail

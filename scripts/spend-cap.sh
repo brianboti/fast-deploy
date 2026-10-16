@@ -90,7 +90,7 @@ case "$ACTION" in
     BODY=$(PROJECT="$PROJECT" AMOUNT="$AMOUNT" CLOUD_RUN="$CLOUD_RUN" python3 -c '
 import json, os
 print(json.dumps({
-    "displayName": "Lab Deploy: Cloud Run spend cap",
+    "displayName": "Fast Deploy: Cloud Run spend cap",
     "budgetFilter": {"projects": ["projects/" + os.environ["PROJECT"]], "services": [os.environ["CLOUD_RUN"]],
                      "calendarPeriod": "MONTH", "creditTypesTreatment": "EXCLUDE_ALL_CREDITS"},
     "amount": {"specifiedAmount": {"currencyCode": "USD", "units": os.environ["AMOUNT"]}},
@@ -122,7 +122,7 @@ print(json.dumps({
     BODY=$(PROJECT="$PROJECT" AMOUNT="$AMOUNT" CLOUD_RUN="$CLOUD_RUN" python3 -c '
 import json, os
 print(json.dumps({
-    "displayName": "Lab Deploy: Cloud Run spend cap",
+    "displayName": "Fast Deploy: Cloud Run spend cap",
     "budgetFilter": {"projects": ["projects/" + os.environ["PROJECT"]], "services": [os.environ["CLOUD_RUN"]],
                      "calendarPeriod": "MONTH", "creditTypesTreatment": "EXCLUDE_ALL_CREDITS"},
     "amount": {"specifiedAmount": {"currencyCode": "USD", "units": os.environ["AMOUNT"], "nanos": 0}},

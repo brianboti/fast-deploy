@@ -1,4 +1,4 @@
-# Drafted by Lab Deploy from docs/DEVELOPER-CONTRACT.md, section 2. Review it, then it is yours: the platform never rewrites it.
+# Drafted by Fast Deploy from docs/DEVELOPER-CONTRACT.md, section 2. Review it, then it is yours: the platform never rewrites it.
 # python:__PYTHON__-slim multi-architecture index digest resolved __RESOLVED__. Refresh deliberately after review with
 #   docker buildx imagetools inspect python:__PYTHON__-slim
 # or merge the pull request Dependabot opens for it; keep the version equal to python in platform.yaml.

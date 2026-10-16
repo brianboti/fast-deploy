@@ -93,10 +93,15 @@ jobs:
           print(issue_body(json.load(open("cost-report.json")), os.environ["RUN_URL"]))
           PY
           # The job never checks out this repository, so every gh call names it explicitly.
-          TITLE="Lab Deploy cost report: $SERVICE"
-          NUMBER=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$TITLE\" in:title" --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)
+          TITLE="Fast Deploy cost report: $SERVICE"
+          # Before the rename to Fast Deploy (1.14.0) the issue was "Lab Deploy cost report: ...": an open one is reused and renamed.
+          NUMBER=""
+          for WANTED in "$TITLE" "Lab Deploy cost report: $SERVICE"; do
+            NUMBER=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$WANTED\" in:title" --json number,title --jq ".[] | select(.title == \"$WANTED\") | .number" | head -1)
+            [ -n "$NUMBER" ] && break
+          done
           if [ -n "$NUMBER" ]; then
-            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --body-file issue-body.md > /dev/null && echo "updated issue #$NUMBER"
+            gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file issue-body.md > /dev/null && echo "updated issue #$NUMBER"
           else
             gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file issue-body.md > /dev/null && echo "created the cost report issue"
           fi
@@ -140,7 +145,7 @@ jobs:
               proposals = (report.get("rightsizing") or {}).get("recommendations") or []
               usage = f"about ${observed['usd_month_at_list_price']:.2f}/month at list price from measured usage" if observed else "no usage metrics in the window"
               line = f"weekly cost report: {usage}; {len(proposals)} proposal(s)"
-          text = f"Lab Deploy, {os.environ['REPOSITORY']}: {line}. {os.environ['RUN_URL']}"
+          text = f"Fast Deploy, {os.environ['REPOSITORY']}: {line}. {os.environ['RUN_URL']}"
           body = json.dumps({"text": text, "content": text}).encode()
           request = urllib.request.Request(os.environ["WEBHOOK"], data=body, headers={"Content-Type": "application/json"})
           with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 - operator-configured webhook secret

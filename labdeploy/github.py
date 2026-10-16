@@ -400,8 +400,8 @@ class GitHub:
                 + "\n\nReview and merge through the normal process; the controller refuses to deploy an app whose pin it does not support. "
                 "Nothing is merged or deployed by this pull request itself.")
         result = self.open_pull_request(app, f"lab-deploy/platform-{platform_sha[:12]}{getattr(app, 'suffix', '')}", files,
-                                        f"Update Lab Deploy workflows to platform {platform_sha[:12]}" + (f" ({app.service})" if getattr(app, "suffix", "") else ""), body,
-                                        f"Pin Lab Deploy workflows to platform {platform_sha[:12]}")
+                                        f"Update Fast Deploy workflows to platform {platform_sha[:12]}" + (f" ({app.service})" if getattr(app, "suffix", "") else ""), body,
+                                        f"Pin Fast Deploy workflows to platform {platform_sha[:12]}")
         if result.get("note") == "The files already have this content.":
             result["note"] = "The workflows already match this platform commit."
         elif result.get("note"):

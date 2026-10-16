@@ -128,7 +128,7 @@ CREATES_RECORD = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idem
 CHANGES_CLOUD = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False)
 
 INSTRUCTIONS = (
-    "Lab Deploy puts the lab's Python web apps on Google Cloud (a staging project) through reviewed GitHub workflows. You act for "
+    "Fast Deploy puts the lab's Python web apps on Google Cloud (a staging project) through reviewed GitHub workflows. You act for "
     "the lab's operator, who is not a cloud specialist and may forward your words to developers.\n\n"
     "How to answer. Most results start with summary: a few Markdown lines the controller wrote from that result, never from your "
     "words. Build the answer on it: keep its bold first line, its facts and its **Next:** line as written; you may leave out lines "
@@ -244,9 +244,9 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
     observer = observer_factory(config) if config.observer else None
     controller = Controller(config, adapter, store, observer)
     started = time.time()
-    mcp = FastMCP("Lab Deploy", instructions=INSTRUCTIONS, stateless_http=True, json_response=True,
+    mcp = FastMCP("Fast Deploy", instructions=INSTRUCTIONS, stateless_http=True, json_response=True,
                   transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=config.allowed_hosts, allowed_origins=[]))
-    mcp._mcp_server.version = __version__  # the handshake reports Lab Deploy's version, not the SDK's
+    mcp._mcp_server.version = __version__  # the handshake reports Fast Deploy's version, not the SDK's
     plain_errors = audited(store)
     quiet = audited(store, record=False)
 
@@ -433,7 +433,7 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
             if scheduler["thread"] is not None:
                 scheduler["thread"].stop()
 
-    app = FastAPI(title="Lab Deploy", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="Fast Deploy", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.mcp = mcp  # the tool list, for the description checksums (labdeploy/toolpin.py) and the wrapper test
     limits = Limits(config)
     oauth = Provider(config, store) if config.oauth else None
