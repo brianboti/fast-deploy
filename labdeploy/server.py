@@ -19,7 +19,7 @@ from mcp.types import ToolAnnotations
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
-from . import __version__
+from . import __version__, chat
 from .cloud import Observer
 from .config import LiveConfig, load_config
 from .controller import Controller, Store
@@ -128,23 +128,25 @@ CREATES_RECORD = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idem
 CHANGES_CLOUD = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False)
 
 INSTRUCTIONS = (
-    "Lab Deploy releases approved lab applications to GCP staging through a reviewed GitHub Actions workflow. "
-    "Order of operations: list_applications, optionally analyze_repository, create_deployment_plan, deploy_staging with "
-    "that plan id, then get_deployment_status. A plan is bound to one commit and one cloud target and expires after 15 "
-    "minutes; create a new plan instead of retrying a rejected or expired one. 'dispatched' means GitHub accepted the "
-    "job, not that the release succeeded: report the workflow state and the individual checks from get_deployment_status, "
-    "and never describe a check as passed unless its value is 'passed'. Requests for other clouds, production, public access, "
-    "GPUs or resources above the lab's limits are refused by policy; relay the refusal instead of working around it. "
-    "Databases, buckets, topics and migrations are supported: the app declares them under needs in platform.yaml through a "
-    "reviewed pull request on its repository, then propose_infrastructure provisions them once its pull request is merged. "
-    "For a problem with a live app, read get_service_health and get_recent_logs; rollback_staging moves traffic back to the "
-    "previous release in seconds but does not undo data changes. "
-    "Use estimate_cost to explain cost bounds and findings before deploying, and get_cost_report for measured right-sizing; "
-    "present bounds as bounds, never as a bill forecast, and say which costs are excluded. "
-    "To deploy a repository that is not registered yet, call onboard_application with its link: it validates the repository against "
-    "the contract, registers it, opens and merges its pull requests when the policy passes, prepares its GitHub environment and "
-    "releases the first commit, continuing on its own in the background; report the step and what it waits for, use "
-    "get_onboarding_status to follow it, and get_deployment_status with the plan id it returns when complete."
+    "Lab Deploy puts the lab's Python web apps on Google Cloud (a staging project) through reviewed GitHub workflows. You act for "
+    "the lab's operator, who is not a cloud specialist and may forward your words to developers.\n\n"
+    "How to answer. Most results start with summary: a few Markdown lines the controller wrote from that result, never from your "
+    "words. Build the answer on it: keep its bold first line, its facts and its **Next:** line as written; you may leave out lines "
+    "the question did not need, never add a claim it does not make, and add detail from the rest of the result only when asked. "
+    "Every answer has the same shape: one bold sentence with the outcome, two to five short bullets, then one **Next:** line that "
+    "says what happens next or what the operator does. Plain words (the new version, visitors, the health check, the safety rules), "
+    "commits as 7-character ids, links as Markdown, a small table for three or more apps or items; no raw JSON, no long ids, no "
+    "secrets. Ask at most one question, with your recommended choice first. When several tools ran, give one combined answer.\n\n"
+    "How to work. A new repository: check_repository first; propose_configuration opens a draft pull request with the files the "
+    "platform can write, which a person reviews, marks reviewed: true and merges; then onboard_application (with path for a service "
+    "in a folder, one call per service) runs on its own: follow it with get_onboarding_status, then its first release with "
+    "get_deployment_status. An app already live: compare_with_live, deploy_latest, then get_deployment_status. 'dispatched' means "
+    "GitHub accepted the job, not that anything is live, and a check passed only when it says passed. A problem: get_service_health "
+    "and get_recent_logs; rollback_staging moves visitors back to the previous version in seconds but does not undo data changes. "
+    "Databases, buckets, topics and migrations are supported: the app declares them under needs in platform.yaml through a reviewed "
+    "pull request on its repository, then propose_infrastructure provisions them once its pull request is merged. Costs from "
+    "estimate_cost and get_cost_report are bounds from list prices, never a bill. Other clouds, production, public access, GPUs and "
+    "resources above the lab's limits are refused by policy: say so with the legitimate way forward, and never work around it."
 )
 
 
@@ -255,7 +257,7 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
     @plain_errors
     def list_applications() -> dict[str, Any]:
         """Applications permitted for the caller, each with the live release this controller recorded and the commits main holds beyond it."""
-        return controller.applications(identity.get())
+        return chat.attach(chat.applications, controller.applications(identity.get()))
 
     @mcp.tool(title="Analyze repository", annotations=READ_ONLY, structured_output=True)
     @plain_errors
@@ -267,7 +269,7 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
     @plain_errors
     def create_deployment_plan(application: str, cloud: str = "gcp", environment: str = "staging", commit_sha: str | None = None) -> dict[str, Any]:
         """Validate committed platform.yaml and pin an expiring plan to a Git commit: the tip of main, or any older commit already on main (commit_sha)."""
-        return controller.plan(identity.get(), application, cloud, environment, commit_sha)
+        return chat.attach(chat.release, controller.plan(identity.get(), application, cloud, environment, commit_sha))
 
     @mcp.tool(title="Propose configuration (draft PR)", annotations=CREATES_RECORD, structured_output=True)
     @plain_errors
@@ -276,19 +278,19 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
         requirements-dev.txt, a hash-locked requirements.lock, a health test, platform.yaml with reviewed: false, CI, SECURITY.md,
         Dependabot), never one that exists. Give a registered `application`, or a `repository` link and its `path` before onboarding.
         The platform never merges it."""
-        return controller.propose_config(identity.get(), application, repository, path)
+        return chat.attach(chat.draft, controller.propose_config(identity.get(), application, repository, path))
 
     @mcp.tool(title="Update app workflows (pull request)", annotations=CREATES_RECORD, structured_output=True)
     @plain_errors
     def update_app_workflows(application: str, platform_commit: str | None = None) -> dict[str, Any]:
         """Regenerate the app's three workflow files against the platform's current (or given) commit and open a pull request. Never merges."""
-        return controller.update_workflows(identity.get(), application, platform_commit)
+        return chat.attach(chat.pull_request, controller.update_workflows(identity.get(), application, platform_commit), what="the release workflows pinned to the current platform")
 
     @mcp.tool(title="Propose infrastructure (pull request)", annotations=CREATES_RECORD, structured_output=True)
     @plain_errors
     def propose_infrastructure(application: str) -> dict[str, Any]:
         """Render the app's Terraform root (service, registry, identities, trust, alerts) and open a pull request on the platform repository; the pipeline applies it on merge. Never merges."""
-        return controller.propose_infrastructure(identity.get(), application)
+        return chat.attach(chat.pull_request, controller.propose_infrastructure(identity.get(), application), what="its cloud setup", applies=True)
 
     @mcp.tool(title="Onboard a repository (one sentence)", annotations=CHANGES_CLOUD, structured_output=True)
     @plain_errors
@@ -298,69 +300,69 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
         GitHub environment with its variables, and release the first commit. `path`: the service's folder when it is not the repository
         root (a monorepo, e.g. services/api); call once per service. Resumable: call again to continue, or after fixing what blocked it.
         Changes cloud resources."""
-        return controller.onboard(identity.get(), repository, application, auto_deploy, path)
+        return chat.attach(chat.onboarding, controller.onboard(identity.get(), repository, application, auto_deploy, path))
 
     @mcp.tool(title="Check a repository", annotations=READ_ONLY, structured_output=True)
     @plain_errors
     def check_repository(repository: str, path: str | None = None) -> dict[str, Any]:
         """Check a GitHub repository (or one service folder of it) against docs/DEVELOPER-CONTRACT.md before deploying: each required
         and recommended item, whether it holds, why it matters, and which missing files the platform can draft. Reads only."""
-        return controller.check_repository(identity.get(), repository, path)
+        return chat.attach(chat.check, controller.check_repository(identity.get(), repository, path))
 
     @mcp.tool(title="Get onboarding status", annotations=READ_ONLY, structured_output=True)
     @plain_errors
     def get_onboarding_status(application: str) -> dict[str, Any]:
         """Where a repository's onboarding stands: the step in progress, what it waits for, or what blocked it and how to fix it."""
-        return controller.onboarding_status(identity.get(), application)
+        return chat.attach(chat.onboarding, controller.onboarding_status(identity.get(), application))
 
     @mcp.tool(title="Deploy to staging", annotations=CHANGES_CLOUD, structured_output=True)
     @plain_errors
     def deploy_staging(plan_id: str) -> dict[str, Any]:
         """Dispatch the approved workflow for an existing plan. Changes cloud resources when enabled."""
-        return controller.deploy(identity.get(), plan_id)
+        return chat.attach(chat.release, controller.deploy(identity.get(), plan_id))
 
     @mcp.tool(title="Deploy the latest commit", annotations=CHANGES_CLOUD, structured_output=True)
     @plain_errors
     def deploy_latest(application: str) -> dict[str, Any]:
         """Plan the tip of main and dispatch it in one call when every policy passes. Changes cloud resources when enabled."""
-        return controller.deploy_latest(identity.get(), application)
+        return chat.attach(chat.release, controller.deploy_latest(identity.get(), application))
 
     @mcp.tool(title="Roll back to the previous revision", annotations=CHANGES_CLOUD, structured_output=True)
     @plain_errors
     def rollback_staging(application: str) -> dict[str, Any]:
         """Move traffic back to the split that served before the live release, in seconds and without a build. Changes cloud resources."""
-        return controller.rollback(identity.get(), application)
+        return chat.attach(chat.release, controller.rollback(identity.get(), application))
 
     @mcp.tool(title="Cancel a running deployment", annotations=CHANGES_CLOUD, structured_output=True)
     @plain_errors
     def cancel_deployment(plan_id: str) -> dict[str, Any]:
         """Cancel the GitHub run of a dispatched plan. The recovery workflow restores traffic if the release had started changing it."""
-        return controller.cancel(identity.get(), plan_id)
+        return chat.attach(chat.release, controller.cancel(identity.get(), plan_id))
 
     @mcp.tool(title="Compare main with the live release", annotations=READ_ONLY, structured_output=True)
     @plain_errors
     def compare_with_live(application: str) -> dict[str, Any]:
         """Commits and files on main since the live release, what kinds of change they are, and the cost bounds before and after."""
-        return controller.compare_with_live(identity.get(), application)
+        return chat.attach(chat.compare, controller.compare_with_live(identity.get(), application))
 
     @mcp.tool(title="Get service health (live)", annotations=READ_ONLY, structured_output=True)
     @plain_errors
     def get_service_health(application: str, minutes: int = 60) -> dict[str, Any]:
         """Live view from Cloud Run and Cloud Monitoring: readiness, serving revisions with their plan and commit, requests, errors, latency,
         instances, memory, and whether it matches what this controller recorded."""
-        return controller.service_health(identity.get(), application, minutes)
+        return chat.attach(chat.health, controller.service_health(identity.get(), application, minutes))
 
     @mcp.tool(title="Get recent logs (live)", annotations=READ_ONLY, structured_output=True)
     @plain_errors
     def get_recent_logs(application: str, minutes: int = 30, severity: str = "ERROR", limit: int = 50) -> dict[str, Any]:
         """The newest log lines of the service at or above a severity (DEFAULT, INFO, WARNING, ERROR, CRITICAL), newest first."""
-        return controller.recent_logs(identity.get(), application, minutes, severity, limit)
+        return chat.attach(chat.logs, controller.recent_logs(identity.get(), application, minutes, severity, limit))
 
     @mcp.tool(title="Get deployment status", annotations=READ_ONLY, structured_output=True)
     @plain_errors
     def get_deployment_status(plan_id: str, wait_seconds: int = 0) -> dict[str, Any]:
         """Actual GitHub workflow status with every step, the release receipt, recovery, and a next action. Dispatched does not mean deployed. wait_seconds (up to 45) waits for a change."""
-        return controller.status(identity.get(), plan_id, wait_seconds)
+        return chat.attach(chat.release, controller.status(identity.get(), plan_id, wait_seconds))
 
     @mcp.tool(title="List plans", annotations=READ_ONLY, structured_output=True)
     @plain_errors
@@ -372,7 +374,7 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
     @plain_errors
     def estimate_cost(application: str, requests_per_month: int | None = None, average_request_seconds: float | None = None) -> dict[str, Any]:
         """Cost bounds from list prices for the committed platform.yaml, plus findings; optional traffic scenario."""
-        return controller.cost(identity.get(), application, requests_per_month, average_request_seconds)
+        return chat.attach(chat.estimate, controller.cost(identity.get(), application, requests_per_month, average_request_seconds), application=application)
 
     @mcp.tool(title="Propose right-sizing (pull request)", annotations=CREATES_RECORD, structured_output=True)
     @plain_errors
@@ -406,7 +408,7 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
         """Controller version, dispatch and sign-in switches, registered apps, GitHub credential expiry, and pricing freshness."""
         status = getattr(adapter, "credential_status", None)
         credential = status() if callable(status) else {"kind": "unknown", "expires_at": None, "days_left": None, "warning": None}
-        return {"version": __version__, "live_dispatch": config.live_dispatch, "oauth_sign_in": config.oauth is not None, "paused": config.paused,
+        return chat.attach(chat.controller, {"version": __version__, "live_dispatch": config.live_dispatch, "oauth_sign_in": config.oauth is not None, "paused": config.paused,
                 "observer": config.observer.service_account if config.observer else None,
                 "auto_deploy": sorted(k for k, a in config.applications.items() if a.auto_deploy),
                 "background": scheduler["thread"].snapshot() if scheduler["thread"] is not None else None,
@@ -415,7 +417,7 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
                 "applications": sorted(config.applications), "github_credential": credential,
                 "spending_guards": spending_guards(), "infrastructure_drift": controller.drift_status(),
                 "pricing_verified": PRICING["verified"], "started_at": datetime.datetime.fromtimestamp(started, datetime.UTC).isoformat(timespec="seconds"),
-                "uptime_seconds": int(time.time() - started)}
+                "uptime_seconds": int(time.time() - started)})
 
     scheduler = {"thread": None}
 
