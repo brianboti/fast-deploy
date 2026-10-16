@@ -1,3 +1,15 @@
+# 1.13.1: every release is followed to its end
+
+Found live on 2026-10-16 while checking the new chat answers: `demo`'s auto-deploy of 15 October had succeeded, but the
+application list still showed the release before it, with "1 new commit" waiting, and the auto-deploy pass said the
+commit was "already handled ... (dispatched)". The controller records a release's outcome when someone asks for its
+status; nobody had asked. A new background job, `follow`, asks every minute about each release still on its way (newest
+first, ten at a time): an auto-deploy, an onboarding's first release, or a release started from chat and not followed.
+So the application list, the watchdog and the chat's summaries are right without anyone asking. A plan of an
+application unregistered since is left as history. The health summary also rounds latency to a tenth of a millisecond.
+Nothing to apply or regenerate; restart the controller.
+
+
 # 1.13.0: clear, consistent answers in Claude chat
 
 Asked for on 2026-10-16: chatting with Lab Deploy should be easy, understandable and professional, with formatted
