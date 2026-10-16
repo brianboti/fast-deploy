@@ -511,7 +511,7 @@ jobs:
           set -euo pipefail
           "$RUNNER_TEMP/trivy" image --input bundle/image.tar --format cyclonedx --output bundle/sbom.cdx.json --quiet --skip-version-check
           python -m labdeploy.sbom bundle/sbom.cdx.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-bundle
           path: bundle/
@@ -771,7 +771,7 @@ jobs:
         id: url
         shell: bash
         run: echo "url=$(python -c 'import json; print(json.load(open("release-receipt.json")).get("url", ""))')" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: release-receipt
