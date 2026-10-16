@@ -474,7 +474,7 @@ class Onboarder:
         if pr["mergeable_state"] not in ("clean", "unstable", "has_hooks"):
             step.update(waiting=f"the pull request to become mergeable (GitHub says {pr['mergeable_state']}): {pr['url']}")
             return
-        merged = self.c.github.merge_pull_request(app.repository, number, "Add the Lab Deploy workflows")
+        merged = self.c.github.merge_pull_request(app.repository, number, "Add the Fast Deploy workflows")
         if not merged["merged"]:
             step.update(waiting=f"merge: {merged.get('reason') or 'not mergeable yet'}")
             return

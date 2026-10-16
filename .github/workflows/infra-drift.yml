@@ -135,12 +135,17 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          TITLE="Lab Deploy: infrastructure drift"
-          NUMBER=$(gh issue list --repo "$REPOSITORY" --state open --search "\"$TITLE\" in:title" --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)
+          TITLE="Fast Deploy: infrastructure drift"
+          # Before the rename to Fast Deploy (1.14.0) the issue was "Lab Deploy: infrastructure drift": an open one is reused and renamed.
+          NUMBER=""
+          for WANTED in "$TITLE" "Lab Deploy: infrastructure drift"; do
+            NUMBER=$(gh issue list --repo "$REPOSITORY" --state open --search "\"$WANTED\" in:title" --json number,title --jq ".[] | select(.title == \"$WANTED\") | .number" | head -1)
+            [ -n "$NUMBER" ] && break
+          done
           DIFFERS=$(python3 -c 'import json; r = json.load(open("drift-report.json")); print("yes" if r["drifted"] or r["failed"] else "no")')
           if [ "$DIFFERS" = "yes" ]; then
             if [ -n "$NUMBER" ]; then
-              gh issue edit "$NUMBER" --repo "$REPOSITORY" --body-file drift-issue.md > /dev/null && echo "updated issue #$NUMBER"
+              gh issue edit "$NUMBER" --repo "$REPOSITORY" --title "$TITLE" --body-file drift-issue.md > /dev/null && echo "updated issue #$NUMBER"
             else
               gh issue create --repo "$REPOSITORY" --title "$TITLE" --body-file drift-issue.md > /dev/null && echo "opened the drift issue"
             fi

@@ -13,7 +13,7 @@ from .models import AppSpec, enforce, parse_spec, spec_hash
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Lab Deploy: generate, validate and plan before deploying")
+    parser = argparse.ArgumentParser(description="Fast Deploy: generate, validate and plan before deploying")
     commands = parser.add_subparsers(dest="command", required=True)
     a = commands.add_parser("analyze")
     a.add_argument("path", type=Path)

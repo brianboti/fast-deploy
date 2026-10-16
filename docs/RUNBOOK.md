@@ -1,6 +1,6 @@
 # Runbook
 
-How Lab Deploy is operated day to day and what to do when something is off. Written 2026-10-12 for the staging
+How Fast Deploy (formerly Lab Deploy) is operated day to day and what to do when something is off. Written 2026-10-12 for the staging
 platform (`lab-deploy-staging-f29a`, operated from Claude chat by one person); update it when the setup changes.
 
 ## Owner and escalation
@@ -123,7 +123,7 @@ start. Nothing was deleted, and Cloud SQL, buckets and topics kept running (and 
 
 ## Drift reported
 
-The issue **Lab Deploy: infrastructure drift** on the platform repository, or a watchdog notification, names the root,
+The issue **Fast Deploy: infrastructure drift** (named Lab Deploy: … before 1.14.0) on the platform repository, or a watchdog notification, names the root,
 the resources and a category. "An apply that did not finish" is as likely as an edit by hand: check the newest
 Infrastructure apply run for the root first.
 

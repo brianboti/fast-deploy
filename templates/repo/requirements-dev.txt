@@ -1,3 +1,3 @@
-# Test tools for the platform's test step and the CI workflow; never installed in the image. Drafted by Lab Deploy;
+# Test tools for the platform's test step and the CI workflow; never installed in the image. Drafted by Fast Deploy;
 # Dependabot keeps the pins current.
 __PINS__

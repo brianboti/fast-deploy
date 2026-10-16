@@ -455,7 +455,7 @@ class Controller:
         self.store.record_event("watchdog", outcome="problems" if problems else "ok", detail="; ".join(problems) or None)
         if problems and self.config.notify_webhook_url:
             import httpx
-            text = "Lab Deploy watchdog found " + str(len(problems)) + " problem(s):\n- " + "\n- ".join(problems)
+            text = "Fast Deploy watchdog found " + str(len(problems)) + " problem(s):\n- " + "\n- ".join(problems)
             try:
                 httpx.post(self.config.notify_webhook_url, json={"text": text, "content": text}, timeout=20).raise_for_status()
                 report["notified"] = True
@@ -861,8 +861,8 @@ class Controller:
         branch = "lab-deploy/contract-files" + (f"-{slug(folder.replace('/', '-'))}" if folder else "")
         view["pull_request"] = self.github.open_pull_request(
             target, branch, {target_path: item["content"] for target_path, item in result["files"].items()},
-            "Add the files Lab Deploy needs" + (f" for {folder}" if folder else ""), scaffold.pull_request_body(result),
-            "Add the files the Lab Deploy contract asks for (drafted; platform.yaml says reviewed: false)", draft=True, create_only=True)
+            "Add the files Fast Deploy needs" + (f" for {folder}" if folder else ""), scaffold.pull_request_body(result),
+            "Add the files the Fast Deploy contract asks for (drafted; platform.yaml says reviewed: false)", draft=True, create_only=True)
         self.store.record_event("propose_configuration", name=target.repository, identity=principal.name, application=app_id,
                                 outcome="opened", detail=f"{len(result['files'])} files" + (f" in {folder}" if folder else ""))
         return view

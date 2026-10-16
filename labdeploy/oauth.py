@@ -39,9 +39,9 @@ LOGIN_SECONDS = 600  # a sign-in page left open longer than this must be reopene
 # No form-action directive: Chrome applies it to the redirect after the POST, which would block the hop back to Claude.
 PAGE_HEADERS = {"Cache-Control": "no-store", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"}
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lab Deploy sign-in</title><style>body{font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;color:#222}
+<title>Fast Deploy sign-in</title><style>body{font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;color:#222}
 input{width:100%;box-sizing:border-box;padding:.5rem;font-size:1rem;margin:.5rem 0 1rem}button{padding:.5rem 1rem;font-size:1rem}.error{color:#b00020}</style></head>
-<body><h1>Lab Deploy</h1><p><strong>__CLIENT__</strong> is asking to use Lab Deploy as you. After sign-in you return to <strong>__HOST__</strong>.</p>
+<body><h1>Fast Deploy</h1><p><strong>__CLIENT__</strong> is asking to use Fast Deploy as you. After sign-in you return to <strong>__HOST__</strong>.</p>
 __ERROR__<form method="post" action="/login"><input type="hidden" name="request" value="__REQUEST__">
 <label for="token">Operator token</label><input id="token" name="token" type="password" autocomplete="off" required autofocus>
 <button type="submit">Sign in</button></form><p>The token is checked on this server only and is never shown to Claude.</p></body></html>"""
@@ -332,6 +332,6 @@ def mount(app, provider, failures):
     """Add the authorization-server, protected-resource metadata and sign-in routes ahead of the MCP mount."""
     issuer = AnyHttpUrl(provider.issuer)
     routes = create_auth_routes(provider, issuer, client_registration_options=ClientRegistrationOptions(enabled=True), revocation_options=RevocationOptions(enabled=True))
-    routes += create_protected_resource_routes(AnyHttpUrl(provider.resource), [issuer], resource_name="Lab Deploy")
+    routes += create_protected_resource_routes(AnyHttpUrl(provider.resource), [issuer], resource_name="Fast Deploy")
     routes += login_routes(provider, failures)
     app.router.routes.extend(routes)

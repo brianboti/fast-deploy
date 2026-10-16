@@ -129,7 +129,7 @@ def serve(args):
     url = f"http://127.0.0.1:{args.port}"
     line = "=" * 76
     print(f"""{line}
- Lab Deploy DEMO MODE: local files, no GitHub, no cloud, dispatch disabled
+ Fast Deploy DEMO MODE: local files, no GitHub, no cloud, dispatch disabled
 {line}
  Application 'demo' ({service}) is read from: {repository.root}
  Plans database:                  {database}

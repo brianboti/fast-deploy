@@ -100,7 +100,7 @@ def test_browser_sign_in_issues_tokens_that_open_mcp_and_rest(client):
     assert body["token_type"] == "Bearer" and body["expires_in"] == 3600 and body["refresh_token"]
     headers = {"Authorization": f"Bearer {body['access_token']}", **MCP_HEADERS}
     init = client.post("/mcp", headers=headers, json=INITIALIZE)
-    assert init.status_code == 200 and init.json()["result"]["serverInfo"]["name"] == "Lab Deploy"
+    assert init.status_code == 200 and init.json()["result"]["serverInfo"]["name"] == "Fast Deploy"
     listed = client.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "list_applications", "arguments": {}}})
     assert "lab/demo" in listed.text
     assert client.get("/applications", headers=headers).status_code == 200  # the REST routes accept the same token

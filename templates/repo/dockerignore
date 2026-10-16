@@ -1,4 +1,4 @@
-# Drafted by Lab Deploy: an allow-list. Nothing enters the image unless a "!" line below lets it in, so a new file (a .env,
+# Drafted by Fast Deploy: an allow-list. Nothing enters the image unless a "!" line below lets it in, so a new file (a .env,
 # a key, a dataset, a notebook) is never copied into the image by accident. When the service needs another file or
 # directory at runtime, add a "!name" line for it.
 *

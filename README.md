@@ -1,4 +1,7 @@
-# Lab Deploy
+# Fast Deploy
+
+*Formerly Lab Deploy.* Only what people see was renamed (1.14.0): the Python package `labdeploy`, the command
+`lab-deploy`, this repository's name and the Google Cloud resources keep their old names, so nothing running had to move.
 
 A working first implementation of the lab deployment platform: Claude calls authenticated MCP tools; the Python controller creates reviewed configuration proposals and immutable deployment plans; GitHub Actions tests, builds, and deploys to GCP Cloud Run.
 
@@ -178,4 +181,4 @@ AWS adapter, production policy/approvals, automatic application of right-sizing 
 
 ## Operations and license
 
-`docs/DEVELOPER-CONTRACT.md` tells a developer what a repository must contain to be deployed. `docs/CLAUDE-CHAT.md` is the operator's daily reference for driving the platform from Claude chat: what to ask, what each tool does, what a normal release looks like and what the guardrails are. `skills/lab-deploy-operator` is the same knowledge as a skill for Claude chat (upload it once under Customize → Skills): when to ask before acting, how to read each status, which costs to show and how to tell a developer what their repository is missing. `docs/RUNBOOK.md` says who owns the platform, what to do when the laptop is off, how to restore the controller from the backup bucket, how to lift the spending cap and how to rotate credentials. The code is released under the MIT License (`LICENSE`).
+`docs/DEVELOPER-CONTRACT.md` tells a developer what a repository must contain to be deployed. `docs/CLAUDE-CHAT.md` is the operator's daily reference for driving the platform from Claude chat: what to ask, what each tool does, what a normal release looks like and what the guardrails are. `skills/fast-deploy-operator` is the same knowledge as a skill for Claude chat (upload it once under Customize → Skills): when to ask before acting, how to read each status, which costs to show and how to tell a developer what their repository is missing. `docs/RUNBOOK.md` says who owns the platform, what to do when the laptop is off, how to restore the controller from the backup bucket, how to lift the spending cap and how to rotate credentials. The code is released under the MIT License (`LICENSE`).

@@ -1,3 +1,27 @@
+# 1.14.0: Lab Deploy is now Fast Deploy
+
+Asked for on 2026-10-16. Everything people see carries the new name: what Claude chat reads when it connects (the
+server's name and instructions), the sign-in page, the files and pull requests the platform drafts ("Drafted by Fast
+Deploy", "Add the Fast Deploy workflows", "Update Fast Deploy workflows to platform ..."), the watchdog's message, the
+release notifications, the weekly cost report issue ("Fast Deploy cost report: SERVICE"), the drift issue ("Fast Deploy:
+infrastructure drift"), a spend cap created from now on, the documents people read and the chat playbook skill, now
+`skills/fast-deploy-operator`.
+
+What keeps the old name, on purpose, so nothing running had to move: the Python package `labdeploy` and the command
+`lab-deploy`, the repository `brianboti/lab-deploy` (renaming it on GitHub is a separate, optional step), and the Google
+Cloud resources and their display names (the project, service accounts, roles, buckets, the key ring, the alert
+"Lab Deploy: spending-cap workflow failed" and the existing spend cap "Lab Deploy: Cloud Run spend cap"), which the
+runbook still names as the console shows them. The history in this file, `docs/VALIDATION.md` and the reviews stays as
+written.
+
+The cost report and drift workflows look for their open issue under the new title, then the old one, and rename an old
+one on its next update, so no second issue opens. The app repositories' workflow files take the new names at their next
+re-pin; nothing changes before then.
+
+For the operator: in Claude, remove the skill `lab-deploy-operator` and upload `fast-deploy-operator`
+(docs/CLAUDE-CHAT.md, step 4); optionally rename the connector to Fast Deploy. Restart the controller.
+
+
 # 1.13.1: every release is followed to its end
 
 Found live on 2026-10-16 while checking the new chat answers: `demo`'s auto-deploy of 15 October had succeeded, but the

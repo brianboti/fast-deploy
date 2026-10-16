@@ -112,7 +112,7 @@ def test_github_adapter_opens_a_pull_request_once(monkeypatch):
             return httpx.Response(404, json={"message": "Not Found"})
         if request.url.path.startswith("/repos/lab/demo/contents/.github/workflows/") and request.method == "PUT":
             body = json.loads(request.content)
-            assert body["branch"] == "lab-deploy/platform-" + NEW[:12] and body["message"].startswith("Pin Lab Deploy")
+            assert body["branch"] == "lab-deploy/platform-" + NEW[:12] and body["message"].startswith("Pin Fast Deploy")
             assert ("sha" in body) == request.url.path.endswith("deploy-gcp.yml")
             return httpx.Response(200 if "sha" in body else 201, json={})
         if request.url.path == "/repos/lab/demo/pulls" and request.method == "POST":

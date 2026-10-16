@@ -844,7 +844,7 @@ def files_to_read(paths, path="", limit=40):
 def pull_request_body(result):
     """The pull request text: one line per drafted file, what was detected, and what a person must decide."""
     found = result.get("detected") or {}
-    lines = ["Lab Deploy drafted these files because docs/DEVELOPER-CONTRACT.md asks for them and this repository does not have them yet. "
+    lines = ["Fast Deploy drafted these files because docs/DEVELOPER-CONTRACT.md asks for them and this repository does not have them yet. "
              "No existing file was changed, and nothing deploys until `platform.yaml` is reviewed and says `reviewed: true`.", "",
              "| File | Why |", "|---|---|"]
     lines += [f"| `{target}` | {item['purpose']} |" for target, item in sorted(result["files"].items())]

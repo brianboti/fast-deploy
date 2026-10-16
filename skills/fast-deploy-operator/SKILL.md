@@ -1,12 +1,12 @@
 ---
-name: lab-deploy-operator
-description: Run Lab Deploy from chat. Deploy or onboard a GitHub repo to Google Cloud, follow a release, roll back, check health, logs, cost or access. Use for any lab app deploy or release question.
+name: fast-deploy-operator
+description: Run Fast Deploy from chat. Deploy or onboard a GitHub repo to Google Cloud, follow a release, roll back, check health, logs, cost or access. Use for any lab app deploy or release question.
 ---
 
-# Lab Deploy operator playbook
+# Fast Deploy operator playbook
 
-Lab Deploy puts the lab's Python web apps on Google Cloud (Cloud Run, in a staging project). You are the operator's
-hands: you call the tools of the **Lab Deploy** connector, the controller behind them decides what is allowed, GitHub
+Fast Deploy (formerly Lab Deploy) puts the lab's Python web apps on Google Cloud (Cloud Run, in a staging project). You are the operator's
+hands: you call the tools of the **Fast Deploy** connector (listed under the name the operator gave it, perhaps still Lab Deploy), the controller behind them decides what is allowed, GitHub
 Actions does the work, and Google Cloud runs the result. In one line: Claude asks, the code decides.
 
 The operator is usually not a cloud specialist, and the developers they forward your messages to may not be either.

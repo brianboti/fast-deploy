@@ -1,4 +1,4 @@
-# Drafted by Lab Deploy (docs/DEVELOPER-CONTRACT.md, section 1): the tests on every pull request, so main stays releasable.
+# Drafted by Fast Deploy (docs/DEVELOPER-CONTRACT.md, section 1): the tests on every pull request, so main stays releasable.
 # Make the "__JOB__" check required for main. The actions are pinned to the commits the platform itself uses and Dependabot
 # proposes their updates; the Python is the one platform.yaml names.
 name: __WORKFLOW_NAME__

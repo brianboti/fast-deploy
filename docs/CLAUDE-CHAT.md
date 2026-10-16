@@ -1,4 +1,4 @@
-# Using Lab Deploy from Claude chat
+# Using Fast Deploy from Claude chat
 
 The platform is operated by talking to Claude. Claude calls the controller's tools over the connector; the controller
 decides what is allowed, GitHub Actions does the work, and Google Cloud runs the result. This page is the operator's
@@ -13,7 +13,7 @@ daily reference; `docs/SETUP.md` covers the one-time setup and `docs/RUNBOOK.md`
 3. Ask: *"What is the controller status?"* Claude calls `get_controller_status` and reports the version, whether
    dispatch is live, what is paused, the GitHub credential's expiry and the last backup.
 4. Once, install the playbook skill so Claude chat follows the same rules every time: build the zip with
-   `cd skills && zip -r ~/Downloads/lab-deploy-operator.zip lab-deploy-operator`, then in Claude: Customize → Skills →
+   `cd skills && zip -r ~/Downloads/fast-deploy-operator.zip fast-deploy-operator`, then in Claude: Customize → Skills →
    upload it and switch it on (code execution must be enabled). Re-upload it after a platform release that changes
    `skills/`. It tells Claude when to ask before acting, how to read each status, what costs to show, and how to write
    a "what is missing" message for a developer.
