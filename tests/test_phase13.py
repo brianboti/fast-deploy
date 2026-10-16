@@ -571,3 +571,19 @@ def test_chat_answers_for_the_as_it_is_route():
                                "steps": {"contract": {"pull_request": 7, "url": "https://github.com/lab/platform/pull/7"},
                                          "merging_contract": {"waiting": "a person to review and merge it"}}})
     assert "step 3 of 9: wait for a person to merge the contract" in waiting and ", as it is" in waiting
+
+
+def test_service_names_are_cut_at_a_dash_and_never_a_generic_folder():
+    assert reader.slug_of("Conversational-AI-Agent") == "conversational-ai"  # found live: not "conversational-ai-age"
+    assert reader.slug_of("lab_monorepo api") == "lab-monorepo-api" and reader.slug_of("42") is None
+    named = read({"backend/requirements.txt": "flask\n", "backend/app.py": "from flask import Flask\napp = Flask(__name__)\n"}, "backend",
+                 fallback_name="llm-debate-agent")
+    assert named["service"] == "llm-debate-agent"  # "backend" says what the folder is, not which service it holds
+    assert read({"admin/requirements.txt": "flask\n", "admin/app.py": "x = 1\n"}, "admin", fallback_name="lab-monorepo")["service"] == "admin"
+    with pytest.raises(ValueError, match="not a valid service name"):
+        read({"main.py": FASTAPI, "requirements.txt": "fastapi\n"}, name="Bad_Name")
+
+
+def test_a_root_without_a_manifest_points_at_the_folder_that_has_one():
+    result = read({"README.md": "x", "backend/requirements.txt": "flask\n", "backend/app.py": "from flask import Flask\napp = Flask(__name__)\n"})
+    assert result["refusals"][0]["fix"].startswith("the service lives in backend: take that folder (path backend)")

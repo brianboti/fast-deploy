@@ -91,6 +91,44 @@ class Ladder:
             self.notes.append(text)
 
 
+# ---- the service's name
+# Folder names that say what a folder is, not which service it holds: a service there is named after its project or its repository.
+GENERIC_FOLDERS = {"api", "app", "apps", "back-end", "backend", "core", "frontend", "main", "server", "service", "services", "site", "src", "web",
+                   "webapp", "website"}
+NAME = re.compile(r"[a-z][a-z0-9-]{1,19}[a-z0-9]")  # AppSpec.name: what Cloud Run, the registry and the roots accept
+
+
+def slug_of(text):
+    """A service name from free text: lowercase words joined by dashes, cut at a dash to at most 21 characters."""
+    slug = re.sub(r"^[^a-z]+", "", re.sub(r"[^a-z0-9]+", "-", str(text or "").lower()).strip("-"))
+    while len(slug) > 21 and "-" in slug[:22]:
+        slug = slug[:slug[:22].rindex("-")]
+    slug = slug[:21].strip("-")
+    return slug if NAME.fullmatch(slug) else None
+
+
+def name_for(name, repo, fallback=None):
+    """(name, note): the explicit name (refused when Cloud Run would refuse it); else, at the root, the project's name, then
+    the repository's; in a folder, the folder's own name unless it is a generic one (backend, api, src, ...), then the
+    project's, then the repository's with the folder. Every candidate is cut at a dash, never in the middle of a word."""
+    if name is not None:
+        return service_name(name, repo, fallback)
+    project = (pyproject_data(repo.text("pyproject.toml")).get("project") or {}).get("name")
+    project = project if isinstance(project, str) and project.lower() not in GENERIC_FOLDERS else None
+    folder = repo.path.rsplit("/", 1)[-1] if repo.path else None
+    if folder is None:
+        candidates = (project, fallback)
+    elif folder.lower() in GENERIC_FOLDERS:
+        candidates = (project, f"{fallback}-{folder}" if fallback else None, fallback)
+    else:
+        candidates = (folder, project, fallback)
+    for candidate in candidates:
+        slug = slug_of(candidate)
+        if slug:
+            return slug, None
+    return "my-service", "No service name was found, so the contract says my-service: choose the real name (3 to 21 characters)."
+
+
 # ---- what to fetch
 def files_to_read(paths, path="", limit=60):
     """The repository paths whose text `read` uses, so a caller fetches only those: the configuration and lock files of the
@@ -618,7 +656,7 @@ def read(paths, texts, path="", name=None, fallback_name=None, sizes=None):
     if not any(item.endswith(".py") for item in local) and not any(repo.has(n) for n in ("requirements.txt", "pyproject.toml", "Pipfile", *CONDA_FILES)):
         ladder.refuse(where, "no Python code or dependency manifest", "the platform deploys Python web services only; give the folder that holds one")
         return result
-    name, name_note = service_name(name, repo, fallback_name)
+    name, name_note = name_for(name, repo, fallback_name)
     result["service"] = name
     if name_note:
         ladder.note(name_note)
@@ -684,6 +722,13 @@ def read(paths, texts, path="", name=None, fallback_name=None, sizes=None):
     # Every ladder runs even after a refusal, so the answer lists everything to fix at once.
     python = python_ladder(repo, ladder, base, dockerfile if builds_itself else None) or DEFAULT_PYTHON
     lock = lock_ladder(repo, ladder)
+    if lock is None and not repo.path:
+        # Nothing at the root, but a folder holds a service (a monorepo, a backend/ folder): say which one to take.
+        nested = [entry["path"] for entry in services(paths, texts) if entry["path"]]
+        for refusal in ladder.refusals:
+            if nested and refusal["problem"].startswith("no dependency manifest"):
+                refusal["fix"] = (f"the service lives in {', '.join(nested[:3])}: take that folder (path {nested[0]}), "
+                                  "or add a requirements.txt with exact pins at the root")
     dependencies = requirement_names(repo.text("requirements.txt")) | requirement_names(repo.text("requirements.lock")) | pyproject_names(pyproject_data(repo.text("pyproject.toml")))
     if lock and lock.get("text"):
         dependencies |= requirement_names("\n".join(pins_of(lock["text"])))
