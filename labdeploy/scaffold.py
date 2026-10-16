@@ -264,11 +264,13 @@ def detect_python(repo, spec):
 
 
 # ---- the application
-def module_of(relative):
-    """("", "app.main") for app/main.py; ("src", "pkg.main") for src/pkg/main.py; None when it is not importable by name."""
+def module_of(relative, src_package=False):
+    """("", "app.main") for app/main.py; ("src", "pkg.main") for src/pkg/main.py; None when it is not importable by name.
+    When src/ is itself a package (it has an __init__.py), its modules are src.<module>: they may import each other
+    relatively, which only works under that name (found live: llm-debate-agent's backend/src)."""
     parts = relative[:-3].split("/")
     app_dir = ""
-    if parts[0] == "src" and len(parts) > 1:
+    if parts[0] == "src" and len(parts) > 1 and not src_package:
         app_dir, parts = "src", parts[1:]
     if parts[-1] == "__init__":
         parts = parts[:-1]
@@ -295,11 +297,14 @@ def classify(call):
     return None
 
 
-def find_applications(sources):
-    """Module-level application objects (constructed, or made by a factory call) and, separately, factory functions."""
+def find_applications(sources, src_package=None):
+    """Module-level application objects (constructed, or made by a factory call) and, separately, factory functions.
+    `src_package`: whether src/__init__.py exists (read from the tree; when unknown, from the files read)."""
     objects, factories = [], []
+    if src_package is None:
+        src_package = "src/__init__.py" in sources
     for relative in sorted(sources, key=rank):
-        located = module_of(relative)
+        located = module_of(relative, src_package)
         if not located:
             continue
         text = sources[relative]
@@ -425,7 +430,7 @@ def find_application(repo, sources, dependencies):
                      application_file=module.replace(".", "/") + ".py")
         return found, notes
     notes = []
-    objects, factories = find_applications(sources)
+    objects, factories = find_applications(sources, "src/__init__.py" in repo.local_paths)
     chosen = None
     if objects:
         chosen = dict(objects[0])

@@ -58,10 +58,11 @@ a `requirements-dev.txt` get the platform's pytest instead of failing.
 Read-only before the merge, the reader took four of the operator's own public repositories, and they improved it: names
 are cut at a dash and never a generic folder (`backend`, `api`, `src`); a root without a manifest names the folder
 that has one; environment files by other names (`env.prod`, `env.yaml`, `*.env`, `secrets.json`) are refused by name,
-never opened; a readiness route (`/ready`, `/ping`) is offered to the reviewer, never chosen. One repository is ready
+never opened; a readiness route (`/ready`, `/ping`) is offered to the reviewer, never chosen; a `src/` folder that is a
+package keeps its name (`uvicorn src.app:app`: its modules import each other relatively). One repository is ready
 from its `backend/` folder; one is refused for its environment files; two are refused for having no web app.
 
-Tests: 521 pass (43 new in `tests/test_phase13.py`); ruff and zizmor clean.
+Tests: 522 pass (44 new in `tests/test_phase13.py`); ruff and zizmor clean.
 
 
 # 1.14.1: the repository is brianboti/fast-deploy

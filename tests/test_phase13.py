@@ -595,3 +595,11 @@ def test_a_readiness_route_is_offered_to_the_reviewer_never_chosen():
     flask = "from flask import Flask\napp = Flask(__name__)\n\n@app.get('/ready')\ndef ready():\n    return 'ok'\n"
     result = read({"app.py": flask, "requirements.txt": "flask\n"})
     assert result["spec"].health_path is None and any("/ready" in note and "set health_path" in note for note in result["notes"])
+
+
+def test_a_src_folder_that_is_a_package_keeps_its_name():
+    app = "from fastapi import FastAPI\nfrom .config import settings\napp = FastAPI()\n"
+    package = read({"src/__init__.py": "", "src/app.py": app, "src/config.py": "settings = 1\n", "requirements.txt": "fastapi\nuvicorn\n"})
+    assert package["spec"].build.entrypoint == "uvicorn src.app:app --host 0.0.0.0 --port 8080"  # found live: relative imports
+    layout = read({"src/web/__init__.py": "", "src/web/main.py": app, "requirements.txt": "fastapi\nuvicorn\n"})
+    assert layout["spec"].build.entrypoint == "uvicorn web.main:app --host 0.0.0.0 --port 8080 --app-dir src"  # the src layout

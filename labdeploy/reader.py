@@ -500,7 +500,7 @@ def application_ladder(repo, ladder, dependencies):
     django = django_entry(repo, ladder, dependencies)
     if django is not None:
         return django or None
-    objects, factories = find_applications(repo.sources())
+    objects, factories = find_applications(repo.sources(), "src/__init__.py" in repo.local_paths)
     candidates = sorted({(item["module"], item["attribute"]) for item in objects})
     if len(candidates) > 1:
         ladder.refuse(repo.at(objects[0]["file"]), "several candidate application objects: " + ", ".join(f"{m}:{a}" for m, a in candidates[:6]),
