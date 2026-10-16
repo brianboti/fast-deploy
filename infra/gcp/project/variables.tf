@@ -89,3 +89,27 @@ variable "iap_client_id" {
   default     = ""
   description = "The project's IAP OAuth client id (not the secret), created once in the console for pages for people; empty until then."
 }
+
+# The controller's own machine (docs/ROADMAP.md D36, Phase 15): null keeps the controller on a laptop.
+variable "controller" {
+  type = object({
+    domain         = string               # the lab's DNS name for the controller, e.g. deploy.lab.example.edu (D6)
+    install_commit = string               # the platform commit a fresh disk installs when the bucket names none
+    repository     = optional(string, "") # owner/name of the platform repository; default: pipeline.platform_repository
+    zone           = optional(string, "us-central1-a")
+    acme_email     = optional(string, "") # Let's Encrypt's contact for certificate notices; empty sends none
+    dns_zone       = optional(string, "") # a Cloud DNS zone of this project for the A record; empty: set it at the registrar
+  })
+  default     = null
+  description = "One Always Free e2-micro running the controller behind Caddy, with Litestream, an uptime check and its alert."
+  validation {
+    condition = var.controller == null ? true : (
+      can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$", var.controller.domain)) &&
+      can(regex("^[0-9a-f]{40}$", var.controller.install_commit)) &&
+      can(regex("^us-central1-[a-f]$", var.controller.zone)) &&
+      (var.controller.repository == "" || can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.controller.repository))) &&
+      (var.controller.dns_zone == "" || can(regex("^[a-z][a-z0-9-]{0,62}$", var.controller.dns_zone)))
+    )
+    error_message = "controller: domain is a lowercase DNS name, install_commit a full 40-character commit, zone one of us-central1-a to -f (the free tier's region), repository owner/name, dns_zone a Cloud DNS zone name."
+  }
+}

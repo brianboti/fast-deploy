@@ -10,6 +10,9 @@ locals {
     "__REGION__", var.region),
     "__DETACH__", var.spending_cap.detach_billing ? "true" : "false"),
   "__DETACH_THRESHOLD__", tostring(var.spending_cap.detach_threshold))
+  # Viewer roles only; the last four let the health view confirm an app's declared needs exist (and that a database runs).
+  # The observer and the controller's machine (controller.tf) both hold exactly these.
+  observer_roles = ["roles/run.viewer", "roles/monitoring.viewer", "roles/logging.viewer", "roles/storage.bucketViewer", "roles/pubsub.viewer", "roles/datastore.viewer", "roles/cloudsql.viewer"]
 }
 
 resource "google_project_service" "apis" {
@@ -167,8 +170,7 @@ resource "google_service_account" "observer" {
   depends_on   = [google_project_service.apis]
 }
 resource "google_project_iam_member" "observer_roles" {
-  # Viewer roles only; the last four let the health view confirm an app's declared needs exist (and that a database runs).
-  for_each = toset(["roles/run.viewer", "roles/monitoring.viewer", "roles/logging.viewer", "roles/storage.bucketViewer", "roles/pubsub.viewer", "roles/datastore.viewer", "roles/cloudsql.viewer"])
+  for_each = toset(local.observer_roles)
   project  = var.project_id
   role     = each.value
   member   = "serviceAccount:${google_service_account.observer.email}"
@@ -244,8 +246,9 @@ resource "google_monitoring_alert_policy" "cap_failures" {
   }
 }
 
-# Controller backups: the laptop controller copies its database and configuration here (config `backup_bucket`), so a
-# lost laptop loses nothing but its tunnel (docs/RUNBOOK.md, "Restore the controller"). Private, versioned and pruned.
+# Controller backups: the controller copies its database and configuration here nightly (config `backup_bucket`): a
+# laptop under controller/, the machine under machine/ beside its Litestream replica (docs/RUNBOOK.md, "Restore the
+# controller", "The controller's machine"). Private, versioned and pruned.
 resource "google_storage_bucket" "backups" {
   name                        = "${var.project_id}-lab-deploy-backups"
   location                    = var.region
@@ -259,6 +262,14 @@ resource "google_storage_bucket" "backups" {
   }
   lifecycle_rule {
     condition { age = 120 }
+    action { type = "Delete" }
+  }
+  # Litestream replaces its small files every few minutes; the versions it retires are of no use a day later.
+  lifecycle_rule {
+    condition {
+      matches_prefix             = ["machine/litestream/"]
+      days_since_noncurrent_time = 1
+    }
     action { type = "Delete" }
   }
 }

@@ -657,6 +657,8 @@ def controller(status):
     facts = []
     if credential.get("days_left") is not None:
         facts.append(f"GitHub access expires in {plural(credential['days_left'], 'day')}" + (f": {clip(credential['warning'], 160)}" if credential.get("warning") else ""))
+    elif credential.get("kind") == "github_app":
+        facts.append("GitHub access through the GitHub App: its tokens renew every hour")
     backup = (background.get("backup") or {}).get("last_run")
     if backup:
         facts.append(f"Last backup: {day(backup)}")

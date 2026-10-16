@@ -24,5 +24,6 @@ module "project" {
   billing_export_dataset       = var.billing_export_dataset
   observer_impersonators       = var.observer_impersonators
   pipeline                     = var.pipeline
+  controller                   = var.controller
   state_bucket                 = local.state_bucket
 }

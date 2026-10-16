@@ -1,3 +1,58 @@
+# 1.17.0: the controller off the laptop (Phase 15)
+
+Asked for on 2026-10-16 with the defaults of D36: the controller moves from the operator's laptop and its ngrok tunnel to
+a machine of its own. Built and tested; the live move waits for the lab's DNS name (D6), the GitHub App and the
+foundation apply.
+
+1. **The machine** (15.2, `infra/gcp/modules/project/controller.tf`, set `controller` in the foundation's tfvars): one
+   Always Free `e2-micro` in us-central1-a with a 30 GB standard disk, Debian 13, Shielded VM, in a network of its own:
+   HTTPS and HTTP (for Let's Encrypt) open, SSH only through Identity-Aware Proxy with OS Login and no keys in metadata.
+   A reserved address keeps the DNS record through a replaced machine. It costs that address, about $3.65 a month, plus
+   a few cents; the machine and its disk are inside the free tier.
+2. **Its own identity, a refinement of D36**: `lab-deploy-controller` holds the observer's viewer roles, read and write
+   on its own folder `machine/` of the backup bucket (an IAM condition), and access to the GitHub App's key; the observer
+   stays viewer-only, so impersonating it from a laptop reaches neither.
+3. **The startup script** (`controller-startup.sh`): Caddy 2.11.7 and Litestream 0.5.17 pinned by their published
+   checksums; three systemd services with `Restart=always` (Caddy with its admin endpoint off, the controller and
+   Litestream as an unprivileged user with a read-only system); a swap file; security updates with a reboot at 09:00 UTC
+   when one needs it; the controller installed only from a commit on main, with `--require-hashes`. On a fresh disk it
+   restores the machine's configuration, commit and database (the Litestream replica, else the newest nightly copy),
+   and it never starts the controller with an empty database. `fast-deploy-install` updates with a rollback when the new
+   commit does not answer within a minute.
+4. **Docker on the machine, contained** (found while building: the plan had missed it). Onboarding compiles lock files in
+   a container of the application's Python (D27), and resolving dependencies can build a package and run its code. So
+   Docker starts only when used; its containers use public DNS and can reach neither the metadata server (the machine's
+   identity, and through it the GitHub App's key) nor any private address; and every lock container, on the machine and
+   on a laptop, now runs without Linux capabilities or privilege gain, with limits on processes and memory.
+5. **The GitHub App** (15.1, D14, `labdeploy/github.py`): an installation token per repository, kept until five
+   minutes before it ends, minted with the App's key, which the controller reads from Secret Manager (the machine's own
+   identity there, the operator's gcloud sign-in on a laptop) and keeps in memory; a refused signature reads the key
+   again, so a rotation needs no restart. A repository without the App is read with the platform repository's token
+   (public data only) and refused for anything else, with what to install. The key's secret is
+   `FAST_DEPLOY_GITHUB_APP_KEY`: application runtimes read secrets named `<service>-NAME`, and no service name can start
+   with an uppercase letter. A fine-grained `GITHUB_TOKEN` still wins, so a laptop keeps working; `scripts/start.sh`
+   uses the App when `github_app` is set.
+6. **Durability** (15.3): the nightly copy is made with `VACUUM INTO` and goes to the host's own folder of the bucket
+   (`backup_prefix`: `controller` for a laptop, `machine` for the machine). Litestream keeps the machine's database in
+   `machine/litestream/`, at most a minute behind, with intervals set for cost; retired versions there are pruned after a
+   day. The restore drill also restores the live copy and says how far it is behind; the watchdog reports a stopped
+   Litestream.
+7. **Reachability** (15.4): an uptime check on `/healthz` every minute from three US locations, with a certificate check
+   and an alert when more than one fails for five minutes, beside the GitHub ping.
+8. **The move** (15.5): `scripts/install-machine.sh DOMAIN APP_ID` checks the laptop's controller is stopped and the name
+   points at the machine, exports the database and the configuration rewritten for the machine
+   (`python -m labdeploy.machine export`), imports them through Identity-Aware Proxy, waits for `/healthz`, records
+   `machine_url` so `scripts/start.sh` stays off while the machine answers, and points `CONTROLLER_HEALTH_URL` at it.
+   `scripts/machine.sh` does the rest: status, logs, restart, update, configuration, backup, drill, and a hold that
+   survives reboots while a laptop takes over. The runbook's "The controller's machine" covers a machine that is gone, the
+   laptop as the fallback, and key rotation.
+
+New settings: `github_app`, `backup_prefix`, `litestream_replica`, `machine_url`. Requires regeneration of app workflows:
+no. Terraform: the foundation once, with `controller` set. The skill changed: rebuild the zip and upload it to claude.ai.
+
+Tests: 583 pass (19 new); ruff clean; `terraform fmt` and `validate` clean on the foundation root.
+
+
 # 1.16.1: what the live trial of 1.16.0 showed
 
 Found on 2026-10-16 in the live exercise of Phase 14 (`docs/VALIDATION.md`); nothing here changes what is deployed.

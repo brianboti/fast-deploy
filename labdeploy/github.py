@@ -4,6 +4,8 @@ import datetime
 import io
 import json
 import os
+import re
+import threading
 import time
 import types
 import zipfile
@@ -44,7 +46,8 @@ def explain(error, repository=None):
     if isinstance(error, httpx.HTTPStatusError):
         status, headers = error.response.status_code, error.response.headers
         if status == 401:
-            return "GitHub rejected the controller's credential: the token is expired or revoked. Renew it on the controller host and restart."
+            return ("GitHub rejected the controller's credential: a fine-grained token that is expired or revoked (renew it on the controller "
+                    "host and restart), or a GitHub App key GitHub no longer accepts (add the new key as the secret's latest version).")
         if status == 403 and headers.get("x-ratelimit-remaining") == "0":
             reset = headers.get("x-ratelimit-reset")
             when = datetime.datetime.fromtimestamp(int(reset), datetime.UTC).strftime("%H:%M UTC") if reset and reset.isdigit() else "shortly"
@@ -95,37 +98,159 @@ def central_of(app):
     """Whether the platform repository's own pipeline releases this application (docs/ROADMAP.md D33)."""
     return bool(getattr(app, "central", False))
 
-class GitHub:
-    def __init__(self, client=None):
-        self.client = client or httpx.Client(base_url="https://api.github.com", timeout=30, follow_redirects=False)
-        self.cached_token = None
-        self.token_until = 0
+REPOSITORY_PATH = re.compile(r"^/repos/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)(?:/|$)")
+TOKEN_MARGIN_SECONDS = 300  # an installation token is renewed five minutes before GitHub ends it (it lives an hour)
+INSTALLATION_SECONDS = 3600  # how long the installation that covers a repository is remembered
+NOT_INSTALLED_SECONDS = 600  # a repository without the App is asked about again after ten minutes: it may be installed meanwhile
 
-    def token(self):
-        # A fine-grained token is supported for development; prefer App installation tokens.
-        if os.getenv("GITHUB_TOKEN"):
-            return os.environ["GITHUB_TOKEN"]
-        if self.cached_token and time.time() < self.token_until:
-            return self.cached_token
-        app_id = os.getenv("GITHUB_APP_ID")
-        installation_id = os.getenv("GITHUB_INSTALLATION_ID")
-        key_path = os.getenv("GITHUB_APP_PRIVATE_KEY_FILE")
-        if not app_id or not installation_id or not key_path or not installation_id.isdigit():
-            raise ValueError("Configure GitHub App credentials or a scoped GITHUB_TOKEN on the server")
-        now = int(time.time())
-        signed = jwt.encode({"iat": now - 60, "exp": now + 540, "iss": app_id}, Path(key_path).read_text(), algorithm="RS256")
-        response = self.client.post(f"/app/installations/{installation_id}/access_tokens", headers=self.headers(signed))
+
+def headers(token):
+    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10"}
+
+
+class StaticToken:
+    """A fine-grained personal access token (GITHUB_TOKEN): the laptop's credential, and its fallback once the machine runs."""
+    kind = "fine_grained_token"
+
+    def __init__(self, value):
+        self.value = value
+
+    def token(self, repository=None, method="GET"):
+        return self.value
+
+
+class AppInstallations:
+    """GitHub App installation tokens, one per repository (docs/ROADMAP.md D14, 15.1).
+
+    The App signs a ten-minute JWT with its private key, asks GitHub which installation covers a repository, and exchanges
+    the JWT for an installation token limited to that one repository, with the permissions the App was created with
+    (exactly what onboarding needs, docs/SETUP.md section 4). Tokens are kept until five minutes before GitHub ends them.
+    A repository the App is not installed on is read, public data only, with the home repository's token; any other call
+    there is refused with what to install. `private_key(refresh)` returns the key's PEM text; it is kept in memory only and
+    read again once when GitHub refuses a signature, so a rotated key takes effect without a restart.
+    """
+    kind = "github_app"
+
+    def __init__(self, app_id, private_key, client, home_repository=None, installation_id=None, clock=time.time):
+        self.app_id, self.private_key, self.client = str(app_id), private_key, client
+        self.home_repository, self.installation_id, self.clock = home_repository, installation_id, clock
+        self.installations, self.tokens = {}, {}
+        self.lock = threading.RLock()  # token() reads the home repository's token from inside itself
+
+    def assertion(self, refresh=False):
+        now = int(self.clock())
+        return jwt.encode({"iat": now - 60, "exp": now + 540, "iss": self.app_id}, self.private_key(refresh), algorithm="RS256")
+
+    def signed(self, method, path, **kwargs):
+        """A request as the App itself. A refused signature (401) reads the key again and retries once: a rotation."""
+        response = self.client.request(method, path, headers=headers(self.assertion()), **kwargs)
+        if response.status_code == 401:
+            response = self.client.request(method, path, headers=headers(self.assertion(refresh=True)), **kwargs)
+        return response
+
+    def installation(self, repository):
+        """The installation id that covers a repository, or None when the App is not installed on it."""
+        if self.installation_id:
+            return int(self.installation_id)
+        key, now = repository.lower(), self.clock()
+        known = self.installations.get(key)
+        if known and known[1] > now:
+            return known[0]
+        response = self.signed("GET", f"/repos/{repository}/installation")
+        if response.status_code == 404:
+            self.installations[key] = (None, now + NOT_INSTALLED_SECONDS)
+            return None
         response.raise_for_status()
-        self.cached_token = response.json()["token"]
-        self.token_until = now + 3000
-        return self.cached_token
+        found = int(response.json()["id"])
+        self.installations[key] = (found, now + INSTALLATION_SECONDS)
+        return found
+
+    def token(self, repository=None, method="GET"):
+        repository = repository or self.home_repository
+        if not repository:
+            raise ValueError("The GitHub App needs platform.repository in the controller configuration for calls that name no repository")
+        with self.lock:
+            installation = self.installation(repository)
+            if installation is None:
+                home = self.home_repository
+                if method == "GET" and home and home.lower() != repository.lower():
+                    return self.token(home, method)  # public data reads with any token
+                raise ValueError(f"The Fast Deploy GitHub App is not installed on {repository}. Install it there (GitHub: the App's page, "
+                                 "Configure, Repository access) and try again.")
+            key, now = (installation, repository.lower()), self.clock()
+            known = self.tokens.get(key)
+            if known and known[1] > now:
+                return known[0]
+            response = self.signed("POST", f"/app/installations/{installation}/access_tokens", json={"repositories": [repository.split("/", 1)[1]]})
+            response.raise_for_status()
+            data = response.json()
+            expires = parse_expiration(data.get("expires_at"))
+            until = (expires.timestamp() if expires else now + 3600) - TOKEN_MARGIN_SECONDS
+            self.tokens[key] = (data["token"], until)
+            return data["token"]
+
+
+def environment_credentials():
+    """A fine-grained GITHUB_TOKEN wins, then an App from GITHUB_APP_ID, GITHUB_INSTALLATION_ID and GITHUB_APP_PRIVATE_KEY_FILE
+    (a container with a mounted key), else None."""
+    if os.getenv("GITHUB_TOKEN"):
+        return StaticToken(os.environ["GITHUB_TOKEN"])
+    app_id, installation_id, key_path = os.getenv("GITHUB_APP_ID"), os.getenv("GITHUB_INSTALLATION_ID"), os.getenv("GITHUB_APP_PRIVATE_KEY_FILE")
+    if app_id and installation_id and installation_id.isdigit() and key_path:
+        return AppInstallations(app_id, lambda refresh=False: Path(key_path).read_text(), github_client(), installation_id=installation_id)
+    return None
+
+
+def github_client():
+    return httpx.Client(base_url="https://api.github.com", timeout=30, follow_redirects=False)
+
+
+class GitHub:
+    def __init__(self, client=None, credentials=None):
+        self.client = client or github_client()
+        self.app_credentials = credentials  # the configured GitHub App; GITHUB_TOKEN in the environment still wins
+        self.environment = None
+
+    @classmethod
+    def from_config(cls, config, client=None):
+        """The client for a controller configuration: its GitHub App when `github_app` is set (the machine), else whatever the
+        environment provides (the laptop's fine-grained token)."""
+        client = client or github_client()
+        app = getattr(config, "github_app", None)
+        if app is None:
+            return cls(client)
+        from .cloud import GoogleToken, secret_reader
+        if app.private_key_secret:
+            key = secret_reader(app.private_key_secret, GoogleToken())
+        else:
+            path = app.private_key_file
+            key = lambda refresh=False: Path(path).read_text()  # noqa: E731 - a one-line key source
+        platform = getattr(config, "platform", None)
+        return cls(client, AppInstallations(app.app_id, key, client, home_repository=platform.repository if platform else None))
+
+    def credentials(self):
+        if os.getenv("GITHUB_TOKEN"):
+            return StaticToken(os.environ["GITHUB_TOKEN"])
+        if self.app_credentials is not None:
+            return self.app_credentials
+        if self.environment is None:
+            self.environment = environment_credentials()
+        if self.environment is None:
+            raise ValueError("No GitHub credential: set github_app in the controller configuration (docs/SETUP.md section 4) or a fine-grained "
+                             "GITHUB_TOKEN on the controller host")
+        return self.environment
+
+    def token(self, path=None, method="GET"):
+        """The credential for one call: on a GitHub App, the installation token of the repository the path names."""
+        match = REPOSITORY_PATH.match(path or "")
+        return self.credentials().token(f"{match.group(1)}/{match.group(2)}" if match else None, method)
 
     @staticmethod
     def headers(token):
-        return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10"}
+        return headers(token)
 
     def request(self, method, path, **kwargs):
-        response = self.client.request(method, path, headers=self.headers(self.token()), **kwargs)
+        response = self.client.request(method, path, headers=self.headers(self.token(path, method)), **kwargs)
         response.raise_for_status()
         return response
 
@@ -189,7 +314,8 @@ class GitHub:
             return None
         if artifact.get("size_in_bytes", 0) > limit:
             raise ValueError(f"Artifact {name} exceeds 1 MiB")
-        response = self.client.request("GET", f"/repos/{pipeline_of(app)}/actions/artifacts/{int(artifact['id'])}/zip", headers=self.headers(self.token()))
+        path = f"/repos/{pipeline_of(app)}/actions/artifacts/{int(artifact['id'])}/zip"
+        response = self.client.request("GET", path, headers=self.headers(self.token(path)))
         if response.status_code == 302:
             # The signed download URL belongs to another host; the GitHub credential is not forwarded.
             response = self.client.get(response.headers["location"])
@@ -230,9 +356,14 @@ class GitHub:
         return result
 
     def credential_status(self, now=None):
-        """When the server-side credential expires, from GitHub's own response header; App tokens renew themselves."""
+        """What the controller signs in to GitHub with, and when that ends: a fine-grained token's expiry from GitHub's own
+        response header, warned two weeks ahead; a GitHub App never expires (its installation tokens renew every hour), so
+        reaching GitHub with one is the check."""
+        credentials = self.credentials()
         response = self.request("GET", "/rate_limit")
-        kind = "fine_grained_token" if os.getenv("GITHUB_TOKEN") else "app_installation"
+        kind = credentials.kind
+        if kind == "github_app":
+            return {"kind": kind, "app_id": credentials.app_id, "expires_at": None, "days_left": None, "warning": None}
         expires = parse_expiration(response.headers.get("github-authentication-token-expiration"))
         if expires is None:
             return {"kind": kind, "expires_at": None, "days_left": None, "warning": None}

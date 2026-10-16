@@ -15,6 +15,7 @@ output "pipeline" { value = module.project.pipeline }
 output "network" { value = module.project.network }
 output "subnet" { value = module.project.subnet }
 output "kms_key_ring" { value = module.project.kms_key_ring }
+output "controller" { value = module.project.controller }
 output "cost_controls" {
   value = {
     image_vulnerability_scanning = var.image_vulnerability_scanning

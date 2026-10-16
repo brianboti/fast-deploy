@@ -122,7 +122,7 @@ Requires regeneration of app workflows: yes. Terraform apply: yes (Secret Manage
 
 ## Phase 5: always on, and live answers (two days) → version 0.9.0
 
-Status: implemented on 2026-10-12 as version 0.9.0 in the laptop variant the operator chose: live views through an impersonated observer identity, auto-deploy, watchdog, backups and a GitHub controller watch. Item 5.1, the machine, is deferred; the observer identity attaches to it unchanged when the time comes.
+Status: implemented on 2026-10-12 as version 0.9.0 in the laptop variant the operator chose: live views through an impersonated observer identity, auto-deploy, watchdog, backups and a GitHub controller watch. Item 5.1, the machine, was deferred here and built in Phase 15 (1.17.0).
 
 | Item | Change | Where |
 |---|---|---|
@@ -169,7 +169,7 @@ Cost effect per resource, monthly, at the defaults: Firestore 0 within the free 
 
 ## Phase 7: one sentence (about four and a half days) → version 1.6
 
-Status: shipped as 1.6.0 on 2026-10-13 except the GitHub App (7.3, a wider fine-grained token stands in) and the live trial (7.5, recorded in `docs/VALIDATION.md` when run). Planned on 2026-10-13 after the operator asked for "a repository link with a build file, and one sentence that gives it every Google service it needs". Today that takes the five onboarding steps in `docs/CLAUDE-CHAT.md` (two pull requests on the app repository, one on the platform repository, a configuration edit, eight variables); the platform already does the hard part. Phase 7 makes the sentence `Deploy https://github.com/ORG/REPO on GCP` sufficient for a repository that follows `docs/DEVELOPER-CONTRACT.md`.
+Status: shipped as 1.6.0 on 2026-10-13 except the GitHub App (7.3, a wider fine-grained token stood in until Phase 15 built it in 1.17.0) and the live trial (7.5, recorded in `docs/VALIDATION.md` when run). Planned on 2026-10-13 after the operator asked for "a repository link with a build file, and one sentence that gives it every Google service it needs". Today that takes the five onboarding steps in `docs/CLAUDE-CHAT.md` (two pull requests on the app repository, one on the platform repository, a configuration edit, eight variables); the platform already does the hard part. Phase 7 makes the sentence `Deploy https://github.com/ORG/REPO on GCP` sufficient for a repository that follows `docs/DEVELOPER-CONTRACT.md`.
 
 ### Decisions the operator makes before "go"
 
@@ -393,7 +393,7 @@ Cost effect: none at idle; scans unchanged at $0.26 per fresh image.
 
 ## Phase 15: the controller off the laptop (about three days) → version 1.17.0
 
-Status: planned on 2026-10-16 (research review section 5.3); it completes roadmap item 5.1 and 7.3.
+Status: built on 2026-10-16 as 1.17.0 with the defaults of D36, and one refinement: the machine carries its own identity, `lab-deploy-controller`, with the observer's viewer roles plus its own folder of the backup bucket and the App's key, so impersonating the observer from a laptop reaches neither. The live exercise waits for the lab's DNS name (D6), the GitHub App and the foundation apply. It completes roadmap items 5.1 and 7.3.
 
 | Item | Change | Where |
 |---|---|---|

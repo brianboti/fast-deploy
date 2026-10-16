@@ -122,6 +122,11 @@ def clean_path(path):
     return "/".join(parts)
 
 
+# What a lock container may not do, wherever it runs: no Linux capabilities, no privilege gain, bounded processes and
+# memory (the controller's machine has 1 GB). Resolving dependencies can build a package and so run its code.
+CONTAINER_LIMITS = ("--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "512", "--memory", "640m")
+
+
 def base_image(python_version):
     """The pinned base image for a supported Python: python:X.Y-slim@<multi-architecture index digest>."""
     if python_version not in BASE_IMAGES:
@@ -555,7 +560,7 @@ def lock_container(python_version):
         + " --generate-hashes -o requirements.lock --quiet --no-progress",
         "cat requirements.lock",
     ))
-    return ["docker", "run", "--rm", "-i", "--user", "65532:65532", "-e", f"HOME={CONTAINER_HOME}", "-e", "UV_NO_CACHE=1", "-w", CONTAINER_HOME,
+    return ["docker", "run", "--rm", "-i", *CONTAINER_LIMITS, "--user", "65532:65532", "-e", f"HOME={CONTAINER_HOME}", "-e", "UV_NO_CACHE=1", "-w", CONTAINER_HOME,
             base_image(python_version), "sh", "-c", script]
 
 
@@ -957,7 +962,7 @@ def export_container(python_version, dev=False):
         f"cd project && ../uv-venv/bin/uv export --frozen {groups} --no-emit-project --no-emit-workspace --format requirements-txt --quiet -o ../requirements.lock",
         "cat ../requirements.lock",
     ))
-    return ["docker", "run", "--rm", "-i", "--user", "65532:65532", "-e", f"HOME={CONTAINER_HOME}", "-e", "UV_NO_CACHE=1", "-w", CONTAINER_HOME,
+    return ["docker", "run", "--rm", "-i", *CONTAINER_LIMITS, "--user", "65532:65532", "-e", f"HOME={CONTAINER_HOME}", "-e", "UV_NO_CACHE=1", "-w", CONTAINER_HOME,
             base_image(python_version), "sh", "-c", script]
 
 
