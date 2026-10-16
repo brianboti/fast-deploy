@@ -31,6 +31,11 @@ can release it, and nothing in its own pipeline can reach another application's 
   merges it itself only under `auto_merge` for that application, when the requester may merge their own requests and
   the checks have passed; a newer one closes the older one. Merging any change to a contract releases it within a
   minute (`contract_release` events in `list_events`).
+- **Code nobody has reviewed is contained** (1.16.0): its services send all traffic into the lab's network, which has
+  Private Google Access and no Cloud NAT, so they reach Google's APIs and the lab's private addresses, never the
+  internet. The infrastructure policy refuses a NAT, a router or an internet route in an application root, because one
+  would open every contained service at once. Keep it that way; an app that must reach the internet says
+  `egress: internet` in its contract, through a reviewed pull request.
 - **A private application repository** is refused while this repository is public: the build logs and the image the
   build uploads would be readable by anyone. Making this repository private changes that, and moves the Actions minutes
   to the lab's bill.
@@ -170,6 +175,25 @@ Infrastructure apply run for the root first.
 | `traffic_restored` after `baking` | The new revision served everyone, then crashed or answered too many 5xx; the previous split is back | Read the bake's numbers and the new revision's log lines in the status; fix the app; deploy again. |
 | `rollback_failed_manual_recovery_required` | Traffic could not be restored | `gcloud run services describe SERVICE --region us-central1` for the live split, then `gcloud run services update-traffic SERVICE --to-revisions=PREVIOUS=100`. |
 | recovery workflow failing on schedule | The checkpoint names revisions that no longer match live traffic | Investigate the manual change; `rollback_staging` refuses by design; deploy the wanted commit instead. |
+
+## A release stopped by a safety gate
+
+Since 1.16.0 (docs/DEVELOPER-CONTRACT.md 5a) a release can stop before anything changes in the cloud; the run's
+annotations and the step summary name the file, the line and the fix, and Claude's status answer repeats them.
+
+| The run says | Meaning | Do |
+|---|---|---|
+| `Dockerfile policy: ...` | The Dockerfile breaks a rule (a download piped into a shell, `sudo`, disabled TLS, a copied key, root for unknown code) | The developer fixes the Dockerfile; for a repository taken as it is, nothing can be added on its behalf: say what the line needs |
+| `Secret scan: ... a key that works right now` | TruffleHog found a credential and its provider accepted it | Treat it as leaked: rotate it at the provider first, then have it removed from the repository and its history; values go to Secret Manager |
+| `... critical or high finding with a fix available, in code nobody has reviewed` | The vulnerability gate (14.4) | Update the base image or the packages; or a person reviews the code and merges `trust: reviewed` in its contract |
+| `known malicious package` | A dependency is a known malicious package (OSV's MAL- advisories) | Remove it; check whether the build machine or any key it saw may be affected |
+| `The build context is ... MiB` | Over 1 GiB | Move the data to a bucket (`needs.buckets`) |
+
+Threat detection for unknown code (14.6) is the operator's switch: Security Command Center Premium at project level
+detects reverse shells, credential hunting, cryptomining and malicious Python inside running Cloud Run services (second
+generation only, which unknown code always uses). It bills about $0.0071 per vCPU-hour of running instances, close to
+nothing for services that scale to zero; turn it on in the console (Security Command Center, project-level activation)
+and read its findings there.
 
 ## Someone cannot open an app's pages
 

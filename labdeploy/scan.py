@@ -1,7 +1,10 @@
 """Vulnerability summary for the image just pushed, from Artifact Analysis. Runs on the deployment runner only.
 
-Reporting is always on when scanning is enabled in Terraform. Blocking a release on critical findings is a
-policy the operator turns on with the BLOCK_ON_CRITICAL_VULNERABILITIES repository variable.
+Reporting is always on when scanning is enabled in Terraform. The gate (docs/ROADMAP.md 14.4), in the industry's wording:
+for code nobody has reviewed (D35: trust `unknown`) a fixable critical or high finding, or a scan that did not finish, stops
+the release; for the lab's own code, blocking on critical findings is the operator's switch, the
+BLOCK_ON_CRITICAL_VULNERABILITIES repository variable. A known malicious package (OSV's MAL- advisories, which Artifact
+Analysis reports as critical) stops every release.
 """
 import json
 import os
@@ -24,17 +27,45 @@ def fix_available(occurrence):
     return False
 
 
+def malicious(occurrence):
+    """Whether a finding is a known malicious package rather than a vulnerability: OSV's MAL- advisories."""
+    details = occurrence.get("vulnerability") or {}
+    names = (occurrence.get("noteName") or "", details.get("shortDescription") or "", occurrence.get("name") or "")
+    return any("MAL-" in str(name) for name in names)
+
+
 def summarize(package_summary):
-    """Counts by effective severity, plus how many of each have a fix available."""
+    """Counts by effective severity, how many of each have a fix available, and the malicious packages."""
     groups = package_summary.get("vulnerabilities") or {}
     counts = {severity: 0 for severity in SEVERITIES}
     fixable = {severity: 0 for severity in SEVERITIES}
+    bad = []
     for severity, items in groups.items():
         bucket = severity if severity in counts else "UNKNOWN"
         counts[bucket] += len(items or [])
         fixable[bucket] += sum(1 for item in items or [] if fix_available(item))
+        bad += [str((item.get("vulnerability") or {}).get("shortDescription") or item.get("noteName") or "?")[:80] for item in items or [] if malicious(item)]
     return {"total": sum(counts.values()), "by_severity": counts, "fixable_by_severity": fixable,
-            "not_fixed": package_summary.get("not_fixed_vulnerability_count")}
+            "not_fixed": package_summary.get("not_fixed_vulnerability_count"), "malicious": bad}
+
+
+def verdict(summary, trust, blocking_critical):
+    """Why the release stops, or None: the gate of docs/ROADMAP.md 14.4 for this trust level."""
+    if summary.get("malicious"):
+        return f"{len(summary['malicious'])} known malicious package{'s' if len(summary['malicious']) != 1 else ''} ({', '.join(summary['malicious'][:3])})"
+    if trust == "unknown":
+        if summary["analysis_status"] != "FINISHED_SUCCESS":
+            return "the vulnerability scan did not finish, and code nobody has reviewed is released only with a finished scan"
+        fixable = summary["fixable_by_severity"]["CRITICAL"] + summary["fixable_by_severity"]["HIGH"]
+        if fixable:
+            return (f"{fixable} critical or high finding{'s' if fixable != 1 else ''} with a fix available, in code nobody has reviewed: update "
+                    "the base image or the packages, or have the lab review it (trust: reviewed in the contract)")
+        return None
+    if blocking_critical and summary["analysis_status"] != "FINISHED_SUCCESS":
+        return "Vulnerability scan did not finish and blocking is enabled"
+    if blocking_critical and summary["by_severity"]["CRITICAL"]:
+        return f"{summary['by_severity']['CRITICAL']} critical vulnerabilities found and blocking is enabled"
+    return None
 
 
 def analysis_status(description):
@@ -68,16 +99,33 @@ def report_lines(summary):
              f"with a fix available: critical {summary['fixable_by_severity']['CRITICAL']}, high {summary['fixable_by_severity']['HIGH']}"]
     if summary["analysis_status"] != "FINISHED_SUCCESS":
         lines.append("The scan had not finished when this release ran; check Artifact Registry for the final result.")
-    lines.append("Release blocking on critical findings is " + ("ON" if summary["blocking"] else "OFF (set BLOCK_ON_CRITICAL_VULNERABILITIES=true to block)"))
+    if summary.get("trust") == "unknown":
+        lines.append("Code nobody has reviewed: fixable critical and high findings, an unfinished scan and malicious packages stop the release")
+    else:
+        lines.append("Release blocking on critical findings is " + ("ON" if summary["blocking"] else "OFF (set BLOCK_ON_CRITICAL_VULNERABILITIES=true to block)"))
+    if summary.get("malicious"):
+        lines.append("Known malicious packages, which stop every release: " + ", ".join(summary["malicious"][:5]))
     return lines
+
+
+def trust_of(env):
+    """The trust level of the release's code: the contract's `trust`, else what an unset one means where it lives."""
+    from .models import containment, parse_spec
+    try:
+        spec = parse_spec(Path(env.get("SPEC_FILE", "bundle/platform.yaml")).read_text())
+    except (OSError, ValueError):
+        return env.get("TRUST_DEFAULT", "reviewed") if env.get("TRUST_DEFAULT") in ("reviewed", "unknown") else "reviewed"
+    return containment(spec, env.get("TRUST_DEFAULT", "reviewed"))["trust"]
 
 
 def main():
     from .release import run
     image = os.environ["IMAGE_DIGEST"]
     blocking = os.environ.get("BLOCK_ON_CRITICAL_VULNERABILITIES", "false").lower() == "true"
-    status, description = wait_for_scan(image, run)
-    summary = {"image": image, "analysis_status": status, "blocking": blocking,
+    trust = trust_of(os.environ)
+    # Code nobody has reviewed waits longer for its scan, since an unfinished scan stops its release.
+    status, description = wait_for_scan(image, run, timeout=300 if trust == "unknown" else 180)
+    summary = {"image": image, "analysis_status": status, "blocking": blocking or trust == "unknown", "trust": trust,
                **summarize(description.get("package_vulnerability_summary") or {})}
     Path("vulnerability-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     lines = report_lines(summary)
@@ -86,10 +134,9 @@ def main():
     if summary_path:
         with open(summary_path, "a") as handle:
             handle.write("## " + lines[0] + "\n\n" + "\n".join(lines[1:]) + "\n")
-    if blocking and status != "FINISHED_SUCCESS":
-        sys.exit("Vulnerability scan did not finish and blocking is enabled")
-    if blocking and summary["by_severity"]["CRITICAL"]:
-        sys.exit(f"{summary['by_severity']['CRITICAL']} critical vulnerabilities found and blocking is enabled")
+    reason = verdict(summary, trust, blocking)
+    if reason:
+        sys.exit(reason[0].upper() + reason[1:])
 
 
 if __name__ == "__main__":

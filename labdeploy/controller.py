@@ -13,7 +13,7 @@ from .contract import Contracts, contract_path
 from .cost import estimate, findings
 from .github import explain
 from .infra import BOOTSTRAP_IMAGE, app_root
-from .models import enforce, needs_env, parse_contract, parse_spec, spec_hash
+from .models import containment, enforce, needs_env, parse_contract, parse_spec, spec_hash
 from .rightsize import SETTINGS, apply_settings
 from .status import TERMINAL, advice, release_phases, summarize
 from .workflows import TEMPLATES, pinned_commit, render
@@ -225,6 +225,18 @@ class Store:
         return [dict(zip(keys, row, strict=True)) for row in rows]
 
 
+IMAGE_RESCAN_DAYS = 30  # Artifact Analysis stops analysing an image this long after its push (docs/ROADMAP.md 14.4)
+
+
+def recent(release, now=None):
+    """Whether a release's image is young enough to reuse: Artifact Analysis analyses an image continuously for 30 days only,
+    so an older one is built and scanned again rather than redeployed."""
+    recorded = ((release or {}).get("outcome") or {}).get("recorded_at")
+    if not isinstance(recorded, (int, float)):
+        return True  # releases recorded before 1.16.0 carry no time; the scan still runs on the reused image
+    return (now or time.time()) - recorded < IMAGE_RESCAN_DAYS * 86_400
+
+
 def release_approval(plan, requested_by=None):
     """The fixed approval block of a release plan (docs/ROADMAP.md 12.1), built by code from the plan's own fields and never
     from Claude's words: the commit, where it goes, what it may cost, who may reach it, what it needs, how far a rollback
@@ -251,6 +263,9 @@ def release_approval(plan, requested_by=None):
         "identifiers": {"plan": plan.get("id"), "commit": plan.get("sha"), "requested_by": requested_by,
                         "onboarding": plan.get("application") if requester.startswith("onboarding:") else None, "run": None, "run_url": None},
     }
+    if plan.get("containment"):
+        held = plan["containment"]
+        block["containment"] = {key: held.get(key) for key in ("trust", "egress", "execution_environment", "vulnerability_gate")}
     if plan.get("contract"):
         # An application taken as it is (docs/ROADMAP.md 13.1) also names its source and the platform commit whose contract describes it.
         contract = plan["contract"]
@@ -870,14 +885,33 @@ class Controller:
         if app.provenance == "unavailable":
             plan["warnings"].append("The operator's exception provenance: unavailable is set for this application: the image is built fresh and released "
                                     "without signed provenance. Remove it from the controller configuration once the cause is fixed.")
-        elif image and image.startswith(prefix):
+        elif image and image.startswith(prefix) and recent(prior):
             # The same commit was released before: reuse its attested image instead of building and testing again.
             plan["reuse_image"] = image
             plan["reused_from_plan"] = prior["id"]
             plan["checks"].update(tests="passed_in_earlier_release", dependency_scan="passed_in_earlier_release")
+        if image and image.startswith(prefix) and not recent(prior):
+            plan["stale_image"] = True
+        self.contain(plan, spec, app)
         plan["approval"] = release_approval(plan, principal.name)
         self.store.add(principal.name, plan)
         return {**plan, "state": "planned", "live_dispatch_enabled": self.config.live_dispatch, "next_action": advice({"state": "planned"})}
+
+    @staticmethod
+    def contain(plan, spec, app):
+        """How the release will treat the code (docs/ROADMAP.md D35), in the plan, its warnings and its approval block."""
+        held = containment(spec, "unknown" if app.central else "reviewed")
+        plan["containment"] = held
+        if held["trust"] == "unknown":
+            plan["warnings"].append("Code nobody has reviewed: a working key in it stops the build, fixable critical and high vulnerabilities stop the "
+                                    "release, and it runs in the second-generation environment.")
+        if held["egress"] == "private":
+            plan["warnings"].append("No internet: the service reaches Google's APIs and the lab's private network only; `egress: internet` in the "
+                                    "contract opens it, through a reviewed pull request.")
+        reused = plan.get("reuse_image")
+        if not reused and plan.get("stale_image"):
+            plan["warnings"].append("The commit's earlier image is over 30 days old, so it is built again and scanned again.")
+        return held
 
     def plan_contract(self, principal, app_id, app, cloud, environment, commit_sha=None):
         """A plan for an application taken as it is: exactly the commit and specification its contract on the platform
@@ -929,11 +963,14 @@ class Controller:
         if app.provenance == "unavailable":
             plan["warnings"].append("The operator's exception provenance: unavailable is set for this application: the image is built fresh and released "
                                     "without signed provenance. Remove it from the controller configuration once the cause is fixed.")
-        elif image and image.startswith(prefix) and same_build:
+        elif image and image.startswith(prefix) and same_build and recent(prior):
             # The same commit built the same way was released before: reuse its attested image.
             plan["reuse_image"] = image
             plan["reused_from_plan"] = prior["id"]
             plan["checks"].update(tests="passed_in_earlier_release", dependency_scan="passed_in_earlier_release")
+        if image and image.startswith(prefix) and not recent(prior):
+            plan["stale_image"] = True
+        self.contain(plan, spec, app)
         plan["approval"] = release_approval(plan, principal.name)
         self.store.add(principal.name, plan)
         return {**plan, "state": "planned", "live_dispatch_enabled": self.config.live_dispatch, "next_action": advice({"state": "planned"})}

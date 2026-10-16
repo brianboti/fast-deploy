@@ -336,6 +336,9 @@ def check_plan(plan, allowed_locations=ALLOWED_LOCATIONS):
         creating, updating, deleting = "create" in actions, "update" in actions, "delete" in actions
         touching = creating or updating
         iam = kind.endswith(("_iam_member", "_iam_binding", "_iam_policy"))
+        if touching and (kind in ("google_compute_router_nat", "google_compute_router") or (kind == "google_compute_route" and "internet" in str(after.get("next_hop_gateway") or ""))):
+            # docs/ROADMAP.md 14.5: code nobody has reviewed is contained because the lab's network has no way to the internet.
+            add("no_internet_gateway", address, "the lab's network has no NAT, router or route to the internet: applications with private egress rely on it")
         if kind == "google_service_account_key" and creating:
             add("no_service_account_keys", address, "service account keys are never created; use Workload Identity Federation")
         if deleting and kind in DATA_TYPES:

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .bake import DEFAULT_BAKE_SECONDS, MAX_BAKE_SECONDS, BakeFailed, bake
 from .bake import iso as bake_iso
-from .models import PLATFORM_NETWORK, PLATFORM_SUBNET, enforce, needs_env, needs_secrets, parse_spec, spec_hash
+from .models import CONTAINED_TAG, PLATFORM_NETWORK, PLATFORM_SUBNET, containment, enforce, needs_env, needs_secrets, parse_spec, spec_hash
 from .provenance import MODES as PROVENANCE_MODES
 
 COMMAND_TIMEOUT = 600  # seconds for any one gcloud call; the migration job is given less, so its wait always ends first
@@ -65,8 +65,10 @@ IAP_ANNOTATION = "run.googleapis.com/iap-enabled"
 
 
 class CloudRun:
-    def __init__(self, project, region, service, probe_account, runner=run, iap_client_id=None):
+    def __init__(self, project, region, service, probe_account, runner=run, iap_client_id=None, default_trust="reviewed"):
         self.project, self.region, self.service = project, region, service
+        # What an unset `trust` means where this application's contract lives (docs/ROADMAP.md D35).
+        self.default_trust = default_trust
         self.probe_account, self.run = probe_account, runner
         if iap_client_id is not None and not IAP_CLIENT_ID.fullmatch(iap_client_id):
             raise ValueError("IAP_CLIENT_ID must be an OAuth client id of the form NUMBER-ID.apps.googleusercontent.com")
@@ -157,8 +159,7 @@ class CloudRun:
         flags = ["--image", image, f"--command={spec.needs.migrate[0]}", "--max-retries=0", f"--task-timeout={MIGRATION_TIMEOUT}", *self.configuration(spec)]
         # gcloud has no --clear-args; the documented reset is an empty value.
         flags.append("--args=" + ",".join(spec.needs.migrate[1:]) if len(spec.needs.migrate) > 1 else "--args=")
-        if spec.needs.database == "postgres":
-            flags += [f"--network={PLATFORM_NETWORK}", f"--subnet={PLATFORM_SUBNET}", "--vpc-egress=private-ranges-only"]
+        flags += self.egress_flags(spec, job=True)
         self.run(["gcloud", "run", "jobs", "update", job, *flags, "--project", self.project, "--region", self.region, "--quiet"])
         try:
             execution = self.run(["gcloud", "run", "jobs", "execute", job, "--wait", "--project", self.project, "--region", self.region, "--quiet", "--format=value(name)"])
@@ -255,17 +256,31 @@ class CloudRun:
             # --update-labels merges, so the service keeps the labels Terraform set (lab-deploy-managed, lab-deploy-app)
             extra.append("--update-labels=" + ",".join(f"{key}={value}" for key, value in sorted(labels.items())))
         extra += self.configuration(spec)
-        # A Cloud SQL instance has a private address only, so the service joins the foundation's network for its egress.
-        if spec.needs.database == "postgres":
-            extra += [f"--network={PLATFORM_NETWORK}", f"--subnet={PLATFORM_SUBNET}", "--vpc-egress=private-ranges-only"]
-        else:
-            extra.append("--clear-network")
+        extra += self.egress_flags(spec)
         self.run(self.command("deploy", self.service, "--image", image,
             "--revision-suffix", suffix, "--no-traffic", "--tag=candidate", "--startup-probe", probe,
             "--ingress=all", "--port", str(spec.port),
             "--cpu", str(spec.resources.cpu), "--memory", f"{spec.resources.memory_mib}Mi",
             "--min-instances", str(spec.scaling.minimum), "--max-instances", str(spec.scaling.maximum),
             "--concurrency", str(spec.concurrency), f"--timeout={spec.timeout_seconds}", "--cpu-throttling", *extra))
+
+    def egress_flags(self, spec, job=False):
+        """Where the service (or its migration job) may connect, and in which environment it runs (docs/ROADMAP.md 14.5, 14.6).
+
+        Private egress sends all traffic into the lab's network, which has Private Google Access and no Cloud NAT: Google's
+        APIs and the lab's private addresses are reachable, the internet is not. A Cloud SQL instance has a private address
+        only, so a service with Postgres joins the network for those ranges in any case. Unknown code runs in the
+        second-generation environment (a microVM rather than gVisor's emulated system calls)."""
+        held = containment(spec, self.default_trust)
+        if held["egress"] == "private":
+            flags = [f"--network={PLATFORM_NETWORK}", f"--subnet={PLATFORM_SUBNET}", "--vpc-egress=all-traffic", f"--network-tags={CONTAINED_TAG}"]
+        elif spec.needs.database == "postgres":
+            flags = [f"--network={PLATFORM_NETWORK}", f"--subnet={PLATFORM_SUBNET}", "--vpc-egress=private-ranges-only"]
+        else:
+            flags = [] if job else ["--clear-network"]
+        if held["execution_environment"] == "gen2":
+            flags.append("--execution-environment=gen2")
+        return flags
 
     def revision_logs(self, revision, limit=50):
         """The last log lines a revision wrote, oldest first: the answer to 'why did the candidate not start?'."""
@@ -543,8 +558,34 @@ def origin_from(env):
     return origin or None
 
 
+def build_checks(folder="bundle"):
+    """What the build job's gates found (docs/ROADMAP.md 14.1, 14.2, 14.7), from the files it left in the bundle: counts only,
+    never a secret. Empty for a reused image, whose first release recorded them."""
+    def read(name):
+        try:
+            return json.loads(Path(folder, name).read_text())
+        except (OSError, ValueError):
+            return None
+    checks = {}
+    policy = read("dockerfile-policy.json")
+    if isinstance(policy, dict):
+        findings = policy.get("findings") or []
+        checks["dockerfile_policy"] = {"refused": sum(1 for f in findings if f.get("refuses")), "reported": sum(1 for f in findings if not f.get("refuses")),
+                                       "trivy_high_or_critical": len(policy.get("trivy") or [])}
+    for key, name in (("secrets_in_checkout", "secrets-checkout.json"), ("secrets_in_image", "secrets-image.json")):
+        scan = read(name)
+        if isinstance(scan, dict):
+            findings = scan.get("findings") or []
+            checks[key] = {"findings": len(findings), "verified": sum(1 for f in findings if f.get("verified"))}
+    from .sbom import summary as sbom_summary
+    sbom = sbom_summary(Path(folder, "sbom.cdx.json"))
+    if sbom:
+        checks["sbom"] = sbom
+    return checks
+
+
 def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=None, labels=None, image_path=None, attempt=1, provenance=None,
-            bake_seconds=0, lint=None, sleep=time.sleep, clock=time.time, origin=None):
+            bake_seconds=0, lint=None, sleep=time.sleep, clock=time.time, origin=None, checks=None):
     if not re.fullmatch(r"[a-f0-9]{32}", plan_id):
         raise ValueError("Invalid plan ID")
     if not IMAGE_DIGEST.fullmatch(image):
@@ -563,6 +604,10 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
         receipt["dockerfile_lint"] = lint  # hadolint's findings from the build job; they inform, they did not stop this release
     if origin:
         receipt["origin"] = origin
+    # How the platform treated this code (docs/ROADMAP.md D35): trust, egress, execution environment and the gates.
+    receipt["containment"] = containment(spec, getattr(adapter, "default_trust", "reviewed"))
+    if checks:
+        receipt["build_checks"] = checks
     if not spec.health_path:
         # No health route (docs/ROADMAP.md 13.4): the release says so rather than inventing one.
         receipt["probe"] = {"kind": "tcp", "note": "No health route: Cloud Run's TCP startup probe gated the start, and the platform's probes only "
@@ -696,7 +741,8 @@ def main():
             raise ValueError("Image does not belong to the reviewed artifact destination")
         if os.environ.get("PROVENANCE_MODE") not in PROVENANCE_MODES:
             raise ValueError("No provenance decision for this image; the deploy job verifies provenance before the release step")
-    adapter = CloudRun(target.project_id, target.region, target.service, target.probe_service_account, iap_client_id=os.environ.get("IAP_CLIENT_ID") or None)
+    adapter = CloudRun(target.project_id, target.region, target.service, target.probe_service_account, iap_client_id=os.environ.get("IAP_CLIENT_ID") or None,
+                       default_trust=os.environ.get("TRUST_DEFAULT", "reviewed"))
     adapter.require_private_service()
     journal = GCSJournal(target.recovery_bucket, target.service, lambda: run(["gcloud", "auth", "print-access-token"]))
     image_path = f"{target.region}-docker.pkg.dev/{target.project_id}/{target.registry}/{target.service}"
@@ -725,7 +771,7 @@ def main():
         raise ValueError(f"BAKE_SECONDS must be a whole number of seconds between 0 and {MAX_BAKE_SECONDS}")
     rollout(adapter, os.environ["IMAGE_DIGEST"], spec, os.environ["PLAN_ID"], "release-receipt.json", journal, target.model_dump(), labels, image_path,
             attempt=int(attempt) if attempt.isdigit() else 1, provenance=os.environ["PROVENANCE_MODE"], bake_seconds=int(bake_seconds),
-            lint=lint_summary(Path(os.environ.get("LINT_FILE", "bundle/hadolint.json"))), origin=origin_from(os.environ))
+            lint=lint_summary(Path(os.environ.get("LINT_FILE", "bundle/hadolint.json"))), origin=origin_from(os.environ), checks=build_checks())
 
 
 if __name__ == "__main__":

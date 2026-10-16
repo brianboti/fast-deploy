@@ -17,6 +17,7 @@ import tomllib
 
 import yaml
 
+from . import dockerpolicy
 from .analyzer import COMPOSE_FILES, IMAGE_KINDS, NEEDS_HINTS, TEST_PATH, UNPROVIDED, WORKERS, compose_names, compose_port
 from .analyzer import folder as compose_folder
 from .models import ENTRYPOINT, AppSpec
@@ -43,6 +44,9 @@ from .scaffold import (
 )
 
 LARGE_FILE = 100 * 1024 * 1024
+# Libraries whose use usually means calls to services on the internet (docs/ROADMAP.md 14.5): a note for the reviewer.
+INTERNET_CLIENTS = {"openai", "anthropic", "requests", "httpx", "aiohttp", "urllib3", "twilio", "stripe", "slack-sdk", "boto3", "botocore",
+                    "sendgrid", "tweepy", "praw", "discord-py", "python-telegram-bot", "mailchimp-marketing", "cohere", "mistralai", "groq"}
 # Committed secrets, recognized by name only: environment files (but not their documented examples), private keys and key
 # stores, cloud credentials and Terraform state. Never opened.
 SECRET_FILE = re.compile(r"(?i)(^|/)(\.env(\.[^/]+)?|[^/]+\.(pem|key|p12|pfx|jks|keystore)|id_(rsa|dsa|ecdsa|ed25519)|credentials\.json|"
@@ -731,6 +735,15 @@ def read(paths, texts, path="", name=None, fallback_name=None, sizes=None):
         if "/" not in other and re.fullmatch(r"(?i)(dockerfile\..+|.+\.dockerfile|containerfile)", other) and other != dockerfile:
             ladder.ignore(repo.at(other), "the platform builds the file named Dockerfile only")
     builds_itself = recipe == "repository" and bool(dockerfile)
+    if builds_itself:
+        # 14.1: the Dockerfile a repository taken as it is brings meets the platform's policy before its contract is proposed;
+        # unless the draft says the lab reviewed it, it is code nobody has reviewed (D35).
+        trust = base.get("trust") if base.get("trust") in ("reviewed", "unknown") else "unknown"
+        for finding in dockerpolicy.check(repo.text(dockerfile), trust):
+            if finding["refuses"]:
+                ladder.refuse(f"{repo.at(dockerfile)}:{finding['line']}", finding["problem"], finding["fix"])
+            else:
+                ladder.note(f"{repo.at(dockerfile)}:{finding['line']}: {finding['problem']} ({finding['fix']})")
 
     # Every ladder runs even after a refusal, so the answer lists everything to fix at once.
     python = python_ladder(repo, ladder, base, dockerfile if builds_itself else None) or DEFAULT_PYTHON
@@ -853,6 +866,11 @@ def read(paths, texts, path="", name=None, fallback_name=None, sizes=None):
             ladder.note(f"{label} appears in the dependencies: the platform does not provide it")
     if re.search(WORKERS, manifest_text, re.I):
         ladder.note("A background-worker library appears in the dependencies: workers run as Cloud Run jobs or Pub/Sub push services, not here")
+    outside = sorted(dependencies & INTERNET_CLIENTS)
+    if outside and not base.get("egress"):
+        # D35: code nobody has reviewed reaches Google's APIs and the lab's private network, never the internet, by default.
+        ladder.note(f"It uses {', '.join(outside[:5])}: if it calls services outside Google Cloud, add egress: internet in the review "
+                    "(code nobody has reviewed reaches no internet otherwise)")
 
     tests = tests_ladder(repo, ladder)
     if ladder.refusals or lock is None:

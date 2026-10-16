@@ -366,7 +366,10 @@ Cost effect: none at idle; the central runs bill the platform repository, which 
 
 ## Phase 14: safety for code nobody has reviewed (about four days) → version 1.16.0
 
-Status: planned on 2026-10-16 (research review section 4.5, controls 1 to 10).
+Status: planned on 2026-10-16 (research review section 4.5, controls 1 to 10); 14.1 to 14.7 built the same day as
+version 1.16.0 with the default of D35 (`docs/CHANGES.md`). Open: 14.8 (Binary Authorization reads only its own
+attestations under one project-wide rule on Cloud Run; settle the attestor in a dry run), 14.9 (built with Phase 16's
+second-project machinery) and 14.10 (needs credentials in a step that never runs application code).
 
 | Item | Change | Where |
 |---|---|---|

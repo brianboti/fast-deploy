@@ -206,6 +206,33 @@ def scan_line(vulnerabilities):
     return f"Image scan: {found_words} findings ({fixes}); {'it blocked the release' if vulnerabilities.get('blocking') else 'not blocking'}"
 
 
+def gates_line(checks):
+    """The checks before the build (docs/ROADMAP.md 14.1, 14.2, 14.7), in words: the Dockerfile, keys, the parts list."""
+    if not checks:
+        return None
+    parts = []
+    policy = checks.get("dockerfile_policy")
+    if policy:
+        parts.append("Dockerfile rules passed" + (f" ({policy['reported']} noted)" if policy.get("reported") else ""))
+    found = [checks.get(key) or {} for key in ("secrets_in_checkout", "secrets_in_image")]
+    verified = sum(item.get("verified", 0) for item in found)
+    possible = sum(item.get("findings", 0) for item in found) - verified
+    if any(found):
+        parts.append(f"{plural(verified, 'working key')} found" if verified else "no working keys found"
+                     + (f" ({plural(possible, 'possible secret')} to check)" if possible else ""))
+    if checks.get("sbom"):
+        parts.append(f"parts list recorded ({checks['sbom']['components']} parts)")
+    return "Before the build: " + " · ".join(parts) if parts else None
+
+
+def contained_line(held):
+    """How unknown code ran (docs/ROADMAP.md D35); nothing for the lab's own code, which runs as it always did."""
+    if not held or held.get("trust") != "unknown":
+        return None
+    reach = "no internet (Google's APIs and the lab's network only)" if held.get("egress") == "private" else "internet allowed by its contract"
+    return f"Runs contained, as code nobody has reviewed: {reach}, second-generation environment"
+
+
 def cost_line(cost):
     if not cost:
         return None
@@ -250,8 +277,9 @@ def release(plan):
         url = phases.get("url") or receipt.get("url")
         took = duration(workflow.get("created_at"), (plan.get("outcome") or {}).get("completed_at") or workflow.get("updated_at"))
         facts = [f"Address: {url} ({access((plan.get('spec') or {}).get('exposure'))})" if url else None, checks_line(checks),
-                 "The database migration ran first" if phases.get("migration") else None, bake_line(phases, minutes),
-                 scan_line(plan.get("vulnerabilities")), f"Took {took}" if took and state == "succeeded" else None]
+                 gates_line(receipt.get("build_checks")), "The database migration ran first" if phases.get("migration") else None,
+                 bake_line(phases, minutes), scan_line(plan.get("vulnerabilities")), contained_line(receipt.get("containment")),
+                 f"Took {took}" if took and state == "succeeded" else None]
         if state != "succeeded":
             facts.append(f"The GitHub run ended '{state}' after the release itself had finished")
         return compose(f"**`{app}` is live** with {what}.", facts, f"nothing to do. To undo it, say “roll {app} back”.", foot)

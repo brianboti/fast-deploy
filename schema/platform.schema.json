@@ -36,6 +36,15 @@
           ],
           "default": null,
           "title": "Entrypoint"
+        },
+        "network": {
+          "default": "default",
+          "enum": [
+            "default",
+            "none"
+          ],
+          "title": "Network",
+          "type": "string"
         }
       },
       "title": "Build",
@@ -288,6 +297,38 @@
     },
     "build": {
       "$ref": "#/$defs/Build"
+    },
+    "trust": {
+      "anyOf": [
+        {
+          "enum": [
+            "reviewed",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Trust"
+    },
+    "egress": {
+      "anyOf": [
+        {
+          "enum": [
+            "internet",
+            "private"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Egress"
     },
     "reviewed": {
       "default": false,

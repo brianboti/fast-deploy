@@ -58,6 +58,9 @@ env:
   # the service has none) and apps/<service>/requirements-test.lock (the service and its test tools, resolved together).
   PLATFORM_LOCK: ''
   PLATFORM_TEST_LOCK: ''
+  # What an unset `trust` in the contract means (docs/ROADMAP.md D35): reviewed in a repository's own platform.yaml. The
+  # platform repository's pipeline, which builds repositories taken as they are, says unknown.
+  TRUST_DEFAULT: reviewed
 jobs:
   build:
     # Skipped when the plan reuses an image this workflow already built and attested for the same commit.
@@ -119,7 +122,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          read_spec() { python -c 'import os, sys; from pathlib import Path; from labdeploy.models import parse_spec; spec = parse_spec(Path(os.environ["SPEC_SOURCE"]).read_text()); print({"tests": spec.tests, "python": spec.python, "context": spec.build.context, "recipe": spec.build.recipe, "entrypoint": spec.build.entrypoint or "", "command": "true" if spec.command is not None or spec.args is not None else "false"}[sys.argv[1]])' "$1"; }
+          read_spec() { python -c 'import os, sys; from pathlib import Path; from labdeploy.models import containment, parse_spec; spec = parse_spec(Path(os.environ["SPEC_SOURCE"]).read_text()); print({"tests": spec.tests, "python": spec.python, "context": spec.build.context, "recipe": spec.build.recipe, "entrypoint": spec.build.entrypoint or "", "command": "true" if spec.command is not None or spec.args is not None else "false", "trust": containment(spec, os.environ["TRUST_DEFAULT"])["trust"], "network": spec.build.network}[sys.argv[1]])' "$1"; }
           TESTS=$(read_spec tests)
           [[ "$TESTS" =~ ^(required|none)$ ]]
           echo "tests=$TESTS" >> "$GITHUB_OUTPUT"
@@ -139,7 +142,61 @@ jobs:
           echo "entrypoint=$ENTRYPOINT" >> "$GITHUB_OUTPUT"
           COMMAND=$(read_spec command)
           echo "command=$COMMAND" >> "$GITHUB_OUTPUT"
+          TRUST=$(read_spec trust)
+          [[ "$TRUST" =~ ^(reviewed|unknown)$ ]]
+          echo "trust=$TRUST" >> "$GITHUB_OUTPUT"
+          NETWORK=$(read_spec network)
+          [[ "$NETWORK" =~ ^(default|none)$ ]]
+          echo "network=$NETWORK" >> "$GITHUB_OUTPUT"
+          if [ "$TRUST" = "unknown" ]; then
+            echo "::notice title=Code nobody has reviewed::the platform's gates for code taken as it is apply: a working key stops the build, fixable critical and high vulnerabilities stop the release, the service runs contained (docs/ROADMAP.md D35)"
+          fi
           [ "$TESTS" = "required" ] || echo "::warning::platform.yaml declares tests: none; no automated tests guard this release"
+      # The scanners of the gates (docs/ROADMAP.md 14.1, 14.2, 14.7), downloaded by version and checked against their SHA-256:
+      # TruffleHog finds secrets and checks whether each still works; Trivy makes the parts list and reads Dockerfiles.
+      - name: Install the scanners
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/trufflehog.tar.gz" https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.4/trufflehog_3.97.4_linux_amd64.tar.gz
+          echo "dc24007c2f233bd61c05beabeb44aa27ea9b43288166279209abe0458c5ce76b  $RUNNER_TEMP/trufflehog.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/trufflehog.tar.gz" -C "$RUNNER_TEMP" trufflehog
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/trivy.tar.gz" https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz
+          echo "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a  $RUNNER_TEMP/trivy.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP" trivy
+      # 14.1: before anything of the repository runs, the Dockerfile it brings is held against the platform's policy. The
+      # build never passes --allow, so BuildKit's privileged and host-network entitlements stay off in any case.
+      - name: Check the Dockerfile against the platform's policy
+        env:
+          RECIPE: ${{ steps.policy.outputs.recipe }}
+          TRUST: ${{ steps.policy.outputs.trust }}
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bundle
+          if [ "$RECIPE" != "repository" ] || [ ! -f "$APP_DIR/Dockerfile" ]; then
+            echo "No Dockerfile of the repository's own is built: nothing to check" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          SHOWN=$(python3 -c 'import os; print(os.path.normpath(os.path.join(os.environ["APP_PATH"], "Dockerfile")))')
+          "$RUNNER_TEMP/trivy" config "$APP_DIR/Dockerfile" --format json --quiet --skip-check-update --skip-version-check > "$RUNNER_TEMP/trivy-config.json"
+          python -m labdeploy.dockerpolicy "$APP_DIR/Dockerfile" --trust "$TRUST" --shown "$SHOWN" --trivy "$RUNNER_TEMP/trivy-config.json" --json bundle/dockerfile-policy.json
+      # 14.2: keys committed to the repository are found before its code runs; a working one stops code nobody has reviewed.
+      - name: Scan the checkout for secrets
+        env:
+          TRUST: ${{ steps.policy.outputs.trust }}
+          CONTEXT: ${{ steps.policy.outputs.context }}
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bundle
+          SCANNED="$APP_DIR"
+          if [ "$CONTEXT" = "repository" ]; then SCANNED=app; fi
+          printf '%s\n' '(^|/)\.git/' > "$RUNNER_TEMP/trufflehog-exclude.txt"
+          "$RUNNER_TEMP/trufflehog" filesystem "$SCANNED" --exclude-paths "$RUNNER_TEMP/trufflehog-exclude.txt" --results=verified,unknown,unverified --json --no-update > "$RUNNER_TEMP/secrets-checkout.jsonl"
+          python -m labdeploy.leaks "$RUNNER_TEMP/secrets-checkout.jsonl" --trust "$TRUST" --where checkout --strip app/ --json bundle/secrets-checkout.json
       # The application's own Python (platform.yaml `python`) for its tests and its dependency audit; the platform's steps
       # keep theirs on PATH.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -253,12 +310,27 @@ jobs:
           RECIPE: ${{ steps.policy.outputs.recipe }}
           ENTRYPOINT: ${{ steps.policy.outputs.entrypoint }}
           HAS_COMMAND: ${{ steps.policy.outputs.command }}
+          NETWORK: ${{ steps.policy.outputs.network }}
           PYTHONPATH: ${{ github.workspace }}/platform
         run: |
           set -euo pipefail
           # The image is built from exactly the reviewed commit: whatever the tests left in the checkout (caches, files a
           # test wrote) is removed first.
           git -C app clean -ffdxq
+          # 14.3: never a build cache (the runner starts empty, and no cache is ever restored); no network at all for a
+          # repository that vendors its dependencies (build.network: none).
+          DOCKER_NETWORK=()
+          PACK_NETWORK=()
+          if [ "$NETWORK" = "none" ]; then DOCKER_NETWORK=(--network=none); PACK_NETWORK=(--network none); fi
+          # 14.2: a build context over 1 GiB is refused; data belongs in a bucket (needs.buckets).
+          cap_context() {
+            local kib
+            kib=$(du -sk --exclude=.git "$1" | cut -f1)
+            if [ "$kib" -gt 1048576 ]; then
+              echo "::error title=Build context::the build context is $((kib / 1024)) MiB, over the 1 GiB the platform builds: keep data in a bucket (needs.buckets)"
+              exit 1
+            fi
+          }
           LOCK_SOURCE=repository
           if [ -n "$PLATFORM_LOCK" ] && [ -f "$PLATFORM_LOCK" ] && [ ! -f "$APP_DIR/requirements.lock" ]; then
             cp "$PLATFORM_LOCK" "$APP_DIR/requirements.lock"
@@ -271,16 +343,25 @@ jobs:
             # platform's deny-list (no .env, keys, tests, caches or notebooks), the Dockerfile is rendered for this contract
             # beside them, and nothing is written to the repository.
             python -m labdeploy.scaffold render-build "$APP_DIR" "$RUNNER_TEMP/platform-build" --spec "$SPEC_SOURCE"
-            docker build --platform linux/amd64 -t "lab-app:$COMMIT_SHA" "$RUNNER_TEMP/platform-build"
+            cap_context "$RUNNER_TEMP/platform-build"
+            docker build --no-cache "${DOCKER_NETWORK[@]}" --platform linux/amd64 -t "lab-app:$COMMIT_SHA" "$RUNNER_TEMP/platform-build"
             DOCKERFILE_USED="$RUNNER_TEMP/platform-build/Dockerfile"
           elif [ "$RECIPE" = "repository" ] && [ -f "$APP_DIR/Dockerfile" ]; then
             DOCKERFILE_USED="$APP_DIR/Dockerfile"
+            # 14.2: without a .dockerignore of its own, this build (never the repository) gets the platform's deny-list.
+            IGNORE_DIR="$APP_DIR"
+            if [ "$CONTEXT" = "repository" ]; then IGNORE_DIR=app; fi
+            if [ ! -f "$IGNORE_DIR/.dockerignore" ] && [ ! -f "$APP_DIR/Dockerfile.dockerignore" ]; then
+              python -m labdeploy.scaffold deny-dockerignore > "$IGNORE_DIR/.dockerignore"
+              echo "No .dockerignore in the repository: the platform's deny-list kept .git, environment files, keys, caches and notebooks out of this build" | tee -a "$GITHUB_STEP_SUMMARY"
+            fi
+            cap_context "$IGNORE_DIR"
             # build.context: repository builds from the repository's root (shared code in a monorepo); the Dockerfile stays
             # in the service's folder. Otherwise the service's folder is the whole build context.
             if [ "$CONTEXT" = "repository" ]; then
-              docker build --platform linux/amd64 -f "$APP_DIR/Dockerfile" -t "lab-app:$COMMIT_SHA" app
+              docker build --no-cache "${DOCKER_NETWORK[@]}" --platform linux/amd64 -f "$APP_DIR/Dockerfile" -t "lab-app:$COMMIT_SHA" app
             else
-              docker build --platform linux/amd64 -t "lab-app:$COMMIT_SHA" "$APP_DIR"
+              docker build --no-cache "${DOCKER_NETWORK[@]}" --platform linux/amd64 -t "lab-app:$COMMIT_SHA" "$APP_DIR"
             fi
           else
             # Google's buildpacks (docs/ROADMAP.md D28, 13.3): build.recipe: buildpacks, or no Dockerfile. The start command
@@ -312,10 +393,11 @@ jobs:
             # The platform's project descriptor keeps secrets, tests, notebooks and caches out of the image (the buildpacks'
             # answer to .dockerignore); a project.toml of the repository's own is not read.
             python -m labdeploy.scaffold descriptor > "$RUNNER_TEMP/project.toml"
+            cap_context "$SOURCE"
             PACK_ENV=(--env "GOOGLE_PYTHON_VERSION=$PYTHON_VERSION.x")
             if [ -n "$ENTRYPOINT" ]; then PACK_ENV+=(--env "GOOGLE_ENTRYPOINT=$ENTRYPOINT"); fi
             "$RUNNER_TEMP/pack" build "lab-app:$COMMIT_SHA" --path "$SOURCE" --builder "$BUILDER" --run-image "$RUN_IMAGE" \
-              --descriptor "$RUNNER_TEMP/project.toml" --platform linux/amd64 --trust-builder --pull-policy if-not-present "${PACK_ENV[@]}"
+              --descriptor "$RUNNER_TEMP/project.toml" --platform linux/amd64 --trust-builder --pull-policy if-not-present "${PACK_NETWORK[@]}" "${PACK_ENV[@]}"
           fi
           mkdir -p bundle
           docker save "lab-app:$COMMIT_SHA" -o bundle/image.tar
@@ -332,6 +414,25 @@ jobs:
           print(json.dumps(inputs, sort_keys=True))
           PY
           sha256sum bundle/image.tar | cut -d' ' -f1 > bundle/image.sha256
+      # 14.2: what reached the image, layer by layer, scanned again for keys; a working one stops code nobody has reviewed.
+      - name: Scan the image for secrets
+        env:
+          TRUST: ${{ steps.policy.outputs.trust }}
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/trufflehog" docker --image="file://$GITHUB_WORKSPACE/bundle/image.tar" --results=verified,unknown,unverified --json --no-update > "$RUNNER_TEMP/secrets-image.jsonl"
+          python -m labdeploy.leaks "$RUNNER_TEMP/secrets-image.jsonl" --trust "$TRUST" --where image --json bundle/secrets-image.json
+      # 14.7: the image's parts list (a CycloneDX SBOM), attested next to its provenance by the deploy job.
+      - name: Make the image's parts list (SBOM)
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/trivy" image --input bundle/image.tar --format cyclonedx --output bundle/sbom.cdx.json --quiet --skip-version-check
+          python -m labdeploy.sbom bundle/sbom.cdx.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-bundle
@@ -532,6 +633,20 @@ jobs:
             echo "::error title=Provenance::signing with $PROVENANCE_KEY failed. A missing key means the foundation (scripts/apply-foundation.sh) and then this application's infrastructure need applying"
             exit 1
           fi
+      - name: Attest the parts list (SBOM) with Cloud KMS
+        if: inputs.image_digest == '' && steps.provenance.outputs.mode == 'cosign-kms'
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$COSIGN" attest --yes --key "$PROVENANCE_KEY" --type cyclonedx --predicate bundle/sbom.cdx.json \
+            --new-bundle-format=false --use-signing-config=false --tlog-upload=false "$IMAGE_DIGEST"
+      - name: Attest the parts list (SBOM)
+        if: inputs.image_digest == '' && steps.provenance.outputs.mode == 'github'
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ env.IMAGE_SHA256 }}
+          sbom-path: bundle/sbom.cdx.json
       - name: Verify build provenance with Cloud KMS
         if: steps.provenance.outputs.mode == 'cosign-kms'
         env:
@@ -544,6 +659,7 @@ jobs:
       - name: Summarize image vulnerabilities
         env:
           PYTHONPATH: ${{ github.workspace }}/platform
+          SPEC_FILE: bundle/platform.yaml
           BLOCK_ON_CRITICAL_VULNERABILITIES: ${{ vars.BLOCK_ON_CRITICAL_VULNERABILITIES || 'false' }}
         run: python -m labdeploy.scan
       - name: Deploy, probe, promote; restore traffic on failure

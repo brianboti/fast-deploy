@@ -157,6 +157,8 @@ def central_deploy(template_text):
   CONTRACT_COMMIT: ${{ inputs.contract_commit }}
 """.replace("@APP_DIR@", APP_DIR_EXPRESSION))
     t = _swap(t, "  SPEC_SOURCE: __LAB_APP_DIR__/platform.yaml\n", "  SPEC_SOURCE: contract/platform.yaml\n")
+    # Repositories taken as they are: code nobody has reviewed unless the contract says otherwise (docs/ROADMAP.md D35).
+    t = _swap(t, "  TRUST_DEFAULT: reviewed\n", "  TRUST_DEFAULT: unknown\n")
     t = _swap(t, "  PLATFORM_LOCK: ''\n  PLATFORM_TEST_LOCK: ''\n",
               "  PLATFORM_LOCK: platform/apps/${{ inputs.application }}/requirements.lock\n"
               "  PLATFORM_TEST_LOCK: platform/apps/${{ inputs.application }}/requirements-test.lock\n")

@@ -134,7 +134,10 @@ operator to restart it with the current code (`scripts/start.sh` on the laptop).
    pull request adding its contract (`apps/NAME/platform.yaml`) to the platform repository, and waits: **a person's merge
    is the review**, never the controller's. Then it continues as above, without workflows in the repository: the
    platform's own pipeline releases it. When it is refused, each refusal names a file and its fix (a committed `.env`, a
-   Python outside 3.11 to 3.15, no dependency list, several candidate apps): turn them into the developer message.
+   Python outside 3.11 to 3.15, no dependency list, several candidate apps, a Dockerfile that pipes a download into a
+   shell or runs as root): turn them into the developer message. Such code runs contained: a working key in it or a
+   fixable serious vulnerability stops its release, and it reaches no internet unless a person merges `egress: internet`
+   into its contract. Say so when its plan or status shows it.
 6. When it is blocked:
    - At the repository check: nothing was created. Turn the checklist into a message for the developer (template at the
      end).

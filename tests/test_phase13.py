@@ -151,7 +151,7 @@ def choice(result, what):
 
 
 def test_the_reader_takes_a_dockerfile_only_repository_as_it_is():
-    result = read({"Dockerfile": "FROM python:3.12-slim\nEXPOSE 8000\nCMD [\"uvicorn\", \"main:app\", \"--host\", \"0.0.0.0\", \"--port\", \"8000\"]\n",
+    result = read({"Dockerfile": "FROM python:3.12-slim\nEXPOSE 8000\nUSER 65532\nCMD [\"uvicorn\", \"main:app\", \"--host\", \"0.0.0.0\", \"--port\", \"8000\"]\n",
                    "main.py": "from fastapi import FastAPI\napp = FastAPI()\n", "requirements.txt": "fastapi==0.115.0\nuvicorn==0.30.0\n"},
                   fallback_name="asis-docker")
     assert not result["refusals"] and result["spec"] is not None
@@ -178,7 +178,7 @@ def test_the_reader_reads_compose_for_port_health_needs_and_command():
     compose = ("services:\n  api:\n    build: ./api\n    ports: ['8001:8000']\n    depends_on: [db]\n    environment:\n      DATABASE_URL: postgres://x\n"
                "    healthcheck:\n      test: ['CMD', 'curl', '-f', 'http://localhost:8000/ready']\n"
                "  web:\n    build: ./web\n    command: gunicorn -b 0.0.0.0:9000 main:app\n    ports: ['9000:9000']\n  db:\n    image: postgres:16\n")
-    files = {"compose.yaml": compose, "api/Dockerfile": "FROM python:3.11-slim\nCMD [\"python\", \"main.py\"]\n", "api/main.py": "x = 1\n",
+    files = {"compose.yaml": compose, "api/Dockerfile": "FROM python:3.11-slim\nUSER 65532\nCMD [\"python\", \"main.py\"]\n", "api/main.py": "x = 1\n",
              "api/requirements.txt": "flask\n", "web/main.py": "from flask import Flask\napp = Flask(__name__)\n", "web/requirements.txt": "flask==3.0.0\n"}
     api = read(files, "api")["spec"]
     assert (api.port, api.health_path, api.python) == (8000, "/ready", "3.11")
@@ -222,7 +222,7 @@ def test_what_is_not_a_secret_or_runs_in_its_own_image_is_not_refused():
     assert not result["refusals"] and any("API_KEY" in note for note in result["notes"])  # names only, read from the example
     big = read({"main.py": FASTAPI, "requirements.txt": "fastapi\n"}, sizes={"data.bin": 200 * 1024 * 1024})
     assert any("MiB" in item["problem"] for item in big["refusals"])
-    built_by_itself = read({"Dockerfile": "FROM python:3.12-slim\nRUN apt-get install -y libgdal-dev\n", "apt.txt": "libgdal-dev\n", "main.py": FASTAPI,
+    built_by_itself = read({"Dockerfile": "FROM python:3.12-slim\nRUN apt-get install -y libgdal-dev\nUSER 65532\n", "apt.txt": "libgdal-dev\n", "main.py": FASTAPI,
                             "requirements.txt": "fastapi\n"})
     assert not built_by_itself["refusals"]  # its own Dockerfile installs what it needs
 
@@ -251,7 +251,7 @@ def test_the_lock_ladder_and_its_conversions():
 
 
 def test_a_platform_yaml_in_the_repository_is_imported_once_as_the_draft():
-    result = read({"Dockerfile": "FROM python:3.12-slim\n", "platform.yaml": "name: legacy\nport: 9000\nhealth_path: /ping\nreviewed: true\nresources: {cpu: 1, memory_mib: 1024}\n",
+    result = read({"Dockerfile": "FROM python:3.12-slim\nUSER 65532\n", "platform.yaml": "name: legacy\nport: 9000\nhealth_path: /ping\nreviewed: true\nresources: {cpu: 1, memory_mib: 1024}\n",
                    "main.py": FASTAPI, "requirements.txt": "fastapi\n"})
     spec = result["spec"]
     assert (spec.name, spec.port, spec.health_path, spec.resources.memory_mib) == ("legacy", 9000, "/ping", 1024)
@@ -615,7 +615,7 @@ def test_only_names_that_end_like_a_secret_are_called_secrets():
 
 
 def test_an_explicit_name_wins_over_the_one_in_the_repositorys_platform_yaml():
-    files = {"Dockerfile": "FROM python:3.12-slim\n", "platform.yaml": "name: legacy\nreviewed: true\n", "main.py": FASTAPI, "requirements.txt": "fastapi\n"}
+    files = {"Dockerfile": "FROM python:3.12-slim\nUSER 65532\n", "platform.yaml": "name: legacy\nreviewed: true\n", "main.py": FASTAPI, "requirements.txt": "fastapi\n"}
     assert read(files)["spec"].name == "legacy" and read(files, name="renamed")["spec"].name == "renamed"
 
 

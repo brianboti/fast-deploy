@@ -876,6 +876,20 @@ BUILD_EXCLUDE = (".git", ".github", ".env", ".env.*", "*.pem", "*.key", "*.p12",
                  "Dockerfile.*", ".dockerignore", "platform.yaml", "compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml")
 
 
+# For a repository's own Dockerfile without a .dockerignore (docs/ROADMAP.md 14.2): what never belongs in an image, and
+# nothing a Dockerfile might copy on purpose (tests, its own Dockerfile, requirement files).
+DENY_DOCKERIGNORE = (".git", "**/.git", "**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/*.p12", "**/*.pfx", "**/*.jks", "**/id_rsa*",
+                     "**/id_dsa*", "**/id_ecdsa*", "**/id_ed25519*", "**/credentials.json", "**/*.tfstate", "**/*.tfstate.*", "**/.venv",
+                     "**/__pycache__", "**/*.py[cod]", "**/.pytest_cache", "**/.mypy_cache", "**/.ruff_cache", "**/*.ipynb",
+                     "**/.ipynb_checkpoints", "**/.DS_Store")
+
+
+def deny_dockerignore():
+    """The deny-list .dockerignore the build writes beside a repository's own Dockerfile when it has none; never committed."""
+    return ("# Written by Fast Deploy for this build only (docs/ROADMAP.md 14.2): the repository has no .dockerignore of its own.\n"
+            + "\n".join(DENY_DOCKERIGNORE) + "\n")
+
+
 def excluded(relative):
     """Whether a path inside the service's folder stays out of an image the platform makes (any segment may match)."""
     import fnmatch
@@ -991,10 +1005,14 @@ def main(argv=None):
     show.add_argument("app_dir")
     show.add_argument("--spec", required=True)
     commands.add_parser("descriptor", help="print the buildpacks' project descriptor")
+    commands.add_parser("deny-dockerignore", help="print the deny-list .dockerignore for a repository without one")
     args = parser.parse_args(argv)
     try:
         if args.command == "descriptor":
             print(descriptor(), end="")
+            return 0
+        if args.command == "deny-dockerignore":
+            print(deny_dockerignore(), end="")
             return 0
         spec = parse_spec(Path(args.spec).read_text())
         if args.command == "render-build":
