@@ -109,10 +109,10 @@ variable "database_password" {
 variable "github_environment" {
   type        = string
   default     = "staging"
-  description = "The GitHub environment the app's workflows run in: staging, or staging-<service> for a further application of the same repository."
+  description = "The GitHub environment the app's workflows run in: staging, staging-<service> for a further application of the same repository, or production-<service> of the platform repository (its promotions, docs/ROADMAP.md D37)."
   validation {
-    condition     = can(regex("^staging(-[a-z][a-z0-9-]{1,19}[a-z0-9])?$", var.github_environment))
-    error_message = "github_environment is staging or staging-<service>."
+    condition     = can(regex("^(staging(-[a-z][a-z0-9-]{1,19}[a-z0-9])?|production-[a-z][a-z0-9-]{1,19}[a-z0-9])$", var.github_environment))
+    error_message = "github_environment is staging, staging-<service> or production-<service>."
   }
 }
 variable "workflow_files" {
@@ -120,10 +120,11 @@ variable "workflow_files" {
   default     = ["deploy-gcp.yml", "recover-gcp.yml", "rightsize-gcp.yml"]
   description = "The deploy, recover and rightsize workflow files the deploy identity trusts, in that order."
   validation {
-    # The application's own files (deploy-gcp.yml, or suffixed by its service), or the platform repository's pipeline
-    # (deploy.yml, recover.yml, rightsize.yml) when it keeps the contract (docs/ROADMAP.md D33).
-    condition     = length(var.workflow_files) == 3 && alltrue([for file in var.workflow_files : can(regex("^(deploy|recover|rightsize)(-gcp(-[a-z][a-z0-9-]{1,19}[a-z0-9])?)?[.]yml$", file))])
-    error_message = "workflow_files are the deploy, recover and rightsize workflow file names."
+    # The application's own files (deploy-gcp.yml, or suffixed by its service), the platform repository's pipeline
+    # (deploy.yml, recover.yml, rightsize.yml) when it keeps the contract (docs/ROADMAP.md D33), or, for production, the
+    # platform repository's promote.yml alone (D37).
+    condition     = (length(var.workflow_files) == 3 && alltrue([for file in var.workflow_files : can(regex("^(deploy|recover|rightsize)(-gcp(-[a-z][a-z0-9-]{1,19}[a-z0-9])?)?[.]yml$", file))])) || (length(var.workflow_files) == 1 && join("", var.workflow_files) == "promote.yml")
+    error_message = "workflow_files are the deploy, recover and rightsize workflow file names, or promote.yml alone for production."
   }
 }
 variable "network" {

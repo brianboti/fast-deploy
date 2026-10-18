@@ -320,6 +320,14 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
         """Render the app's Terraform root (service, registry, identities, trust, alerts) and open a pull request on the platform repository; the pipeline applies it on merge. Never merges."""
         return chat.attach(chat.pull_request, controller.propose_infrastructure(identity.get(), application), what="its cloud setup", applies=True)
 
+    @tool(title="Add production (step by step)", annotations=CREATES_RECORD)
+    @plain_errors
+    def add_production(application: APP) -> dict[str, Any]:
+        """Give an application its production (a second project): register its production target, open the pull request for its production
+        cloud setup (a person merges it; the controller never does), then create its GitHub environment production-<service> whose required
+        reviewers approve every promotion. Call again after each step; it continues from where it stands. Never releases anything."""
+        return chat.attach(chat.production, controller.add_production(identity.get(), application))
+
     @tool(title="Onboard a repository (one sentence)", annotations=CHANGES_CLOUD)
     @plain_errors
     def onboard_application(repository: REPOSITORY, application: APP_OR_NONE = None,

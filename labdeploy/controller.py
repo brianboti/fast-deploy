@@ -8,11 +8,11 @@ import time
 import uuid
 
 from .analyzer import COMPOSE_FILES, FILES, analyze
-from .config import Application, Principal
+from .config import Application, Principal, Production
 from .contract import Contracts, contract_path
 from .cost import estimate, findings
 from .github import explain
-from .infra import BOOTSTRAP_IMAGE, app_root
+from .infra import BOOTSTRAP_IMAGE, PRODUCTION_ROOTS, PRODUCTION_WORKFLOWS, app_root
 from .models import containment, enforce, needs_env, parse_contract, parse_spec, spec_hash
 from .rightsize import SETTINGS, apply_settings
 from .status import TERMINAL, advice, release_phases, summarize
@@ -32,6 +32,8 @@ class Store:
                        "outcome TEXT, duration_ms INTEGER, detail TEXT)")
             db.execute("CREATE INDEX IF NOT EXISTS events_at ON events (at)")
             db.execute("CREATE TABLE IF NOT EXISTS applications (id TEXT PRIMARY KEY, created REAL NOT NULL, payload TEXT NOT NULL)")
+            # Each application's production (docs/ROADMAP.md D37), for an application of the file as for a registered one.
+            db.execute("CREATE TABLE IF NOT EXISTS productions (id TEXT PRIMARY KEY, created REAL NOT NULL, payload TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS onboardings (id TEXT PRIMARY KEY, updated REAL NOT NULL, payload TEXT NOT NULL)")
             # The newest release pull request of each application whose contract the platform keeps (docs/ROADMAP.md D32).
             db.execute("CREATE TABLE IF NOT EXISTS release_requests (id TEXT PRIMARY KEY, updated REAL NOT NULL, payload TEXT NOT NULL)")
@@ -52,6 +54,14 @@ class Store:
     def registered_applications(self):
         with self.connect() as db:
             return {row[0]: json.loads(row[1]) for row in db.execute("SELECT id, payload FROM applications ORDER BY created").fetchall()}
+
+    def register_production(self, app_id, entry):
+        with self.connect() as db:
+            db.execute("INSERT OR REPLACE INTO productions VALUES (?, ?, ?)", (app_id, time.time(), json.dumps(entry)))
+
+    def productions(self):
+        with self.connect() as db:
+            return {row[0]: json.loads(row[1]) for row in db.execute("SELECT id, payload FROM productions ORDER BY created").fetchall()}
 
     def onboarding(self, app_id):
         with self.connect() as db:
@@ -309,6 +319,8 @@ class Controller:
         """Applications onboarding registered live in the database; the live configuration shows them next to the file's."""
         if hasattr(self.config, "registry"):
             self.config.registry = {app_id: Application.model_validate(entry) for app_id, entry in self.store.registered_applications().items()}
+        if hasattr(self.config, "productions"):
+            self.config.productions = self.store.productions()
 
     def visible_apps(self, principal):
         """The application ids this identity may see: its list, or every registered application for a `*` identity."""
@@ -1142,13 +1154,27 @@ class Controller:
             files[f".github/workflows/{app.workflows[kind]}"] = render(template["text"], platform.repository, sha, app)
         return {"application": app_id, "platform_commit": sha, "current_pin": current, "pull_request": self.github.update_workflows(app, sha, files)}
 
-    def render_infrastructure(self, principal, app_id, state_bucket=None, bootstrap_image=None, settings=None):
-        """The app's Terraform root as the pipeline will plan it: literal inputs from the configuration, the reviewed spec and GitHub's ids."""
+    def render_infrastructure(self, principal, app_id, state_bucket=None, bootstrap_image=None, settings=None, environment="staging"):
+        """The app's Terraform root as the pipeline will plan it: literal inputs from the configuration, the reviewed spec and GitHub's ids.
+        environment: staging (the default) or production, the app's production root under infra/gcp/apps-production (D37)."""
         app = self.app(principal, app_id, write=True)
+        if environment not in ("staging", "production"):
+            raise ValueError("environment is staging or production")
         target = app.target
         # The deploy identity trusts the workflows that release the app: its own repository's, or the platform repository's
         # pipeline in the environment staging-<service> for an application taken as it is (docs/ROADMAP.md D33).
         trusted = self.config.platform.repository if app.central else app.repository
+        layout = {"github_environment": app.environment, "workflow_files": list(app.workflows.values()), "pipeline": "platform" if app.central else "repository"}
+        directory = f"infra/gcp/apps/{target.service}"
+        if environment == "production":
+            production = self.config.production
+            if production is None or app.production is None:
+                raise ValueError(f"{app_id} has no production yet: set production in the controller configuration and call add_production")
+            # Promotions run the platform repository's promote.yml in production-<service>, whatever released staging.
+            target, trusted = app.production.target, self.config.platform.repository
+            layout = {"github_environment": app.production.environment, "workflow_files": list(PRODUCTION_WORKFLOWS), "pipeline": "platform"}
+            directory = f"{PRODUCTION_ROOTS}/{target.service}"
+            state_bucket = state_bucket or production.state_bucket
         ids = self.github.repository_ids(trusted)
         note, needs, exposure = None, None, "authenticated"
         try:
@@ -1159,9 +1185,58 @@ class Controller:
         files = app_root(target.service, project_id=target.project_id, region=target.region, state_bucket=state_bucket or f"{target.project_id}-tfstate",
                          github_repository=trusted, github_repository_id=ids["repository_id"], github_owner_id=ids["owner_id"],
                          bootstrap_image=bootstrap_image or BOOTSTRAP_IMAGE, health_path=health_path, settings={**app.infra, **(settings or {})}, needs=needs,
-                         exposure=exposure, viewers=self.viewers(app), github_environment=app.environment, workflow_files=list(app.workflows.values()),
-                         pipeline="platform" if app.central else "repository")
-        return {"application": app_id, "service": target.service, "directory": f"infra/gcp/apps/{target.service}", "files": files, "note": note}
+                         exposure=exposure, viewers=self.viewers(app), environment=environment, **layout)
+        return {"application": app_id, "service": target.service, "environment": environment, "directory": directory, "files": files, "note": note}
+
+    def add_production(self, principal, app_id):
+        """Give an application its production (docs/ROADMAP.md D37), one step at a time and safe to repeat: its production
+        target registered by convention in the production project; its production root proposed as a pull request that a
+        person merges (production infrastructure is never merged by the controller), which the pipeline plans and applies
+        with the production identities; then its environment production-<service> in the platform repository, whose
+        required reviewers approve every promotion, with the target's variables. Returns where it stands and what is next."""
+        app = self.app(principal, app_id, write=True)
+        if not principal.can_deploy:
+            raise ValueError("Identity has read-only access")
+        production, platform = self.config.production, self.config.platform
+        if production is None:
+            raise ValueError("Set production in the controller configuration first: the production project and its reviewers (docs/SETUP.md 7n)")
+        if platform is None:
+            raise ValueError("Set platform.repository in the controller configuration before adding production")
+        service, steps = app.service, {}
+        if app.production is None:
+            entry = {"environment": f"production-{service}", "target": {
+                "project_id": production.project_id, "region": production.region, "service": service, "registry": service,
+                "deploy_service_account": f"{service}-deploy@{production.project_id}.iam.gserviceaccount.com",
+                "probe_service_account": f"{service}-probe@{production.project_id}.iam.gserviceaccount.com",
+                "wif_provider": f"projects/{production.project_number}/locations/global/workloadIdentityPools/{service}-gh/providers/github",
+                "recovery_bucket": f"{production.project_id}-{service}-recovery"}}
+            Production.model_validate(entry)
+            self.store.register_production(app_id, entry)
+            self.refresh_registry()
+            app = self.config.applications[app_id]
+            self.store.record_event("production", name=app_id, identity=principal.name, application=app_id, outcome="registered", detail=production.project_id)
+            steps["registered"] = entry["target"]
+        rendered = self.render_infrastructure(principal, app_id, environment="production")
+        on_main = self.github.contents(platform.repository, platform.branch, f"{rendered['directory']}/main.tf")
+        base = {"application": app_id, "environment": app.production.environment, "project_id": app.production.target.project_id, "steps": steps}
+        if on_main is None or on_main["text"] != rendered["files"]["main.tf"]:
+            proposed = self.propose_infrastructure(principal, app_id, allow_writes=True, through="add_production", environment="production")
+            pull_request = proposed["pull_request"]
+            return {**base, "state": "infrastructure", "pull_request": pull_request,
+                    "next_action": f"A person merges {pull_request.get('url') or 'the production infrastructure pull request'} once its plan has run "
+                                   "(production infrastructure is never merged by the controller), then approves the apply in the environment "
+                                   "infra-production. Ask again after the apply for the environment and its approvers."}
+        target = app.production.target
+        variables = {"GCP_PROJECT_ID": target.project_id, "GCP_REGION": target.region, "CLOUD_RUN_SERVICE": target.service,
+                     "ARTIFACT_REPOSITORY": target.registry, "WIF_PROVIDER": target.wif_provider, "DEPLOY_SERVICE_ACCOUNT": target.deploy_service_account,
+                     "PROBE_SERVICE_ACCOUNT": target.probe_service_account, "RECOVERY_BUCKET": target.recovery_bucket}
+        self.github.ensure_protected_environment(platform.repository, app.production.environment, platform.branch, production.reviewers)
+        self.github.set_environment_variables(platform.repository, app.production.environment, variables)
+        self.store.record_event("production", name=app_id, identity=principal.name, application=app_id, outcome="ready",
+                                detail=f"{app.production.environment}: reviewers {', '.join(production.reviewers)}")
+        return {**base, "state": "ready", "reviewers": list(production.reviewers), "variables": sorted(variables),
+                "next_action": f"Production is ready for {app_id}: its root is on main, and every promotion into {app.production.environment} waits "
+                               f"for {' or '.join(production.reviewers)} to approve it on GitHub."}
 
     def viewers(self, app):
         """Who may open the app's pages: the lab-wide list plus the app's own, as the root grants them."""
@@ -1180,15 +1255,20 @@ class Controller:
         if lock is not None:  # every root pins the same provider build as the foundation
             rendered["files"][".terraform.lock.hcl"] = lock["text"]
         paths = {f"{rendered['directory']}/{name}": text for name, text in rendered["files"].items()}
-        body = (f"Terraform root for `{rendered['service']}` rendered by the controller from the configuration, the app's reviewed "
+        production = rendered.get("environment") == "production"
+        where = "production" if production else "staging"
+        body = (f"Terraform root for `{rendered['service']}` in {where}, rendered by the controller from the configuration, the app's reviewed "
                 "platform.yaml and GitHub's immutable ids.\n\nThe infrastructure plan workflow posts what an apply would do; "
                 "merging applies exactly that with the pipeline identity and publishes the outputs to the app's GitHub environment. "
                 "Nothing is applied by this pull request itself.\n\n"
                 f"Requested by `{principal.name}`{' through ' + through if through else ''} (written by the controller, not by Claude); "
                 "with `may_merge_own_requests: false` someone else merges it (docs/ROADMAP.md D29).")
-        pull_request = self.github.open_platform_pull_request(platform.repository, platform.branch, f"lab-deploy/infra-{rendered['service']}", paths,
-                                                              f"Infrastructure for {rendered['service']}", body, f"Render the infrastructure root for {rendered['service']}")
-        return {"application": app_id, "service": rendered["service"], "files": sorted(paths), "pull_request": pull_request, "note": rendered["note"]}
+        branch = f"lab-deploy/infra-{rendered['service']}" + ("-production" if production else "")
+        title = ("Production infrastructure for " if production else "Infrastructure for ") + rendered["service"]
+        pull_request = self.github.open_platform_pull_request(platform.repository, platform.branch, branch, paths, title, body,
+                                                              f"Render the {where} infrastructure root for {rendered['service']}")
+        return {"application": app_id, "service": rendered["service"], "environment": rendered.get("environment", "staging"), "files": sorted(paths),
+                "pull_request": pull_request, "note": rendered["note"]}
 
     def applications(self, principal):
         """Registered apps this identity may see, each with the live release this controller recorded and what main holds beyond it."""

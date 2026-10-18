@@ -105,7 +105,8 @@ jobs:
         working-directory: infra/gcp
         run: |
           terraform fmt -check -diff -recursive
-          for root in project apps/*/; do
+          shopt -s nullglob  # apps-production/ appears with the first production root (docs/ROADMAP.md D37)
+          for root in project apps/*/ apps-production/*/; do
             echo "== $root"
             (cd "$root" && terraform init -backend=false -input=false && terraform validate)
           done
@@ -123,7 +124,8 @@ jobs:
           git archive HEAD infra/gcp | tar -x -C "$RUNNER_TEMP/roots"
           export TF_PLUGIN_CACHE_DIR="$RUNNER_TEMP/tofu-plugins"
           cd "$RUNNER_TEMP/roots/infra/gcp"
-          for root in project apps/*/; do
+          shopt -s nullglob
+          for root in project apps/*/ apps-production/*/; do
             echo "== $root (OpenTofu)"
             (cd "$root" && "$RUNNER_TEMP/tofu/tofu" init -backend=false -input=false && "$RUNNER_TEMP/tofu/tofu" validate)
           done

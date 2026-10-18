@@ -308,6 +308,83 @@ anyone who has one. The steps, once:
 5. **Claude**: remove the old connector and add the `url` from the `controller` output (`https://ADDRESS/mcp`), then sign
    in with your operator token.
 
+## 7n. Production (Phase 16)
+
+Production is a second Google Cloud project with its own foundation, state, identities and budget (decision D37). It is
+created under the organization from the start, because the tier for protected health information (Phase 17) needs it
+there; staging stays where it is. A promotion will copy the exact image staging released, and every promotion waits for
+a reviewer's approval on GitHub. The steps, once:
+
+1. **The project**, under the organization and on the same billing account (this needs Project Creator on the
+   organization and Billing Account User on the account):
+
+   ```bash
+   gcloud projects create PROD_PROJECT --organization ORG_ID --name "Fast Deploy production"
+   gcloud billing projects link PROD_PROJECT --billing-account BILLING_ACCOUNT
+   ```
+
+2. **Its state bucket**, as in section 3:
+
+   ```bash
+   gcloud storage buckets create gs://PROD_PROJECT-tfstate --project PROD_PROJECT --location us-central1 --uniform-bucket-level-access --public-access-prevention
+   gcloud storage buckets update gs://PROD_PROJECT-tfstate --versioning
+   ```
+
+3. **Each environment its own settings file.** Rename `infra/gcp/project/terraform.tfvars` to `staging.tfvars`: Terraform
+   loads `terraform.tfvars` by itself, so staging's values would reach production, and `apply-foundation.sh` refuses
+   production while one exists. Then write `infra/gcp/project/production.tfvars`:
+
+   ```hcl
+   project_id = "PROD_PROJECT"
+   region     = "us-central1"
+
+   image_vulnerability_scanning = false  # a promotion copies a digest staging already scanned
+   monthly_budget_usd           = 20
+   billing_account              = "XXXXXX-XXXXXX-XXXXXX"
+   spending_cap                 = { enabled = true, threshold = 1.0 }
+   alert_email                  = "lab-admin@example.edu"
+
+   # Production's own pipeline identities, applied only from the environment infra-production.
+   pipeline = {
+     platform_repository    = "OWNER/fast-deploy"
+     platform_repository_id = "NUMERIC_ID"
+     platform_owner_id      = "NUMERIC_OWNER_ID"
+     environment            = "infra-production"
+   }
+
+   # The controller's machine stays in staging and reads production with the observer's viewer roles.
+   viewer_members = ["serviceAccount:lab-deploy-controller@STAGING_PROJECT.iam.gserviceaccount.com"]
+   ```
+
+   There is no `controller` block and no `billing_export_dataset`: the machine and the billing account's one export stay
+   in staging. The spending cap closes production's services at the budget, as in staging; turn it off only when a
+   production that stops is worse than the bill.
+4. **The foundation**: `scripts/apply-foundation.sh PROD_PROJECT production`. It prints four `INFRA_PRODUCTION_*` values.
+5. **On the platform repository**: set the repository variables `INFRA_PRODUCTION_PLAN_WIF_PROVIDER`,
+   `INFRA_PRODUCTION_APPLY_WIF_PROVIDER`, `INFRA_PRODUCTION_PLAN_SERVICE_ACCOUNT` and
+   `INFRA_PRODUCTION_APPLY_SERVICE_ACCOUNT` from that output; the production jobs stay dormant until they exist. Create
+   the environment `infra-production` like `infra` (section 7f: deployments from `main` only, no administrator bypass)
+   and add yourself as its required reviewer, leaving "Prevent self-review" off because you usually merge the change
+   yourself. Every production apply then waits for your approval, so nothing applies to production unless a person
+   agreed, whoever merged.
+6. **The controller's configuration** (`scripts/machine.sh config-get FILE`, edit, then `scripts/machine.sh config-put FILE`):
+
+   ```yaml
+   production:
+     project_id: PROD_PROJECT
+     project_number: "123456789012"   # gcloud projects describe PROD_PROJECT --format 'value(projectNumber)'
+     reviewers: [your-github-login]   # who approves every promotion, one to six GitHub accounts
+   ```
+
+7. **Each application**: ask Claude "add production for APP" (`add_production`). The first answer is a pull request with
+   the production root, `infra/gcp/apps-production/APP`. Read its plan comment and merge it yourself; the controller never
+   merges production infrastructure. Approve the apply in `infra-production`. Then ask again: the controller creates the
+   environment `production-APP` on the platform repository, with your reviewers as required reviewers, self-review
+   prevented, deployments from `main` only, and the eight target variables.
+
+At idle the production project costs a few cents a month (the roadmap's estimate is $0.06); its budget, alerts and
+spending cap work as in staging.
+
 ## 7b. Steer after a release
 
 - **Roll back**: ask Claude for `rollback_staging`. Traffic returns to the split that served before the live release through the recovery workflow, in seconds, with no build. The runner refuses if traffic has moved since or the checkpoint belongs to another release; deploy the wanted commit instead in that case.

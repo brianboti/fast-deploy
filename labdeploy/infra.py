@@ -16,6 +16,8 @@ import urllib.request
 from pathlib import Path
 
 NAME = re.compile(r"^[a-z][a-z0-9-]{2,20}$")
+# A root as the drift report names it: the service for staging, production-<service> for its production root (D37).
+ROOT_LABEL = re.compile(r"^(production-)?[a-z][a-z0-9-]{2,20}$")
 RESOURCE_NAME = re.compile(r"^[a-z][a-z0-9-]{1,20}$")
 ENVIRONMENT = re.compile(r"^[a-z][a-z0-9-]{1,15}$")
 DIGITS = re.compile(r"^[0-9]{1,20}$")
@@ -76,9 +78,15 @@ VIEWER = re.compile(r"^(user|group|domain):[A-Za-z0-9._%+-]+(@[A-Za-z0-9.-]+\.[A
 
 PLAIN_WORKFLOWS = ("deploy-gcp.yml", "recover-gcp.yml", "rightsize-gcp.yml")
 GITHUB_ENVIRONMENT = re.compile(r"^staging(-[a-z][a-z0-9-]{1,19}[a-z0-9])?$")
+# Where a root's outputs may be published: a staging environment, or production-<service> of the platform repository.
+PUBLISHED_ENVIRONMENT = re.compile(r"^(staging(-[a-z][a-z0-9-]{1,19}[a-z0-9])?|production-[a-z][a-z0-9-]{1,19}[a-z0-9])$")
 
 
 CENTRAL_WORKFLOWS = ("deploy.yml", "recover.yml", "rightsize.yml")  # the platform repository's own pipeline (docs/ROADMAP.md D33)
+# Production (docs/ROADMAP.md D37): every promotion runs the platform repository's promote.yml in production-<service>,
+# whose required reviewer is the approval; nothing else may sign in as a production deploy identity.
+PRODUCTION_WORKFLOWS = ("promote.yml",)
+PRODUCTION_ROOTS = "infra/gcp/apps-production"
 
 
 def app_root(name, *, project_id, region, state_bucket, github_repository, github_repository_id, github_owner_id,
@@ -112,7 +120,12 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
     if pipeline not in ("repository", "platform"):
         raise ValueError("pipeline is repository or platform")
     suffix = "" if github_environment == "staging" else github_environment.removeprefix("staging")
-    if pipeline == "platform":
+    if environment == "production":
+        # Promotions only: the platform repository's promote.yml in production-<service>, never an application's own workflows.
+        if pipeline != "platform" or github_environment != f"production-{name}" or tuple(workflow_files) != PRODUCTION_WORKFLOWS:
+            raise ValueError("A production root trusts the platform repository's promote.yml in the environment production-<service>")
+        suffix = f"-{name}"
+    elif pipeline == "platform":
         # Every application the platform pipeline releases runs in its own environment of the platform repository.
         if github_environment != f"staging-{name}" or tuple(workflow_files) != CENTRAL_WORKFLOWS:
             raise ValueError("The platform pipeline runs in the environment staging-<service> of the platform repository with deploy.yml, recover.yml and rightsize.yml")
@@ -239,16 +252,18 @@ output "runtime_alerts" {{ value = module.service.runtime_alerts }}
 
 
 def roots(changed, apps_dir):
-    """Which application roots a set of changed paths affects: a module or pipeline change affects every root."""
+    """Which application roots of `apps_dir` (infra/gcp/apps for staging, infra/gcp/apps-production for production) a set
+    of changed paths affects: a module or pipeline change affects every root."""
     directory = Path(apps_dir)
     names = sorted(p.name for p in directory.iterdir() if p.is_dir() and NAME.fullmatch(p.name)) if directory.is_dir() else []
     if any(path.startswith(("infra/gcp/modules/", ".github/workflows/infra-")) for path in changed):
         return names
+    prefix = ["infra", "gcp", "apps-production" if directory.name == "apps-production" else "apps"]
     touched = set()
     for path in changed:
         parts = path.split("/")
-        if parts[:3] == ["infra", "gcp", "apps"] and len(parts) > 3 and parts[3] in names:
-            touched.add(parts[3])
+        if parts[:len(prefix)] == prefix and len(parts) > len(prefix) and parts[len(prefix)] in names:
+            touched.add(parts[len(prefix)])
     return sorted(touched)
 
 
@@ -738,7 +753,7 @@ def publish(outputs, token=None, environment="staging", request=github_request):
         environment = (outputs.get("github_environment") or {}).get("value", environment)  # staging-<service> for a further app of a repository
     except KeyError as missing:
         raise ValueError(f"The root's outputs lack {missing}; render the root again with the current platform and merge it") from None
-    if not REPOSITORY.fullmatch(repository) or not GITHUB_ENVIRONMENT.fullmatch(environment):
+    if not REPOSITORY.fullmatch(repository) or not PUBLISHED_ENVIRONMENT.fullmatch(environment):
         raise ValueError("Unexpected repository or environment name in the outputs")
     lines = [f"### Variables for `{repository}`, environment `{environment}`", "", "| Variable | Value |", "|---|---|"]
     lines += [f"| {name} | `{value}` |" for name, value in sorted(values.items())]
@@ -782,13 +797,24 @@ def main(argv=None):
         print(usage, file=sys.stderr)
         return 1
     if argv[0] == "roots":
-        changed = [line.strip() for line in Path(argv[1]).read_text().splitlines() if line.strip()]
-        print("apps=" + json.dumps(roots(changed, argv[2] if len(argv) > 2 else "infra/gcp/apps")))
+        # --output NAME names the line (production for the production roots), so one job can list both kinds.
+        options, rest = _options(argv[1:], ("output",))
+        changed = [line.strip() for line in Path(rest[0]).read_text().splitlines() if line.strip()]
+        output = options.get("output", "apps")
+        if not re.fullmatch(r"[a-z]+", output):
+            print("--output is a lowercase word", file=sys.stderr)
+            return 1
+        print(f"{output}=" + json.dumps(roots(changed, rest[1] if len(rest) > 1 else "infra/gcp/apps")))
         return 0
     if argv[0] == "roots-all":
-        directory = Path(argv[1])
+        options, rest = _options(argv[1:], ("output",))
+        directory = Path(rest[0])
         names = sorted(p.name for p in directory.iterdir() if p.is_dir() and NAME.fullmatch(p.name)) if directory.is_dir() else []
-        print("apps=" + json.dumps(names))
+        output = options.get("output", "apps")
+        if not re.fullmatch(r"[a-z]+", output):
+            print("--output is a lowercase word", file=sys.stderr)
+            return 1
+        print(f"{output}=" + json.dumps(names))
         return 0
     if argv[0] == "drift-report":
         records = [json.loads(path.read_text()) for path in sorted(Path(argv[1]).glob("*.json"))] if Path(argv[1]).is_dir() else []
@@ -802,8 +828,8 @@ def main(argv=None):
         print(f"{len(violations)} violation(s)")
         return 2 if violations else 0
     if argv[0] == "drift":
-        if not NAME.fullmatch(argv[2] if len(argv) > 2 else ""):
-            print("drift needs the application's root name", file=sys.stderr)
+        if not ROOT_LABEL.fullmatch(argv[2] if len(argv) > 2 else ""):
+            print("drift needs the application's root name (production-<name> for a production root)", file=sys.stderr)
             return 1
         print(json.dumps(drift(document, argv[2]), indent=2))
         return 0

@@ -15,6 +15,20 @@ SERVICE_PATH = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0
 KINDS = ("deploy", "recover", "rightsize")
 
 
+class Production(StrictModel):
+    """An application's production (docs/ROADMAP.md D37): its target in the production project and its GitHub environment
+    production-<service> in the platform repository, where every promotion waits for a reviewer's approval. Registered by
+    add_production in the controller's database, for an application of the file as for one onboarding registered."""
+    target: Target
+    environment: str
+
+    @model_validator(mode="after")
+    def named(self):
+        if self.environment != f"production-{self.target.service}":
+            raise ValueError(f"A production environment is named production-<service>: production-{self.target.service}")
+        return self
+
+
 class Application(StrictModel):
     repository: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
     branch: str = Field(default="main", pattern=r"^[A-Za-z0-9_/-]+$")
@@ -52,6 +66,8 @@ class Application(StrictModel):
     # How long the release watches a promoted revision's own logs before calling it done (docs/ROADMAP.md D22); a crash or
     # 5xx answers restore the previous traffic. 0 turns the bake off for this application.
     bake_seconds: int = Field(default=300, ge=0, le=900)
+    # Its production, once add_production has registered one (docs/ROADMAP.md D37); None: staging only.
+    production: Production | None = None
 
     @model_validator(mode="after")
     def workflow_fixed(self):
@@ -75,6 +91,11 @@ class Application(StrictModel):
                                  f"deploy-gcp-{self.service}.yml with staging-{self.service}")
         if self.cost_ceiling_usd is not None and self.cost_ceiling_usd <= 0:
             raise ValueError("cost_ceiling_usd must be a positive amount")
+        if self.production is not None:
+            if self.production.target.service != self.service:
+                raise ValueError("The production target serves the same service as staging")
+            if self.production.target.project_id == self.target.project_id:
+                raise ValueError("Production lives in its own project, never in staging's (docs/ROADMAP.md D37)")
         check_viewers(self.viewers)
         from .infra import DEFAULT_SETTINGS, SETTING_RANGES
         for key, value in self.infra.items():
@@ -154,6 +175,33 @@ class Onboarding(StrictModel):
     @model_validator(mode="after")
     def viewers_well_formed(self):
         check_viewers(self.default_viewers)
+        return self
+
+
+GITHUB_LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
+
+
+class ProductionSettings(StrictModel):
+    """Where production lives and who approves a promotion there (docs/ROADMAP.md D37, D38): a second project in the same
+    billing account, under the organization from the start (D40), with its own foundation, state and identities."""
+    project_id: str = Field(pattern=r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+    project_number: str = Field(pattern=r"^[0-9]{6,20}$")
+    region: str = Field(default="us-central1", pattern=r"^[a-z]+-[a-z]+[0-9]$")
+    state_bucket: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$")  # default: <project_id>-tfstate
+    # The GitHub accounts that approve a promotion: the required reviewers of every production-<service> environment of the
+    # platform repository. The controller asks as the GitHub App, so its operator approving is not a self-review.
+    reviewers: list[str] = Field(min_length=1, max_length=6)
+    # The split release (D38): the share of traffic at each step, every step watched like the bake (seconds per step).
+    rollout: list[int] = Field(default_factory=lambda: [10, 50, 100])
+    bake_seconds: int = Field(default=300, ge=0, le=1800)
+
+    @model_validator(mode="after")
+    def well_formed(self):
+        for login in self.reviewers:
+            if not GITHUB_LOGIN.fullmatch(login):
+                raise ValueError(f"production.reviewers holds GitHub user names; {login!r} is not one")
+        if not self.rollout or self.rollout[-1] != 100 or any(not 0 < step <= 100 for step in self.rollout) or self.rollout != sorted(set(self.rollout)):
+            raise ValueError("production.rollout is a rising list of traffic shares that ends at 100, such as [10, 50, 100]")
         return self
 
 
@@ -259,6 +307,7 @@ class Config(StrictModel):
     github_app: GitHubApp | None = None
     oauth: OAuth | None = None
     onboarding: Onboarding | None = None
+    production: ProductionSettings | None = None
     paused: bool = False  # the kill switch: no new plans or dispatches for any app; reads keep working
     auto_deploy_interval_seconds: int = Field(default=300, ge=60, le=3600)
     notify_webhook_url: str | None = None  # Slack or Discord incoming webhook for the daily watchdog's findings
@@ -301,6 +350,8 @@ class Config(StrictModel):
             # The MCP transport matches Host exactly or as "host:*"; a wildcard entry would silently match nothing.
             if not re.fullmatch(r"(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:(\d{1,5}|\*))?", host):
                 raise ValueError("allowed_hosts entries must be exact hostnames with an optional port or ':*'; wildcards are not supported")
+        if self.production is not None and self.onboarding is not None and self.production.project_id == self.onboarding.project_id:
+            raise ValueError("production.project_id is a project of its own, never the staging project (docs/ROADMAP.md D37)")
         if self.oauth is not None:
             url = urlparse(self.oauth.public_url)
             if url.netloc not in self.allowed_hosts and f"{url.hostname}:*" not in self.allowed_hosts:
@@ -325,6 +376,7 @@ class LiveConfig:
     def __init__(self, config, path=None):
         self.current, self.path, self.error, self.reloaded_at = config, path, None, None
         self.registry = {}  # applications registered by onboarding (the controller's database), merged over the file's
+        self.productions = {}  # each application's production, registered by add_production (the database), laid over both
         self.mtime = self._mtime()
 
     @property
@@ -337,7 +389,11 @@ class LiveConfig:
             if settings is not None:
                 application = Application.model_validate({**application.model_dump(), **settings.model_dump(exclude_none=True)})
             registered[app_id] = application
-        return {**registered, **self.current.applications}
+        merged = {**registered, **self.current.applications}
+        for app_id, production in self.productions.items():
+            if app_id in merged:
+                merged[app_id] = Application.model_validate({**merged[app_id].model_dump(), "production": production})
+        return merged
 
     def _mtime(self):
         try:

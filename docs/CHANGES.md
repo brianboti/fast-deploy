@@ -1,3 +1,50 @@
+# 1.18.0: production as a project of its own (Phase 16, part one)
+
+The first part of Phase 16 (docs/ROADMAP.md D37): production gets its own Google Cloud project, created under the
+organization from the start because the tier for protected health information (Phase 17) needs it there, with its own
+foundation, state and identities. Each application gets its own production root and a protected GitHub environment.
+Nothing is promoted yet: promotion by digest (16.2) and the split release (16.3) come next. Staging is unchanged.
+
+1. **The production foundation** is the same Terraform as staging's, applied by the operator with
+   `scripts/apply-foundation.sh PROJECT production`. It has its own state (`project/production` in its own bucket), its
+   own budget and alerts named for production, and its own pipeline identities: the plan identity answers only the
+   platform repository's plan workflow on a pull request, and the apply identity only its apply workflow on `main` in
+   the environment `infra-production`. Each environment now names its own settings file (`staging.tfvars`,
+   `production.tfvars`). The script refuses production while `terraform.tfvars` exists, because Terraform loads that
+   file by itself and staging's values (its controller machine, its pipeline) would reach production. Git now ignores
+   every `*.tfvars`, so neither file can be committed.
+   `viewer_members` gives the controller's machine in staging the observer's viewer roles in production, so health and
+   logs will work for production apps.
+2. **The configuration's `production` block** names the project, its number and the GitHub accounts that approve a
+   promotion (`reviewers`, one to six). It also holds the split release's steps (`rollout`, default 10, 50, 100) and how
+   long each step is watched (`bake_seconds`), which 16.3 uses. The controller refuses a production in the staging project.
+3. **`add_production`**, a new tool (25 in all), works one step at a time and is safe to repeat.
+   - The first call registers the application's production in the controller's database, by convention:
+     `<service>-deploy` and `<service>-probe` in the production project, the `<service>-gh` identity pool, the bucket
+     `<project>-<service>-recovery` and the environment `production-<service>`. It works the same for an application of
+     the configuration file and for one onboarding registered.
+   - It then opens the production root, `infra/gcp/apps-production/<service>`, as a pull request. **A person merges it:
+     the controller never merges production infrastructure.** The pipeline plans it with production's read-only
+     identity and applies it with production's apply identity.
+   - Once the root is on `main`, the next call creates the platform repository's environment `production-<service>`. It
+     deploys only from `main`, every job in it waits for one of the reviewers, and self-review is prevented. The
+     controller starts runs as the GitHub App, so the operator's approval counts. The environment also gets the eight
+     target variables.
+4. **The production root trusts only the platform repository's `promote.yml` in `production-<service>`.** The deploy
+   identity's Workload Identity condition names that workflow and that environment, so neither the application's
+   repository nor staging's workflows can reach production. The service module accepts exactly that shape and nothing
+   looser, and its dashboard says which environment it shows.
+5. **The pipeline covers both projects.** The plan, apply and drift workflows find production roots under
+   `infra/gcp/apps-production/` and run them in jobs of their own with the `INFRA_PRODUCTION_*` variables. A change to
+   the shared service module plans and applies every root in both projects. Drift names production roots
+   `production-<service>`. CI validates and lint-checks those roots too.
+
+Setup: `docs/SETUP.md` section 7n, once. Terraform: the production foundation once, by the operator; staging's foundation
+plans no change. The skill (`skills/fast-deploy-operator`) gained the new tool; upload it again.
+
+Tests: 616 pass (12 new in `tests/test_phase16.py`); ruff clean.
+
+
 # 1.17.3: the controller merges its own pull request only after its checks pass
 
 Found on 2026-10-18 in the live onboarding through the GitHub App (`docs/VALIDATION.md`): lab-bare has no required checks,

@@ -86,6 +86,7 @@ changes until a person merges. **Act** tools change the cloud.
 | `create_deployment_plan` | Record | A plan for one exact commit already on main; it expires after 15 minutes |
 | `propose_configuration` | Record | A draft pull request with the contract files a service lacks (never one that exists), for a registered app or a repository link before onboarding |
 | `propose_infrastructure` | Record | The app's cloud setup (Terraform) as a pull request on the platform repository; merging applies it |
+| `add_production` | Record | Give an app its production, step by step: its production cloud setup as a pull request a person merges, then its environment whose reviewers approve every promotion |
 | `import_contract` | Record | Take a repository as it is: its contract (`apps/NAME/platform.yaml`) as a pull request on the platform repository; nothing is added to the repository |
 | `update_app_workflows` | Record | Re-pin the app's three workflow files to the current platform, as a pull request |
 | `propose_rightsizing` | Record | The weekly report's measured proposals as a pull request on `platform.yaml` |

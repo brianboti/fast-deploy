@@ -1,4 +1,14 @@
 variable "project_id" { type = string }
+variable "environment" {
+  type        = string
+  default     = "staging"
+  description = "staging or production (docs/ROADMAP.md D37): only names change with it; each environment is its own project and foundation."
+}
+variable "viewer_members" {
+  type        = list(string)
+  default     = []
+  description = "Service accounts of another project (serviceAccount:EMAIL) that view this one with the observer's roles."
+}
 variable "project_number" { type = string }
 variable "region" { type = string }
 variable "state_bucket" {

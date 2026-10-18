@@ -12,6 +12,8 @@ locals {
 module "project" {
   source                       = "../modules/project"
   project_id                   = var.project_id
+  environment                  = var.environment
+  viewer_members               = var.viewer_members
   project_number               = data.google_project.current.number
   region                       = var.region
   image_vulnerability_scanning = var.image_vulnerability_scanning

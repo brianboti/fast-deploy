@@ -1,6 +1,24 @@
 variable "project_id" {
   type = string
 }
+variable "environment" {
+  type        = string
+  default     = "staging"
+  description = "staging or production: production is a project of its own with its own foundation and state (docs/ROADMAP.md D37)."
+  validation {
+    condition     = contains(["staging", "production"], var.environment)
+    error_message = "environment is staging or production."
+  }
+}
+variable "viewer_members" {
+  type        = list(string)
+  default     = []
+  description = "Service accounts of another project that view this one with the observer's roles; in production, the controller machine's identity in staging."
+  validation {
+    condition     = alltrue([for member in var.viewer_members : can(regex("^serviceAccount:[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9][.]iam[.]gserviceaccount[.]com$", member))])
+    error_message = "viewer_members are serviceAccount:NAME@PROJECT.iam.gserviceaccount.com."
+  }
+}
 variable "region" {
   type    = string
   default = "us-central1"
