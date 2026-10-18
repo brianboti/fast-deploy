@@ -55,7 +55,9 @@ invented. Claude adds detail only when you ask for it ("show me the steps", "why
 > **Next:** nothing to do; it continues on its own every minute.
 
 If an answer comes back as a wall of text or raw JSON, the playbook skill is probably missing or old: re-upload it
-(step 4 above).
+(step 4 above). claude.ai does not read the connector's own instructions (anthropics/claude-ai-mcp issue #93, open since
+March 2026), so the skill, the tool descriptions and each result's `summary` are all the guidance Claude gets; that is why
+the skill must be re-uploaded after every release that changes `skills/` (the release note in `docs/CHANGES.md` says when).
 
 ## What you can ask for
 

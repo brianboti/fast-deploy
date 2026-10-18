@@ -405,10 +405,23 @@ class Controller:
         from .onboarding import describe
         record = self.store.onboarding(app_id)
         if record is None:
+            if app_id in self.visible_apps(principal):
+                return self.registered_by_hand(app_id)
             raise ValueError("No onboarding record for this application; call onboard_application with the repository link")
         if "*" not in principal.applications and app_id not in principal.applications:
             raise ValueError("Application is not authorized for this identity; list_applications shows the ones it may use")
         return describe(record)
+
+    def registered_by_hand(self, app_id):
+        """An application in the configuration without an onboarding record (found live: `demo`, registered by hand and live,
+        was told to onboard itself): what it is and where its live release stands, so the answer points at the right tools."""
+        app = self.config.applications[app_id]
+        live = self.store.latest_success(app_id)
+        return {"application": app_id, "state": "registered_by_hand", "repository": app.repository, "path": app.path, "as_is": app.central,
+                "live_release": live and {"plan_id": live["id"], "sha": live["sha"], "commit": live.get("commit"),
+                                          "completed_at": (live.get("outcome") or {}).get("completed_at")},
+                "next_action": f"{app_id} was registered by hand, not onboarded from chat, so there is no onboarding to follow; "
+                               "list_applications shows its live release and get_service_health how it is doing."}
 
     AUTO_DEPLOY_IDENTITY = "auto-deploy"
 
@@ -1432,6 +1445,7 @@ class Controller:
             "sha": live["sha"], "commit": live.get("commit"), "spec_hash": live.get("spec_hash"), "cloud": "gcp", "environment": "staging",
             "target": live.get("target"), "expires_at": time.time() + 900, "cost": None, "checks": {},
             "from_plan": live["id"], "from_revision": receipt.get("revision"), "to_traffic": receipt["previous_traffic"],
+            "previous": self.previous_release(app_id, receipt["previous_traffic"]),
         }
         try:
             record["dispatch_result"] = self.github.dispatch_workflow(app, app.workflows["recover"], {"rollback_plan_id": live["id"]})
@@ -1441,6 +1455,17 @@ class Controller:
         self.store.add(principal.name, record, "dispatched")
         return {**record, "state": "dispatched",
                 "next_action": f"Rollback dispatched: traffic returns to {record['to_traffic']} within about a minute. Ask for status with this id."}
+
+    def previous_release(self, app_id, split):
+        """The release whose revision held the most traffic before the live one, so a rollback can name a commit rather than a
+        revision (found live: `lab-notebook-r9111fd55b0d94066`); only the revision when this controller did not release it."""
+        if not isinstance(split, dict) or not split:
+            return None
+        revision = max(split, key=lambda name: split[name] or 0)
+        for item in self.store.plans(applications=[app_id]):
+            if item.get("revision") == revision and item.get("sha"):
+                return {"revision": revision, "sha": item["sha"], "message": item.get("summary")}
+        return {"revision": revision}
 
     def compare_with_live(self, principal, app_id):
         """What main holds beyond the live release: commits, files, the kinds of change, and the cost bounds before and after."""

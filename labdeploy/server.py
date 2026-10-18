@@ -4,11 +4,12 @@ import datetime
 import functools
 import hashlib
 import hmac
+import inspect
 import logging
 import os
 import threading
 import time
-from typing import Any
+from typing import Annotated, Any
 
 import httpx
 import pydantic
@@ -151,6 +152,20 @@ INSTRUCTIONS = (
     "estimate_cost and get_cost_report are bounds from list prices, never a bill. Other clouds, production, public access, GPUs and "
     "resources above the lab's limits are refused by policy: say so with the legitimate way forward, and never work around it."
 )
+# claude.ai does not pass INSTRUCTIONS to the model (anthropics/claude-ai-mcp issue #93), so the one rule that matters most
+# ends every tool's description, and every parameter says what it is: those two and `summary` are all Claude reads there.
+SUMMARY_RULE = "Answer from `summary` as written (bold outcome, bullets, Next line); the rest is detail for when the operator asks."
+
+
+def described(text):
+    return pydantic.Field(description=text)
+
+
+APP = Annotated[str, described("The app's registered name, as list_applications shows it.")]
+APP_OR_NONE = Annotated[str | None, described("The name to register it under; omit to take the repository's name.")]
+REPOSITORY = Annotated[str, described("The GitHub repository: a link, or owner/name.")]
+PATH = Annotated[str | None, described("The service's folder inside the repository (e.g. services/api); omit for the root.")]
+PLAN_ID = Annotated[str, described("The plan's id, from create_deployment_plan, deploy_latest or list_plans.")]
 
 
 class RateLimiter:
@@ -256,158 +271,174 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
     def rest(name, fn, subject=None):
         return invoke(store, "rest", name, fn, subject)
 
-    @mcp.tool(title="List applications", annotations=READ_ONLY, structured_output=True)
+    def tool(title, annotations):
+        """Register a tool whose result starts with `summary`: its description ends with the rule for answering from it."""
+        def register(fn):
+            fn.__doc__ = f"{inspect.cleandoc(fn.__doc__ or '')} {SUMMARY_RULE}"
+            return mcp.tool(title=title, annotations=annotations, structured_output=True)(fn)
+        return register
+
+    @tool(title="List applications", annotations=READ_ONLY)
     @plain_errors
     def list_applications() -> dict[str, Any]:
         """Applications permitted for the caller, each with the live release this controller recorded and the commits main holds beyond it."""
         return chat.attach(chat.applications, controller.applications(identity.get()))
 
-    @mcp.tool(title="Analyze repository", annotations=READ_ONLY, structured_output=True)
+    @tool(title="Analyze repository", annotations=READ_ONLY)
     @plain_errors
-    def analyze_repository(application: str) -> dict[str, Any]:
-        """Inspect approved repository metadata; return a draft with explicit assumptions."""
-        return controller.inspect(identity.get(), application)
+    def analyze_repository(application: APP) -> dict[str, Any]:
+        """Read a registered app's repository conservatively: what it found, a draft platform.yaml, and the questions a person must confirm. Reads only."""
+        return chat.attach(chat.analysis, controller.inspect(identity.get(), application), application=application)
 
-    @mcp.tool(title="Create deployment plan", annotations=CREATES_RECORD, structured_output=True)
+    @tool(title="Create deployment plan", annotations=CREATES_RECORD)
     @plain_errors
-    def create_deployment_plan(application: str, cloud: str = "gcp", environment: str = "staging", commit_sha: str | None = None) -> dict[str, Any]:
+    def create_deployment_plan(application: APP, cloud: Annotated[str, described("Only gcp is supported.")] = "gcp",
+                               environment: Annotated[str, described("Only staging is supported.")] = "staging",
+                               commit_sha: Annotated[str | None, described("A full 40-character commit already on main, to release that one; omit for the tip of main.")] = None) -> dict[str, Any]:
         """Validate committed platform.yaml and pin an expiring plan to a Git commit: the tip of main, or any older commit already on main (commit_sha)."""
         return chat.attach(chat.release, controller.plan(identity.get(), application, cloud, environment, commit_sha))
 
-    @mcp.tool(title="Propose configuration (draft PR)", annotations=CREATES_RECORD, structured_output=True)
+    @tool(title="Propose configuration (draft PR)", annotations=CREATES_RECORD)
     @plain_errors
-    def propose_configuration(application: str | None = None, repository: str | None = None, path: str | None = None) -> dict[str, Any]:
-        """Open a draft pull request with the files docs/DEVELOPER-CONTRACT.md asks for that the service lacks (Dockerfile, .dockerignore,
-        requirements-dev.txt, a hash-locked requirements.lock, a health test, platform.yaml with reviewed: false, CI, SECURITY.md,
-        Dependabot), never one that exists. Give a registered `application`, or a `repository` link and its `path` before onboarding.
-        The platform never merges it."""
+    def propose_configuration(application: Annotated[str | None, described("A registered app; or give repository (and path) for one not onboarded yet.")] = None,
+                              repository: Annotated[str | None, described("The GitHub repository (a link, or owner/name) when the app is not registered yet.")] = None,
+                              path: PATH = None) -> dict[str, Any]:
+        """Open a draft pull request with the files docs/DEVELOPER-CONTRACT.md asks for that the service lacks (Dockerfile, lock files, a health
+        test, platform.yaml with reviewed: false, CI, SECURITY.md, Dependabot), never one that exists. The platform never merges it."""
         return chat.attach(chat.draft, controller.propose_config(identity.get(), application, repository, path))
 
-    @mcp.tool(title="Update app workflows (pull request)", annotations=CREATES_RECORD, structured_output=True)
+    @tool(title="Update app workflows (pull request)", annotations=CREATES_RECORD)
     @plain_errors
-    def update_app_workflows(application: str, platform_commit: str | None = None) -> dict[str, Any]:
+    def update_app_workflows(application: APP,
+                             platform_commit: Annotated[str | None, described("The platform commit to pin the workflows to; omit for the current one.")] = None) -> dict[str, Any]:
         """Regenerate the app's three workflow files against the platform's current (or given) commit and open a pull request. Never merges."""
         return chat.attach(chat.pull_request, controller.update_workflows(identity.get(), application, platform_commit), what="the release workflows pinned to the current platform")
 
-    @mcp.tool(title="Propose infrastructure (pull request)", annotations=CREATES_RECORD, structured_output=True)
+    @tool(title="Propose infrastructure (pull request)", annotations=CREATES_RECORD)
     @plain_errors
-    def propose_infrastructure(application: str) -> dict[str, Any]:
+    def propose_infrastructure(application: APP) -> dict[str, Any]:
         """Render the app's Terraform root (service, registry, identities, trust, alerts) and open a pull request on the platform repository; the pipeline applies it on merge. Never merges."""
         return chat.attach(chat.pull_request, controller.propose_infrastructure(identity.get(), application), what="its cloud setup", applies=True)
 
-    @mcp.tool(title="Onboard a repository (one sentence)", annotations=CHANGES_CLOUD, structured_output=True)
+    @tool(title="Onboard a repository (one sentence)", annotations=CHANGES_CLOUD)
     @plain_errors
-    def onboard_application(repository: str, application: str | None = None, auto_deploy: bool = False, path: str | None = None,
-                            as_is: bool = False) -> dict[str, Any]:
-        """From a repository link to a running service, for a repository that follows docs/DEVELOPER-CONTRACT.md: validate it, register it,
-        open and (when the policy and checks pass) merge its infrastructure and workflow pull requests, wait for the pipeline, create the
-        GitHub environment with its variables, and release the first commit. `path`: the service's folder when it is not the repository
-        root (a monorepo, e.g. services/api); call once per service. `as_is`: take the repository as it is, adding nothing to it: the
-        platform reads it, proposes its contract as a pull request on the platform repository (a person's merge is the review) and
-        releases it with the platform's own pipeline. Resumable: call again to continue, or after fixing what blocked it. Changes cloud
-        resources."""
+    def onboard_application(repository: REPOSITORY, application: APP_OR_NONE = None,
+                            auto_deploy: Annotated[bool, described("True to release every future merge to main on its own; off by default.")] = False,
+                            path: PATH = None,
+                            as_is: Annotated[bool, described("True to take the repository as it is: nothing is added to it, and its contract becomes a "
+                                                             "pull request on the platform repository that a person merges.")] = False) -> dict[str, Any]:
+        """From a repository link to a running service, for a repository that follows docs/DEVELOPER-CONTRACT.md: validate and register it,
+        merge its infrastructure and workflow pull requests once the policy and checks pass, create the GitHub environment and release the
+        first commit. One call per service; call again to continue, or after fixing what blocked it. Changes cloud resources."""
         return chat.attach(chat.onboarding, controller.onboard(identity.get(), repository, application, auto_deploy, path, as_is=as_is))
 
-    @mcp.tool(title="Import a contract (pull request)", annotations=CREATES_RECORD, structured_output=True)
+    @tool(title="Import a contract (pull request)", annotations=CREATES_RECORD)
     @plain_errors
-    def import_contract(repository: str, path: str | None = None, application: str | None = None) -> dict[str, Any]:
-        """Read one service of a repository as it is and open the pull request that adds its contract (apps/<service>/platform.yaml,
-        with the locks the platform made) to the platform repository: every choice and the file it came from, the files set aside,
-        and what it refuses and how to fix it. Nothing is added to the repository itself; a person's merge is the review."""
+    def import_contract(repository: REPOSITORY, path: PATH = None, application: APP_OR_NONE = None) -> dict[str, Any]:
+        """Read one service of a repository as it is and open the pull request that adds its contract (apps/<service>/platform.yaml, with
+        the locks the platform made) to the platform repository: every choice and its source file, and what it refuses and how to fix it.
+        Nothing is added to the repository itself; a person's merge is the review."""
         return chat.attach(chat.contract_import, controller.import_contract(identity.get(), repository, path, application))
 
-    @mcp.tool(title="Check a repository", annotations=READ_ONLY, structured_output=True)
+    @tool(title="Check a repository", annotations=READ_ONLY)
     @plain_errors
-    def check_repository(repository: str, path: str | None = None) -> dict[str, Any]:
+    def check_repository(repository: REPOSITORY, path: PATH = None) -> dict[str, Any]:
         """Check a GitHub repository (or one service folder of it) against docs/DEVELOPER-CONTRACT.md before deploying: each required
         and recommended item, whether it holds, why it matters, and which missing files the platform can draft. Reads only."""
         return chat.attach(chat.check, controller.check_repository(identity.get(), repository, path))
 
-    @mcp.tool(title="Get onboarding status", annotations=READ_ONLY, structured_output=True)
+    @tool(title="Get onboarding status", annotations=READ_ONLY)
     @plain_errors
-    def get_onboarding_status(application: str) -> dict[str, Any]:
+    def get_onboarding_status(application: APP) -> dict[str, Any]:
         """Where a repository's onboarding stands: the step in progress, what it waits for, or what blocked it and how to fix it."""
         return chat.attach(chat.onboarding, controller.onboarding_status(identity.get(), application))
 
-    @mcp.tool(title="Deploy to staging", annotations=CHANGES_CLOUD, structured_output=True)
+    @tool(title="Deploy to staging", annotations=CHANGES_CLOUD)
     @plain_errors
-    def deploy_staging(plan_id: str) -> dict[str, Any]:
+    def deploy_staging(plan_id: PLAN_ID) -> dict[str, Any]:
         """Dispatch the approved workflow for an existing plan. Changes cloud resources when enabled."""
         return chat.attach(chat.release, controller.deploy(identity.get(), plan_id))
 
-    @mcp.tool(title="Deploy the latest commit", annotations=CHANGES_CLOUD, structured_output=True)
+    @tool(title="Deploy the latest commit", annotations=CHANGES_CLOUD)
     @plain_errors
-    def deploy_latest(application: str) -> dict[str, Any]:
+    def deploy_latest(application: APP) -> dict[str, Any]:
         """Plan the tip of main and dispatch it in one call when every policy passes. Changes cloud resources when enabled."""
         return chat.attach(chat.release, controller.deploy_latest(identity.get(), application))
 
-    @mcp.tool(title="Roll back to the previous revision", annotations=CHANGES_CLOUD, structured_output=True)
+    @tool(title="Roll back to the previous revision", annotations=CHANGES_CLOUD)
     @plain_errors
-    def rollback_staging(application: str) -> dict[str, Any]:
+    def rollback_staging(application: APP) -> dict[str, Any]:
         """Move traffic back to the split that served before the live release, in seconds and without a build. Changes cloud resources."""
         return chat.attach(chat.release, controller.rollback(identity.get(), application))
 
-    @mcp.tool(title="Cancel a running deployment", annotations=CHANGES_CLOUD, structured_output=True)
+    @tool(title="Cancel a running deployment", annotations=CHANGES_CLOUD)
     @plain_errors
-    def cancel_deployment(plan_id: str) -> dict[str, Any]:
+    def cancel_deployment(plan_id: PLAN_ID) -> dict[str, Any]:
         """Cancel the GitHub run of a dispatched plan. The recovery workflow restores traffic if the release had started changing it."""
         return chat.attach(chat.release, controller.cancel(identity.get(), plan_id))
 
-    @mcp.tool(title="Compare main with the live release", annotations=READ_ONLY, structured_output=True)
+    @tool(title="Compare main with the live release", annotations=READ_ONLY)
     @plain_errors
-    def compare_with_live(application: str) -> dict[str, Any]:
+    def compare_with_live(application: APP) -> dict[str, Any]:
         """Commits and files on main since the live release, what kinds of change they are, and the cost bounds before and after."""
         return chat.attach(chat.compare, controller.compare_with_live(identity.get(), application))
 
-    @mcp.tool(title="Get service health (live)", annotations=READ_ONLY, structured_output=True)
+    @tool(title="Get service health (live)", annotations=READ_ONLY)
     @plain_errors
-    def get_service_health(application: str, minutes: int = 60) -> dict[str, Any]:
+    def get_service_health(application: APP, minutes: Annotated[int, described("The window to measure, in minutes (default 60).")] = 60) -> dict[str, Any]:
         """Live view from Cloud Run and Cloud Monitoring: readiness, serving revisions with their plan and commit, requests, errors, latency,
         instances, memory, and whether it matches what this controller recorded."""
         return chat.attach(chat.health, controller.service_health(identity.get(), application, minutes))
 
-    @mcp.tool(title="Get recent logs (live)", annotations=READ_ONLY, structured_output=True)
+    @tool(title="Get recent logs (live)", annotations=READ_ONLY)
     @plain_errors
-    def get_recent_logs(application: str, minutes: int = 30, severity: str = "ERROR", limit: int = 50) -> dict[str, Any]:
+    def get_recent_logs(application: APP, minutes: Annotated[int, described("How far back to look, in minutes (default 30, up to 1440).")] = 30,
+                        severity: Annotated[str, described("The lowest level to include: DEFAULT, INFO, WARNING, ERROR (default) or CRITICAL.")] = "ERROR",
+                        limit: Annotated[int, described("At most this many lines (default 50, up to 200).")] = 50) -> dict[str, Any]:
         """The newest log lines of the service at or above a severity (DEFAULT, INFO, WARNING, ERROR, CRITICAL), newest first."""
         return chat.attach(chat.logs, controller.recent_logs(identity.get(), application, minutes, severity, limit))
 
-    @mcp.tool(title="Get deployment status", annotations=READ_ONLY, structured_output=True)
+    @tool(title="Get deployment status", annotations=READ_ONLY)
     @plain_errors
-    def get_deployment_status(plan_id: str, wait_seconds: int = 0) -> dict[str, Any]:
+    def get_deployment_status(plan_id: PLAN_ID,
+                              wait_seconds: Annotated[int, described("Seconds to wait for the state to change before answering: 0 (default) to 45.")] = 0) -> dict[str, Any]:
         """Actual GitHub workflow status with every step, the release receipt, recovery, and a next action. Dispatched does not mean deployed. wait_seconds (up to 45) waits for a change."""
         return chat.attach(chat.release, controller.status(identity.get(), plan_id, wait_seconds))
 
-    @mcp.tool(title="List plans", annotations=READ_ONLY, structured_output=True)
+    @tool(title="List plans", annotations=READ_ONLY)
     @plain_errors
     def list_plans() -> dict[str, Any]:
-        """List this caller's own deployment plans, newest first, with their current state."""
-        return controller.plans(identity.get())
+        """Deployment plans and rollbacks this caller may see, newest first, with their current state."""
+        return chat.attach(chat.plans, controller.plans(identity.get()))
 
-    @mcp.tool(title="Estimate cost", annotations=READ_ONLY, structured_output=True)
+    @tool(title="Estimate cost", annotations=READ_ONLY)
     @plain_errors
-    def estimate_cost(application: str, requests_per_month: int | None = None, average_request_seconds: float | None = None) -> dict[str, Any]:
+    def estimate_cost(application: APP,
+                      requests_per_month: Annotated[int | None, described("Expected requests a month, for a traffic scenario; give both scenario values or neither.")] = None,
+                      average_request_seconds: Annotated[float | None, described("Seconds an average request takes, for the scenario.")] = None) -> dict[str, Any]:
         """Cost bounds from list prices for the committed platform.yaml, plus findings; optional traffic scenario."""
         return chat.attach(chat.estimate, controller.cost(identity.get(), application, requests_per_month, average_request_seconds), application=application)
 
-    @mcp.tool(title="Propose right-sizing (pull request)", annotations=CREATES_RECORD, structured_output=True)
+    @tool(title="Propose right-sizing (pull request)", annotations=CREATES_RECORD)
     @plain_errors
-    def propose_rightsizing(application: str) -> dict[str, Any]:
+    def propose_rightsizing(application: APP) -> dict[str, Any]:
         """Turn the latest measured right-sizing proposals into a pull request against platform.yaml, with the savings and cost bounds. Never merges."""
-        return controller.propose_rightsizing(identity.get(), application)
+        return chat.attach(chat.rightsizing, controller.propose_rightsizing(identity.get(), application))
 
-    @mcp.tool(title="Get cost report", annotations=READ_ONLY, structured_output=True)
+    @tool(title="Get cost report", annotations=READ_ONLY)
     @plain_errors
-    def get_cost_report(application: str) -> dict[str, Any]:
-        """Latest measured right-sizing report from the rightsizing workflow; never estimated."""
-        return controller.cost_report(identity.get(), application)
+    def get_cost_report(application: APP) -> dict[str, Any]:
+        """Latest measured right-sizing report from the rightsizing workflow: real usage, proposals and actual spend; never estimated."""
+        return chat.attach(chat.cost_report, controller.cost_report(identity.get(), application), application=application)
 
-    @mcp.tool(title="List events", annotations=READ_ONLY, structured_output=True)
+    @tool(title="List events", annotations=READ_ONLY)
     @quiet
-    def list_events(limit: int = 50, application: str | None = None) -> dict[str, Any]:
+    def list_events(limit: Annotated[int, described("At most this many events (default 50, up to 500).")] = 50,
+                    application: Annotated[str | None, described("Only events about this app; omit for all.")] = None) -> dict[str, Any]:
         """Recent audit events: tool and REST calls, sign-ins, throttling, token reuse. Deployers see every identity; read-only identities see their own."""
         principal = identity.get()
-        return {"events": store.recent_events(min(max(int(limit), 1), 500), identity=None if principal.can_deploy else principal.name, application=application)}
+        return chat.attach(chat.events, {"events": store.recent_events(min(max(int(limit), 1), 500), identity=None if principal.can_deploy else principal.name,
+                                                                        application=application)})
 
     def spending_guards():
         caps = getattr(config, "cloud_run_spend_caps", None) or {}
@@ -416,7 +447,7 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
                 "missing": [project for project in projects if not caps.get(project)],
                 "note": "Native Cloud Run spend caps the operator recorded (docs/SETUP.md 7i); the platform's own cap workflow also stops databases."}
 
-    @mcp.tool(title="Get controller status", annotations=READ_ONLY, structured_output=True)
+    @tool(title="Get controller status", annotations=READ_ONLY)
     @plain_errors
     def get_controller_status() -> dict[str, Any]:
         """Controller version, dispatch and sign-in switches, registered apps, GitHub credential expiry, and pricing freshness."""
