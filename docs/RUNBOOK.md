@@ -70,6 +70,17 @@ cost bounds in production. **Review deployments**, then approve or reject. Rejec
 run may not approve it; the controller starts runs as the GitHub App, so your approval counts. If the run waits too long
 (GitHub ends an unapproved run after 30 days), ask for the promotion again.
 
+If **Review deployments** does nothing, check which GitHub account the browser is signed in with: only a required reviewer
+can approve, and an approval that did not arrive leaves the run waiting with nothing in its approvals (found on
+2026-10-18). From a terminal signed in to `gh` as the reviewer, after reading the approval block:
+
+```bash
+gh api -X POST repos/OWNER/fast-deploy/actions/runs/RUN_ID/pending_deployments -F "environment_ids[]=$(gh api repos/OWNER/fast-deploy/environments/ENVIRONMENT --jq .id)" -f state=approved -f comment="approved after reading the approval block"
+```
+
+The same works for an apply waiting in `infra-production`. The promote job checks the approval GitHub recorded before it
+does anything.
+
 ### Undo a promotion
 
 Until the split release (roadmap item 16.3) brings a production rollback, it is done by hand, in seconds and without a

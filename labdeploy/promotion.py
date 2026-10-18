@@ -73,6 +73,9 @@ def check(env):
         raise PromotionError("Only an image with signed provenance is promoted (github or cosign-kms); one released under the operator's exception is not")
     if contract and (workflow != "deploy.yml" or mode != "cosign-kms"):
         raise PromotionError("An application whose contract the platform keeps was released by deploy.yml and signed with its Cloud KMS key")
+    attested = env.get("ATTESTED_COMMIT", "")
+    if attested and (not COMMIT.fullmatch(attested) or mode != "github"):
+        raise PromotionError("attested_commit is the full commit GitHub's attestation names, for an image GitHub attested")
     bake = env.get("BAKE_SECONDS", "")
     if not re.fullmatch(r"[0-9]{1,3}", bake) or int(bake) > MAX_BAKE_SECONDS:
         raise PromotionError(f"bake_seconds is a whole number from 0 to {MAX_BAKE_SECONDS}")
@@ -88,7 +91,8 @@ def check(env):
     if project == target.get("project_id"):
         raise PromotionError("The staging image is already in the production project: a promotion copies from staging")
     return {"plan": plan, "source_plan": source_plan, "service": service, "commit": commit, "repository": repository, "contract": contract or None, "workflow": workflow,
-            "mode": mode, "staging_project": project, "staging_registry": registry, "digest": digest, "target": target, "bake_seconds": int(bake)}
+            "mode": mode, "staging_project": project, "staging_registry": registry, "digest": digest, "target": target, "bake_seconds": int(bake),
+            "attested_commit": attested or None}
 
 
 def approvers(approvals, environment):
@@ -143,7 +147,7 @@ def predicate(env, now=None):
         "slsaVersion": "1.0",
         "lab_deploy": {"plan_id": facts["plan"], "application": facts["service"], "commit": facts["commit"], "spec_hash": env["SPEC_HASH"],
                        "source": {"image": source, "plan_id": facts["source_plan"], "provenance": facts["mode"], "repository": facts["repository"],
-                                  "workflow": facts["workflow"], "contract_commit": facts["contract"]},
+                                  "workflow": facts["workflow"], "contract_commit": facts["contract"], "attested_commit": facts["attested_commit"]},
                        "approved_by": approved, "environment": f"production-{facts['service']}",
                        "run": f"{server}/{platform}/actions/runs/{run}"},
     }

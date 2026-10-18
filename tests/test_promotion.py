@@ -97,6 +97,11 @@ def test_promote_refuses_without_production_ready_or_a_signed_recent_staging_rel
     with pytest.raises(ValueError, match="rolled back"):
         c.promote(brian, "demo", "1" * 32)
     staging_release(c, "2" * 32)
+    bypassable = gh.deployment_environment
+    gh.deployment_environment = lambda repository, name: {**bypassable(repository, name), "can_admins_bypass": True}
+    with pytest.raises(ValueError, match="administrators can skip the approval in production-demo"):  # GitHub's default (found live)
+        c.promote(brian, "demo")
+    del gh.deployment_environment
     del gh.environments[("lab/platform", "production-demo")]
     with pytest.raises(ValueError, match="production-demo does not exist.*Ask for add_production"):
         c.promote(brian, "demo")
@@ -110,7 +115,7 @@ def test_promote_dispatches_the_exact_staging_image_to_the_platform_pipeline(tmp
     repository, plan = gh.promotions[-1]
     assert repository == "lab/platform" and result["state"] == "dispatched" and result["kind"] == "promotion"
     assert plan["source"] == {"plan": STAGING_PLAN, "image": STAGING_IMAGE, "digest": DIGEST, "provenance": "github", "workflow": "deploy-gcp.yml",
-                              "revision": "demo-reeeeeeeeeeeeeeee", "released_at": "2026-10-17T10:00:00Z",
+                              "attested_commit": COMMIT, "revision": "demo-reeeeeeeeeeeeeeee", "released_at": "2026-10-17T10:00:00Z",
                               "cost": {"idle_floor_usd_month": 0.0, "compute_ceiling_usd_month": 12.5, "needs_floor_usd_month": 0.0}}
     assert plan["target"]["project_id"] == "lab-deploy-prod-abcd" and plan["layout"]["github_environment"] == "production-demo"
     approval = result["approval"]
@@ -121,6 +126,21 @@ def test_promote_dispatches_the_exact_staging_image_to_the_platform_pipeline(tmp
     assert c.store.latest_success("demo")["id"] == STAGING_PLAN and c.store.latest_success("demo", kind="promotion") is None
     assert {e["outcome"] for e in c.store.recent_events(20) if e["kind"] == "promotion"} == {"dispatched"}
     assert "Waiting for approval: promote `demo` to production" in chat.release(result) and "`brianboti`" in chat.release(result)
+
+
+def test_github_attests_the_commit_its_build_run_started_on_so_that_is_what_a_promotion_checks(tmp_path):
+    """Found reading the template on 2026-10-18: a release of an older commit of main is built by a run that started on
+    main's tip, which GitHub's attestation names; a reused image was attested by the run that built it."""
+    c, brian, gh = ready_controller(tmp_path)
+    tip = "9" * 40
+    staging_release(c, "3" * 32, workflow={"head_sha": tip})  # built an older commit on a run that started at the tip
+    staging_release(c, "4" * 32, reused_from_plan="3" * 32, workflow={"head_sha": "8" * 40})  # reused that image later
+    c.promote(brian, "demo", "4" * 32)
+    assert gh.promotions[-1][1]["source"]["attested_commit"] == tip
+    staging_release(c, "5" * 32, workflow={"head_sha": COMMIT}, receipt={"state": "succeeded", "image": STAGING_IMAGE, "provenance": "cosign-kms"})
+    c.promote(brian, "demo", "5" * 32)
+    assert gh.promotions[-1][1]["source"]["attested_commit"] == COMMIT  # a statement of the platform's own names the built commit
+    assert "${ATTESTED_COMMIT:-$COMMIT_SHA}" in Path(".github/workflows/promote.yml").read_text()
 
 
 def test_a_promotion_waits_for_a_reviewer_then_production_has_its_own_live_release(tmp_path):
@@ -190,6 +210,9 @@ def test_the_github_adapter_dispatches_promote_and_reads_who_may_approve(monkeyp
     assert body["inputs"] == {"plan_id": "9" * 32, "application": "demo", "source_plan": STAGING_PLAN, "source_image": STAGING_IMAGE, "commit_sha": COMMIT,
                               "spec_hash": "f" * 64, "target_json": json.dumps(plan["target"], sort_keys=True), "repository": "lab/demo", "app_path": "",
                               "contract_commit": "", "staging_workflow": "deploy-gcp.yml", "provenance": "github", "bake_seconds": "300"}
+    assert "attested_commit" not in body["inputs"]  # a release built at the tip of main is promoted as before
+    gh.dispatch_promotion("lab/platform", {**plan, "source": {**plan["source"], "attested_commit": "9" * 40}})
+    assert seen[-1][2]["inputs"]["attested_commit"] == "9" * 40
     found = gh.status(None, {**plan, "dispatch_result": {"workflow_run_id": 77}})
     assert found["status"] == "waiting" and found["pending"] == [{"environment": "production-demo", "reviewers": ["brianboti"]}]
     assert gh.deployment_environment("lab/platform", "production-demo") is None
@@ -214,7 +237,8 @@ def test_promotion_inputs_are_checked_before_anything_runs():
                             ({"PROVENANCE_INPUT": "unavailable"}, "signed provenance"),
                             ({"CONTRACT_COMMIT": CONTRACT}, "deploy.yml and signed with its Cloud KMS key"),
                             ({"BAKE_SECONDS": "1800"}, "0 to 900"), ({"GITHUB_REF": "refs/heads/feature"}, "from main only"),
-                            ({"APP_PATH": "../x"}, "folder"), ({"STAGING_WORKFLOW": "evil.yml"}, "staging workflow")):
+                            ({"APP_PATH": "../x"}, "folder"), ({"STAGING_WORKFLOW": "evil.yml"}, "staging workflow"),
+                            ({"ATTESTED_COMMIT": "abc"}, "attested_commit"), ({"ATTESTED_COMMIT": "9" * 40, "PROVENANCE_INPUT": "cosign-kms"}, "attested_commit")):
         with pytest.raises(promotion.PromotionError, match=message):
             promotion.check(env(**change))
     summary = promotion.summary(env(), SPEC, {"idle_floor_usd_month": 0.0, "compute_ceiling_usd_month": 9.5, "needs_floor_usd_month": 0.0})

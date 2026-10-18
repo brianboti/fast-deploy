@@ -51,7 +51,7 @@ class ProductionGitHub(FakeGitHub):
         found = self.environments.get((repository, name))
         if found is None:
             return None
-        return {"name": name, "protection_rules": [{"type": "required_reviewers", "prevent_self_review": True,
+        return {"name": name, "can_admins_bypass": False, "protection_rules": [{"type": "required_reviewers", "prevent_self_review": True,
                                                     "reviewers": [{"type": "User", "reviewer": {"login": login}} for login in found["reviewers"]]}]}
 
     def last_commit(self, repository, path, branch="main"):
@@ -200,7 +200,7 @@ def test_the_protected_environment_names_its_reviewers_by_id_and_refuses_self_re
     gh = GitHub(httpx.Client(base_url="https://api.github.com", transport=httpx.MockTransport(handler)))
     gh.ensure_protected_environment("lab/platform", "production-demo", "main", ["brianboti"])
     put = next(body for method, path, body in seen if method == "PUT")
-    assert put == {"wait_timer": 0, "prevent_self_review": True, "reviewers": [{"type": "User", "id": 207480197}],
+    assert put == {"wait_timer": 0, "prevent_self_review": True, "can_admins_bypass": False, "reviewers": [{"type": "User", "id": 207480197}],
                    "deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": True}}
 
 
@@ -219,6 +219,9 @@ def test_the_foundation_script_keeps_staging_values_out_of_production(tmp_path):
     assert 'Rename infra/gcp/project/terraform.tfvars to staging.tfvars first' in script
     assert 'gcloud services enable cloudresourcemanager.googleapis.com serviceusage.googleapis.com --project "$PROJECT"' in script  # a new project
     assert script.index("gcloud services enable") > script.index("names another project_id")  # only once the settings file names this project
+    # a new project's first apply: only Google's "API not ready yet" is waited out, once, then the rest is planned and applied
+    assert 'grep -q "has not been used in project" "$LOG"' in script and script.count("sleep 60") == 1
+    assert script.count("run apply -input=false -no-color project.tfplan") == 2
     assert '-var-file="$VARS" -var="environment=$ENVIRONMENT"' in script and 'prefix = "INFRA_PRODUCTION_" if os.environ["ENVIRONMENT"] == "production"' in script
     if shutil.which("zsh"):
         work = tmp_path / "repo"

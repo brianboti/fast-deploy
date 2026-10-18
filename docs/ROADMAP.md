@@ -421,6 +421,9 @@ copied by digest with a carbon copy (`docker buildx imagetools create --prefer-i
 staging provenance is checked by the production deployer with read access to that one application's registry and the
 public half of its key (a second pull request of `add_production`), and production's key signs a SLSA verification summary
 that names the source and who approved it. A production rollback waits for 16.3; until then the runbook gives the command.
+Exercised live on 2026-10-18 (`docs/VALIDATION.md`): the production project under the organization, its foundation and
+pipeline, `add_production` for the demo through all four steps, and the demo promoted by digest with the operator's
+approval, serving staging's exact image in production; 1.18.2 fixed what that showed.
 
 | Item | Change | Where |
 |---|---|---|

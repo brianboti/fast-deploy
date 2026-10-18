@@ -1,3 +1,28 @@
+# 1.18.2: what the production setup showed
+
+Found on 2026-10-18 in the live exercise of 1.18.0 and 1.18.1 (`docs/VALIDATION.md`): the production project's foundation,
+`add_production` for the demo through its four steps, and the demo's first promotion, which served staging's exact image
+in production with the operator's approval.
+
+1. **A new project's first foundation apply finishes by itself.** It enables APIs and uses them seconds later, before
+   Google has them ready: 6 of the production project's 104 resources stopped with "has not been used in project ... or it
+   is disabled", and a second run finished them. `scripts/apply-foundation.sh` now waits that one error out once: a minute
+   later it plans and applies the rest of the same configuration. Any other failure still stops it.
+2. **No administrator can skip a production approval.** GitHub lets administrators bypass an environment's required
+   reviewers unless told otherwise, and `production-lab-demo` was created that way. The controller now creates every
+   `production-<service>` environment with the bypass off, and `promote_to_production` refuses while it is on;
+   `add_production` turns it off again. The live environment was closed by hand at once.
+3. **A promotion checks the commit GitHub's attestation names.** An application's own deploy workflow can build an older
+   commit of main on a run that started at main's tip, and GitHub's attestation names the tip. Such a release would have
+   failed the promotion's check (closed, but wrongly). The promotion now checks the commit the image's build run started
+   on, following a reused image back to the run that built it, and records it in its statement; `promote.yml` takes it as
+   the optional input `attested_commit`. Found reading the template; the live promotion was of a release built at the tip.
+4. **Approving from a terminal** (`docs/RUNBOOK.md`, Production): the operator's approvals in the browser did not reach
+   GitHub twice, while `gh` could approve; the runbook gives the command for a promotion or an apply that waits.
+
+Tests: 630 pass; ruff clean; zizmor clean.
+
+
 # 1.18.1: promotion by digest (Phase 16, part two)
 
 Roadmap item 16.2 (docs/ROADMAP.md D37): a staging release reaches production only by promotion. The promotion takes the

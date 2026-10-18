@@ -631,3 +631,35 @@ Asked for by the operator, who allowed the machine to be deleted and made again 
 
 Phase 15's live exercise is complete: Claude through the address, a power cycle (50 seconds), a restore from Litestream on a
 fresh machine, and an onboarding with a GitHub App token.
+
+## Live exercise of 1.18.0 and 1.18.1: production and the first promotion (2026-10-18 UTC)
+
+Phase 16's first two items with the defaults of D37, on the operator's "start them". Production is the project
+`fast-deploy-prod-c602` (number 765798408878), created under the organization `mail-mboti-org` on the same billing
+account. The organization's own policies were read first: no domain-restricted sharing, so the staging machine's identity
+may view production; the others (no service account keys, uniform bucket access, protocol forwarding, zonal DNS, no
+automatic grants to default identities) match what the platform does anyway.
+
+| Trial | What was done | Observed |
+|---|---|---|
+| Staging untouched | `staging.tfvars` in place of `terraform.tfvars`, then a plan of the staging foundation; the plan comments of #78 and #80 | No changes in the foundation and in all eight staging roots. (The staging foundation applied meanwhile also added three pieces of 1.10.0 never applied before: the secret writer role and its two grants.) |
+| The production foundation's plan | `scripts/apply-foundation.sh fast-deploy-prod-c602 production`, read-only | **Failed, and found a bug**: the root reads its project through Cloud Resource Manager, which a new project does not have. Enabled by hand once; 1.18.1 makes the script switch it on with Service Usage before planning. Then 104 to add |
+| The production foundation | The same script, applied | **Stopped after 95 of 104**: 6 resources (5 custom roles, the key ring's grant) used the IAM and KMS APIs seconds after the same apply enabled them ("has not been used in project ... or it is disabled"). Applied again minutes later: those 6 and the 3 that waited on them, complete. 1.18.2 waits that error out once by itself |
+| The pipeline for production | The four `INFRA_PRODUCTION_*` variables; `infra-production` with the operator as required reviewer | The first production plan (#81) ran with production's read-only identity in 26 seconds |
+| The machine | `scripts/machine.sh update` to 2b4dae9, then 95d0c0e; the `production:` block through `config-get` and `config-put` | 1.18.1, the configuration loaded without an error |
+| `add_production` for `demo`, step 1 | Called on the machine | #81, the production root of `lab-demo`: 43 to add, idle floor +$0.06 a month (its signing key), the only access changes the probe's and the uptime check's invoker grants; policy passed. The controller did not merge it; the operator did |
+| Step 2: the apply in `infra-production` | Run 39099847870 waited for its reviewer | The operator's two approvals in the browser never reached GitHub (no approval recorded, while `current_user_can_approve` was true for `brianboti` through `gh`). Approved through the API at the operator's request; `apply-production (lab-demo)` succeeded: the production service at its own address, the placeholder image serving |
+| Step 3: the gate | `production-lab-demo` created by the controller, with the eight target variables | Required reviewer `brianboti`, self-review prevented, `main` only. **Found**: administrators could skip the approval, GitHub's default. Closed by hand at once; 1.18.2 sets it, and a promotion refuses while it is open. #82, the staging root's read access for production's deployer: 3 to add (the registry's reader, the key's viewer and public-key viewer), no cost, no access change; merged by the operator, applied by staging's pipeline |
+| Step 4 | Called again | "`demo` has its production" |
+| The promotion | `promote_to_production` for `demo`: plan `2294ddde`, staging release `25bc6a80` (`0612505`, GitHub's attestation from `lab-demo-app`'s `deploy-gcp.yml`) | Run 39100988038: the describe job passed (inputs, both commits on main, the exact specification read and held to production's limits, the approval block in the summary); the promote job waited in `production-lab-demo`. The browser approval again did not arrive; approved through the API at the operator's request, recorded as `brianboti` |
+| What the promote job did | Every step | The approval found on the run; the target equal to the environment's variables; signed in as `lab-demo-deploy@fast-deploy-prod-c602`; no checkpoint to recover; the staging attestation verified (`--source-ref refs/heads/main --source-digest`); the carbon copy kept `sha256:c64563e8…af8`; the verification summary signed with production's key and verified; the release: candidate, probes, 100 percent, bake inconclusive (no traffic). 14 minutes with the wait |
+| Production afterwards | `gcloud run services describe`, the registry's tags, `/health` | 100 percent on `lab-demo-r2294ddde545f40e0`; its image is the production registry's copy with staging's digest; tags `release-2294ddde…`, `serving-lab-demo-r2294ddde545f40e0` and `sha256-….att`; `/health` 200 with a token, 403 without |
+| The controller's view | `get_deployment_status`, `list_applications` | Succeeded with approval, provenance, copy and health passed; the receipt names the staging release, its image and `brianboti`; the application list shows production's release beside staging's, which stays `25bc6a80` |
+
+**What reading the template showed**: an application's own deploy workflow builds an older commit of main on a run that
+started at main's tip, and GitHub's attestation names that tip. A promotion of such a release would have failed its
+check (closed, but wrongly). 1.18.2 checks the commit the image's build run started on, following a reused image back to
+the run that built it.
+
+Not yet (16.3 to 16.7): the split release and a production rollback by tool, the SLO and its burn-rate alerts, a
+domain, the cap-fire drill for production.

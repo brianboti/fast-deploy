@@ -46,7 +46,18 @@ elif [[ -t 0 ]]; then
 else
   echo "Not a terminal and LAB_DEPLOY_APPLY_CONFIRMED is not 'yes'; nothing applied."; rm -f project.tfplan; exit 1
 fi
-run apply -input=false -no-color project.tfplan
+# A new project's first apply switches on APIs and uses them seconds later, before Google has them ready ("has not been
+# used in project ... or it is disabled"); found with the production project on 2026-10-18, where 6 of 104 resources
+# stopped. Only that error is waited out, once: a minute later the rest of the same configuration is planned and applied.
+LOG=$(mktemp)
+if ! run apply -input=false -no-color project.tfplan 2>&1 | tee "$LOG"; then
+  if ! grep -q "has not been used in project" "$LOG"; then rm -f "$LOG" project.tfplan; exit 1; fi
+  echo "Google is still switching on the APIs this apply enabled (a new project's first apply); the rest follows in a minute."
+  sleep 60
+  run plan -input=false -no-color -var-file="$VARS" -var="environment=$ENVIRONMENT" -out=project.tfplan | grep -E "^  # |^Plan:|^No changes" || true
+  run apply -input=false -no-color project.tfplan
+fi
+rm -f "$LOG"
 run output -json > outputs.json
 ENVIRONMENT="$ENVIRONMENT" python3 - <<'PY'
 import json, os

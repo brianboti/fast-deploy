@@ -63,6 +63,11 @@ on:
         required: false
         default: '300'
         type: string
+      attested_commit:
+        description: For GitHub's attestation, the commit the image's build run started on when it differs from commit_sha; empty otherwise
+        required: false
+        default: ''
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -83,6 +88,7 @@ env:
   STAGING_WORKFLOW: ${{ inputs.staging_workflow }}
   PROVENANCE_INPUT: ${{ inputs.provenance }}
   BAKE_SECONDS: ${{ inputs.bake_seconds }}
+  ATTESTED_COMMIT: ${{ inputs.attested_commit }}
   # Code a contract of this repository describes is code nobody has reviewed (docs/ROADMAP.md D35), and production holds
   # it exactly as staging did; an application's own platform.yaml is reviewed.
   TRUST_DEFAULT: ${{ inputs.contract_commit != '' && 'unknown' || 'reviewed' }}
@@ -292,8 +298,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$PROVENANCE_INPUT" = "github" ]; then
+            # GitHub's attestation names the commit its build run started on: the tip of main then, which an older commit
+            # built on that run is an ancestor of (the deploy workflow checks it).
             gh attestation verify "oci://$SOURCE_IMAGE" --repo "$SOURCE_REPOSITORY" --signer-workflow "$SOURCE_REPOSITORY/.github/workflows/$STAGING_WORKFLOW" \
-              --source-ref refs/heads/main --source-digest "$COMMIT_SHA" --deny-self-hosted-runners
+              --source-ref refs/heads/main --source-digest "${ATTESTED_COMMIT:-$COMMIT_SHA}" --deny-self-hosted-runners
           else
             "$COSIGN" verify-attestation --key "$STAGING_KEY" --type slsaprovenance1 --insecure-ignore-tlog=true "$SOURCE_IMAGE" > "$RUNNER_TEMP/staging.jsonl"
             python -m labdeploy.promotion verify "$RUNNER_TEMP/staging.jsonl"
