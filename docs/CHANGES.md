@@ -16,7 +16,7 @@ Found on 2026-10-18 in the live exercise of Phase 15 (`docs/VALIDATION.md`).
 
 Terraform: the foundation once (two IAM changes). The machine: `scripts/machine.sh update` to this commit.
 
-Tests: 586 pass (2 new); ruff clean.
+Tests: 601 pass (2 new); ruff clean.
 
 
 # 1.17.1: clearer answers in Claude chat
