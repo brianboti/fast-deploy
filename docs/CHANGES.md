@@ -1,4 +1,4 @@
-# 1.17.1: what the move to the machine showed
+# 1.17.2: what the move to the machine showed
 
 Found on 2026-10-18 in the live exercise of Phase 15 (`docs/VALIDATION.md`).
 
@@ -17,6 +17,56 @@ Found on 2026-10-18 in the live exercise of Phase 15 (`docs/VALIDATION.md`).
 Terraform: the foundation once (two IAM changes). The machine: `scripts/machine.sh update` to this commit.
 
 Tests: 586 pass (2 new); ruff clean.
+
+
+# 1.17.1: clearer answers in Claude chat
+
+Found on 2026-10-17 in a read-only review of seventeen tools against the running controller (`docs/CLAUDE-CHAT.md`, "What
+answers look like"). The shape held; these are the gaps. Two facts shaped the fix: claude.ai does not pass the connector's
+own instructions to the model (anthropics/claude-ai-mcp issue #93, open since March 2026), so only the tool descriptions,
+each result's `summary` and the uploaded skill reach Claude; and the tool descriptions are pinned by checksum
+(`schema/tools.sha256.json`), so changing them is a reviewed diff. Nothing here changes what any tool does in the cloud.
+
+1. **Five tools answered with raw JSON** (`list_plans` at 30 KB with epoch timestamps and 32-character ids, `list_events`,
+   `get_cost_report`, `analyze_repository`, `propose_rightsizing`). Each now starts with a `summary` in the one shape:
+   the plan list as a table of the newest eight (app, outcome in plain words, 7-character commit, time in UTC) with the
+   history's counts; the audit trail as a short table with readable times and an error count; the measured cost report
+   with actual spend, measured use, bounds, proposals and drift; the repository analysis with the detected facts and
+   the questions a person confirms; the right-sizing proposal with its pull request, or "nothing to propose".
+2. **Failed and cancelled releases in the operator's words.** The Next line repeated the pipeline's sentence ("see
+   vulnerability-summary.json", "or no receipt was uploaded. The recovery run that followed concluded 'success':
+   no_recovery_needed") and showed a raw `KeyboardInterrupt:` as the error. The chat now says what happened and who does
+   what ("the image scan found serious problems with fixes available; the developer updates the libraries or the base
+   image, then release again"; "it was cancelled before anything changed, so the previous version kept serving. The check
+   that followed confirmed nothing needed restoring"), keeps the GitHub run link for the detail, and leaves the technical
+   sentence in `next_action` (`labdeploy/status.py`) for whoever asks.
+3. **A rollback names commits, not revisions** (`lab-notebook-r9111fd55b0d94066`): the controller records the previous
+   version's commit with the rollback when it released it, and the answer shows both 7-character commits, else "the
+   previous version".
+4. **Log lines**: a rollback is suggested only for WARNING and above; INFO and DEFAULT lines say they are ordinary output
+   and how to ask for the errors.
+5. **Cost estimates** with a traffic scenario say its best and worst monthly cost for the given requests, and a finding is
+   never cut mid-sentence.
+6. **Onboarding, days later**: the complete state no longer promises to follow the first release once it is more than an
+   hour old; it says when the app was onboarded, which plan its first release was, and to ask about the app's health or
+   releases. An app registered by hand (`demo`) was told to call `onboard_application`; it now says it was registered by
+   hand, which release is live, and points to the application list and the health view.
+7. **Repository checks** list the refusals of a repository taken as it is one per line (file, problem, fix) instead of
+   one 400-character sentence.
+8. **Every tool parameter has a description** (minutes, severity, limit, wait_seconds, path, as_is, auto_deploy,
+   commit_sha, platform_commit, requests_per_month, average_request_seconds and the rest), and every tool's description
+   ends with the one answering rule claude.ai lets through: "Answer from `summary` as written (bold outcome, bullets,
+   Next line); the rest is detail for when the operator asks." Each description stays under 500 characters, so
+   `onboard_application`'s was shortened. `schema/tools.sha256.json` was regenerated for the deliberate change.
+9. **The controller status** no longer says "nothing to do" beside "weekly cost report not run yet"; it says the report
+   runs on its own every week and to tell the operator only if it is still missing after a week.
+10. **The skill and the page** (`skills/fast-deploy-operator/SKILL.md`, `docs/CLAUDE-CHAT.md`) say that claude.ai does not
+    read the connector's instructions, so the skill and the tool descriptions are the only rules, and that the skill must be
+    re-uploaded after every release that changes `skills/`.
+
+Nothing to apply or regenerate; restart the controller and re-upload the skill zip in Claude (Customize → Skills).
+
+Tests: 599 pass (15 new in `tests/test_chat.py`); ruff clean.
 
 
 # 1.17.0: the controller off the laptop (Phase 15)

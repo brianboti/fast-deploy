@@ -341,7 +341,7 @@ def test_the_machine_is_the_free_shape_with_ssh_only_through_identity_aware_prox
             'google_compute_address.controller[0].address) : ""') in text
     assert "fast-deploy-host       = local.controller_host" in text and "host = local.controller_host" in text
     assert '"projects/_/buckets/${google_storage_bucket.backups.name}/objects/machine/' in text  # its own folder only
-    # gcloud lists a folder by its name without the slash (1.17.1: the live drill was refused for `prefix=machine`)
+    # gcloud lists a folder by its name without the slash (1.17.2: the live drill was refused for `prefix=machine`)
     assert 'objectListPrefix\\", \\"\\").startsWith(\\"machine\\"))"' in text
     assert 'role    = "roles/logging.logWriter"' in text
     assert 'role      = "roles/secretmanager.secretAccessor"' in text and "google_secret_manager_secret.github_app_key[0].id" in text

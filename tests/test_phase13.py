@@ -631,7 +631,7 @@ def test_an_as_is_onboarding_of_a_generic_folder_gets_a_telling_name(tmp_path):
 def test_the_check_answer_gives_the_fix_of_an_as_is_refusal():
     text = chat.check({"repository": "lab/x", "checklist": [{"item": "Dockerfile", "ok": False}], "as_it_is": {
         "ready": False, "refusals": [{"file": "the repository root", "problem": "no dependency manifest", "fix": "the service lives in backend: take that folder"}]}})
-    assert "(fix: the service lives in backend: take that folder)" in text
+    assert "As it is, it is refused too:\n1. `the repository root` no dependency manifest. Fix: the service lives in backend: take that folder." in text
     ready = chat.check({"repository": "lab/x", "checklist": [{"item": "Dockerfile", "ok": False, "platform_writes": True}],
                         "as_it_is": {"ready": True, "choices": [{"what": "Python", "value": "3.12", "from": ".python-version"}]}})
     assert ", or I can open a draft pull request" in ready

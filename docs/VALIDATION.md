@@ -610,9 +610,9 @@ address. The operator made the GitHub App and its key; the rest ran from the lap
 | The move | `scripts/install-machine.sh 5363822` with the laptop's controller stopped | A 1.4 MB copy with 71 plans and 8 applications, imported through Identity-Aware Proxy; `/healthz` answered; `machine_url` recorded; `CONTROLLER_HEALTH_URL` updated |
 | Claude through the address | The connector at `https://34.133.114.245/mcp` | The first attempt failed: the pasted address ended in `)` (Claude asked `/mcp%29`). Added again exactly: registration, sign-in (the audit's `sign_in` from the operator's own address, not 127.0.0.1: Caddy's forwarded address reaches the limits), connected |
 | The live copy | The bucket's `machine/` folder | Litestream's files within minutes; the first nightly copy `deployments-20261018-021027.db` |
-| The restore drill | `scripts/machine.sh drill` | **Failed, and found a bug**: `gcloud storage ls` lists a folder by its name without the slash (`prefix=machine`), which the bucket condition refused (403; `machine/` gave 200). 1.17.1 matches the prefix without the slash; the drill runs again after its apply |
+| The restore drill | `scripts/machine.sh drill` | **Failed, and found a bug**: `gcloud storage ls` lists a folder by its name without the slash (`prefix=machine`), which the bucket condition refused (403; `machine/` gave 200). 1.17.2 matches the prefix without the slash; the drill runs again after its apply |
 | A power cycle | `gcloud compute instances reset fast-deploy` | `/healthz` answered again 50 seconds after the reset began; all three services active; the startup script ran again and changed nothing |
-| Noise | The serial console | The guest agent's writes to Cloud Logging were refused (no log writer role); 1.17.1 grants `roles/logging.logWriter` |
+| Noise | The serial console | The guest agent's writes to Cloud Logging were refused (no log writer role); 1.17.2 grants `roles/logging.logWriter` |
 
 Not yet: a tool call from Claude through the new connector (the sign-in passed), an onboarding with an App token, and a
 restore on a fresh machine.
