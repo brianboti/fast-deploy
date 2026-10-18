@@ -1,0 +1,353 @@
+# Promotes the exact image a staging release deployed to production (docs/ROADMAP.md D37, roadmap item 16.2). The controller
+# starts it as the GitHub App; the promote job waits in the environment production-<service> until one of its required
+# reviewers approves it (self-review prevented). Nothing is built: the staging image is checked, copied by digest into
+# production's own registry, signed with production's key and released by the same runner as staging.
+name: Promote to production
+run-name: promote-${{ inputs.plan_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      plan_id:
+        description: The promotion plan's id
+        required: true
+        type: string
+      application:
+        description: The service, whose environment here is production-<service>
+        required: true
+        type: string
+      source_plan:
+        description: The staging release being promoted
+        required: true
+        type: string
+      source_image:
+        description: The image that staging release deployed, by digest
+        required: true
+        type: string
+      commit_sha:
+        description: The application commit the image was built from
+        required: true
+        type: string
+      spec_hash:
+        description: The reviewed specification's hash, as staging released it
+        required: true
+        type: string
+      target_json:
+        description: The production target, which must equal this environment's variables
+        required: true
+        type: string
+      repository:
+        description: The application's repository (owner/name)
+        required: true
+        type: string
+      app_path:
+        description: The service's folder in that repository; empty for the root
+        required: false
+        default: ''
+        type: string
+      contract_commit:
+        description: For an application whose contract this repository keeps, the platform commit of apps/<service>/platform.yaml; empty otherwise
+        required: false
+        default: ''
+        type: string
+      staging_workflow:
+        description: The workflow that built and released the image in staging, which its provenance names
+        required: true
+        type: string
+      provenance:
+        description: How staging signed the image's provenance
+        required: true
+        type: choice
+        options: [github, cosign-kms]
+      bake_seconds:
+        description: Seconds to watch the new revision after the switch (0 to 900); a crash or 5xx answers restore the previous traffic
+        required: false
+        default: '300'
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: gcp-production-${{ inputs.application }}
+  cancel-in-progress: false
+  queue: max
+env:
+  PLAN_ID: ${{ inputs.plan_id }}
+  APPLICATION: ${{ inputs.application }}
+  SOURCE_PLAN: ${{ inputs.source_plan }}
+  SOURCE_IMAGE: ${{ inputs.source_image }}
+  COMMIT_SHA: ${{ inputs.commit_sha }}
+  SPEC_HASH: ${{ inputs.spec_hash }}
+  TARGET_JSON: ${{ inputs.target_json }}
+  SOURCE_REPOSITORY: ${{ inputs.repository }}
+  APP_PATH: ${{ inputs.app_path }}
+  CONTRACT_COMMIT: ${{ inputs.contract_commit }}
+  STAGING_WORKFLOW: ${{ inputs.staging_workflow }}
+  PROVENANCE_INPUT: ${{ inputs.provenance }}
+  BAKE_SECONDS: ${{ inputs.bake_seconds }}
+  # Code a contract of this repository describes is code nobody has reviewed (docs/ROADMAP.md D35), and production holds
+  # it exactly as staging did; an application's own platform.yaml is reviewed.
+  TRUST_DEFAULT: ${{ inputs.contract_commit != '' && 'unknown' || 'reviewed' }}
+jobs:
+  describe:
+    # No cloud credentials and no environment: the inputs and the reviewed specification are checked, and the approval block
+    # is written to this run's summary, where the reviewer reads it before approving the promote job.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: platform
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install trusted platform dependencies
+        run: python -m pip install --require-hashes -r platform/requirements.lock
+      - name: Check the dispatch inputs
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        run: python -m labdeploy.promotion check
+      # A short-lived token for the application repository, as the deploy pipeline has one: the platform's GitHub App when it
+      # is installed, else the operator's read-only token, else this job's own token, which reaches public repositories only.
+      - name: Name the application repository
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "owner=${SOURCE_REPOSITORY%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${SOURCE_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
+      - name: Token for the application repository
+        id: app-token
+        if: vars.APPS_APP_ID != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.APPS_APP_ID }}
+          private-key: ${{ secrets.APPS_APP_PRIVATE_KEY }}
+          owner: ${{ steps.source.outputs.owner }}
+          repositories: ${{ steps.source.outputs.name }}
+          permission-contents: read
+      - name: The commits are on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token || secrets.APPS_READ_TOKEN || github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$CONTRACT_COMMIT" ]; then
+            STATUS=$(gh api "repos/$GITHUB_REPOSITORY/compare/$CONTRACT_COMMIT...$GITHUB_SHA" --jq .status)
+            [ "$STATUS" = "ahead" ] || [ "$STATUS" = "identical" ]
+          fi
+          STATUS=$(GH_TOKEN="$APP_TOKEN" gh api "repos/$SOURCE_REPOSITORY/compare/$COMMIT_SHA...main" --jq .status)
+          [ "$STATUS" = "ahead" ] || [ "$STATUS" = "identical" ]
+      # Exactly the specification staging released: the application's platform.yaml at the commit, or the contract at the
+      # platform commit staging's plan was made from. It must hash to the plan's spec hash and pass production's policy.
+      - name: Read the reviewed specification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token || secrets.APPS_READ_TOKEN || github.token }}
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bundle
+          if [ -n "$CONTRACT_COMMIT" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/contents/apps/$APPLICATION/platform.yaml?ref=$CONTRACT_COMMIT" --jq .content | base64 -d > bundle/contract.yaml
+          else
+            FILE=platform.yaml
+            if [ -n "$APP_PATH" ]; then FILE="$APP_PATH/platform.yaml"; fi
+            GH_TOKEN="$APP_TOKEN" gh api "repos/$SOURCE_REPOSITORY/contents/$FILE?ref=$COMMIT_SHA" --jq .content | base64 -d > bundle/platform.yaml
+          fi
+          python - <<'PY'
+          import os, pathlib
+          from labdeploy.models import enforce, parse_contract, parse_spec, spec_hash, spec_text
+          bundle = pathlib.Path("bundle")
+          if os.environ["CONTRACT_COMMIT"]:
+              spec, source = parse_contract((bundle / "contract.yaml").read_text())
+              assert source.repository.lower() == os.environ["SOURCE_REPOSITORY"].lower(), "the contract names another repository"
+              assert source.path == os.environ["APP_PATH"], "the contract names another folder"
+              assert source.commit == os.environ["COMMIT_SHA"], "the contract names another commit"
+              (bundle / "platform.yaml").write_text(spec_text(spec))
+              (bundle / "contract.yaml").unlink()
+          spec = parse_spec((bundle / "platform.yaml").read_text())
+          enforce(spec, "gcp", "production")
+          assert spec.name == os.environ["APPLICATION"], "the specification names another service"
+          assert spec_hash(spec) == os.environ["SPEC_HASH"], "Spec hash mismatch"
+          PY
+      - name: Write the approval block
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+          SPEC_FILE: bundle/platform.yaml
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m labdeploy.promotion summary | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: promotion-bundle
+          path: bundle/
+          retention-days: 3
+          if-no-files-found: error
+  promote:
+    needs: describe
+    runs-on: ubuntu-24.04
+    # Twenty minutes for the copy and the release, plus up to fifteen for the bake (bake_seconds is at most 900).
+    timeout-minutes: 40
+    # Every job in this environment waits for one of its required reviewers; the controller starts the run as the GitHub
+    # App, and whoever starts a run may not approve it.
+    environment:
+      name: production-${{ inputs.application }}
+      url: ${{ steps.url.outputs.url }}
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+      REGISTRY_NAME: ${{ vars.ARTIFACT_REPOSITORY }}
+      PROBE_SERVICE_ACCOUNT: ${{ vars.PROBE_SERVICE_ACCOUNT }}
+      DEPLOY_SERVICE_ACCOUNT: ${{ vars.DEPLOY_SERVICE_ACCOUNT }}
+      WIF_PROVIDER: ${{ vars.WIF_PROVIDER }}
+      RECOVERY_BUCKET: ${{ vars.RECOVERY_BUCKET }}
+      IAP_CLIENT_ID: ${{ vars.IAP_CLIENT_ID }}
+      ENVIRONMENT: production-${{ inputs.application }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: platform
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --require-hashes -r platform/requirements.lock
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: promotion-bundle
+          path: bundle
+      # An environment that lost its protection (or one GitHub created on first use) would let this job start unapproved:
+      # it stops here unless a reviewer approved this very run in this environment.
+      - name: Refuse to run without a reviewer's approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/approvals" > "$RUNNER_TEMP/approvals.json"
+          APPROVED_BY=$(python -m labdeploy.promotion approvals "$RUNNER_TEMP/approvals.json")
+          echo "Approved by $APPROVED_BY" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "APPROVED_BY=$APPROVED_BY" >> "$GITHUB_ENV"
+      - name: Validate the production target
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        run: |
+          python -m labdeploy.promotion check
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from labdeploy.models import enforce, parse_spec, spec_hash
+          from labdeploy.target import environment_target, verify_target
+          verify_target(os.environ['TARGET_JSON'], environment_target())
+          spec = parse_spec(Path('bundle/platform.yaml').read_text())
+          enforce(spec, 'gcp', 'production')
+          assert spec_hash(spec) == os.environ['SPEC_HASH'] and spec.name == os.environ['SERVICE']
+          PY
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - name: Configure registry access
+        shell: bash
+        run: gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
+      - name: Recover any interrupted previous release
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+          RECOVERY_ONLY: 'true'
+        run: python -m labdeploy.release
+      - name: Install Cosign
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/cosign" https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-amd64
+          echo "4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71  $RUNNER_TEMP/cosign" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/cosign"
+          echo "COSIGN=$RUNNER_TEMP/cosign" >> "$GITHUB_ENV"
+          echo "PROVENANCE_KEY=$(python -m labdeploy.provenance key)" >> "$GITHUB_ENV"
+          REST=${SOURCE_IMAGE#*/}
+          echo "STAGING_KEY=$(GCP_PROJECT_ID="${REST%%/*}" python -m labdeploy.provenance key)" >> "$GITHUB_ENV"
+      # The staging image is promoted only if its provenance shows it was built from this commit by the workflow that released
+      # it in staging, on main: GitHub's attestation, or the statement signed with the application's Cloud KMS key in staging.
+      - name: Verify the staging image's provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$PROVENANCE_INPUT" = "github" ]; then
+            gh attestation verify "oci://$SOURCE_IMAGE" --repo "$SOURCE_REPOSITORY" --signer-workflow "$SOURCE_REPOSITORY/.github/workflows/$STAGING_WORKFLOW" \
+              --source-ref refs/heads/main --source-digest "$COMMIT_SHA" --deny-self-hosted-runners
+          else
+            "$COSIGN" verify-attestation --key "$STAGING_KEY" --type slsaprovenance1 --insecure-ignore-tlog=true "$SOURCE_IMAGE" > "$RUNNER_TEMP/staging.jsonl"
+            python -m labdeploy.promotion verify "$RUNNER_TEMP/staging.jsonl"
+          fi
+      # A carbon copy, never a rebuild: the same manifest, so the same digest, now in production's own registry, where
+      # staging's cleanup never reaches it.
+      - name: Copy the image into production by digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIGEST="${SOURCE_IMAGE##*@}"
+          IMAGE="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT_ID/$REGISTRY_NAME/$SERVICE"
+          docker buildx imagetools create --prefer-index=false --tag "$IMAGE:release-$PLAN_ID" "$SOURCE_IMAGE"
+          COPIED=$(gcloud artifacts docker images describe "$IMAGE:release-$PLAN_ID" --format='value(image_summary.digest)')
+          if [ "$COPIED" != "$DIGEST" ]; then
+            echo "::error title=Copy::the copy in production has the digest $COPIED, not $DIGEST: nothing was deployed"
+            exit 1
+          fi
+          echo "IMAGE_DIGEST=$IMAGE@$DIGEST" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=$IMAGE" >> "$GITHUB_ENV"
+          echo "IMAGE_SHA256=$DIGEST" >> "$GITHUB_ENV"
+      # What production's key signs: this run verified the staging provenance and a reviewer approved the promotion (SLSA's
+      # verification summary). No transparency log, as in staging.
+      - name: Sign the promotion with production's key
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m labdeploy.promotion predicate > "$RUNNER_TEMP/promotion.json"
+          if ! "$COSIGN" attest --yes --key "$PROVENANCE_KEY" --type https://slsa.dev/verification_summary/v1 --predicate "$RUNNER_TEMP/promotion.json" \
+              --new-bundle-format=false --use-signing-config=false --tlog-upload=false "$IMAGE_DIGEST"; then
+            echo "::error title=Promotion::signing with $PROVENANCE_KEY failed. A missing key means the production foundation and then this application's production infrastructure need applying"
+            exit 1
+          fi
+          "$COSIGN" verify-attestation --key "$PROVENANCE_KEY" --type https://slsa.dev/verification_summary/v1 --insecure-ignore-tlog=true "$IMAGE_DIGEST" > /dev/null
+      - name: Deploy, probe, promote; restore traffic on failure
+        id: release
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+          SPEC_FILE: bundle/platform.yaml
+          PROVENANCE_MODE: ${{ inputs.provenance }}
+        shell: bash
+        # exec: the release becomes the step's own process, so a cancelled run's SIGINT and SIGTERM reach it and it restores
+        # traffic itself.
+        run: exec python -m labdeploy.release
+      - name: Record the service URL
+        id: url
+        shell: bash
+        run: echo "url=$(python -c 'import json; print(json.load(open("release-receipt.json")).get("url", ""))')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: release-receipt
+          path: release-receipt.json
+          if-no-files-found: warn
+          retention-days: 30

@@ -73,7 +73,7 @@ def test_demo_server_serves_all_tools_over_mcp(tmp_path):
         assert "dispatched" in init["instructions"]
         names = [t["name"] for t in rpc("tools/list")["tools"]]
         assert names == ["list_applications", "analyze_repository", "create_deployment_plan", "propose_configuration", "update_app_workflows",
-                         "propose_infrastructure", "add_production", "onboard_application", "import_contract",
+                         "propose_infrastructure", "add_production", "promote_to_production", "onboard_application", "import_contract",
                          "check_repository", "get_onboarding_status", "deploy_staging",
                          "deploy_latest", "rollback_staging", "cancel_deployment", "compare_with_live", "get_service_health", "get_recent_logs", "get_deployment_status",
                          "list_plans", "estimate_cost", "propose_rightsizing", "get_cost_report", "list_events", "get_controller_status"]
