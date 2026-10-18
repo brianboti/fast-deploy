@@ -73,6 +73,9 @@ PLAN_WORDS = {"planned": "planned but not released", "dispatching": "release sta
 PROMOTION_WORDS = {"succeeded": "promoted to production", "failed": "promotion failed", "cancelled": "promotion cancelled", "timed_out": "promotion timed out",
                    "dispatched": "promotion started", "dispatching": "promotion started", "dispatch_unknown": "promotion unclear",
                    "dispatch_lost": "promotion never started", "completed_unverified": "promoted, not verified"}
+PRODUCTION_ROLLBACK_WORDS = {"succeeded": "production rolled back", "failed": "production rollback failed", "cancelled": "production rollback cancelled",
+                             "timed_out": "production rollback timed out", "dispatched": "production rollback started",
+                             "dispatch_unknown": "production rollback unclear"}
 ROLLBACK_WORDS = {"succeeded": "rolled back", "failed": "rollback failed", "cancelled": "rollback cancelled", "timed_out": "rollback timed out",
                   "dispatch_unknown": "rollback unclear"}
 SETTING_WORDS = {"resources.memory_mib": "memory (MiB)", "resources.cpu": "CPUs", "concurrency": "requests in parallel per instance",
@@ -347,6 +350,8 @@ def release(plan):
         return rollback(plan)
     if plan.get("kind") == "promotion":
         return promotion(plan)
+    if plan.get("kind") == "production_rollback":
+        return production_rollback(plan)
     app = plan.get("application") or "the app"
     state = plan.get("state")
     phases, receipt, workflow, checks = plan.get("phases") or {}, plan.get("receipt") or {}, plan.get("workflow") or {}, plan.get("checks") or {}
@@ -442,6 +447,8 @@ def promotion(plan):
     restored = "traffic_restored" in (phases.get("state"), receipt.get("state"))
     stuck = "rollback_failed_manual_recovery_required" in (phases.get("state"), receipt.get("state"))
     approved = ", ".join(f"`{name}`" for name in (receipt.get("promotion") or {}).get("approved_by") or [])
+    steps = [int(step) for step in plan.get("rollout") or [] if isinstance(step, int)]
+    in_steps = f"{', '.join(f'{step}%' for step in steps[:-1])} and {steps[-1]}%" if len(steps) > 1 else None
     if state in ("dispatching", "dispatched", "awaiting_workflow", "queued", "awaiting_approval"):
         approve = (f"approve it on GitHub: open {link('the run', run)}, choose Review deployments, read its approval block, then approve or reject."
                    if run else "approve it on GitHub: the platform repository's Actions tab, Promote to production, Review deployments.")
@@ -450,18 +457,23 @@ def promotion(plan):
                         *[f"Note: {clip(item, 220)}" for item in (plan.get("warnings") or [])[:2]]],
                        approve, foot)
     if state == "running":
-        facts = [f"Now: {doing(plan)}", f"Approved by {approved}" if approved else None]
-        if phases.get("state") == "baking":
+        facts = [f"Now: {doing(plan)}", f"Approved by {approved}" if approved else None,
+                 f"It takes {in_steps} of production's traffic in turn, {minutes} min each; a failure at any step brings the previous version back "
+                 "for everyone" if in_steps else None]
+        if phases.get("state") == "baking" and not in_steps:
             facts.append(f"The new version already serves production; if it fails within {minutes} min, production goes back to its previous version on its own")
         return compose(f"**Promotion in progress for `{app}`**: {what}.", facts, "nothing to do; it continues on its own.", foot)
     if state == "succeeded" or (state in ("failed", "cancelled", "timed_out") and receipt.get("state") == "succeeded" and not restored):
         url = phases.get("url") or receipt.get("url")
         took = duration(workflow.get("created_at"), (plan.get("outcome") or {}).get("completed_at") or workflow.get("updated_at"))
+        taken = [f"{step.get('percent')}%" for step in receipt.get("rollout") or [] if isinstance(step, dict)]
+        stepped = (f"Took {', '.join(taken[:-1])} and {taken[-1]} of the traffic in turn, watched {minutes} min at each step"
+                   if len(taken) > 1 else None)
         facts = [f"Address: {url} ({access((plan.get('spec') or {}).get('exposure'))})" if url else None, image,
-                 f"Approved by {approved}" if approved else None, f"In project `{project}`" if project else None,
+                 f"Approved by {approved}" if approved else None, f"In project `{project}`" if project else None, stepped,
                  bake_line(phases, minutes), f"Took {took}, the wait for approval included" if took and state == "succeeded" else None]
         return compose(f"**`{app}` is live in production** with {what}.", facts,
-                       "nothing to do. To undo it before the split release arrives, follow docs/RUNBOOK.md, Production.", foot)
+                       f"nothing to do. To undo it, say “roll {app} back in production”.", foot)
     if stuck:
         error = phases.get("restore_error") or receipt.get("restore_error")
         return compose(f"**Needs you now: production for `{app}` could not be put back on its previous version.**",
@@ -470,10 +482,13 @@ def promotion(plan):
     if restored:
         error = phases.get("error") or receipt.get("error")
         cancelled = bool(receipt.get("cancelled")) or str(error or "").strip().startswith(CANCELLED_ERRORS)
+        failed_phase = phases.get("failed_phase") or receipt.get("failed_phase")
+        share = receipt.get("step")
         reason = ("it was cancelled" if cancelled else
+                  f"the new version failed its watch with {share}% of the traffic" if share and share < 100 and failed_phase == "baking" else
+                  f"the new version failed its health check with {share}% of the traffic" if share and share < 100 and failed_phase == "promoting" else
                   {"preparing": "it stopped before deploying anything", "migrating": "the database migration failed, so nothing new was deployed",
-                   "baking": "the new version took over, then failed its watch with real traffic"}.get(phases.get("failed_phase") or receipt.get("failed_phase"),
-                                                                                                        "the new version failed its health check"))
+                   "baking": "the new version took over, then failed its watch with real traffic"}.get(failed_phase, "the new version failed its health check"))
         return compose(f"**Promotion stopped for `{app}`: production's previous version is serving.**",
                        [f"Why: {reason}", None if cancelled or not error else f"Error: `{clip(error, 240)}`"],
                        "promote again when ready." if cancelled else "the developer fixes the app and releases it to staging; then promote that release.", foot)
@@ -488,6 +503,34 @@ def promotion(plan):
                 else f"**The promotion of `{app}` did not run.** Nothing changed in production.")
         return compose(head, [], plain_next(plan) if step else plan.get("next_action"), foot)
     return compose(f"**Promotion of `{app}`: {str(state).replace('_', ' ')}.**", [], plan.get("next_action"), foot)
+
+
+def production_rollback(plan):
+    """rollback_production, and get_deployment_status for it: production's traffic back to the split before its live promotion."""
+    app = plan.get("application") or "the app"
+    state, receipt = plan.get("state"), plan.get("receipt") or {}
+    run = (plan.get("workflow") or {}).get("html_url") or (plan.get("dispatch_result") or {}).get("html_url")
+    foot = f"Plan `{str(plan.get('id') or '')[:8]}`" + (f" · {link('GitHub run', run)}" if run else "")
+    previous = plan.get("previous") or {}
+    back_to = version(previous["sha"], previous.get("message")) if previous.get("sha") else f"`{previous.get('revision') or 'the previous revision'}`"
+    undone = version(plan.get("sha"), (plan.get("commit") or {}).get("message")) if plan.get("sha") else f"`{plan.get('from_revision')}`"
+    reviewers = " or ".join(f"`{name}`" for name in plan.get("reviewers") or []) or "a production reviewer"
+    if state in ("dispatching", "dispatched", "awaiting_workflow", "queued", "awaiting_approval"):
+        approve = (f"approve it on GitHub: open {link('the run', run)}, choose Review deployments, then approve." if run
+                   else "approve it on GitHub: the platform repository's Actions tab, Promote to production, Review deployments.")
+        return compose(f"**Waiting for approval: roll `{app}` back in production.**",
+                       [f"Traffic returns to {back_to}", f"No longer serving: {undone}",
+                        f"Only {reviewers} may approve it; production's traffic stays where it is until then"], approve, foot)
+    if state == "running":
+        return compose(f"**Rolling `{app}` back in production**: visitors move to {back_to} within a minute.", [], "nothing to do; ask me in a minute.", foot)
+    if state == "succeeded" and receipt.get("state") == "rolled_back":
+        return compose(f"**`{app}` is back on its previous version in production.**",
+                       [f"Now serving: {back_to}", f"No longer serving: {undone}", "Database changes and anything the app already did are not undone"],
+                       "the developer fixes the code and releases it to staging; then promote that release.", foot)
+    if state in ("failed", "cancelled", "timed_out"):
+        return compose(f"**The production rollback of `{app}` did not complete**; production's traffic was not changed.", [],
+                       "open the GitHub run: a reviewer may have rejected it, or traffic moved since the promotion and the runner refused.", foot)
+    return compose(f"**Production rollback of `{app}`: {str(state).replace('_', ' ')}.**", [], plan.get("next_action"), foot)
 
 
 def recovery_words(plan):
@@ -952,6 +995,8 @@ def plan_words(item):
         return ROLLBACK_WORDS.get(state, "rollback " + PLAN_WORDS.get(state, str(state).replace("_", " ")))
     if item.get("kind") == "promotion":
         return PROMOTION_WORDS.get(state, "promotion " + PLAN_WORDS.get(state, str(state).replace("_", " ")))
+    if item.get("kind") == "production_rollback":
+        return PRODUCTION_ROLLBACK_WORDS.get(state, "production rollback " + PLAN_WORDS.get(state, str(state).replace("_", " ")))
     return PLAN_WORDS.get(state, str(state).replace("_", " "))
 
 

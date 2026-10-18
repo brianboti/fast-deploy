@@ -423,7 +423,10 @@ public half of its key (a second pull request of `add_production`), and producti
 that names the source and who approved it. A production rollback waits for 16.3; until then the runbook gives the command.
 Exercised live on 2026-10-18 (`docs/VALIDATION.md`): the production project under the organization, its foundation and
 pipeline, `add_production` for the demo through all four steps, and the demo promoted by digest with the operator's
-approval, serving staging's exact image in production; 1.18.2 fixed what that showed.
+approval, serving staging's exact image in production; 1.18.2 fixed what that showed. Item 16.3 built on 2026-10-18 as
+1.18.3: the split release in the runner (`ROLLOUT_STEPS`, production only; staging still moves everyone at once, so no
+application's workflows change), secrets pinned to their version at release in production, and `rollback_production`
+as the rollback of `promote.yml`, which production's deployer already trusts, so no root changes either.
 
 | Item | Change | Where |
 |---|---|---|

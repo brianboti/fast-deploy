@@ -27,6 +27,7 @@ WORKFLOW = "promote.yml"
 SERVICE = re.compile(r"^[a-z][a-z0-9-]{1,19}[a-z0-9]$")
 SOURCE_IMAGE = re.compile(r"^(us-central1)-docker\.pkg\.dev/([a-z][a-z0-9-]{4,28}[a-z0-9])/([a-z][a-z0-9-]{2,62})/([a-z][a-z0-9-]{2,20})@(sha256:[a-f0-9]{64})$")
 APP_PATH = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*){0,7}$")
+REVISION = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
 STAGING_MODES = ("github", "cosign-kms")  # an image released under the operator's exception carries no provenance: never promoted
 MAX_BAKE_SECONDS = 900
 
@@ -43,22 +44,54 @@ def source_image(value):
     return found.group(2), found.group(3), found.group(4), found.group(5)
 
 
+def target_of(env, service):
+    try:
+        target = json.loads(env.get("TARGET_JSON", ""))
+    except ValueError:
+        raise PromotionError("The production target is not JSON") from None
+    if not isinstance(target, dict) or target.get("service") != service:
+        raise PromotionError("The production target is for another service")
+    return target
+
+
+def split_of(text):
+    """A traffic split as a receipt records it ({"revision": percent}), checked; None when not given."""
+    if not text:
+        return None
+    try:
+        split = json.loads(text)
+    except ValueError:
+        raise PromotionError("rollback_to is not JSON") from None
+    if (not isinstance(split, dict) or not split or sum(split.values()) != 100
+            or any(not REVISION.fullmatch(str(name)) or type(share) is not int or not 0 < share <= 100 for name, share in split.items())):
+        raise PromotionError("rollback_to is a traffic split of revisions that adds up to 100")
+    return split
+
+
 def check(env):
-    """The dispatch inputs, checked before anything else runs: the shapes, an image of this service in another project than
-    production's, and a provenance this pipeline can verify. Returns the facts the later steps use."""
+    """The dispatch inputs, checked before anything else runs. A promotion: the shapes, an image of this service in another
+    project than production's, a provenance this pipeline can verify, and the split's steps. A rollback: which promotion
+    it undoes. Returns the facts the later steps use."""
     def need(pattern, name, what):
         value = env.get(name, "")
         if not pattern.fullmatch(value):
             raise PromotionError(f"Invalid {what}: {value!r}")
         return value
+    operation = env.get("OPERATION") or "promote"
+    if operation not in ("promote", "rollback"):
+        raise PromotionError(f"The operation is promote or rollback, not {operation!r}")
     plan = need(PLAN, "PLAN_ID", "plan id")
-    source_plan = need(PLAN, "SOURCE_PLAN", "staging plan id")
     service = need(SERVICE, "APPLICATION", "application")
+    if env.get("GITHUB_REF") != "refs/heads/main":
+        raise PromotionError("Promotions and rollbacks run from main only")
+    if operation == "rollback":
+        undone = need(PLAN, "ROLLBACK_PLAN", "promotion to roll back")
+        return {"operation": "rollback", "plan": plan, "service": service, "rollback_plan": undone, "target": target_of(env, service),
+                "rollback_to": split_of(env.get("ROLLBACK_TO", ""))}
+    source_plan = need(PLAN, "SOURCE_PLAN", "staging plan id")
     commit = need(COMMIT, "COMMIT_SHA", "commit")
     need(SPEC_HASH, "SPEC_HASH", "spec hash")
     repository = need(REPOSITORY, "SOURCE_REPOSITORY", "application repository")
-    if env.get("GITHUB_REF") != "refs/heads/main":
-        raise PromotionError("Promotions run from main only")
     path = env.get("APP_PATH", "")
     if path and (not APP_PATH.fullmatch(path) or ".." in path):
         raise PromotionError(f"Invalid application folder: {path!r}")
@@ -79,20 +112,22 @@ def check(env):
     bake = env.get("BAKE_SECONDS", "")
     if not re.fullmatch(r"[0-9]{1,3}", bake) or int(bake) > MAX_BAKE_SECONDS:
         raise PromotionError(f"bake_seconds is a whole number from 0 to {MAX_BAKE_SECONDS}")
+    steps = env.get("ROLLOUT_STEPS") or "100"
     try:
-        target = json.loads(env.get("TARGET_JSON", ""))
+        rollout = [int(part) for part in steps.split(",")]
     except ValueError:
-        raise PromotionError("The production target is not JSON") from None
-    if not isinstance(target, dict) or target.get("service") != service:
-        raise PromotionError("The production target is for another service")
+        rollout = []
+    if not rollout or rollout[-1] != 100 or rollout != sorted(set(rollout)) or any(not 0 < step <= 100 for step in rollout):
+        raise PromotionError("rollout is a rising list of traffic percents that ends at 100, such as 10,50,100")
+    target = target_of(env, service)
     project, registry, image_service, digest = source_image(env.get("SOURCE_IMAGE", ""))
     if image_service != service:
         raise PromotionError(f"The staging image belongs to {image_service}, not {service}")
     if project == target.get("project_id"):
         raise PromotionError("The staging image is already in the production project: a promotion copies from staging")
-    return {"plan": plan, "source_plan": source_plan, "service": service, "commit": commit, "repository": repository, "contract": contract or None, "workflow": workflow,
-            "mode": mode, "staging_project": project, "staging_registry": registry, "digest": digest, "target": target, "bake_seconds": int(bake),
-            "attested_commit": attested or None}
+    return {"operation": "promote", "plan": plan, "source_plan": source_plan, "service": service, "commit": commit, "repository": repository,
+            "contract": contract or None, "workflow": workflow, "mode": mode, "staging_project": project, "staging_registry": registry, "digest": digest,
+            "target": target, "bake_seconds": int(bake), "attested_commit": attested or None, "rollout": rollout}
 
 
 def approvers(approvals, environment):
@@ -156,6 +191,17 @@ def predicate(env, now=None):
 def summary(env, spec=None, cost=None):
     """The approval block a reviewer reads on the run before approving, written by code from the checked inputs."""
     facts = check(env)
+    if facts["operation"] == "rollback":
+        split = facts["rollback_to"]
+        back = ", ".join(f"`{name}` {share}%" for name, share in sorted(split.items(), key=lambda pair: -pair[1])) if split else "the split before it"
+        rows = [("Undoes", f"promotion `{facts['rollback_plan'][:8]}`, the release production serves now"),
+                ("Traffic returns to", f"{back}, as that promotion's checkpoint recorded"),
+                ("How", "traffic only, in seconds; nothing is built or copied, and it is refused if production's traffic moved since"),
+                ("Where", f"production project `{facts['target'].get('project_id')}`, service `{facts['service']}`")]
+        lines = [f"### Roll `{facts['service']}` back in production", "", "| | |", "|---|---|"]
+        lines += [f"| {name} | {value} |" for name, value in rows]
+        lines += ["", "Approving moves production's traffic back; data the newer version wrote stays. Rejecting changes nothing."]
+        return "\n".join(lines) + "\n"
     short = facts["digest"].removeprefix("sha256:")[:12]
     from_where = (f"the platform's pipeline, from {facts['repository']} through the contract at `{facts['contract'][:7]}`" if facts["contract"]
                   else f"{facts['repository']}'s own {facts['workflow']}")
@@ -165,7 +211,8 @@ def summary(env, spec=None, cost=None):
             ("Provenance", "GitHub's attestation" if facts["mode"] == "github" else "signed with the application's Cloud KMS key in staging"),
             ("From", f"staging project `{facts['staging_project']}`"),
             ("To", f"production project `{facts['target'].get('project_id')}`, service `{facts['service']}`"),
-            ("Watched after the switch", f"{facts['bake_seconds']} seconds; a crash or 5xx answers restore the previous version")]
+            ("Released in steps", " then ".join(f"{step}%" for step in facts["rollout"]) + f" of the traffic, each watched {facts['bake_seconds']} "
+                                  "seconds; a crash, errors or slow answers at any step bring the previous version back for everyone")]
     if spec is not None:
         rows.append(("Size", f"{spec.resources.cpu} CPU, {spec.resources.memory_mib} MiB, {spec.scaling.minimum} to {spec.scaling.maximum} instances, "
                              f"exposure {spec.exposure}"))
@@ -184,10 +231,13 @@ def main(argv=None):
     try:
         if args == ["check"]:
             facts = check(env)
-            print(f"Promotion inputs checked: {facts['service']} at {facts['commit'][:12]}, {facts['digest']} from {facts['staging_project']}")
+            if facts["operation"] == "rollback":
+                print(f"Rollback inputs checked: {facts['service']}, undoing promotion {facts['rollback_plan'][:8]}")
+            else:
+                print(f"Promotion inputs checked: {facts['service']} at {facts['commit'][:12]}, {facts['digest']} from {facts['staging_project']}")
         elif args == ["summary"]:
             spec = cost = None
-            if env.get("SPEC_FILE"):
+            if env.get("SPEC_FILE") and os.path.isfile(env["SPEC_FILE"]):
                 from pathlib import Path
 
                 from .cost import estimate

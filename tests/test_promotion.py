@@ -36,7 +36,7 @@ class PromotionGitHub(ProductionGitHub):
         return {"workflow_run_id": 77, "html_url": RUN}
 
     def status(self, app, plan):
-        return self.run if plan.get("kind") == "promotion" else super().status(app, plan)
+        return self.run if plan.get("kind") in ("promotion", "production_rollback") else super().status(app, plan)
 
     def cancel_run(self, app, run_id):
         self.cancelled.append((app.pipeline_repo, run_id))
@@ -318,7 +318,7 @@ def test_a_staging_root_lets_the_production_deployer_read_its_images_and_nothing
 def test_the_promote_workflow_waits_for_approval_before_any_cloud_step():
     workflow = yaml.safe_load(Path(".github/workflows/promote.yml").read_text())
     text = Path(".github/workflows/promote.yml").read_text()
-    assert workflow["run-name"] == "promote-${{ inputs.plan_id }}" and workflow["concurrency"]["group"] == "gcp-production-${{ inputs.application }}"
+    assert workflow["run-name"] == "${{ inputs.operation }}-${{ inputs.plan_id }}" and workflow["concurrency"]["group"] == "gcp-production-${{ inputs.application }}"
     assert workflow["permissions"] == {"contents": "read"}
     describe, promote = workflow["jobs"]["describe"], workflow["jobs"]["promote"]
     assert "environment" not in describe and "permissions" not in describe  # no cloud identity before a reviewer approves

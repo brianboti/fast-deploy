@@ -150,8 +150,9 @@ INSTRUCTIONS = (
     "Databases, buckets, topics and migrations are supported: the app declares them under needs in platform.yaml through a reviewed "
     "pull request on its repository, then propose_infrastructure provisions them once its pull request is merged. Costs from "
     "estimate_cost and get_cost_report are bounds from list prices, never a bill. Production is reached only by promotion: "
-    "add_production once per app, then promote_to_production copies a staging release's exact image, and nothing happens until a "
-    "production reviewer approves the run on GitHub. Other clouds, public access, GPUs and resources above the lab's limits are refused "
+    "add_production once per app, then promote_to_production copies a staging release's exact image and moves production's traffic "
+    "to it in steps, and rollback_production moves it back; nothing happens in production until a production reviewer approves the run "
+    "on GitHub. Other clouds, public access, GPUs and resources above the lab's limits are refused "
     "by policy: say so with the legitimate way forward, and never work around it."
 )
 # claude.ai does not pass INSTRUCTIONS to the model (anthropics/claude-ai-mcp issue #93), so the one rule that matters most
@@ -335,9 +336,17 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
     def promote_to_production(application: APP, plan_id: Annotated[str | None, described(
             "The staging release to promote, from list_plans; omit for the newest that succeeded.")] = None) -> dict[str, Any]:
         """Promote a staging release to production: the exact image it deployed, copied by digest, never rebuilt. The run waits on GitHub until one
-        of production's reviewers approves it; then it checks the image's signature, copies it, releases it and restores the previous version
-        on a failure. Follow it with get_deployment_status."""
+        of production's reviewers approves it; then it checks the image's signature, copies it and releases it in steps of the traffic (10, 50,
+        100 percent), restoring the previous version on a failure at any step. Follow it with get_deployment_status."""
         return chat.attach(chat.release, controller.promote(identity.get(), application, plan_id))
+
+    @tool(title="Roll production back (after approval)", annotations=CHANGES_CLOUD)
+    @plain_errors
+    def rollback_production(application: APP) -> dict[str, Any]:
+        """Move production's traffic back to the split that served before its live promotion, in seconds and without a build. Like every change
+        to production it waits on GitHub for a production reviewer's approval. Data the newer version wrote stays. Follow it with
+        get_deployment_status."""
+        return chat.attach(chat.release, controller.rollback_production(identity.get(), application))
 
     @tool(title="Onboard a repository (one sentence)", annotations=CHANGES_CLOUD)
     @plain_errors

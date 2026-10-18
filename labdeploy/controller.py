@@ -1577,7 +1577,8 @@ class Controller:
         run_id = (plan.get("dispatch_result") or {}).get("workflow_run_id")
         if plan["state"] not in DISPATCHED or not run_id:
             raise ValueError(f"Plan is '{plan['state']}' and has no running workflow to cancel")
-        result = self.github.cancel_run(self.promotion_pipeline(plan) if plan.get("kind") == "promotion" else app, run_id)
+        production = plan.get("kind") in ("promotion", "production_rollback")
+        result = self.github.cancel_run(self.promotion_pipeline(plan) if production else app, run_id)
         with self.store.connect() as db:
             db.execute("INSERT INTO audit VALUES (?, ?, ?, 'cancel_requested')", (time.time(), owner, plan_id))
         status = self.refresh(principal, plan_id)
@@ -1673,7 +1674,7 @@ class Controller:
             "source": {"plan": source["id"], "image": image, "digest": image.rsplit("@", 1)[1], "provenance": mode, "workflow": staging_workflow,
                        "attested_commit": attested if attested and re.fullmatch(r"[a-f0-9]{40}", attested) else source["sha"],
                        "revision": receipt.get("revision"), "released_at": (source.get("outcome") or {}).get("completed_at"), "cost": source.get("cost")},
-            "bake_seconds": min(production.bake_seconds, MAX_BAKE_SECONDS),
+            "bake_seconds": min(production.bake_seconds, MAX_BAKE_SECONDS), "rollout": list(production.rollout),
             "layout": {"path": app.path, "workflow": "promote.yml", "github_environment": app.production.environment},
             "reviewers": list(production.reviewers), "containment": source.get("containment"), "warnings": [],
         }
@@ -1684,6 +1685,10 @@ class Controller:
         if spec.secrets:
             plan["warnings"].append("References secrets " + ", ".join(f"{app.service}-{name}" for name in spec.secrets) + f" that must exist in "
                                     f"{app.production.target.project_id} with an enabled version, or the release stops before deploying.")
+        if len(plan["rollout"]) > 1:
+            minutes = round(len(plan["rollout"]) * plan["bake_seconds"] / 60)
+            plan["warnings"].append("Released in steps of " + ", ".join(f"{step}%" for step in plan["rollout"]) + f" of the traffic, each watched "
+                                    f"{plan['bake_seconds']} seconds: it serves everyone about {minutes} minutes after the approval.")
         if not plan["bake_seconds"]:
             plan["warnings"].append("production.bake_seconds is 0: nothing watches the new revision after its final probe.")
         plan["approval"] = promotion_approval(plan, principal.name)
@@ -1698,6 +1703,48 @@ class Controller:
         self.store.record_event("promotion", name=app_id, identity=principal.name, application=app_id, outcome="dispatched",
                                 detail=f"staging {source['id'][:8]} {plan['source']['digest'][:19]}")
         return {**plan, "state": "dispatched", "next_action": advice({**plan, "state": "dispatched"})}
+
+    def rollback_production(self, principal, app_id):
+        """Move production's traffic back to the split that served before its live promotion (docs/ROADMAP.md D38): traffic
+        only, in seconds, no build. It runs as promote.yml's rollback, the one workflow production's deployer trusts, so it
+        waits for a production reviewer's approval like every job in production-<service>. The runner refuses when the
+        checkpoint belongs to another promotion or traffic moved since."""
+        app = self.app(principal, app_id, write=True)
+        if not principal.can_deploy:
+            raise ValueError("Identity has read-only access")
+        self.require_active(app_id)
+        production, platform = self.config.production, self.config.platform
+        if production is None or platform is None or app.production is None:
+            raise ValueError(f"{app_id} has no production yet: ask for add_production first")
+        if not self.config.live_dispatch:
+            raise ValueError("Dispatch is disabled (live_dispatch: false); nothing can be rolled back from here")
+        live = self.store.latest_success(app_id, kind="promotion")
+        if live is None:
+            raise ValueError(f"Nothing promoted to production by this controller to roll back for {app_id}")
+        receipt = live.get("receipt") or {}
+        if not receipt.get("previous_traffic"):
+            raise ValueError("The live promotion's receipt records no earlier split; promote the wanted staging release instead")
+        gate = [item for item in self.production_missing(app) if item.startswith(("the environment", "administrators"))]
+        if gate:
+            raise ValueError(f"Production's approval gate for {app_id} is not as it must be: {'; '.join(gate)}. Ask for add_production first.")
+        record = {
+            "id": uuid.uuid4().hex, "kind": "production_rollback", "application": app_id, "repository": app.repository, "branch": app.branch,
+            "sha": live["sha"], "commit": live.get("commit"), "spec_hash": live.get("spec_hash"), "cloud": "gcp", "environment": "production",
+            "target": app.production.target.model_dump(), "pipeline": platform.repository, "expires_at": time.time() + 900, "cost": None, "checks": {},
+            "from_plan": live["id"], "from_revision": receipt.get("revision"), "to_traffic": receipt["previous_traffic"],
+            "previous": self.previous_release(app_id, receipt["previous_traffic"]), "reviewers": list(production.reviewers),
+            "layout": {"path": app.path, "workflow": "promote.yml", "github_environment": app.production.environment},
+        }
+        try:
+            record["dispatch_result"] = self.github.dispatch_production_rollback(platform.repository, record)
+        except Exception:
+            self.store.add(principal.name, record, "dispatch_unknown")
+            raise ValueError("Rollback dispatch outcome unknown: look for a run titled rollback- with this id among the platform repository's Promote to "
+                             "production runs before asking again.") from None
+        self.store.add(principal.name, record, "dispatched")
+        self.store.record_event("production_rollback", name=app_id, identity=principal.name, application=app_id, outcome="dispatched",
+                                detail=f"undoes {live['id'][:8]}")
+        return {**record, "state": "dispatched", "next_action": advice({**record, "state": "dispatched"})}
 
     def production_missing(self, app):
         """What a promotion of this application still needs, in plain words; empty when production is ready: the protected
@@ -1838,9 +1885,12 @@ class Controller:
 
     def record_outcome(self, owner, app, plan, workflow):
         """A finished run is stored once with its receipt, so history survives GitHub's artifact retention."""
-        if plan.get("kind") == "rollback":
+        if plan.get("kind") in ("rollback", "production_rollback"):
+            # A production rollback's receipt is uploaded by the platform repository's promote.yml, under its plain name.
+            production = plan.get("kind") == "production_rollback"
+            where, name = (self.promotion_pipeline(plan), "recovery-receipt") if production else (app, self.artifact_name(app, "recovery-receipt"))
             fetch = getattr(self.github, "artifact_json", None)
-            files = fetch(app, workflow["id"], self.artifact_name(app, "recovery-receipt"), ("recovery-receipt.json",)) if callable(fetch) and workflow.get("id") else None
+            files = fetch(where, workflow["id"], name, ("recovery-receipt.json",)) if callable(fetch) and workflow.get("id") else None
             plan["receipt"] = (files or {}).get("recovery-receipt.json")
             if plan["state"] == "succeeded" and (plan["receipt"] or {}).get("state") == "rolled_back":
                 self.store.mark(plan["from_plan"], rolled_back=True, rolled_back_by=plan["id"])
@@ -1865,7 +1915,7 @@ class Controller:
         self.persist(owner, plan)
 
     def record_recovery(self, owner, app, plan, persist=True):
-        if plan.get("kind") == "promotion":
+        if plan.get("kind") in ("promotion", "production_rollback"):
             return  # a promotion restores production's traffic itself; the next promotion recovers a lost runner's checkpoint first
         lookup = getattr(self.github, "recovery_after", None)
         if not callable(lookup) or not (plan.get("workflow") or {}).get("id"):
