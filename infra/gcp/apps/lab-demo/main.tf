@@ -31,6 +31,9 @@ module "service" {
   error_alert_count            = 5
   latency_alert_ms             = 2000
   instance_alert_count         = 4
+  exposure                     = "authenticated"
+  viewers                      = []
+  promotion_readers            = ["lab-demo-deploy@fast-deploy-prod-c602.iam.gserviceaccount.com"]
   needs                        = { buckets = ["uploads"], topics = ["events"], database = "none", migrate = [] }
   project_number               = data.terraform_remote_state.project.outputs.project_number
   image_vulnerability_scanning = data.terraform_remote_state.project.outputs.image_vulnerability_scanning
