@@ -9,7 +9,8 @@ gha-creds-*.json
 .terraform/
 *.tfstate*
 *.tfplan
-terraform.tfvars
+# Each environment's settings stay local: terraform.tfvars, staging.tfvars, production.tfvars
+*.tfvars
 config.local.yaml
 
 .ruff_cache/

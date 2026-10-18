@@ -178,6 +178,7 @@ def test_the_foundation_names_its_environment_and_lets_the_machine_view_producti
 
 
 def test_the_foundation_script_keeps_staging_values_out_of_production(tmp_path):
+    assert "*.tfvars" in Path(".gitignore").read_text().splitlines()  # staging.tfvars and production.tfvars never reach git
     script = Path("scripts/apply-foundation.sh").read_text()
     assert 'Rename infra/gcp/project/terraform.tfvars to staging.tfvars first' in script
     assert '-var-file="$VARS" -var="environment=$ENVIRONMENT"' in script and 'prefix = "INFRA_PRODUCTION_" if os.environ["ENVIRONMENT"] == "production"' in script
