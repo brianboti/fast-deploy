@@ -223,7 +223,7 @@ def run(parser, args):
         from .github import GitHub
         config_path = args.config or os.environ.get("LAB_CONFIG", "config.local.yaml")
         config = load_config(config_path)
-        controller = Controller(config, GitHub(), Store(config.database))
+        controller = Controller(config, GitHub.from_config(config), Store(config.database))
         print(json.dumps(controller.watchdog_tick() if args.command == "watchdog" else controller.backup_tick(config_path=config_path), indent=2))
     elif args.command == "restore-drill":
         import getpass
@@ -270,7 +270,7 @@ def run(parser, args):
             from .controller import Controller
             from .github import GitHub
             app = applications[args.app]
-            controller = Controller(config, GitHub(), Store(config.database))
+            controller = Controller(config, GitHub.from_config(config), Store(config.database))
             needs = controller.spec_at(app, controller.github.head(app)).needs.model_dump()
         except Exception as exc:  # noqa: BLE001 - the checklist is still useful without the spec; say what could not be read
             note = f"The app's platform.yaml could not be read ({str(exc)[:100]}); check it for buckets, topics and a database and delete their data deliberately."
@@ -305,7 +305,7 @@ def run(parser, args):
         if args.app not in config.applications:
             parser.error(f"Unknown application: {args.app}")
         operator = Principal(name="operator-cli", token_sha256="0" * 64, applications=sorted(config.applications), can_deploy=True)
-        controller = Controller(config, GitHub(), Store(config.database))
+        controller = Controller(config, GitHub.from_config(config), Store(config.database))
         options = {"state_bucket": args.state_bucket, "bootstrap_image": args.bootstrap_image}
         if args.pull_request:
             print(json.dumps(controller.propose_infrastructure(operator, args.app, allow_writes=True, **options), indent=2))
@@ -337,7 +337,7 @@ def run(parser, args):
         unknown = [a for a in app_ids if a not in config.applications]
         if unknown:
             parser.error(f"Unknown application(s): {', '.join(unknown)}")
-        print(json.dumps(update_workflows(config, GitHub(), app_ids, args.platform_commit), indent=2))
+        print(json.dumps(update_workflows(config, GitHub.from_config(config), app_ids, args.platform_commit), indent=2))
     else:
         from .workflows import render
         try:

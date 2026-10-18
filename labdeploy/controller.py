@@ -552,6 +552,9 @@ class Controller:
         reminder = self.restore_drill_reminder()
         if reminder:
             problems.append(reminder)
+        replication = self.replication_problem()
+        if replication:
+            problems.append(replication)
         report = {"checked_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"), "problems": problems, "notified": False}
         self.store.record_event("watchdog", outcome="problems" if problems else "ok", detail="; ".join(problems) or None)
         if problems and self.config.notify_webhook_url:
@@ -579,7 +582,24 @@ class Controller:
         latest = self.store.newest_event("restore_drill")
         if latest and latest["outcome"] != "ok":
             when += f"; the latest attempt failed: {(latest['detail'] or 'no detail')[:160]}"
-        return f"quarterly restore drill due ({when}): run python -m labdeploy.cli restore-drill"
+        how = "scripts/machine.sh drill (from the laptop)" if getattr(self.config, "litestream_replica", None) else "python -m labdeploy.cli restore-drill"
+        return f"quarterly restore drill due ({when}): run {how}"
+
+    def replication_problem(self, run=None):
+        """The watchdog's line when the machine's live copy of the database (Litestream, docs/ROADMAP.md 15.3) is not
+        running, else None. Only where `litestream_replica` is set: the machine's configuration."""
+        if not getattr(self.config, "litestream_replica", None):
+            return None
+        import subprocess
+        run = run or subprocess.run
+        try:
+            state = run(["systemctl", "is-active", "litestream"], capture_output=True, text=True, timeout=10).stdout.strip()
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"the live copy of the database (Litestream) could not be checked: {str(exc)[:120]}"
+        if state != "active":
+            return (f"the live copy of the database (Litestream) is {state or 'not running'}: until it runs again the database is only copied "
+                    "nightly (scripts/machine.sh logs litestream)")
+        return None
 
     DRIFT_STALE_DAYS = 8  # the drift check runs weekly; a report older than this means the schedule stopped
 
@@ -610,20 +630,21 @@ class Controller:
                 "drifted": details, "serious": report.get("serious", []), "failed": report.get("failed", [])}
 
     def backup_tick(self, config_path=None):
-        """A consistent copy of the SQLite database next to it (or in backup_dir); copies older than backup_keep_days go.
+        """A consistent, compact copy of the SQLite database next to it (or in backup_dir), made with VACUUM INTO while the
+        controller keeps writing; copies older than backup_keep_days go.
 
         With `backup_bucket` set, the copy and the configuration file (`config_path`, else the live configuration's path)
-        are uploaded with the operator's own gcloud sign-in.
+        are uploaded to the bucket's `backup_prefix` folder (controller/ for a laptop, machine/ for the machine) with this
+        host's own gcloud sign-in: the operator's on a laptop, the machine's identity on the machine.
         """
         from pathlib import Path
         folder = Path(self.config.backup_dir or f"{self.config.database}.backups")
         folder.mkdir(parents=True, exist_ok=True)
         destination = folder / f"deployments-{datetime.datetime.now(datetime.UTC):%Y%m%d-%H%M%S}.db"
-        source, copy = sqlite3.connect(self.config.database), sqlite3.connect(destination)
+        source = sqlite3.connect(self.config.database, timeout=30)
         try:
-            source.backup(copy)
+            source.execute("VACUUM INTO ?", (str(destination),))
         finally:
-            copy.close()
             source.close()
         cutoff = time.time() - self.config.backup_keep_days * 86_400
         removed = []
@@ -638,9 +659,10 @@ class Controller:
             # private, versioned bucket so a lost laptop loses nothing but its tunnel.
             import subprocess
             config_path = config_path or getattr(self.config, "path", None)
-            targets = [(str(destination), f"gs://{bucket}/controller/{destination.name}")]
+            prefix = getattr(self.config, "backup_prefix", None) or "controller"
+            targets = [(str(destination), f"gs://{bucket}/{prefix}/{destination.name}")]
             if config_path and Path(config_path).is_file():
-                targets.append((str(config_path), f"gs://{bucket}/controller/config.yaml"))
+                targets.append((str(config_path), f"gs://{bucket}/{prefix}/config.yaml"))
             for source_path, target in targets:
                 subprocess.run(["gcloud", "storage", "cp", source_path, target], check=True, capture_output=True, text=True, timeout=120)
             uploaded = [target for _, target in targets]

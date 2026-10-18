@@ -4,6 +4,7 @@ The controller still holds no cloud credential of its own. On a Google Cloud mac
 account through the metadata server; on a laptop it asks gcloud for a short-lived token impersonating the observer
 identity, which has only viewer roles. Either way the token is cached and never written anywhere.
 """
+import base64
 import datetime
 import json
 import re
@@ -29,6 +30,56 @@ def log_line(entry):
         payload = (entry["protoPayload"].get("status") or {}).get("message")
     labels = (entry.get("resource") or {}).get("labels") or {}
     return {"at": entry.get("timestamp"), "severity": entry.get("severity"), "revision": labels.get("revision_name"), "message": str(payload or "")[:500]}
+
+
+class GoogleToken:
+    """An access token for Google APIs as this host itself: the attached service account through the metadata server on a
+    Google Cloud machine, else the operator's own gcloud sign-in on a laptop. Kept until a minute before it ends."""
+
+    def __init__(self, client=None, runner=None, clock=time.time):
+        self.client = client or httpx.Client(timeout=30, follow_redirects=False)
+        self.runner = runner or (lambda args: subprocess.run(args, check=True, capture_output=True, text=True, timeout=60).stdout.strip())
+        self.clock = clock
+        self.cached, self.until = None, 0.0
+
+    def __call__(self):
+        if self.cached and self.clock() < self.until:
+            return self.cached
+        try:
+            response = self.client.get(METADATA, headers={"Metadata-Flavor": "Google"}, timeout=0.5)
+            if response.status_code == 200:
+                data = response.json()
+                self.cached, self.until = data["access_token"], self.clock() + max(60, int(data.get("expires_in", 300)) - 60)
+                return self.cached
+        except (httpx.HTTPError, ValueError, KeyError):
+            pass
+        try:
+            token = self.runner(["gcloud", "auth", "print-access-token"])
+        except (subprocess.CalledProcessError, OSError, subprocess.SubprocessError):
+            raise ValueError("Could not get a Google token on this host: on a laptop, sign in with gcloud auth login; on the machine, "
+                             "check that it runs with its service account") from None
+        self.cached, self.until = token, self.clock() + 1800
+        return token
+
+
+def secret_reader(name, token, client=None, ttl=3600, clock=time.time):
+    """A key source for the GitHub App: the latest version of a Secret Manager secret, kept in memory for an hour and read
+    again when asked (refresh=True, after GitHub refused a signature). The value never reaches a log, a file or Claude."""
+    client = client or httpx.Client(timeout=30, follow_redirects=False)
+    state = {"value": None, "until": 0.0}
+
+    def read(refresh=False):
+        if state["value"] is not None and not refresh and clock() < state["until"]:
+            return state["value"]
+        response = client.get(f"https://secretmanager.googleapis.com/v1/{name}/versions/latest:access", headers={"Authorization": "Bearer " + token()})
+        if response.status_code in (403, 404):
+            raise ValueError(f"The GitHub App's key could not be read from {name} (HTTP {response.status_code}): add the key as a version of that "
+                             "secret and check that this host's identity may read it (docs/SETUP.md section 4)")
+        response.raise_for_status()
+        state["value"], state["until"] = base64.b64decode(response.json()["payload"]["data"]).decode(), clock() + ttl
+        return state["value"]
+
+    return read
 
 
 class Observer:

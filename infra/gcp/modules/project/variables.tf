@@ -38,6 +38,18 @@ variable "observer_impersonators" {
   type        = list(string)
   description = "Principals (user:… or serviceAccount:…) allowed to mint tokens for the viewer-only observer identity, for the controller on a laptop."
 }
+variable "controller" {
+  type = object({
+    install_commit = string
+    domain         = optional(string, "")
+    repository     = optional(string, "")
+    zone           = optional(string, "us-central1-a")
+    acme_email     = optional(string, "")
+    dns_zone       = optional(string, "")
+  })
+  default     = null
+  description = "The controller's own machine (controller.tf); null creates none."
+}
 variable "billing_export_dataset" {
   type        = string
   description = "BigQuery dataset id for the billing export (enable the export in the Billing console to this dataset); empty creates nothing."

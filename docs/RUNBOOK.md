@@ -7,7 +7,7 @@ platform (`lab-deploy-staging-f29a`, operated from Claude chat by one person); u
 
 | Role | Who | How |
 |---|---|---|
-| Owner and only operator | Brian Boti | Claude chat (the connector), the terminal on the laptop that runs the controller |
+| Owner and only operator | Brian Boti | Claude chat (the connector); `scripts/machine.sh` on the laptop for the controller's machine |
 | Alerts | the `alert_email` and optional `alert_webhook_url` in `infra/gcp/project/terraform.tfvars`; GitHub's failed-workflow emails; the `NOTIFY_WEBHOOK_URL` secret on each app repository | arrive without anyone watching |
 | Escalation | nobody else today | when a second operator joins, follow "Succession" below: their own principal, `observer_impersonators`, `.github/CODEOWNERS`, required review (`docs/SETUP.md` 7l) and a rehearsal |
 
@@ -45,17 +45,75 @@ can release it, and nothing in its own pipeline can reach another application's 
 
 ## What "up" means
 
-- `GET /healthz` on the controller answers 200 through the tunnel. The platform repository's **Controller watch**
-  workflow calls it every thirty minutes and fails loudly when it does not answer (`CONTROLLER_HEALTH_URL`).
+- `GET /healthz` on the controller answers 200 at its address. A Cloud Monitoring uptime check calls it every minute from
+  three US locations and alerts when more than one fails for five minutes; the platform repository's **Controller
+  watch** workflow calls it every thirty minutes and fails loudly when it does not answer (`CONTROLLER_HEALTH_URL`).
 - A release reaches `succeeded` or a final failure within about twenty minutes of a plan being dispatched; the status
   tool names the phase it is in and the next action.
 - The daily watchdog finds nothing (`get_controller_status` shows its last findings), the nightly backup is less than
   a day old and the copy in the backup bucket matches.
 - Every alert policy is enabled in Cloud Monitoring and reaches a channel (section "Prove the alerts work").
 
+## The controller's machine
+
+Since 1.17.0 (Phase 15, decision D36) the controller runs on its own machine in the staging project: `fast-deploy`, one
+Always Free `e2-micro` in us-central1-a with a 30 GB standard disk, at its own reserved address (or a DNS name, when one
+is set). Caddy answers HTTPS with a Let's Encrypt certificate for that address (six days long, renewed every few days)
+and hands requests to the controller on 127.0.0.1:8000. Litestream copies the database to
+`gs://PROJECT-lab-deploy-backups/machine/litestream/`, at most a minute behind, and the nightly backup puts a copy and the
+configuration beside it in `machine/`. The machine signs in to GitHub as the GitHub App and to Google as its own identity,
+`lab-deploy-controller` (the observer's viewer roles, its own folder of the backup bucket and the App's key): no token or
+key file is on its disk. It costs the external IPv4 address, about $3.65 a month, plus a few cents of Secret Manager and
+Cloud Storage operations; the machine and its disk are inside the free tier (one `e2-micro` per billing account). There
+is no open SSH port: `scripts/machine.sh` goes through Identity-Aware Proxy, and gcloud signs you in with OS Login.
+
+| To | Run on the laptop, in the repository |
+|---|---|
+| See it | `scripts/machine.sh status`: the three services, the commit it runs, disk, memory, `/healthz` |
+| Read its logs | `scripts/machine.sh logs` (the controller), `logs litestream`, `logs caddy`, `logs startup` (the boot script) |
+| Restart the controller | `scripts/machine.sh restart` |
+| Update the platform it runs | after the merge, `scripts/machine.sh update $(git rev-parse origin/main)`: only a commit on main installs, and the previous one comes back if the new one does not answer within a minute |
+| Change its configuration | `scripts/machine.sh config-get /tmp/machine.yaml`, edit, `scripts/machine.sh config-put /tmp/machine.yaml`: checked before it goes; principals, applications and settings apply at once, `oauth` and `github_app` changes need `restart` |
+| Back up now, or drill | `scripts/machine.sh backup`, `scripts/machine.sh drill` |
+| Hold it while a laptop takes over | `scripts/machine.sh stop` (not even a reboot starts it); `scripts/machine.sh start` releases the hold |
+
+Docker is on the machine only for the lock files onboarding compiles (decision D27); it starts when first used, and its
+containers can reach neither the metadata server (the machine's identity) nor any private address.
+
+What restarts by itself: systemd restarts the controller, Litestream and Caddy when one stops; Google restarts the machine
+after a host failure and moves it live for maintenance; a security update that needs a reboot gets one at 09:00 UTC, and
+the controller is back within a minute.
+
+### The machine is gone or broken
+
+The machine keeps nothing that is not also in its folder of the backup bucket, and a fresh one restores itself: the
+configuration from `machine/config.yaml`, the commit it ran from `machine/installed-commit`, the database from the
+Litestream replica (or, failing that, the newest nightly copy, up to a day old). It never starts the controller with an
+empty database, which would forget every plan and release.
+
+1. Replace it: `gcloud compute instances delete fast-deploy --zone us-central1-a --project PROJECT` (a deletion: your
+   call), then `scripts/apply-foundation.sh PROJECT` creates a new one with the same address.
+2. About five minutes later `scripts/machine.sh logs startup` says where the database came from and that the controller
+   runs; `scripts/machine.sh status` and `get_controller_status` in Claude confirm it. The connector keeps working: the
+   address is the same and the sessions are in the restored database.
+
+When Google Cloud itself is out, the laptop is the fallback:
+
+1. `scripts/machine.sh stop` if the machine still answers: two controllers would release the same applications twice.
+2. Bring the newest database to the laptop: `gcloud storage ls gs://PROJECT-lab-deploy-backups/machine/` and
+   `gcloud storage cp gs://PROJECT-lab-deploy-backups/machine/deployments-STAMP.db ~/.local/share/lab-deploy/deployments.db`,
+   or the replica with `litestream restore -o ~/.local/share/lab-deploy/deployments.db gs://PROJECT-lab-deploy-backups/machine/litestream/deployments.db`
+   (`brew install litestream`; at most a minute old).
+3. `scripts/start.sh` (it stays off while the machine answers) and point the connector at the ngrok address.
+4. When the machine is back: stop the laptop, then `scripts/install-machine.sh APP_ID --replace` takes the laptop's
+   database back to the machine.
+
+If Google ends the free tier (it gives thirty days' notice), the machine costs about $6.11 a month more. The fallback
+design, Cloud Run with a scheduler job (`docs/RESEARCH-2026-10-16.md`, section 5.3, design B), is not built.
+
 ## The laptop is off or asleep
 
-What keeps working without the controller: every workflow already dispatched on GitHub (a release finishes or restores
+Only while the laptop is the controller: before the move to the machine, or as its fallback. What keeps working without the controller: every workflow already dispatched on GitHub (a release finishes or restores
 traffic on its own), the recovery workflow every six hours, the weekly right-sizing report, the spending cap in Google
 Cloud, every Cloud Monitoring alert. What stops: Claude's tools (the connector reports a connection error), auto-deploy,
 the daily watchdog, the nightly backup. Nothing is lost: plans expire, and the next start continues.
@@ -67,7 +125,7 @@ the daily watchdog, the nightly backup. Nothing is lost: plans expire, and the n
 
 ## Restore the controller on another machine
 
-Rehearsed on 2026-10-12 (`docs/VALIDATION.md`). What the backup bucket holds: the nightly database copy and the
+This is the laptop's procedure; the machine restores itself ("The machine is gone or broken" above). Rehearsed on 2026-10-12 (`docs/VALIDATION.md`). What the backup bucket holds: the nightly database copy and the
 configuration file (principals as hashes, targets, settings). What it does not hold, by design: the operator token's
 clear text, the GitHub token, the ngrok credentials.
 
@@ -93,19 +151,28 @@ clear text, the GitHub token, the ngrok credentials.
 ## Quarterly restore drill
 
 A backup nobody has restored is a hope. Once a quarter (the daily watchdog says "quarterly restore drill due" when no
-drill has passed for 92 days, whenever `backup_bucket` is set), run on the controller's machine:
+drill has passed for 92 days, whenever `backup_bucket` is set), run it where the controller runs. For the machine, from
+the laptop:
+
+```bash
+scripts/machine.sh drill
+```
+
+For a laptop that is the controller:
 
 ```bash
 python -m labdeploy.cli restore-drill        # LAB_CONFIG or --config for another configuration file
 ```
 
-It needs gcloud signed in as someone who may read the backup bucket. It restores nothing into the live database, which
-only gains the drill's audit event. It lists
-`gs://BUCKET/controller/`, downloads the newest `deployments-*.db` into a temporary folder (deleted afterwards), opens it
+It needs gcloud signed in as someone who may read the backup bucket (on the machine, its own identity). It restores
+nothing into the live database, which only gains the drill's audit event. It lists the host's folder,
+`gs://BUCKET/controller/` or `gs://BUCKET/machine/` (`backup_prefix`), downloads the newest `deployments-*.db` into a temporary folder (deleted afterwards), opens it
 read-only, runs SQLite's integrity check, counts the plans, audit events, plan state changes, registered applications and
 onboarding records, downloads `config.yaml` and checks that it loads, prints a short report, and records the outcome as
 the audit event `restore_drill` (`list_events` shows it). A copy older than 48 hours passes with a warning: the nightly
-backup runs inside the controller, so a laptop that was off for days has an old newest copy.
+backup runs inside the controller, so a laptop that was off for days has an old newest copy. On the machine it also
+restores the live copy with Litestream, checks it the same way and says how many minutes it is behind the database (a
+warning past ten).
 
 | The drill says | Do |
 |---|---|
@@ -205,10 +272,15 @@ Services, Credentials). To add someone, add `user:name@example.edu` to the app's
 
 ## Rotate credentials
 
-- **Operator token**: `python -m labdeploy.cli token`, replace the hash in `config.local.yaml`, restart the controller,
-  sign in again in Claude. Every session of the old token ends.
-- **GitHub token**: `security delete-generic-password -s lab-deploy-github-token`, create a new fine-grained token on
-  GitHub, run `start.sh` once by hand (it asks and stores it). The watchdog warns two weeks before expiry.
+- **Operator token**: `python -m labdeploy.cli token`, replace the hash in the configuration (on the machine through
+  `scripts/machine.sh config-get` and `config-put`; on a laptop in `config.local.yaml`), sign in again in Claude. Every
+  session of the old token ends.
+- **GitHub App key** (the machine): on the App's page generate a new private key, then
+  `gcloud secrets versions add FAST_DEPLOY_GITHUB_APP_KEY --project PROJECT --data-file=KEY.pem`, delete the file, and
+  delete the old key on the App's page. The controller reads the new version within the hour, or at once when GitHub
+  refuses the old key.
+- **GitHub token** (a laptop): `security delete-generic-password -s lab-deploy-github-token`, create a new fine-grained
+  token on GitHub, run `start.sh` once by hand (it asks and stores it). The watchdog warns two weeks before expiry.
 - **ngrok**: rotate in the ngrok dashboard and `ngrok config add-authtoken`; the domain and the connector stay.
 - **Pipeline and app identities** have no keys to rotate: their trust is the federation condition in Terraform.
   Changing a repository's numeric id (a transfer) needs a foundation apply and a root re-render.
@@ -333,9 +405,10 @@ and the apps' pins carry the name, so the order matters:
 ## Monthly checklist
 
 - `get_controller_status` and the last watchdog findings; the backup bucket has copies from the last day.
-- Every quarter: the restore drill (`python -m labdeploy.cli restore-drill`; the watchdog reminds).
+- `scripts/machine.sh status`: the three services active, the disk under half full, the commit the one you expect.
+- Every quarter: the restore drill (`scripts/machine.sh drill`; the watchdog reminds).
 - The cost report issue on each app repository: spend against the budget, drift, proposals.
 - Any `lab-deploy-cap-lifted` label left from the previous month (`gcloud run services list --format="table(name,labels)"`).
 - The native spend cap still exists (`scripts/spend-cap.sh check PROJECT`) and the drift issue on the platform repository is closed.
 - Dependabot pull requests on the platform repository; `pip-audit` runs every Monday in CI.
-- The GitHub token's expiry in the watchdog findings.
+- The GitHub token's expiry in the watchdog findings, while a laptop uses one.

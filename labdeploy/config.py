@@ -209,6 +209,31 @@ class ObserverIdentity(StrictModel):
     cache_seconds: int = Field(default=2700, ge=60, le=3500)
 
 
+# Secret Manager names the controller may read its GitHub App key from. App runtime identities read secrets by the prefix
+# "<service>-", and service names start with a lowercase letter, so a key whose name starts with an uppercase letter can
+# never fall inside an application's grant (infra/gcp/modules/service/main.tf, secret_accessor).
+APP_KEY_SECRET = re.compile(r"^projects/[a-z0-9-]{6,30}/secrets/[A-Z][A-Za-z0-9_-]{0,254}$")
+
+
+class GitHubApp(StrictModel):
+    """The controller's GitHub App (docs/ROADMAP.md D14, 15.1): an installation token per repository, minted with the App's
+    private key, which the controller reads from Secret Manager (on the machine through its own identity, on a laptop
+    through the operator's gcloud sign-in) or, for development, from a file. A fine-grained GITHUB_TOKEN in the
+    environment still wins, so a laptop keeps working as the fallback."""
+    app_id: str = Field(pattern=r"^([0-9]{1,12}|Iv[0-9A-Za-z.]{4,40})$")  # the App ID or its Client ID; either signs as the issuer
+    private_key_secret: str | None = None  # projects/PROJECT/secrets/NAME; the latest version is read
+    private_key_file: str | None = None
+
+    @model_validator(mode="after")
+    def one_key(self):
+        if (self.private_key_secret is None) == (self.private_key_file is None):
+            raise ValueError("github_app needs exactly one of private_key_secret (Secret Manager) and private_key_file")
+        if self.private_key_secret is not None and not APP_KEY_SECRET.fullmatch(self.private_key_secret):
+            raise ValueError("github_app.private_key_secret must be projects/PROJECT/secrets/NAME with a NAME that starts with an uppercase "
+                             "letter (for example FAST_DEPLOY_GITHUB_APP_KEY), so no application's secret grant can reach it")
+        return self
+
+
 class ApplicationSettings(StrictModel):
     """The operator's switches for an application registered by onboarding (whose entry lives in the database): the same
     fields as an Application's, laid over the registered entry, so nothing has to be copied into the file."""
@@ -231,6 +256,7 @@ class Config(StrictModel):
     application_settings: dict[str, ApplicationSettings] = Field(default_factory=dict)
     platform: Platform | None = None
     observer: ObserverIdentity | None = None
+    github_app: GitHubApp | None = None
     oauth: OAuth | None = None
     onboarding: Onboarding | None = None
     paused: bool = False  # the kill switch: no new plans or dispatches for any app; reads keep working
@@ -240,6 +266,14 @@ class Config(StrictModel):
     backup_keep_days: int = Field(default=14, ge=1, le=365)
     # A private, versioned bucket the nightly backup also uploads to (the database copy and this configuration).
     backup_bucket: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$")
+    # The folder in that bucket: `controller` for a laptop, `machine` for the always-on machine (docs/ROADMAP.md 15.5), so
+    # the two never mix their copies and a fresh machine only ever restores the machine's own.
+    backup_prefix: str = Field(default="controller", pattern=r"^[a-z][a-z0-9-]{0,30}$")
+    # The machine's live copy of the database (Litestream, docs/ROADMAP.md 15.3), gs://BUCKET/PATH. The restore drill
+    # restores from it as well, and the watchdog reports when the replication service stops.
+    litestream_replica: str | None = Field(default=None, pattern=r"^gs://[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]/[A-Za-z0-9._/-]{1,200}$")
+    # On a laptop: the always-on machine's address. scripts/start.sh refuses to start a second controller while it answers.
+    machine_url: str | None = Field(default=None, pattern=r"^https://[A-Za-z0-9.-]+$")
     log_file: str | None = None  # rotating controller log (requests, warnings); the audit trail itself lives in the database
     live_dispatch: bool = False
     # Google's native budget spend caps for Cloud Run that the operator has created (docs/SETUP.md 7i), by project id, in
@@ -328,6 +362,8 @@ class LiveConfig:
             notes.append("database path changes need a restart")
         if candidate.oauth != self.current.oauth:
             notes.append("oauth changes need a restart")
+        if candidate.github_app != self.current.github_app:
+            notes.append("github_app changes need a restart")
         self.current, self.error, self.reloaded_at = candidate, "; ".join(notes) or None, time.time()
         return True
 
