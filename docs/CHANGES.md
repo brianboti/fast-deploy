@@ -11,7 +11,8 @@ Nothing is promoted yet: promotion by digest (16.2) and the split release (16.3)
    platform repository's plan workflow on a pull request, and the apply identity only its apply workflow on `main` in
    the environment `infra-production`. Each environment now names its own settings file (`staging.tfvars`,
    `production.tfvars`). The script refuses production while `terraform.tfvars` exists, because Terraform loads that
-   file by itself and staging's values (its controller machine, its pipeline) would reach production.
+   file by itself and staging's values (its controller machine, its pipeline) would reach production. Git now ignores
+   every `*.tfvars`, so neither file can be committed.
    `viewer_members` gives the controller's machine in staging the observer's viewer roles in production, so health and
    logs will work for production apps.
 2. **The configuration's `production` block** names the project, its number and the GitHub accounts that approve a
