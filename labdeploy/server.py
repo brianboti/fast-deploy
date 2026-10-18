@@ -149,8 +149,10 @@ INSTRUCTIONS = (
     "and get_recent_logs; rollback_staging moves visitors back to the previous version in seconds but does not undo data changes. "
     "Databases, buckets, topics and migrations are supported: the app declares them under needs in platform.yaml through a reviewed "
     "pull request on its repository, then propose_infrastructure provisions them once its pull request is merged. Costs from "
-    "estimate_cost and get_cost_report are bounds from list prices, never a bill. Other clouds, production, public access, GPUs and "
-    "resources above the lab's limits are refused by policy: say so with the legitimate way forward, and never work around it."
+    "estimate_cost and get_cost_report are bounds from list prices, never a bill. Production is reached only by promotion: "
+    "add_production once per app, then promote_to_production copies a staging release's exact image, and nothing happens until a "
+    "production reviewer approves the run on GitHub. Other clouds, public access, GPUs and resources above the lab's limits are refused "
+    "by policy: say so with the legitimate way forward, and never work around it."
 )
 # claude.ai does not pass INSTRUCTIONS to the model (anthropics/claude-ai-mcp issue #93), so the one rule that matters most
 # ends every tool's description, and every parameter says what it is: those two and `summary` are all Claude reads there.
@@ -323,10 +325,19 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
     @tool(title="Add production (step by step)", annotations=CREATES_RECORD)
     @plain_errors
     def add_production(application: APP) -> dict[str, Any]:
-        """Give an application its production (a second project): register its production target, open the pull request for its production
-        cloud setup (a person merges it; the controller never does), then create its GitHub environment production-<service> whose required
-        reviewers approve every promotion. Call again after each step; it continues from where it stands. Never releases anything."""
+        """Give an application its production (a second project), step by step: the pull request for its production cloud setup (a person merges
+        it; the controller never does), its GitHub environment production-<service> whose reviewers approve every promotion, then read access to
+        staging's images (a second pull request). Call again after each step. Never releases anything."""
         return chat.attach(chat.production, controller.add_production(identity.get(), application))
+
+    @tool(title="Promote to production (after approval)", annotations=CHANGES_CLOUD)
+    @plain_errors
+    def promote_to_production(application: APP, plan_id: Annotated[str | None, described(
+            "The staging release to promote, from list_plans; omit for the newest that succeeded.")] = None) -> dict[str, Any]:
+        """Promote a staging release to production: the exact image it deployed, copied by digest, never rebuilt. The run waits on GitHub until one
+        of production's reviewers approves it; then it checks the image's signature, copies it, releases it and restores the previous version
+        on a failure. Follow it with get_deployment_status."""
+        return chat.attach(chat.release, controller.promote(identity.get(), application, plan_id))
 
     @tool(title="Onboard a repository (one sentence)", annotations=CHANGES_CLOUD)
     @plain_errors

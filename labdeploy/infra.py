@@ -74,6 +74,8 @@ def _hcl(value):
 
 EXPOSURES = ("authenticated", "lab-members")
 VIEWER = re.compile(r"^(user|group|domain):[A-Za-z0-9._%+-]+(@[A-Za-z0-9.-]+\.[A-Za-z]{2,})?$")
+# A service account of a project, with the project's id as group 1: a production deployer reading staging (D37).
+SERVICE_ACCOUNT = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]@([a-z][a-z0-9-]{4,28}[a-z0-9])\.iam\.gserviceaccount\.com$")
 
 
 PLAIN_WORKFLOWS = ("deploy-gcp.yml", "recover-gcp.yml", "rightsize-gcp.yml")
@@ -91,11 +93,13 @@ PRODUCTION_ROOTS = "infra/gcp/apps-production"
 
 def app_root(name, *, project_id, region, state_bucket, github_repository, github_repository_id, github_owner_id,
              bootstrap_image, health_path="/health", environment="staging", settings=None, needs=None, exposure="authenticated", viewers=(),
-             github_environment="staging", workflow_files=PLAIN_WORKFLOWS, pipeline="repository"):
+             github_environment="staging", workflow_files=PLAIN_WORKFLOWS, pipeline="repository", promotion_readers=()):
     """The three files of an application's Terraform root, with every input a literal so a reviewer sees the truth.
     `pipeline`: repository when the application's own workflows release it (github_repository is the application's);
     platform when the platform repository's pipeline does (github_repository and the ids are the platform's, the
-    environment is staging-<service> there, and the workflow files are deploy.yml, recover.yml and rightsize.yml)."""
+    environment is staging-<service> there, and the workflow files are deploy.yml, recover.yml and rightsize.yml).
+    `promotion_readers`: in a staging root, the application's production deployer, which may read the images staging
+    released and check their provenance to promote them (docs/ROADMAP.md D37)."""
     checks = [
         (NAME, name, "application name"), (PROJECT, project_id, "project id"), (BUCKET, state_bucket, "state bucket"),
         (REPOSITORY, github_repository, "GitHub repository"), (DIGITS, github_repository_id, "GitHub repository id"),
@@ -115,6 +119,13 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
             raise ValueError(f"Viewer {viewer!r} must be user:EMAIL, group:EMAIL or domain:DOMAIN")
     if exposure == "lab-members" and not viewers:
         raise ValueError("exposure: lab-members needs at least one viewer (onboarding.default_viewers or the application's viewers)")
+    promotion_readers = sorted(set(promotion_readers))
+    for reader in promotion_readers:
+        match = SERVICE_ACCOUNT.fullmatch(reader) if isinstance(reader, str) else None
+        if match is None or match.group(1) == project_id:
+            raise ValueError(f"A promotion reader is another project's service account (NAME@PROJECT.iam.gserviceaccount.com), not {reader!r}")
+    if promotion_readers and environment == "production":
+        raise ValueError("Only a staging root grants promotion readers: production reads nothing from another project")
     # A further application of a repository runs in its own GitHub environment with its own workflow files (D24); the
     # deploy identity's federation trusts exactly those, so the repository's other service cannot release this one.
     if pipeline not in ("repository", "platform"):
@@ -189,6 +200,8 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
     inputs.update(merged)
     inputs["exposure"] = exposure
     inputs["viewers"] = viewers
+    if promotion_readers:  # only a root whose application has a production carries it; the others stay as they were
+        inputs["promotion_readers"] = promotion_readers
     if suffix:  # only a further application of a repository carries these; the first keeps the module's defaults
         inputs["github_environment"] = github_environment
         inputs["workflow_files"] = list(workflow_files)
@@ -311,6 +324,8 @@ ALLOWED_ROLES = frozenset({
     "roles/containeranalysis.occurrences.viewer",
     # The deployer signs and checks its own application's build provenance; the service module grants both on that one key.
     "roles/cloudkms.signerVerifier", "roles/cloudkms.viewer",
+    # The production deployer checks a staging image's provenance before promoting it: the key's public half only (D37).
+    "roles/cloudkms.publicKeyViewer",
 })
 CUSTOM_ROLE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/roles/labDeploy[A-Za-z]+$")
 # The one grant to a platform identity an application root makes by design: the spending cap may read and update the

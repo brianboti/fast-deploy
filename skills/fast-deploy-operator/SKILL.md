@@ -86,12 +86,13 @@ changes until a person merges. **Act** tools change the cloud.
 | `create_deployment_plan` | Record | A plan for one exact commit already on main; it expires after 15 minutes |
 | `propose_configuration` | Record | A draft pull request with the contract files a service lacks (never one that exists), for a registered app or a repository link before onboarding |
 | `propose_infrastructure` | Record | The app's cloud setup (Terraform) as a pull request on the platform repository; merging applies it |
-| `add_production` | Record | Give an app its production, step by step: its production cloud setup as a pull request a person merges, then its environment whose reviewers approve every promotion |
+| `add_production` | Record | Give an app its production, step by step: its production cloud setup as a pull request a person merges, its environment whose reviewers approve every promotion, then read access to staging's images (a second pull request) |
 | `import_contract` | Record | Take a repository as it is: its contract (`apps/NAME/platform.yaml`) as a pull request on the platform repository; nothing is added to the repository |
 | `update_app_workflows` | Record | Re-pin the app's three workflow files to the current platform, as a pull request |
 | `propose_rightsizing` | Record | The weekly report's measured proposals as a pull request on `platform.yaml` |
 | `deploy_staging` | Act | Release an existing plan |
 | `deploy_latest` | Act | Plan the tip of main and release it, in one call |
+| `promote_to_production` | Act | Promote a staging release to production: its exact image, copied by digest; nothing happens until a production reviewer approves the run on GitHub |
 | `rollback_staging` | Act | Send visitors back to the version that served before the live one: seconds, no build |
 | `cancel_deployment` | Act | Stop a running release; the recovery workflow puts visitors back if the release had started moving them |
 | `onboard_application` | Act | From a repository link to a running service, unattended; `as_is: true` takes the repository as it is |
@@ -247,7 +248,9 @@ Always pass on the status's own `next_action` too; it is written for exactly thi
 
 The platform refuses these. Explain the rule; do not look for a way around it.
 
-- Apps anyone can open without signing in, production, clouds other than Google, GPUs.
+- Apps anyone can open without signing in, clouds other than Google, GPUs.
+- Production except by promotion: a release goes to staging first, `promote_to_production` copies that exact image, and
+  only a production reviewer's approval on GitHub lets it through. Never build or release straight to production.
 - More than 2 CPUs, 2048 MiB of memory or 3 instances per app; requests longer than 300 seconds.
 - Anything other than a Python web service, built from a Dockerfile (or from a Procfile with Google's buildpacks) at the
   repository's root or in one of its folders; any branch other than main.
