@@ -1,3 +1,40 @@
+# 1.18.3: the split release and production's rollback (Phase 16, part three)
+
+Roadmap item 16.3 (docs/ROADMAP.md D38). A promotion no longer moves all of production at once, and production can be
+rolled back by tool. Staging releases are unchanged, so no application's workflows need regenerating, and no Terraform
+root changes: the rollback runs in the one workflow production's deployer already trusts.
+
+1. **The split release.** After its candidate passes the probes, a promotion takes 10, 50, then 100 percent of
+   production's traffic (`production.rollout`), and the bake watches each step for `production.bake_seconds` with its
+   rules (D22): a crash, more than 5 percent of answers being server errors, or latency above three times the earlier
+   version's. A broken rule at any step brings the earlier split back for everyone. Too little traffic to judge passes
+   with a note, as in staging.
+   - Each step keeps the earlier split's proportions, in whole percents. While traffic is split, the probe asks the
+     candidate's own address.
+   - The receipt records every step (its share, the bake's verdict, requests and server errors), and each phase says at
+     which share.
+   - The promote job's time limit rises to 75 minutes for three watched steps.
+2. **Secrets at their version.** In production each secret runs at the version that was newest when the promotion
+   released it, the same for the migration and the revision. The receipt names each one (name and version number, never a
+   value). A new version reaches production only by promoting again (`docs/RUNBOOK.md`, "A new secret version"), through
+   the same split. Staging keeps `latest`.
+3. **`rollback_production`**, a new tool (27 in all). It returns production's traffic to the split before its live
+   promotion, in seconds and without a build. It runs as `promote.yml`'s new `rollback` operation, so it waits for a
+   production reviewer's approval like every job in `production-<service>`. The runner refuses if the checkpoint belongs
+   to another promotion or traffic moved since. The rolled-back promotion stops being production's live release.
+4. **`promote.yml` has two operations**, `promote` (the default) and `rollback`, with the run named after each. The
+   promotion inputs are optional, and `labdeploy.promotion check` holds each operation to its own inputs. A rollback's
+   approval block names the promotion it undoes and the split coming back.
+5. **Claude's answers** say which share a promotion is at or failed at ("failed its watch with 10% of the traffic"), list
+   the steps a successful promotion took, and offer "roll APP back in production". The runbook gives the rollback drill:
+   a fault the probes cannot see (`FAULT_EVERY` in the demo), caught at 10 percent.
+
+Not yet: the drill itself, live (it needs a pull request on the demo application and real traffic during the 10 percent
+step); SLOs and production data (16.4, 16.5).
+
+Tests: 640 pass (10 new in `tests/test_split.py`); ruff clean; zizmor clean.
+
+
 # 1.18.2: what the production setup showed
 
 Found on 2026-10-18 in the live exercise of 1.18.0 and 1.18.1 (`docs/VALIDATION.md`): the production project's foundation,

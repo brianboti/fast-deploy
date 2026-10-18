@@ -1,14 +1,21 @@
 # Promotes the exact image a staging release deployed to production (docs/ROADMAP.md D37, roadmap item 16.2). The controller
 # starts it as the GitHub App; the promote job waits in the environment production-<service> until one of its required
 # reviewers approves it (self-review prevented). Nothing is built: the staging image is checked, copied by digest into
-# production's own registry, signed with production's key and released by the same runner as staging.
+# production's own registry, signed with production's key and released by the same runner as staging, in steps of the
+# traffic (D38). The same workflow rolls production back: the deploy identity trusts this one file in this environment.
 name: Promote to production
-run-name: promote-${{ inputs.plan_id }}
+run-name: ${{ inputs.operation }}-${{ inputs.plan_id }}
 on:
   workflow_dispatch:
     inputs:
+      operation:
+        description: promote a staging release, or roll production's traffic back to the split before its live promotion
+        required: false
+        default: promote
+        type: choice
+        options: [promote, rollback]
       plan_id:
-        description: The promotion plan's id
+        description: The controller's record of this promotion or rollback
         required: true
         type: string
       application:
@@ -17,19 +24,23 @@ on:
         type: string
       source_plan:
         description: The staging release being promoted
-        required: true
+        required: false
+        default: ''
         type: string
       source_image:
         description: The image that staging release deployed, by digest
-        required: true
+        required: false
+        default: ''
         type: string
       commit_sha:
         description: The application commit the image was built from
-        required: true
+        required: false
+        default: ''
         type: string
       spec_hash:
         description: The reviewed specification's hash, as staging released it
-        required: true
+        required: false
+        default: ''
         type: string
       target_json:
         description: The production target, which must equal this environment's variables
@@ -37,7 +48,8 @@ on:
         type: string
       repository:
         description: The application's repository (owner/name)
-        required: true
+        required: false
+        default: ''
         type: string
       app_path:
         description: The service's folder in that repository; empty for the root
@@ -51,13 +63,14 @@ on:
         type: string
       staging_workflow:
         description: The workflow that built and released the image in staging, which its provenance names
-        required: true
+        required: false
+        default: ''
         type: string
       provenance:
-        description: How staging signed the image's provenance
-        required: true
-        type: choice
-        options: [github, cosign-kms]
+        description: How staging signed the image's provenance (github or cosign-kms)
+        required: false
+        default: ''
+        type: string
       bake_seconds:
         description: Seconds to watch the new revision after the switch (0 to 900); a crash or 5xx answers restore the previous traffic
         required: false
@@ -68,6 +81,21 @@ on:
         required: false
         default: ''
         type: string
+      rollout:
+        description: The split release's steps, a rising list of traffic percents that ends at 100
+        required: false
+        default: '10,50,100'
+        type: string
+      rollback_plan:
+        description: For a rollback, the promotion whose earlier split comes back
+        required: false
+        default: ''
+        type: string
+      rollback_to:
+        description: For a rollback, that split as its receipt recorded it (shown to the reviewer; the runner reads its checkpoint)
+        required: false
+        default: ''
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -75,6 +103,10 @@ concurrency:
   cancel-in-progress: false
   queue: max
 env:
+  OPERATION: ${{ inputs.operation }}
+  ROLLOUT_STEPS: ${{ inputs.rollout }}
+  ROLLBACK_PLAN: ${{ inputs.rollback_plan }}
+  ROLLBACK_TO: ${{ inputs.rollback_to }}
   PLAN_ID: ${{ inputs.plan_id }}
   APPLICATION: ${{ inputs.application }}
   SOURCE_PLAN: ${{ inputs.source_plan }}
@@ -118,6 +150,7 @@ jobs:
       # is installed, else the operator's read-only token, else this job's own token, which reaches public repositories only.
       - name: Name the application repository
         id: source
+        if: inputs.operation == 'promote'
         shell: bash
         run: |
           set -euo pipefail
@@ -125,7 +158,7 @@ jobs:
           echo "name=${SOURCE_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
       - name: Token for the application repository
         id: app-token
-        if: vars.APPS_APP_ID != ''
+        if: inputs.operation == 'promote' && vars.APPS_APP_ID != ''
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.APPS_APP_ID }}
@@ -134,6 +167,7 @@ jobs:
           repositories: ${{ steps.source.outputs.name }}
           permission-contents: read
       - name: The commits are on main
+        if: inputs.operation == 'promote'
         env:
           GH_TOKEN: ${{ github.token }}
           APP_TOKEN: ${{ steps.app-token.outputs.token || secrets.APPS_READ_TOKEN || github.token }}
@@ -149,6 +183,7 @@ jobs:
       # Exactly the specification staging released: the application's platform.yaml at the commit, or the contract at the
       # platform commit staging's plan was made from. It must hash to the plan's spec hash and pass production's policy.
       - name: Read the reviewed specification
+        if: inputs.operation == 'promote'
         env:
           GH_TOKEN: ${{ github.token }}
           APP_TOKEN: ${{ steps.app-token.outputs.token || secrets.APPS_READ_TOKEN || github.token }}
@@ -189,6 +224,7 @@ jobs:
           set -euo pipefail
           python -m labdeploy.promotion summary | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: inputs.operation == 'promote'
         with:
           name: promotion-bundle
           path: bundle/
@@ -197,8 +233,8 @@ jobs:
   promote:
     needs: describe
     runs-on: ubuntu-24.04
-    # Twenty minutes for the copy and the release, plus up to fifteen for the bake (bake_seconds is at most 900).
-    timeout-minutes: 40
+    # Twenty minutes for the copy and the release, plus the bake at every step of the split (at most 900 seconds each).
+    timeout-minutes: 75
     # Every job in this environment waits for one of its required reviewers; the controller starts the run as the GitHub
     # App, and whoever starts a run may not approve it.
     environment:
@@ -231,6 +267,7 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install --require-hashes -r platform/requirements.lock
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: inputs.operation == 'promote'
         with:
           name: promotion-bundle
           path: bundle
@@ -258,9 +295,10 @@ jobs:
           from labdeploy.models import enforce, parse_spec, spec_hash
           from labdeploy.target import environment_target, verify_target
           verify_target(os.environ['TARGET_JSON'], environment_target())
-          spec = parse_spec(Path('bundle/platform.yaml').read_text())
-          enforce(spec, 'gcp', 'production')
-          assert spec_hash(spec) == os.environ['SPEC_HASH'] and spec.name == os.environ['SERVICE']
+          if os.environ['OPERATION'] == 'promote':
+              spec = parse_spec(Path('bundle/platform.yaml').read_text())
+              enforce(spec, 'gcp', 'production')
+              assert spec_hash(spec) == os.environ['SPEC_HASH'] and spec.name == os.environ['SERVICE']
           PY
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
@@ -268,14 +306,17 @@ jobs:
           service_account: ${{ vars.DEPLOY_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
       - name: Configure registry access
+        if: inputs.operation == 'promote'
         shell: bash
         run: gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
       - name: Recover any interrupted previous release
+        if: inputs.operation == 'promote'
         env:
           PYTHONPATH: ${{ github.workspace }}/platform
           RECOVERY_ONLY: 'true'
         run: python -m labdeploy.release
       - name: Install Cosign
+        if: inputs.operation == 'promote'
         env:
           PYTHONPATH: ${{ github.workspace }}/platform
         shell: bash
@@ -291,6 +332,7 @@ jobs:
       # The staging image is promoted only if its provenance shows it was built from this commit by the workflow that released
       # it in staging, on main: GitHub's attestation, or the statement signed with the application's Cloud KMS key in staging.
       - name: Verify the staging image's provenance
+        if: inputs.operation == 'promote'
         env:
           GH_TOKEN: ${{ github.token }}
           PYTHONPATH: ${{ github.workspace }}/platform
@@ -309,6 +351,7 @@ jobs:
       # A carbon copy, never a rebuild: the same manifest, so the same digest, now in production's own registry, where
       # staging's cleanup never reaches it.
       - name: Copy the image into production by digest
+        if: inputs.operation == 'promote'
         shell: bash
         run: |
           set -euo pipefail
@@ -326,6 +369,7 @@ jobs:
       # What production's key signs: this run verified the staging provenance and a reviewer approved the promotion (SLSA's
       # verification summary). No transparency log, as in staging.
       - name: Sign the promotion with production's key
+        if: inputs.operation == 'promote'
         env:
           PYTHONPATH: ${{ github.workspace }}/platform
         shell: bash
@@ -340,22 +384,42 @@ jobs:
           "$COSIGN" verify-attestation --key "$PROVENANCE_KEY" --type https://slsa.dev/verification_summary/v1 --insecure-ignore-tlog=true "$IMAGE_DIGEST" > /dev/null
       - name: Deploy, probe, promote; restore traffic on failure
         id: release
+        if: inputs.operation == 'promote'
         env:
           PYTHONPATH: ${{ github.workspace }}/platform
           SPEC_FILE: bundle/platform.yaml
           PROVENANCE_MODE: ${{ inputs.provenance }}
+          # Each secret at the version that is newest now (D38): a new version reaches production only through a release.
+          PIN_SECRET_VERSIONS: 'true'
         shell: bash
         # exec: the release becomes the step's own process, so a cancelled run's SIGINT and SIGTERM reach it and it restores
         # traffic itself.
         run: exec python -m labdeploy.release
       - name: Record the service URL
         id: url
+        if: inputs.operation == 'promote'
         shell: bash
         run: echo "url=$(python -c 'import json; print(json.load(open("release-receipt.json")).get("url", ""))')" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
+        if: always() && inputs.operation == 'promote'
         with:
           name: release-receipt
           path: release-receipt.json
+          if-no-files-found: warn
+          retention-days: 30
+      # Traffic only, in seconds, no build: the split before the promotion comes back from its checkpoint in the recovery
+      # bucket, refused when the checkpoint belongs to another promotion or traffic moved since (labdeploy/release.py).
+      - name: Roll production's traffic back
+        if: inputs.operation == 'rollback'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+          RECOVERY_ONLY: 'true'
+          ROLLBACK_PLAN_ID: ${{ inputs.rollback_plan }}
+        run: python -m labdeploy.release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && inputs.operation == 'rollback'
+        with:
+          name: recovery-receipt
+          path: recovery-receipt.json
           if-no-files-found: warn
           retention-days: 30

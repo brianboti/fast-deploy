@@ -393,7 +393,9 @@ a reviewer's approval on GitHub. The steps, once:
    the staging release it came from, the size and cost in production), then choose **Review deployments** and approve or
    reject it. Approved, it checks the image's provenance, copies it by digest into production's registry (never a rebuild),
    signs the promotion with production's key and releases it with the same runner as staging: a candidate with no traffic,
-   the probes, the switch, then the bake, restoring the previous version on a failure.
+   the probes, then 10, 50 and 100 percent of the traffic, each step watched by the bake, restoring the previous version on a
+   failure at any step. "Roll APP back in production" (`rollback_production`) undoes the live promotion, after an approval
+   too.
 
 At idle the production project costs a few cents a month (the roadmap's estimate is $0.06); its budget, alerts and
 spending cap work as in staging.

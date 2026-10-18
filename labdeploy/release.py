@@ -65,10 +65,13 @@ IAP_ANNOTATION = "run.googleapis.com/iap-enabled"
 
 
 class CloudRun:
-    def __init__(self, project, region, service, probe_account, runner=run, iap_client_id=None, default_trust="reviewed"):
+    def __init__(self, project, region, service, probe_account, runner=run, iap_client_id=None, default_trust="reviewed", pin_secrets=False):
         self.project, self.region, self.service = project, region, service
         # What an unset `trust` means where this application's contract lives (docs/ROADMAP.md D35).
         self.default_trust = default_trust
+        # Production pins each secret to the version that was newest at its release (docs/ROADMAP.md D38): a new version
+        # reaches it only through a release, split and watched like any other, never by an instance restarting.
+        self.pin_secrets, self.pinned = pin_secrets, {}
         self.probe_account, self.run = probe_account, runner
         if iap_client_id is not None and not IAP_CLIENT_ID.fullmatch(iap_client_id):
             raise ValueError("IAP_CLIENT_ID must be an OAuth client id of the form NUMBER-ID.apps.googleusercontent.com")
@@ -135,6 +138,15 @@ class CloudRun:
     def secret_name(self, name):
         return f"{self.service}-{name}"
 
+    def secret_version(self, secret):
+        """The newest enabled version of a secret, resolved once per release so the migration and the revision use the same."""
+        listed = self.run(["gcloud", "secrets", "versions", "list", secret, "--project", self.project, "--filter=state:ENABLED",
+                           "--sort-by=~createTime", "--limit=1", "--format=value(name)"])
+        version = (listed or "").strip().rsplit("/", 1)[-1]
+        if not re.fullmatch(r"[0-9]{1,10}", version):
+            raise ValueError(f"Secret {secret} has no enabled version to pin")
+        return version
+
     def configuration(self, spec):
         """The variable and secret flags a revision or job gets: the reviewed spec is the whole truth, needs add their derived variables."""
         flags = []
@@ -148,7 +160,12 @@ class CloudRun:
         # A need's own secret (DATABASE_URL for database_auth: password) is named by the platform, not by platform.yaml.
         secrets = {**{name: self.secret_name(name) for name in spec.secrets}, **needs_secrets(spec)}
         if secrets:
-            flags.append("--set-secrets=" + ",".join(f"{name}={secret}:latest" for name, secret in secrets.items()))
+            if self.pin_secrets:
+                for name, secret in secrets.items():
+                    if name not in self.pinned:
+                        self.pinned[name] = {"secret": secret, "version": self.secret_version(secret)}  # names and numbers, never values
+            chosen = {name: self.pinned[name]["version"] if self.pin_secrets else "latest" for name in secrets}
+            flags.append("--set-secrets=" + ",".join(f"{name}={secret}:{chosen[name]}" for name, secret in secrets.items()))
         else:
             flags.append("--clear-secrets")
         return flags
@@ -437,6 +454,37 @@ def reconcile_serving_tags(adapter, image_path, runner=run):
     return result
 
 
+def parse_steps(text):
+    """The split release's steps from ROLLOUT_STEPS ("10,50,100"): a rising list of whole percents that ends at 100.
+    Empty means one step, everyone at once, as staging releases (docs/ROADMAP.md D38)."""
+    if not (text or "").strip():
+        return [100]
+    try:
+        steps = [int(part) for part in text.split(",")]
+    except ValueError:
+        raise ValueError("ROLLOUT_STEPS holds whole percents separated by commas, such as 10,50,100") from None
+    if steps[-1] != 100 or any(not 0 < step <= 100 for step in steps) or steps != sorted(set(steps)):
+        raise ValueError("ROLLOUT_STEPS is a rising list of percents that ends at 100, such as 10,50,100")
+    return steps
+
+
+def shares(previous, revision, percent):
+    """One step's traffic: `percent` on the new revision and the rest on the revisions that served before, in their earlier
+    proportions, as whole percents that add up to 100 (the largest remainders round up)."""
+    if not isinstance(percent, int) or not 0 < percent <= 100:
+        raise ValueError("A step's share is a whole percent from 1 to 100")
+    if revision in previous:
+        raise ValueError("The new revision cannot already be serving")
+    rest, total = 100 - percent, sum(previous.values())
+    exact = {name: share * rest / total for name, share in previous.items()} if rest and total else {}
+    whole = {name: int(value) for name, value in exact.items()}
+    for name in sorted(exact, key=lambda n: (whole[n] - exact[n], n))[:rest - sum(whole.values())]:
+        whole[name] += 1
+    split = {name: value for name, value in whole.items() if value}
+    split[revision] = percent
+    return split
+
+
 def traffic_snapshot(status):
     allocations = {}
     for item in status.get("traffic", []):
@@ -598,7 +646,7 @@ def build_checks(folder="bundle"):
 
 
 def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=None, labels=None, image_path=None, attempt=1, provenance=None,
-            bake_seconds=0, lint=None, sleep=time.sleep, clock=time.time, origin=None, checks=None, promotion=None):
+            bake_seconds=0, lint=None, sleep=time.sleep, clock=time.time, origin=None, checks=None, promotion=None, steps=None):
     if not re.fullmatch(r"[a-f0-9]{32}", plan_id):
         raise ValueError("Invalid plan ID")
     if not IMAGE_DIGEST.fullmatch(image):
@@ -629,10 +677,21 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
                                                    "checked that the service answers HTTP at all; the HTTP health probe is off."}
     if not 0 <= int(bake_seconds) <= MAX_BAKE_SECONDS:
         raise ValueError(f"bake_seconds must be between 0 and {MAX_BAKE_SECONDS}")
+    split = list(steps or [100])
+    if split[-1] != 100 or split != sorted(set(split)) or any(not 0 < step <= 100 for step in split):
+        raise ValueError("The split release's steps are a rising list of percents that ends at 100")
+    if len(split) > 1:
+        receipt["rollout"] = []  # one entry per step of the split release (docs/ROADMAP.md D38)
+
     def save():
-        # Each state change is timestamped so the controller can show how long every phase took.
-        if not receipt["phases"] or receipt["phases"][-1]["state"] != receipt["state"]:
-            receipt["phases"].append({"state": receipt["state"], "at": now_iso()})
+        # Each state change is timestamped so the controller can show how long every phase took; a split release also
+        # says at which share of the traffic.
+        last = receipt["phases"][-1] if receipt["phases"] else None
+        if last is None or last["state"] != receipt["state"] or last.get("step") != receipt.get("step"):
+            phase = {"state": receipt["state"], "at": now_iso()}
+            if receipt.get("step") is not None:
+                phase["step"] = receipt["step"]
+            receipt["phases"].append(phase)
         if journal is not None:
             journal.write(receipt)
         Path(receipt_path).write_text(json.dumps(receipt, indent=2) + "\n")
@@ -661,21 +720,35 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
         entry = next((t for t in candidate.get("traffic", []) if t.get("tag") == "candidate" and t.get("revisionName") == revision), None)
         if not entry or not adapter.health(entry["url"], candidate["url"], spec.health_path):
             raise RuntimeError("Candidate health check failed")
-        receipt["state"] = "promoting"
-        save()
-        adapter.traffic({revision: 100})
-        switched_at = clock()
-        if not adapter.health(candidate["url"], candidate["url"], spec.health_path):
-            raise RuntimeError("Post-promotion health check failed")
-        if bake_seconds:
-            # The new revision serves everyone now; watch what it does with real traffic before calling the release done.
-            receipt["state"] = "baking"
+        for percent in split:
+            # One step: this share of the traffic on the new revision, the rest where it was, then the bake's rules on what
+            # the new revision does with its share; a broken rule at any step restores the earlier split (D38).
+            if len(split) > 1:
+                receipt["step"] = percent
+            receipt["state"] = "promoting"
             save()
-            if callable(getattr(adapter, "revision_requests", None)) and callable(getattr(adapter, "revision_system_logs", None)):
-                receipt["bake"] = bake(adapter, revision, allocations, spec.health_path, int(bake_seconds), switched_at, sleep=sleep, clock=clock)
-            else:
-                receipt["bake"] = {"seconds": int(bake_seconds), "result": "unobserved", "notes": ["this runner cannot read Cloud Run logs"]}
+            adapter.traffic(shares(allocations, revision, percent) if percent < 100 else {revision: 100})
+            switched_at = clock()
+            # While traffic is split the service's address reaches either revision; the candidate's own tag reaches the new one.
+            probe = candidate["url"] if percent == 100 else entry["url"]
+            if not adapter.health(probe, candidate["url"], spec.health_path):
+                raise RuntimeError("Post-promotion health check failed" if percent == 100 else f"Health check failed with {percent} percent of the traffic")
+            if bake_seconds:
+                receipt["state"] = "baking"
+                save()
+                if callable(getattr(adapter, "revision_requests", None)) and callable(getattr(adapter, "revision_system_logs", None)):
+                    receipt["bake"] = bake(adapter, revision, allocations, spec.health_path, int(bake_seconds), switched_at, sleep=sleep, clock=clock)
+                else:
+                    receipt["bake"] = {"seconds": int(bake_seconds), "result": "unobserved", "notes": ["this runner cannot read Cloud Run logs"]}
+            if len(split) > 1:
+                bake_report = receipt.get("bake") or {}
+                receipt["rollout"].append({"percent": percent, "at": bake_iso(switched_at), "bake": bake_report.get("result") if bake_seconds else "skipped",
+                                           "requests": (bake_report.get("window") or {}).get("requests"),
+                                           "errors_5xx": (bake_report.get("window") or {}).get("errors_5xx")})
+        receipt.pop("step", None)
         receipt.update(state="succeeded", revision=revision, url=candidate["url"])
+        if getattr(adapter, "pinned", None):
+            receipt["secrets"] = adapter.pinned
         save()
     except (Exception, KeyboardInterrupt, SystemExit) as error:
         # Graceful termination gets an immediate recovery attempt. A killed runner is
@@ -757,7 +830,7 @@ def main():
         if os.environ.get("PROVENANCE_MODE") not in PROVENANCE_MODES:
             raise ValueError("No provenance decision for this image; the deploy job verifies provenance before the release step")
     adapter = CloudRun(target.project_id, target.region, target.service, target.probe_service_account, iap_client_id=os.environ.get("IAP_CLIENT_ID") or None,
-                       default_trust=os.environ.get("TRUST_DEFAULT", "reviewed"))
+                       default_trust=os.environ.get("TRUST_DEFAULT", "reviewed"), pin_secrets=os.environ.get("PIN_SECRET_VERSIONS") == "true")
     adapter.require_private_service()
     journal = GCSJournal(target.recovery_bucket, target.service, lambda: run(["gcloud", "auth", "print-access-token"]))
     image_path = f"{target.region}-docker.pkg.dev/{target.project_id}/{target.registry}/{target.service}"
@@ -787,7 +860,7 @@ def main():
     rollout(adapter, os.environ["IMAGE_DIGEST"], spec, os.environ["PLAN_ID"], "release-receipt.json", journal, target.model_dump(), labels, image_path,
             attempt=int(attempt) if attempt.isdigit() else 1, provenance=os.environ["PROVENANCE_MODE"], bake_seconds=int(bake_seconds),
             lint=lint_summary(Path(os.environ.get("LINT_FILE", "bundle/hadolint.json"))), origin=origin_from(os.environ), checks=build_checks(),
-            promotion=promotion_from(os.environ))
+            promotion=promotion_from(os.environ), steps=parse_steps(os.environ.get("ROLLOUT_STEPS", "")))
 
 
 if __name__ == "__main__":

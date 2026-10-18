@@ -81,18 +81,54 @@ gh api -X POST repos/OWNER/fast-deploy/actions/runs/RUN_ID/pending_deployments -
 The same works for an apply waiting in `infra-production`. The promote job checks the approval GitHub recorded before it
 does anything.
 
+### How a promotion reaches everyone
+
+Since 1.18.3 (roadmap item 16.3, decision D38) a promotion moves production's traffic in steps: 10, 50, then 100 percent
+of the visitors (`production.rollout`), each step watched for `production.bake_seconds` (300 by default) by the bake's
+rules. A crash, more than 5 percent of answers being server errors, or latency above three times the earlier version's,
+at any step, brings the earlier split back for everyone. Too little traffic to judge passes with a note, as in staging.
+Each secret runs at the version that was newest when the promotion released it; a new version reaches production only
+through a promotion.
+
 ### Undo a promotion
 
-Until the split release (roadmap item 16.3) brings a production rollback, it is done by hand, in seconds and without a
-build. The release receipt of the promotion (`get_deployment_status`, or the run's `release-receipt` artifact) names
-`previous_traffic`, the split that served before it:
+Ask Claude to "roll APP back in production" (`rollback_production`). It runs as the rollback of `promote.yml`, the one
+workflow production's deployer trusts, so it waits for a production reviewer's approval like everything in production.
+Once approved, traffic returns in seconds to the split before the live promotion, as its checkpoint recorded; nothing is
+built. The runner refuses if the checkpoint belongs to another promotion or if production's traffic moved since. Data the
+newer version wrote stays.
+
+If the tool cannot help (the controller is down, or traffic was moved by hand), do it by hand. The promotion's receipt
+(`get_deployment_status`, or the run's `release-receipt` artifact) names `previous_traffic`:
 
 ```bash
 gcloud run services update-traffic SERVICE --to-revisions PREVIOUS_REVISION=100 --project PROD_PROJECT --region us-central1
 ```
 
-Then tell Claude, so the next promotion starts from what serves. A promotion that stopped halfway restores production's
-traffic itself; if its runner was lost, the next promotion restores the checkpoint before anything else.
+A promotion that stopped halfway restores production's traffic itself; if its runner was lost, the next promotion
+restores the checkpoint before anything else.
+
+### A new secret version
+
+Add the version with `gcloud secrets versions add SERVICE-NAME --project PROD_PROJECT --data-file=-`, then ask Claude to
+"promote APP to production" again. The same staging release is copied again (nothing is rebuilt), and its new revision
+takes the new version, through the same split and watch as any promotion. Until then production keeps the version it
+was released with, even when instances restart.
+
+### The rollback drill
+
+Twice a year, and after a change to the release: a planted fault the probes cannot see must be caught at 10 percent.
+
+1. In the demo application's `platform.yaml`, set `env: FAULT_EVERY: "2"` through a pull request: every second request
+   to `/` then answers 500, while `/health` stays fine. Release it to staging (the bake there sees no traffic and passes).
+2. Promote it. During its 10 percent step, send real requests with a sign-in token, enough for the new revision's share
+   to pass the bake's minimum of 20 (a few hundred in all), for example
+   `TOKEN=$(gcloud auth print-identity-token); for i in $(seq 300); do curl -s -o /dev/null -H "Authorization: Bearer $TOKEN" https://PRODUCTION-URL/; done`.
+3. Expected: the bake fails on errors at 10 percent, and the earlier split serves everyone again. `get_deployment_status`
+   says so.
+4. Remove `FAULT_EVERY` the same way, release, promote through 10, 50 and 100 percent, then ask for
+   `rollback_production` and approve it: traffic returns to the earlier revision. Promote again to end on the fixed version.
+5. Record the results in `docs/VALIDATION.md`.
 
 ## What "up" means
 

@@ -647,10 +647,20 @@ class GitHub:
                   "commit_sha": plan["sha"], "spec_hash": plan["spec_hash"], "target_json": json.dumps(plan["target"], sort_keys=True),
                   "repository": plan["repository"], "app_path": (plan.get("layout") or {}).get("path") or "", "contract_commit": contract.get("commit", ""),
                   "staging_workflow": source["workflow"], "provenance": source["provenance"], "bake_seconds": str(int(plan["bake_seconds"]))}
+        if plan.get("rollout"):
+            inputs["rollout"] = ",".join(str(int(step)) for step in plan["rollout"])  # the split release's steps (D38)
         if source.get("attested_commit") and source["attested_commit"] != plan["sha"]:
             # GitHub's attestation names the commit its build run started on (docs/CHANGES.md 1.18.2); sent only when it
             # differs, so a promotion of a release built at the tip of main stays as it was.
             inputs["attested_commit"] = source["attested_commit"]
+        response = self.request("POST", f"/repos/{repository}/actions/workflows/promote.yml/dispatches", json={"ref": "main", "inputs": inputs})
+        return response.json() if response.content else {}
+
+    def dispatch_production_rollback(self, repository, record):
+        """Start promote.yml's rollback for a production rollback record: the promotion it undoes and the split coming back."""
+        inputs = {"operation": "rollback", "plan_id": record["id"], "application": record["target"]["service"],
+                  "target_json": json.dumps(record["target"], sort_keys=True), "rollback_plan": record["from_plan"],
+                  "rollback_to": json.dumps(record["to_traffic"], sort_keys=True)}
         response = self.request("POST", f"/repos/{repository}/actions/workflows/promote.yml/dispatches", json={"ref": "main", "inputs": inputs})
         return response.json() if response.content else {}
 
@@ -671,10 +681,16 @@ class GitHub:
     def status(self, app, plan):
         result = plan.get("dispatch_result", {})
         run_id = result.get("workflow_run_id")
-        rollback, promotion = plan.get("kind") == "rollback", plan.get("kind") == "promotion"
-        # A promotion runs in the platform repository's promote.yml, whatever pipeline released the application in staging.
+        rollback, promotion = plan.get("kind") == "rollback", plan.get("kind") in ("promotion", "production_rollback")
+        # A promotion, and a production rollback, run in the platform repository's promote.yml, whatever pipeline released
+        # the application in staging.
         repository = plan["pipeline"] if promotion else pipeline_of(app)
-        title = f"rollback-{plan['from_plan']}" if rollback else (f"promote-{plan['id']}" if promotion else f"deploy-{plan['id']}")
+        if rollback:
+            title = f"rollback-{plan['from_plan']}"
+        elif promotion:
+            title = f"{'rollback' if plan['kind'] == 'production_rollback' else 'promote'}-{plan['id']}"
+        else:
+            title = f"deploy-{plan['id']}"
         workflow = app.workflows["recover"] if rollback else ("promote.yml" if promotion else app.workflow)
         if run_id:
             run = self.request("GET", f"/repos/{repository}/actions/runs/{int(run_id)}").json()

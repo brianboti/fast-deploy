@@ -92,7 +92,8 @@ changes until a person merges. **Act** tools change the cloud.
 | `propose_rightsizing` | Record | The weekly report's measured proposals as a pull request on `platform.yaml` |
 | `deploy_staging` | Act | Release an existing plan |
 | `deploy_latest` | Act | Plan the tip of main and release it, in one call |
-| `promote_to_production` | Act | Promote a staging release to production: its exact image, copied by digest; nothing happens until a production reviewer approves the run on GitHub |
+| `promote_to_production` | Act | Promote a staging release to production: its exact image, copied by digest, then 10, 50 and 100 percent of the traffic, each step watched; nothing happens until a production reviewer approves the run on GitHub |
+| `rollback_production` | Act | Send production's visitors back to the version before its live promotion: seconds, no build; it too waits for a production reviewer's approval |
 | `rollback_staging` | Act | Send visitors back to the version that served before the live one: seconds, no build |
 | `cancel_deployment` | Act | Stop a running release; the recovery workflow puts visitors back if the release had started moving them |
 | `onboard_application` | Act | From a repository link to a running service, unattended; `as_is: true` takes the repository as it is |

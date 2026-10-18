@@ -74,11 +74,12 @@ def summarize(workflow, prior, kind=None):
     if state == "not_visible_yet":
         return {"state": "awaiting_workflow", "checks": prior, "timeline": [], "failed_step": None}
     terminal = state == "completed"
-    if kind == "rollback":
+    if kind in ("rollback", "production_rollback"):
         conclusion = workflow.get("conclusion")
         items = timeline(workflow)
+        waiting = "awaiting_approval" if state == "waiting" else ("running" if state == "in_progress" else "queued")
         result = ({"success": "succeeded", "failure": "failed", "cancelled": "cancelled", "timed_out": "timed_out"}.get(conclusion, "completed_unverified")
-                  if terminal else ("running" if state == "in_progress" else "queued"))
+                  if terminal else waiting)
         return {"state": result, "checks": {}, "timeline": items, "failed_step": failed_step(items), "recovery": "not_requested"}
     table = PROMOTION_CHECKS if kind == "promotion" else CHECKS
     checks = dict(prior)
@@ -185,6 +186,33 @@ def promotion_advice(plan):
     if receipt.get("state") in {"preparing", "migrating", "deploying", "promoting", "baking"} and state in {"failed", "cancelled", "timed_out"}:
         return (f"The runner stopped mid-release at '{receipt['state']}'. The next promotion restores production's traffic from the checkpoint before "
                 "anything else; to restore it now, follow docs/RUNBOOK.md, Production.")
+    step_share = receipt.get("step")
+    if receipt.get("state") == "traffic_restored" and receipt.get("failed_phase") in ("promoting", "baking") and step_share and step_share < 100:
+        why = "it was cancelled" if receipt.get("cancelled") else receipt.get("error", "see the receipt")
+        return (f"The new revision stopped with {step_share} percent of production's traffic ({why}); the earlier split serves everyone again. "
+                "Fix the application, release it to staging, then promote again.")
+    return None
+
+
+def production_rollback_advice(plan):
+    """The next step for a production rollback (promote.yml's rollback)."""
+    state, receipt = plan.get("state"), plan.get("receipt") or {}
+    reviewers = " or ".join(plan.get("reviewers") or []) or "a production reviewer"
+    run = (plan.get("workflow") or {}).get("html_url")
+    where = f" ({run})" if run else ""
+    if state == "awaiting_approval":
+        return (f"Waiting for {reviewers} to approve the rollback on GitHub{where}: Review deployments, then approve. Production's traffic stays "
+                "where it is until then.")
+    if state in {"dispatched", "dispatching", "awaiting_workflow", "queued", "running"}:
+        return "The production rollback is under way; it waits for a reviewer's approval, then moves the traffic within a minute. Ask again shortly."
+    if state == "succeeded" and receipt.get("state") == "rolled_back":
+        return (f"Production's traffic is back on {receipt.get('restored_traffic')}; revision {receipt.get('rolled_back_from')} no longer serves. "
+                "Promote a fixed staging release when ready.")
+    if state == "succeeded":
+        return f"The rollback run finished but reports '{receipt.get('state', 'no receipt')}'; confirm production's traffic split in Cloud Run."
+    if state in {"failed", "cancelled", "timed_out"}:
+        return ("The rollback did not run or did not finish, so production's traffic was not changed (a reviewer may have rejected it, or traffic "
+                "moved since the promotion and the runner refused). Open the run, then try again or promote the wanted release.")
     return None
 
 
@@ -196,6 +224,8 @@ def advice(plan):
         text = promotion_advice(plan)
         if text:
             return text
+    if plan.get("kind") == "production_rollback":
+        return production_rollback_advice(plan) or "Inspect the rollback run in the platform repository's Actions."
     if plan.get("kind") == "rollback":
         if state == "succeeded" and receipt.get("state") == "rolled_back":
             return f"Traffic is back on {receipt.get('restored_traffic')}; revision {receipt.get('rolled_back_from')} no longer serves. Deploy a fixed commit when ready."
