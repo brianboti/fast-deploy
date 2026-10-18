@@ -57,8 +57,9 @@ can release it, and nothing in its own pipeline can reach another application's 
 ## The controller's machine
 
 Since 1.17.0 (Phase 15, decision D36) the controller runs on its own machine in the staging project: `fast-deploy`, one
-Always Free `e2-micro` in us-central1-a with a 30 GB standard disk, at the lab's DNS name. Caddy answers HTTPS with a
-Let's Encrypt certificate and hands requests to the controller on 127.0.0.1:8000. Litestream copies the database to
+Always Free `e2-micro` in us-central1-a with a 30 GB standard disk, at its own reserved address (or a DNS name, when one
+is set). Caddy answers HTTPS with a Let's Encrypt certificate for that address (six days long, renewed every few days)
+and hands requests to the controller on 127.0.0.1:8000. Litestream copies the database to
 `gs://PROJECT-lab-deploy-backups/machine/litestream/`, at most a minute behind, and the nightly backup puts a copy and the
 configuration beside it in `machine/`. The machine signs in to GitHub as the GitHub App and to Google as its own identity,
 `lab-deploy-controller` (the observer's viewer roles, its own folder of the backup bucket and the App's key): no token or
@@ -104,7 +105,7 @@ When Google Cloud itself is out, the laptop is the fallback:
    or the replica with `litestream restore -o ~/.local/share/lab-deploy/deployments.db gs://PROJECT-lab-deploy-backups/machine/litestream/deployments.db`
    (`brew install litestream`; at most a minute old).
 3. `scripts/start.sh` (it stays off while the machine answers) and point the connector at the ngrok address.
-4. When the machine is back: stop the laptop, then `scripts/install-machine.sh DOMAIN APP_ID --replace` takes the laptop's
+4. When the machine is back: stop the laptop, then `scripts/install-machine.sh APP_ID --replace` takes the laptop's
    database back to the machine.
 
 If Google ends the free tier (it gives thirty days' notice), the machine costs about $6.11 a month more. The fallback

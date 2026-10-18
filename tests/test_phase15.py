@@ -211,12 +211,21 @@ def test_the_machine_configuration_moves_paths_address_backups_and_the_app_and_k
     assert machine["principals"] == laptop["principals"] and machine["notify_webhook_url"] == laptop["notify_webhook_url"]
     assert laptop["database"] == str(tmp_path / "db")  # the laptop's own settings are left as they are
     Config.model_validate(machine)
-    with pytest.raises(ValueError, match="not a DNS name"):
+    with pytest.raises(ValueError, match="neither the machine's address"):
         machine_config(laptop, "https://deploy.lab.example.edu", "123456")
     with pytest.raises(ValueError, match="App ID"):
         machine_config(laptop, "deploy.lab.example.edu")
     with pytest.raises(ValueError, match="backup_bucket"):
         machine_config({**laptop, "backup_bucket": None}, "deploy.lab.example.edu", "123456")
+
+
+def test_without_a_name_claude_reaches_the_machine_at_its_own_public_ipv4_address(tmp_path):
+    machine = machine_config(laptop_config(tmp_path), "34.123.45.67", "123456")
+    assert machine["oauth"]["public_url"] == "https://34.123.45.67" and machine["allowed_hosts"][-1] == "34.123.45.67"
+    Config.model_validate(machine)
+    for refused in ("10.9.0.2", "192.168.1.5", "127.0.0.1", "2600:1900::1", "34.123.45"):
+        with pytest.raises(ValueError):
+            machine_config(laptop_config(tmp_path), refused, "123456")
 
 
 def test_the_export_writes_a_whole_database_and_a_private_configuration_and_prints_no_setting(tmp_path):
@@ -328,6 +337,9 @@ def test_the_machine_is_the_free_shape_with_ssh_only_through_identity_aware_prox
     web = text[text.index('resource "google_compute_firewall" "controller_web"'):]
     assert 'ports    = ["80", "443"]' in web[:600] and '"22"' not in web[:600]
     assert 'account_id   = "lab-deploy-controller"' in text and "toset(local.observer_roles)" in text
+    assert ('controller_host = local.controller_enabled ? (var.controller.domain != "" ? var.controller.domain : '
+            'google_compute_address.controller[0].address) : ""') in text
+    assert "fast-deploy-host       = local.controller_host" in text and "host = local.controller_host" in text
     assert '"projects/_/buckets/${google_storage_bucket.backups.name}/objects/machine/' in text  # its own folder only
     assert 'role      = "roles/secretmanager.secretAccessor"' in text and "google_secret_manager_secret.github_app_key[0].id" in text
 
@@ -363,6 +375,10 @@ def test_the_startup_script_pins_its_tools_and_never_starts_the_controller_witho
     assert "merge-base --is-ancestor \"$COMMIT\" origin/main" in text and "--require-hashes -r \"$release/requirements.lock\"" in text
     assert "url: gs://$BUCKET/machine/litestream/deployments.db" in text and "sync-interval: 1m" in text and "l0-retention-check-interval: 5m" in text
     assert "gs://$BUCKET/machine/config.yaml" in text and "/controller/" not in text  # a fresh machine never wakes up with a laptop's state
+    # Without a name: Let's Encrypt certifies the address itself only in its short-lived profile, and a client that
+    # connects by address sends no server name, so Caddy is told which certificate to show.
+    assert 'HOST=$(meta fast-deploy-host)' in text and 'if [[ -n "$ADDRESS_ONLY" ]]; then echo "	default_sni $HOST"; fi' in text
+    assert 'echo "			profile shortlived"' in text and 'echo "		issuer acme {"' in text
     assert 'no database to restore: the controller stays off' in text
 
 
@@ -373,6 +389,9 @@ def test_every_trip_to_the_machine_goes_through_identity_aware_proxy():
             subprocess.run(["zsh", "-n", str(script)], check=True)
         trips = re.findall(r"gcloud compute (?:ssh|scp)[^\n]*", text)
         assert trips and all("--tunnel-through-iap" in trip for trip in trips), script
+    move = Path("scripts/install-machine.sh").read_text()
+    assert 'USAGE="usage: scripts/install-machine.sh GITHUB_APP_ID [--domain NAME] [--replace]"' in move
+    assert 'if [[ -z "$DOMAIN" ]]; then\n  CONTROLLER_HOST=$ADDRESS' in move and '--host "$CONTROLLER_HOST"' in move
     start = Path("scripts/start.sh").read_text()
     assert "sed -n 's|^machine_url: *||p' config.local.yaml" in start and 'curl -fsS --max-time 10 "$MACHINE/healthz"' in start
     assert "grep -q '^github_app:' config.local.yaml" in start

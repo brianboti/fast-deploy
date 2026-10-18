@@ -581,8 +581,8 @@ canary key, which cannot go into a repository.
 
 ## 1.17.0 before the merge: what was checked (2026-10-16)
 
-The controller's machine is not created yet: the live move waits for the lab's DNS name (D6), the GitHub App and the
-foundation apply. What was checked without them:
+The controller's machine is not created yet: the live move waits for the GitHub App and the foundation apply. What was
+checked without them:
 
 | Check | Observed |
 |---|---|
@@ -592,4 +592,5 @@ foundation apply. What was checked without them:
 | Debian 13 on Compute Engine | `debian-13-trixie-v20261014` in the `debian-13` family (Python 3.13); the controller's `requirements.lock` resolves with its hashes for Linux x86-64 on Python 3.13 (`uv pip install --dry-run`) |
 | Litestream 0.5.17's configuration | read from its source at the tag: `replica.url` with `gs://` (Google's default credentials, so the machine's metadata server), `sync-interval`, `levels`, `snapshot`, `l0-retention`, `l0-retention-check-interval`; `restore -if-replica-exists -integrity-check quick -o` |
 | The copy the move takes | A `VACUUM INTO` copy of a WAL database is in rollback-journal mode and passes `sqlite3 -readonly ... PRAGMA quick_check` without creating files, so the machine checks it before it replaces anything |
+| No DNS name (2026-10-17) | Caddy 2.11.7 (`caddy adapt`) takes both Caddyfiles the script writes: for an address, an automation policy for `34.123.45.67` with the `acme` issuer and `profile: shortlived`, `default_sni` set on the connection policies, HTTP/3 off and the admin endpoint disabled. Its certificate library (certmagic v0.25.6) allows IP certificates from Let's Encrypt. Google's automatic name for an address can not be used: `googleusercontent.com` has CAA `issue "pki.goog"` only. The foundation's `controller` variable takes no `domain` and refuses `dns_zone` without one |
 | `main`'s protection and the App | `main` requires the `test` and `terraform` checks and no approvals, with no bypass for admins: the controller's merges never relied on an admin's rights, so the App can make them too |

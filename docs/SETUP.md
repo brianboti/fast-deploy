@@ -271,32 +271,34 @@ An app has one `database`. Changing its type means retiring the old database fir
 
 One Always Free `e2-micro` in the staging project runs the controller around the clock behind Caddy and Let's Encrypt,
 with Litestream copying its database to the backup bucket (decision D36; the runbook's "The controller's machine" is
-the day-to-day side). It costs the external IPv4 address, about $3.65 a month. The steps, once:
+the day-to-day side). It costs the external IPv4 address, about $3.65 a month. No DNS name is needed: Claude reaches the
+machine at that reserved address, and Let's Encrypt certifies the address itself (a free certificate six days long, which
+Caddy renews every few days; the uptime check alerts if one ever runs out). A DNS name stays possible (decision D6) for
+anyone who has one. The steps, once:
 
-1. **A DNS name** the lab owns for it (decision D6: a university subdomain if IT gives one, otherwise a cheap domain), for
-   example `deploy.lab.example.edu`.
-2. **The foundation apply** with the machine in `infra/gcp/project/terraform.tfvars`, then `scripts/apply-foundation.sh PROJECT`:
+1. **The foundation apply** with the machine in `infra/gcp/project/terraform.tfvars`, then `scripts/apply-foundation.sh PROJECT`:
 
    ```hcl
    controller = {
-     domain         = "deploy.lab.example.edu"
      install_commit = "FULL-40-CHARACTER-COMMIT-ON-MAIN"  # what a fresh disk installs first
      acme_email     = "you@example.edu"                    # optional: Let's Encrypt's certificate notices
+     # domain       = "deploy.lab.example.edu"             # optional: a DNS name instead of the address
    }
    ```
 
    It creates the machine, its own network and firewall (HTTPS and HTTP for Let's Encrypt; SSH only through
    Identity-Aware Proxy), the reserved address, the machine's identity `lab-deploy-controller`, the empty secret
    `FAST_DEPLOY_GITHUB_APP_KEY`, the uptime check on `/healthz` and its alert. `terraform output controller` (or the apply's
-   output) shows the address.
-3. **The A record**: the DNS name to that address, at the registrar; or set `dns_zone` to a Cloud DNS zone of the project
-   and the apply writes it.
-4. **The GitHub App** (section 4), with its key in that secret.
-5. **The move**: stop the laptop's controller, then `scripts/install-machine.sh DOMAIN APP_ID`. It checks the name points
-   at the machine, copies the database and the configuration rewritten for the machine through Identity-Aware Proxy,
-   imports them, waits for `https://DOMAIN/healthz`, records `machine_url` in `config.local.yaml` (so `start.sh` keeps the
+   output) shows the address and the connector's `url`.
+2. **With a DNS name only**, its A record to that address, at the registrar; or set `dns_zone` to a Cloud DNS zone of the
+   project and the apply writes it.
+3. **The GitHub App** (section 4), with its key in that secret.
+4. **The move**: stop the laptop's controller, then `scripts/install-machine.sh APP_ID` (add `--domain NAME` with a DNS
+   name). It copies the database and the configuration rewritten for the machine through Identity-Aware Proxy, imports
+   them, waits for `/healthz` to answer over HTTPS, records `machine_url` in `config.local.yaml` (so `start.sh` keeps the
    laptop off while the machine answers) and points `CONTROLLER_HEALTH_URL` at the machine.
-6. **Claude**: remove the old connector and add `https://DOMAIN/mcp`, then sign in with your operator token.
+5. **Claude**: remove the old connector and add the `url` from the `controller` output (`https://ADDRESS/mcp`), then sign
+   in with your operator token.
 
 ## 7b. Steer after a release
 

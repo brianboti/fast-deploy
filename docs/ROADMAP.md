@@ -393,7 +393,7 @@ Cost effect: none at idle; scans unchanged at $0.26 per fresh image.
 
 ## Phase 15: the controller off the laptop (about three days) → version 1.17.0
 
-Status: built on 2026-10-16 as 1.17.0 with the defaults of D36, and one refinement: the machine carries its own identity, `lab-deploy-controller`, with the observer's viewer roles plus its own folder of the backup bucket and the App's key, so impersonating the observer from a laptop reaches neither. The live exercise waits for the lab's DNS name (D6), the GitHub App and the foundation apply. It completes roadmap items 5.1 and 7.3.
+Status: built on 2026-10-16 as 1.17.0 with the defaults of D36, and one refinement: the machine carries its own identity, `lab-deploy-controller`, with the observer's viewer roles plus its own folder of the backup bucket and the App's key, so impersonating the observer from a laptop reaches neither. No DNS name is needed (the operator's choice on 2026-10-17, in place of D6's university subdomain or cheap domain): Claude reaches the machine at its own reserved address, which Let's Encrypt certifies with six-day certificates that Caddy renews; a name stays optional. The live exercise waits for the GitHub App and the foundation apply. It completes roadmap items 5.1 and 7.3.
 
 | Item | Change | Where |
 |---|---|---|

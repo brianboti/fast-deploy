@@ -22,12 +22,18 @@ STAMPS=/usr/local/lib/fast-deploy-tools
 log() { echo "fast-deploy-startup: $*"; }
 meta() { curl -fsS --retry 5 -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1"; }
 
-DOMAIN=$(meta fast-deploy-domain)
+HOST=$(meta fast-deploy-host)  # where Claude reaches the machine: its own address, or a DNS name
 REPOSITORY=$(meta fast-deploy-repository)
 COMMIT=$(meta fast-deploy-commit)
 BUCKET=$(meta fast-deploy-bucket)
 ACME_EMAIL=$(meta fast-deploy-acme-email 2>/dev/null || true)
-[[ "$DOMAIN" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]] || { log "fast-deploy-domain is not a DNS name"; exit 1; }
+ADDRESS_ONLY=""
+if [[ "$HOST" =~ ^(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}$ ]]; then
+  ADDRESS_ONLY=yes
+elif [[ ! "$HOST" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]]; then
+  log "fast-deploy-host is neither an IPv4 address nor a DNS name"
+  exit 1
+fi
 [[ "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { log "fast-deploy-repository is not owner/name"; exit 1; }
 [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { log "fast-deploy-commit is not a full commit"; exit 1; }
 [[ "$BUCKET" =~ ^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$ ]] || { log "fast-deploy-bucket is not a bucket name"; exit 1; }
@@ -116,7 +122,7 @@ id -u caddy >/dev/null 2>&1 || useradd --system --home-dir /var/lib/caddy --crea
 install -d -o fastdeploy -g fastdeploy -m 0750 "$DATA"
 install -d -m 0755 "$OPT" "$OPT/releases" "$OPT/venvs" /etc/caddy /etc/fast-deploy
 cat > /etc/fast-deploy/machine.env <<EOF
-DOMAIN=$DOMAIN
+HOST=$HOST
 REPOSITORY=$REPOSITORY
 BUCKET=$BUCKET
 EOF
@@ -210,19 +216,30 @@ exit 1
 EOF
 chmod 0755 /usr/local/sbin/fast-deploy-import
 
-# Caddy: HTTPS with Let's Encrypt for the lab's name, in front of the controller on 127.0.0.1:8000. Its admin endpoint is
-# off, so nothing on the machine can reconfigure it; HTTP/3 is off because the firewall opens TCP only.
+# Caddy: HTTPS with Let's Encrypt, in front of the controller on 127.0.0.1:8000. Its admin endpoint is off, so nothing on
+# the machine can reconfigure it; HTTP/3 is off because the firewall opens TCP only. For the machine's own address,
+# Let's Encrypt issues a certificate for the address itself only in its short-lived profile (six days; free like every
+# other, and Caddy renews it every few days), and a client that connects by address sends no server name, so Caddy is
+# told which certificate to show it.
 {
   echo "# Written at every boot by the machine's startup script (infra/gcp/modules/project/controller-startup.sh)."
   echo "{"
   echo "	admin off"
   if [[ -n "$ACME_EMAIL" ]]; then echo "	email $ACME_EMAIL"; fi
+  if [[ -n "$ADDRESS_ONLY" ]]; then echo "	default_sni $HOST"; fi
   echo "	servers {"
   echo "		protocols h1 h2"
   echo "	}"
   echo "}"
   echo ""
-  echo "$DOMAIN {"
+  echo "$HOST {"
+  if [[ -n "$ADDRESS_ONLY" ]]; then
+    echo "	tls {"
+    echo "		issuer acme {"
+    echo "			profile shortlived"
+    echo "		}"
+    echo "	}"
+  fi
   echo "	reverse_proxy 127.0.0.1:8000"
   echo "}"
 } > /etc/caddy/Caddyfile
@@ -374,7 +391,7 @@ if [[ -f "$DATA/held" ]]; then
   log "the controller is held (scripts/machine.sh stop); scripts/machine.sh start runs it again"
 elif [[ -f "$DATA/config.yaml" && -f "$DATA/deployments.db" ]]; then
   systemctl start litestream fast-deploy
-  log "the controller is running for https://$DOMAIN"
+  log "the controller is running for https://$HOST"
 else
-  log "Caddy answers for https://$DOMAIN; the controller waits for its configuration and database (scripts/install-machine.sh)"
+  log "Caddy answers for https://$HOST; the controller waits for its configuration and database (scripts/install-machine.sh)"
 fi

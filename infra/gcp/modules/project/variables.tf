@@ -40,8 +40,8 @@ variable "observer_impersonators" {
 }
 variable "controller" {
   type = object({
-    domain         = string
     install_commit = string
+    domain         = optional(string, "")
     repository     = optional(string, "")
     zone           = optional(string, "us-central1-a")
     acme_email     = optional(string, "")

@@ -1,6 +1,7 @@
 # The controller's own machine (docs/ROADMAP.md D36, Phase 15): one Always Free e2-micro in us-central1 with a 30 GB
-# standard disk (both inside Google's free tier), Caddy with Let's Encrypt on the lab's DNS name, the controller and
-# Litestream as systemd services. What it costs: the external IPv4 address, $0.005 an hour (about $3.65 a month), plus a
+# standard disk (both inside Google's free tier), Caddy with Let's Encrypt, the controller and Litestream as systemd
+# services. Claude reaches it at its own reserved address (a Let's Encrypt certificate for the address itself, six days
+# long and renewed by Caddy every few days), or at a DNS name when `domain` is set. What it costs: the external IPv4 address, $0.005 an hour (about $3.65 a month), plus a
 # few cents of Secret Manager and Cloud Storage operations. Nothing here exists until `controller` is set in tfvars.
 #
 # The machine carries its own identity, not the observer's: the observer's viewer roles, plus the two things only the
@@ -10,13 +11,15 @@ locals {
   controller_enabled    = var.controller != null
   controller_tag        = "fast-deploy-controller"
   controller_repository = local.controller_enabled ? (var.controller.repository != "" ? var.controller.repository : (var.pipeline != null ? var.pipeline.platform_repository : "")) : ""
+  # Where Claude reaches it: the DNS name when one is given, else the machine's own reserved address.
+  controller_host = local.controller_enabled ? (var.controller.domain != "" ? var.controller.domain : google_compute_address.controller[0].address) : ""
   # Starts with an uppercase letter: application runtime identities read secrets by the lowercase prefix "<service>-"
   # (modules/service, secret_accessor), so no application's grant can ever reach this one.
   github_app_key_secret = "FAST_DEPLOY_GITHUB_APP_KEY"
 }
 
 resource "google_project_service" "controller_dns" {
-  count              = local.controller_enabled && try(var.controller.dns_zone, "") != "" ? 1 : 0
+  count              = local.controller_enabled && try(var.controller.dns_zone, "") != "" && try(var.controller.domain, "") != "" ? 1 : 0
   service            = "dns.googleapis.com"
   disable_on_destroy = false
 }
@@ -164,7 +167,7 @@ resource "google_compute_instance" "controller" {
     block-project-ssh-keys = "TRUE"
     serial-port-enable     = "FALSE"
     startup-script         = file("${path.module}/controller-startup.sh")
-    fast-deploy-domain     = var.controller.domain
+    fast-deploy-host       = local.controller_host
     fast-deploy-repository = local.controller_repository
     fast-deploy-commit     = var.controller.install_commit
     fast-deploy-bucket     = google_storage_bucket.backups.name
@@ -182,10 +185,10 @@ resource "google_compute_instance" "controller" {
   depends_on = [google_project_iam_member.controller_roles, google_storage_bucket_iam_member.controller_backups, google_secret_manager_secret_iam_member.controller_github_app_key]
 }
 
-# The A record, when the lab's name lives in a Cloud DNS zone of this project; otherwise set it at the registrar to the
-# address in the `controller` output.
+# The A record, when a DNS name is used and it lives in a Cloud DNS zone of this project; otherwise set it at the
+# registrar to the address in the `controller` output. Without a name there is nothing to set.
 resource "google_dns_record_set" "controller" {
-  count        = local.controller_enabled && try(var.controller.dns_zone, "") != "" ? 1 : 0
+  count        = local.controller_enabled && try(var.controller.dns_zone, "") != "" && try(var.controller.domain, "") != "" ? 1 : 0
   managed_zone = var.controller.dns_zone
   name         = "${var.controller.domain}."
   type         = "A"
@@ -206,7 +209,7 @@ resource "google_monitoring_uptime_check_config" "controller" {
     path           = "/healthz"
     port           = 443
     use_ssl        = true
-    validate_ssl   = true # an expired or wrong certificate counts as down: Claude would refuse it too
+    validate_ssl   = true # an expired or wrong certificate counts as down (a six-day one that failed to renew): Claude would refuse it too
     request_method = "GET"
   }
   content_matchers {
@@ -215,7 +218,7 @@ resource "google_monitoring_uptime_check_config" "controller" {
   }
   monitored_resource {
     type   = "uptime_url"
-    labels = { project_id = var.project_id, host = var.controller.domain }
+    labels = { project_id = var.project_id, host = local.controller_host }
   }
   depends_on = [google_project_service.apis]
 }
@@ -242,7 +245,7 @@ resource "google_monitoring_alert_policy" "controller" {
     }
   }
   documentation {
-    content   = "https://${var.controller.domain}/healthz has not answered for five minutes, so Claude's tools are down. Releases already running finish on GitHub. docs/RUNBOOK.md, \"The controller's machine\": `scripts/machine.sh status`."
+    content   = "https://${local.controller_host}/healthz has not answered for five minutes, so Claude's tools are down. Releases already running finish on GitHub. docs/RUNBOOK.md, \"The controller's machine\": `scripts/machine.sh status`."
     mime_type = "text/markdown"
   }
   notification_channels = concat(google_monitoring_notification_channel.alert_email[*].id, google_monitoring_notification_channel.alert_webhook[*].id)

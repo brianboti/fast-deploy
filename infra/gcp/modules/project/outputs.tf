@@ -24,7 +24,8 @@ output "controller" {
     name                  = google_compute_instance.controller[0].name
     zone                  = google_compute_instance.controller[0].zone
     address               = google_compute_address.controller[0].address
-    domain                = var.controller.domain
+    host                  = local.controller_host
+    url                   = "https://${local.controller_host}/mcp"
     service_account       = google_service_account.controller[0].email
     github_app_key_secret = google_secret_manager_secret.github_app_key[0].id
   } : null

@@ -8,8 +8,8 @@ daily reference; `docs/SETUP.md` covers the one-time setup and `docs/RUNBOOK.md`
 
 1. The controller runs: on its own machine since 1.17.0 (`scripts/machine.sh status` from the laptop), or on the laptop
    with `scripts/start.sh` as the fallback.
-2. In Claude: Customize → Connectors → Add custom connector → `https://DOMAIN/mcp` (the lab's DNS name for the machine;
-   the ngrok address while a laptop is the controller), **Sign in now**,
+2. In Claude: Customize → Connectors → Add custom connector → `https://ADDRESS/mcp` (the machine's address, or its DNS
+   name if it has one; the ngrok address while a laptop is the controller), **Sign in now**,
    **Register automatically**, **Connect**. The browser opens the controller's own page; paste the operator token there,
    never into the chat. The sign-in lasts thirty days; when Claude says the connector needs attention, sign in again.
 3. Ask: *"What is the controller status?"* Claude calls `get_controller_status` and reports the version, whether

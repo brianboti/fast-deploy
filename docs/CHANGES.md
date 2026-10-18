@@ -1,14 +1,20 @@
 # 1.17.0: the controller off the laptop (Phase 15)
 
 Asked for on 2026-10-16 with the defaults of D36: the controller moves from the operator's laptop and its ngrok tunnel to
-a machine of its own. Built and tested; the live move waits for the lab's DNS name (D6), the GitHub App and the
-foundation apply.
+a machine of its own. Built and tested; the live move waits for the GitHub App and the foundation apply. No DNS name is
+needed (the operator's choice on 2026-10-17, in place of D6's): Claude reaches the machine at its own reserved address.
 
 1. **The machine** (15.2, `infra/gcp/modules/project/controller.tf`, set `controller` in the foundation's tfvars): one
    Always Free `e2-micro` in us-central1-a with a 30 GB standard disk, Debian 13, Shielded VM, in a network of its own:
    HTTPS and HTTP (for Let's Encrypt) open, SSH only through Identity-Aware Proxy with OS Login and no keys in metadata.
-   A reserved address keeps the DNS record through a replaced machine. It costs that address, about $3.65 a month, plus
-   a few cents; the machine and its disk are inside the free tier.
+   A reserved address stays the same through a replaced machine. It costs that address, about $3.65 a month, plus a few
+   cents; the machine and its disk are inside the free tier.
+   **Claude reaches it at that address**, with no name to buy or set: since January 2026 Let's Encrypt certifies an IP
+   address itself, in its short-lived profile (six days, free like every certificate, renewed by Caddy every few days;
+   the uptime check checks the certificate). Caddy 2.11.7's certificate library allows Let's Encrypt IP certificates, and
+   is told which one to show a client that connects by address (no server name). Google's automatic name for the
+   address would not do: only Google's own CA may certify `googleusercontent.com` names. A DNS name stays an option
+   (`domain`, and `--domain` for the move).
 2. **Its own identity, a refinement of D36**: `lab-deploy-controller` holds the observer's viewer roles, read and write
    on its own folder `machine/` of the backup bucket (an IAM condition), and access to the GitHub App's key; the observer
    stays viewer-only, so impersonating it from a laptop reaches neither.
@@ -39,8 +45,8 @@ foundation apply.
    Litestream.
 7. **Reachability** (15.4): an uptime check on `/healthz` every minute from three US locations, with a certificate check
    and an alert when more than one fails for five minutes, beside the GitHub ping.
-8. **The move** (15.5): `scripts/install-machine.sh DOMAIN APP_ID` checks the laptop's controller is stopped and the name
-   points at the machine, exports the database and the configuration rewritten for the machine
+8. **The move** (15.5): `scripts/install-machine.sh APP_ID [--domain NAME]` checks the laptop's controller is stopped
+   (and that a given name points at the machine), exports the database and the configuration rewritten for the machine
    (`python -m labdeploy.machine export`), imports them through Identity-Aware Proxy, waits for `/healthz`, records
    `machine_url` so `scripts/start.sh` stays off while the machine answers, and points `CONTROLLER_HEALTH_URL` at it.
    `scripts/machine.sh` does the rest: status, logs, restart, update, configuration, backup, drill, and a hold that
@@ -50,7 +56,7 @@ foundation apply.
 New settings: `github_app`, `backup_prefix`, `litestream_replica`, `machine_url`. Requires regeneration of app workflows:
 no. Terraform: the foundation once, with `controller` set. The skill changed: rebuild the zip and upload it to claude.ai.
 
-Tests: 583 pass (19 new); ruff clean; `terraform fmt` and `validate` clean on the foundation root.
+Tests: 584 pass (20 new); ruff clean; `terraform fmt` and `validate` clean on the foundation root; both Caddyfiles adapt with Caddy 2.11.7.
 
 
 # 1.16.1: what the live trial of 1.16.0 showed
