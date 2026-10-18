@@ -1,3 +1,24 @@
+# 1.17.2: what the move to the machine showed
+
+Found on 2026-10-18 in the live exercise of Phase 15 (`docs/VALIDATION.md`).
+
+1. **The machine may list its own folder the way gcloud asks**: `gcloud storage ls gs://BUCKET/machine/` lists the
+   prefix `machine`, without the slash, and the bucket condition only allowed `machine/`, so the restore drill on the
+   machine failed. The condition now matches the prefix without the slash; reading and writing objects stays limited to
+   `machine/`.
+2. **The machine writes its own log lines to Cloud Logging** (`roles/logging.logWriter`): Google's guest agent and the
+   startup script were refused and retried into the serial console. Inside Logging's free allotment; the controller's
+   own log stays on the machine.
+3. **`scripts/tool.sh` and `scripts/ctl.sh` call the machine** when `config.local.yaml` names `machine_url` (the move
+   writes it), else the laptop; `FAST_DEPLOY_URL` chooses another.
+4. **The GitHub App's setup follows GitHub's current pages** (docs/SETUP.md section 4): a link that fills in the form,
+   the key under Credentials, Key pairs, New key, and no Variables permission, which the controller never used.
+
+Terraform: the foundation once (two IAM changes). The machine: `scripts/machine.sh update` to this commit.
+
+Tests: 601 pass (2 new); ruff clean.
+
+
 # 1.17.1: clearer answers in Claude chat
 
 Found on 2026-10-17 in a read-only review of seventeen tools against the running controller (`docs/CLAUDE-CHAT.md`, "What

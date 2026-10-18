@@ -341,6 +341,9 @@ def test_the_machine_is_the_free_shape_with_ssh_only_through_identity_aware_prox
             'google_compute_address.controller[0].address) : ""') in text
     assert "fast-deploy-host       = local.controller_host" in text and "host = local.controller_host" in text
     assert '"projects/_/buckets/${google_storage_bucket.backups.name}/objects/machine/' in text  # its own folder only
+    # gcloud lists a folder by its name without the slash (1.17.2: the live drill was refused for `prefix=machine`)
+    assert 'objectListPrefix\\", \\"\\").startsWith(\\"machine\\"))"' in text
+    assert 'role    = "roles/logging.logWriter"' in text
     assert 'role      = "roles/secretmanager.secretAccessor"' in text and "google_secret_manager_secret.github_app_key[0].id" in text
 
 
@@ -407,3 +410,23 @@ def test_lock_containers_on_the_machine_never_reach_its_identity_and_run_without
     assert '{"dns": ["8.8.8.8", "8.8.4.4"], "log-driver": "local"}' in text  # the metadata server is also the machine's DNS
     assert "systemctl disable --quiet --now docker.service" in text and "systemctl enable --quiet --now docker.socket" in text
     assert "SupplementaryGroups=docker" in text and "usermod -aG docker fastdeploy" in text
+
+
+def test_the_operator_scripts_call_the_machine_once_the_move_names_it():
+    for script in (Path("scripts/tool.sh"), Path("scripts/ctl.sh")):
+        body = script.read_text()
+        if shutil.which("zsh"):
+            subprocess.run(["zsh", "-n", str(script)], check=True)
+        assert 'os.environ.get("FAST_DEPLOY_URL")' in body and '.get("machine_url")' in body and '"http://127.0.0.1:8000"' in body
+        assert "base() +" in body and "print(token" not in body
+
+
+def test_the_setup_guide_creates_the_app_with_exactly_the_permissions_the_controller_uses():
+    guide = Path("docs/SETUP.md").read_text()
+    link = re.search(r"https://github.com/settings/apps/new\?\S+", guide).group(0)
+    permissions = dict(part.split("=", 1) for part in link.split("?", 1)[1].split("&") if "=" in part)
+    assert {key: value for key, value in permissions.items() if value in ("read", "write")} == {
+        "actions": "write", "administration": "write", "contents": "write", "environments": "write", "metadata": "read",
+        "pull_requests": "write", "workflows": "write"}
+    assert permissions["public"] == "false" and permissions["webhook_active"] == "false"
+    assert "**Credentials**, **Key pairs**,\n   **New key**" in guide

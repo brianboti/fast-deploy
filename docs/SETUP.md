@@ -143,25 +143,33 @@ repository, minted for an hour at a time with the App's private key, which the c
 through the machine's own identity and keeps in memory only. A laptop can use the same App (its key read with your gcloud
 sign-in) or a fine-grained token.
 
-Create the App once, on the account that owns the repositories (GitHub: Settings, Developer settings, GitHub Apps, New
-GitHub App):
+Create the App once, on the account that owns the repositories. The quickest way is GitHub's form with everything
+filled in through its URL (name, homepage, no webhook, only on this account, and exactly the permissions below):
+
+```text
+https://github.com/settings/apps/new?name=fast-deploy-YOUR-ACCOUNT&url=https%3A%2F%2Fgithub.com%2FOWNER%2Ffast-deploy&public=false&webhook_active=false&actions=write&administration=write&contents=write&environments=write&metadata=read&pull_requests=write&workflows=write
+```
+
+Check the page and click **Create GitHub App**. By hand it is:
 
 1. Name: anything unique, for example `fast-deploy-YOUR-ACCOUNT`; Homepage URL: the platform repository's address.
 2. Webhook: clear **Active**. The controller asks GitHub; GitHub never calls it.
-3. Repository permissions, exactly what onboarding needs and nothing else: **Actions** read and write, **Administration**
-   read and write (environments are created through it), **Contents** read and write, **Environments** read and write,
-   **Metadata** read-only, **Pull requests** read and write, **Variables** read and write, **Workflows** read and write.
-   No organization or account permissions.
-4. Where can this GitHub App be installed: **Only on this account**. Create it and note its **App ID**.
-5. **Generate a private key** (a `.pem` file downloads). Put it into the secret the foundation apply created, then delete
-   the file; the key never goes into the repository, Terraform or a chat:
+3. Repository permissions, exactly what the controller uses and nothing else: **Actions** read and write,
+   **Administration** read and write (environments are created through it), **Contents** read and write,
+   **Environments** read and write (its variables too), **Metadata** read-only, **Pull requests** read and write,
+   **Workflows** read and write. No **Variables** (the controller never writes repository-level variables), and no
+   organization or account permissions.
+4. Where can this GitHub App be installed: **Only on this account**. Its **App ID** is at the top of its General page.
+5. **Install App** on the account: all repositories, or the platform repository and every application repository.
+6. **The key**, once the foundation apply has created the secret: in the App's settings, **Credentials**, **Key pairs**,
+   **New key** (GitHub's name since 2026; it was "Generate a private key"). A `.pem` file downloads; this puts it into
+   the secret and deletes the file, so the key never goes into the repository, Terraform or a chat:
 
    ```bash
-   gcloud secrets versions add FAST_DEPLOY_GITHUB_APP_KEY --project PROJECT --data-file=KEY.pem
+   KEY=$(find ~/Downloads -maxdepth 1 -name '*.pem' -mmin -30 -print | head -1); if [ -n "$KEY" ]; then gcloud secrets versions add FAST_DEPLOY_GITHUB_APP_KEY --project PROJECT --data-file="$KEY" && rm "$KEY"; else echo "No new .pem file in Downloads yet"; fi
    ```
 
-6. **Install App** on the account: all repositories, or the platform repository and every application repository.
-7. The configuration names the App and the secret (`scripts/install-machine.sh` writes this into the machine's own):
+7. The configuration names the App and the secret (`scripts/install-machine.sh APP_ID` writes this into the machine's own):
 
    ```yaml
    github_app:
@@ -369,7 +377,7 @@ onboarding:
 ```
 
 2. The operator's identity with `applications: ["*"]`, so it sees the applications onboarding registers (they live in the controller's database, not in this file).
-3. A GitHub credential that may write. The fine-grained token covers **all repositories** of the account (or the organization's) with these permissions: Contents read and write, Pull requests read and write, Workflows read and write, Actions read and write, Environments read and write, Variables read and write, Administration read and write (environments are created through it), Metadata read. Store it with `scripts/start.sh` as before. A GitHub App with the same permissions is the planned replacement (roadmap, decision D14).
+3. A GitHub credential that may write. The fine-grained token covers **all repositories** of the account (or the organization's) with these permissions: Contents read and write, Pull requests read and write, Workflows read and write, Actions read and write, Environments read and write, Variables read and write, Administration read and write (environments are created through it), Metadata read. Store it with `scripts/start.sh` as before. On the controller's machine the GitHub App (section 4, decision D14) replaces it since 1.17.0; this token stays the laptop's fallback.
 
 What the tool does, in order: contract check (blocks with a checklist), registration, infrastructure pull request (merged once the plan workflow's policy verdict is `passed` and only when every file sits under `infra/gcp/apps/<service>/`), the apply, the `staging` environment with its variables, the workflows pull request (merged when GitHub reports it mergeable), the first release. Long waits end the call and the scheduler continues every minute; `get_onboarding_status` reports the step, and a blocked onboarding resumes from its step when the same tool is called again.
 
