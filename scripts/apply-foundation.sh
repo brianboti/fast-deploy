@@ -24,6 +24,9 @@ else
 fi
 [[ -f "$VARS" ]] || { echo "infra/gcp/project/$VARS is missing: write the $ENVIRONMENT settings first (docs/SETUP.md)."; exit 1; }
 grep -q "^project_id *= *\"$PROJECT\"" "$VARS" || { echo "$VARS names another project_id than $PROJECT."; exit 1; }
+# A new project has only Google's default APIs: the plan reads the project through Cloud Resource Manager, and Service
+# Usage enables the rest. Both are switched on first; idempotent (found with the production project on 2026-10-18).
+gcloud services enable cloudresourcemanager.googleapis.com serviceusage.googleapis.com --project "$PROJECT" --quiet
 TOKEN=$(gcloud auth print-access-token)
 # The uptime check signs in as the Monitoring service agent; make sure the agent exists (idempotent).
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \

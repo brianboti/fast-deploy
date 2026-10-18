@@ -359,7 +359,9 @@ a reviewer's approval on GitHub. The steps, once:
    There is no `controller` block and no `billing_export_dataset`: the machine and the billing account's one export stay
    in staging. The spending cap closes production's services at the budget, as in staging; turn it off only when a
    production that stops is worse than the bill.
-4. **The foundation**: `scripts/apply-foundation.sh PROD_PROJECT production`. It prints four `INFRA_PRODUCTION_*` values.
+4. **The foundation**: `scripts/apply-foundation.sh PROD_PROJECT production`, typing **yes** at its prompt. It first switches
+   on the two APIs a new project lacks (Cloud Resource Manager and Service Usage), and at the end it prints four
+   `INFRA_PRODUCTION_*` values.
 5. **On the platform repository**: set the repository variables `INFRA_PRODUCTION_PLAN_WIF_PROVIDER`,
    `INFRA_PRODUCTION_APPLY_WIF_PROVIDER`, `INFRA_PRODUCTION_PLAN_SERVICE_ACCOUNT` and
    `INFRA_PRODUCTION_APPLY_SERVICE_ACCOUNT` from that output; the production jobs stay dormant until they exist. Create

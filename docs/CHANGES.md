@@ -32,6 +32,9 @@ GitHub. Nothing changes for staging, and no application's workflows need regener
    status of a promotion reads "waiting for approval" with who may approve and the run's link, then its own steps in plain
    words.
 
+6. **The foundation script switches on Cloud Resource Manager and Service Usage first.** A new project has neither, and the
+   root reads the project through the first, so the production project's first plan failed (found on 2026-10-18).
+
 Not yet: a production rollback by tool (16.3, with the split release); until then `docs/RUNBOOK.md`, Production, gives the
 command.
 

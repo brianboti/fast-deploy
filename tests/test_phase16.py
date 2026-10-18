@@ -217,6 +217,8 @@ def test_the_foundation_script_keeps_staging_values_out_of_production(tmp_path):
     assert "*.tfvars" in Path(".gitignore").read_text().splitlines()  # staging.tfvars and production.tfvars never reach git
     script = Path("scripts/apply-foundation.sh").read_text()
     assert 'Rename infra/gcp/project/terraform.tfvars to staging.tfvars first' in script
+    assert 'gcloud services enable cloudresourcemanager.googleapis.com serviceusage.googleapis.com --project "$PROJECT"' in script  # a new project
+    assert script.index("gcloud services enable") > script.index("names another project_id")  # only once the settings file names this project
     assert '-var-file="$VARS" -var="environment=$ENVIRONMENT"' in script and 'prefix = "INFRA_PRODUCTION_" if os.environ["ENVIRONMENT"] == "production"' in script
     if shutil.which("zsh"):
         work = tmp_path / "repo"
