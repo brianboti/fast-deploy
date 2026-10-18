@@ -89,6 +89,29 @@ def parse_expiration(header):
 
 
 
+CHECKS_GRACE_SECONDS = 120  # GitHub can take a minute or two to start a pull request's workflows
+FINE = ("success", "skipped", "neutral")
+
+
+def checks_verdict(runs, opened_at=None, now=None):
+    """("passed" | "wait" | "failed", why) for a pull request the controller would merge itself: every GitHub Actions run
+    on its head must have finished and none may have failed. A repository without required checks lets GitHub call such
+    a pull request mergeable while its tests still run (found live: lab-bare#6 merged 12 seconds before its tests ended),
+    so the controller asks the runs itself. With no run at all it waits until two minutes after the pull request opened
+    (GitHub starts them a little later), then treats the repository as one without checks."""
+    pending = [run for run in runs if run.get("status") != "completed"]
+    if pending:
+        return "wait", f"its checks to finish ({', '.join(sorted({str(run.get('name')) for run in pending}))})"
+    failed = [run for run in runs if run.get("conclusion") not in FINE]
+    if failed:
+        return "failed", f"{failed[0].get('name')} ended {failed[0].get('conclusion')} ({failed[0].get('url')})"
+    if not runs and opened_at:
+        opened = parse_expiration(opened_at)
+        if opened is not None and (now or time.time()) - opened.timestamp() < CHECKS_GRACE_SECONDS:
+            return "wait", "GitHub to start its checks"
+    return "passed", None
+
+
 def pipeline_of(app):
     """The repository whose workflows release an application: the platform's for a contract it keeps, else the app's own."""
     return getattr(app, "pipeline_repo", None) or app.repository
@@ -419,7 +442,14 @@ class GitHub:
         data = self.request("GET", f"/repos/{repository}/pulls/{number}").json()
         return {"number": number, "state": data["state"], "merged": bool(data.get("merged")), "mergeable_state": data.get("mergeable_state"),
                 "head_sha": data["head"]["sha"], "merge_commit_sha": data.get("merge_commit_sha"), "url": data["html_url"],
-                "merged_by": (data.get("merged_by") or {}).get("login"), "head_ref": data["head"].get("ref"), "base_sha": data["base"].get("sha")}
+                "merged_by": (data.get("merged_by") or {}).get("login"), "head_ref": data["head"].get("ref"), "base_sha": data["base"].get("sha"),
+                "created_at": data.get("created_at")}
+
+    def head_checks(self, repository, sha):
+        """Every GitHub Actions run on a commit, a pull request's head: what the controller waits for before it merges its own
+        pull request (checks_verdict). Read with the Actions permission; check runs would need one more for the App."""
+        runs = self.request("GET", f"/repos/{repository}/actions/runs", params={"head_sha": sha, "per_page": 100}).json().get("workflow_runs", [])
+        return [{"name": run.get("name"), "status": run.get("status"), "conclusion": run.get("conclusion"), "url": run.get("html_url")} for run in runs]
 
     def open_pull_requests(self, repository, prefix):
         """The open pull requests whose branch starts with `prefix`: the controller's own, found by its branch names."""

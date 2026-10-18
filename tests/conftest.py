@@ -30,6 +30,9 @@ class FakeGitHub:
     def from_config(cls, config, client=None):
         return cls()
 
+    def head_checks(self, repository, sha):
+        return [{"name": "tests", "status": "completed", "conclusion": "success", "url": f"https://github.com/{repository}/actions/runs/1"}]
+
     def head(self, app):
         return self.sha
 

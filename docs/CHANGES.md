@@ -1,3 +1,21 @@
+# 1.17.3: the controller merges its own pull request only after its checks pass
+
+Found on 2026-10-18 in the live onboarding through the GitHub App (`docs/VALIDATION.md`): lab-bare has no required checks,
+so GitHub called the onboarding's workflows pull request (lab-bare#6) mergeable while its tests were still running, and
+the controller merged it twelve seconds before they ended. They passed, but the promise in the configuration ("merge
+the application's own pull requests once the policy and the checks have passed") was not kept. The gap is older than
+the App; the App's test only showed it.
+
+1. **Before it merges its own pull request**, the controller now reads every GitHub Actions run on the pull request's
+   head (with the Actions permission the App already has) and waits until all have finished; a failed or cancelled run
+   stops the onboarding with its name and link, and asking again after the fix continues from the merge. With no run at
+   all it gives GitHub two minutes to start them, then treats the repository as one without checks.
+2. **The same rule guards release pull requests** on the platform repository, whose required checks already made
+   GitHub wait.
+
+Tests: 604 pass (3 new in `tests/test_merge_gate.py`); ruff clean.
+
+
 # 1.17.2: what the move to the machine showed
 
 Found on 2026-10-18 in the live exercise of Phase 15 (`docs/VALIDATION.md`).

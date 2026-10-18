@@ -616,3 +616,18 @@ address. The operator made the GitHub App and its key; the rest ran from the lap
 
 Not yet: a tool call from Claude through the new connector (the sign-in passed), an onboarding with an App token, and a
 restore on a fresh machine.
+
+## Live exercise of 1.17.2: the last checks of Phase 15 (2026-10-18 UTC)
+
+Asked for by the operator, who allowed the machine to be deleted and made again for it.
+
+| Trial | What was done | Observed |
+|---|---|---|
+| Claude's own call through the address | The operator asked Claude for the controller status | `get_controller_status` from 160.79.106.160 (Anthropic's addresses) at 02:37; the answer named 1.17.2 and the GitHub App |
+| The restore drill after the 1.17.2 apply | Foundation apply (2 added, 1 replaced), `scripts/machine.sh update a4e5af3`, `scripts/machine.sh drill` | Passed: the nightly copy (12 minutes old, 71 plans, 1,412 audit events) and the live copy restored with Litestream, integrity ok, 0.0 minutes behind; no refused log writes since the apply |
+| An onboarding through the GitHub App | `lab-deploy unregister lab-bare` on the machine (a backup first), then `onboard_application` for `brianboti/lab-bare` | Complete in 0.3 minutes: registered again (the same entry), the root already on main, the `staging` environment and its variables written, the workflows pull request lab-bare#6 opened and merged, all by `app/fast-deploy-ai`; the release it dispatched went live in 11 minutes on the current pipeline (no working keys, 221-part SBOM, the scan's findings reported, as for reviewed code) |
+| **What the onboarding showed** | The timing of lab-bare#6 | Merged at 02:53:30 while its `tests` ran until 02:53:42 (they passed): with no required checks GitHub called it mergeable. Fixed in 1.17.3: the controller waits for the pull request's runs and stops at a failed one |
+| A restore on a fresh machine | Controller held at 03:05:06; Litestream's last upload 03:05:41; `gcloud compute instances delete fast-deploy`; the foundation apply made it again (1 to add) | The machine was up 43 seconds into the apply and the controller answered 252 seconds later, its startup log saying "restored the configuration from gs://.../machine/config.yaml", "restored the database from the Litestream replica" and the commit from `machine/installed-commit` (a4e5af3). Before and after: 72 plans, the newest the lab-bare release, its onboarding complete; the newest audit event kept was written at 03:05:02, after the snapshot. A new Let's Encrypt certificate for the same address; all three services active |
+
+Phase 15's live exercise is complete: Claude through the address, a power cycle (50 seconds), a restore from Litestream on a
+fresh machine, and an onboarding with a GitHub App token.

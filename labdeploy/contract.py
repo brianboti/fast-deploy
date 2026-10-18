@@ -14,7 +14,7 @@ import time
 
 from . import reader, scaffold
 from .config import Principal
-from .github import explain
+from .github import checks_verdict, explain
 from .models import Source, contract_text, parse_contract, spec_hash
 
 MERGEABLE = ("clean", "unstable", "has_hooks")
@@ -306,6 +306,8 @@ class Contracts:
                     waiting = f"a person: {why}"
                 elif pr["mergeable_state"] not in MERGEABLE:
                     waiting = f"the platform's checks on the pull request (GitHub says {pr['mergeable_state']})"
+                elif (verdict := checks_verdict(github.head_checks(platform.repository, pr["head_sha"]), pr.get("created_at")))[0] != "passed":
+                    waiting = f"the pull request's checks: {verdict[1]}" if verdict[0] == "wait" else f"a person: {verdict[1]}"
                 else:
                     self.c.ancestor_of_branch(app, parse_contract(head["text"])[1].commit)
                     merged = github.merge_pull_request(platform.repository, number, f"Release {app.service} at {record['target'][:12]}")
