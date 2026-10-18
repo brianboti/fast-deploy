@@ -737,7 +737,8 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
                 receipt["state"] = "baking"
                 save()
                 if callable(getattr(adapter, "revision_requests", None)) and callable(getattr(adapter, "revision_system_logs", None)):
-                    receipt["bake"] = bake(adapter, revision, allocations, spec.health_path, int(bake_seconds), switched_at, sleep=sleep, clock=clock)
+                    receipt["bake"] = bake(adapter, revision, allocations, spec.health_path, int(bake_seconds), switched_at, sleep=sleep, clock=clock,
+                                           share=percent if len(split) > 1 else None)
                 else:
                     receipt["bake"] = {"seconds": int(bake_seconds), "result": "unobserved", "notes": ["this runner cannot read Cloud Run logs"]}
             if len(split) > 1:

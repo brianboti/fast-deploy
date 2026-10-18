@@ -426,7 +426,10 @@ pipeline, `add_production` for the demo through all four steps, and the demo pro
 approval, serving staging's exact image in production; 1.18.2 fixed what that showed. Item 16.3 built on 2026-10-18 as
 1.18.3: the split release in the runner (`ROLLOUT_STEPS`, production only; staging still moves everyone at once, so no
 application's workflows change), secrets pinned to their version at release in production, and `rollback_production`
-as the rollback of `promote.yml`, which production's deployer already trusts, so no root changes either.
+as the rollback of `promote.yml`, which production's deployer already trusts, so no root changes either. Exercised live on
+2026-10-18 (`docs/VALIDATION.md`, the rollback drill): a fault the probes cannot see failed its bake at 10 percent and
+the earlier split came back; the fix passed every step on real traffic; the rollback by tool moved production back in 16
+seconds; 1.18.4 fixed what that showed.
 
 | Item | Change | Where |
 |---|---|---|

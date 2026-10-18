@@ -1,3 +1,20 @@
+# 1.18.4: what the rollback drill showed
+
+Found on 2026-10-18 in the rollback drill of 1.18.3 (`docs/VALIDATION.md`). A fault the probes cannot see failed its bake
+at 10 percent (16 of 31 requests answered 500), and the earlier split came back for everyone. The fixed version then
+passed every step of the split on real traffic, and `rollback_production` moved production back in 16 seconds once
+approved.
+
+1. **A bake that fails at a step names the step.** It said "Bake failed 69 seconds after promotion"; at a step of the
+   split it now says "after the switch to 10 percent of the traffic". A staging release, which moves everyone at once,
+   still says "after promotion".
+2. **`scripts/promotion-traffic.sh`** sends real requests with your own sign-in token each time a promotion's new revision
+   takes a new share (10, 50, 100 percent), so the bake judges real traffic at every step. It stops at 100 percent, or
+   reports when the earlier split comes back. The runbook's drill uses it in place of a loop typed by hand.
+
+Tests: 641 pass; ruff clean.
+
+
 # 1.18.3: the split release and production's rollback (Phase 16, part three)
 
 Roadmap item 16.3 (docs/ROADMAP.md D38). A promotion no longer moves all of production at once, and production can be

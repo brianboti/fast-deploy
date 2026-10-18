@@ -79,6 +79,8 @@ def test_a_broken_rule_at_any_step_brings_back_the_earlier_split(tmp_path):
     saved = json.loads((tmp_path / "receipt.json").read_text())
     assert cloud.moves[-1] == {"demo-old": 100} and {REVISION: 100} not in cloud.moves
     assert saved["state"] == "traffic_restored" and saved["failed_phase"] == "baking" and saved["step"] == 10 and saved["bake"]["rule"] == "errors"
+    # found in the drill: the failure names the step's switch, not "promotion" (docs/VALIDATION.md, 2026-10-18)
+    assert " seconds after the switch to 10 percent of the traffic: " in saved["error"]
     text = advice({"kind": "promotion", "state": "failed", "receipt": saved, "failed_step": {"step": "Deploy, probe, promote; restore traffic on failure"}})
     assert text.startswith("The new revision stopped with 10 percent of production's traffic") and "earlier split serves everyone again" in text
     shown = chat.release({"kind": "promotion", "application": "demo", "state": "failed", "receipt": saved, "phases": {"state": "traffic_restored"}})
@@ -223,3 +225,11 @@ def test_the_github_adapter_starts_a_rollback_and_names_the_split_steps(monkeypa
             "source": {"plan": STAGING_PLAN, "image": IMAGE, "workflow": "deploy-gcp.yml", "provenance": "github"}}
     gh.dispatch_promotion("lab/platform", plan)
     assert seen[-1][1]["inputs"]["rollout"] == "10,50,100"
+
+
+def test_the_drills_traffic_comes_with_the_platform():
+    """Found in the drill (2026-10-18): the traffic that proves each step is a script of the repository, not a loop typed by hand."""
+    script = Path("scripts/promotion-traffic.sh")
+    text = script.read_text()
+    assert script.stat().st_mode & 0o111 and "gcloud auth print-identity-token" in text and "exit 3" in text
+    assert "scripts/promotion-traffic.sh PROD_PROJECT SERVICE SERVICE-rPLANID16 400" in Path("docs/RUNBOOK.md").read_text()
