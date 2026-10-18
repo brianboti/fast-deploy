@@ -524,10 +524,11 @@ class GitHub:
 
     def ensure_protected_environment(self, repository, name, branch, reviewers):
         """A production environment (docs/ROADMAP.md D37): restricted to one branch, every job in it waits for one of
-        `reviewers` (GitHub user names) to approve, and whoever started the run may not approve it. The controller starts
-        promotions as the GitHub App, so its operator approving one is not a self-review. Idempotent."""
+        `reviewers` (GitHub user names) to approve, whoever started the run may not approve it, and no administrator may
+        skip the approval (GitHub's default lets them; found live on 2026-10-18). The controller starts promotions as the
+        GitHub App, so its operator approving one is not a self-review. Idempotent."""
         path = f"/repos/{repository}/environments/{quote(name, safe='')}"
-        self.request("PUT", path, json={"wait_timer": 0, "prevent_self_review": True,
+        self.request("PUT", path, json={"wait_timer": 0, "prevent_self_review": True, "can_admins_bypass": False,
                                         "reviewers": [{"type": "User", "id": self.user_id(login)} for login in reviewers],
                                         "deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": True}})
         try:
@@ -646,6 +647,10 @@ class GitHub:
                   "commit_sha": plan["sha"], "spec_hash": plan["spec_hash"], "target_json": json.dumps(plan["target"], sort_keys=True),
                   "repository": plan["repository"], "app_path": (plan.get("layout") or {}).get("path") or "", "contract_commit": contract.get("commit", ""),
                   "staging_workflow": source["workflow"], "provenance": source["provenance"], "bake_seconds": str(int(plan["bake_seconds"]))}
+        if source.get("attested_commit") and source["attested_commit"] != plan["sha"]:
+            # GitHub's attestation names the commit its build run started on (docs/CHANGES.md 1.18.2); sent only when it
+            # differs, so a promotion of a release built at the tip of main stays as it was.
+            inputs["attested_commit"] = source["attested_commit"]
         response = self.request("POST", f"/repos/{repository}/actions/workflows/promote.yml/dispatches", json={"ref": "main", "inputs": inputs})
         return response.json() if response.content else {}
 

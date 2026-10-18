@@ -1655,6 +1655,15 @@ class Controller:
             raise ValueError(f"Production for {app_id} is not ready: {'; '.join(missing)}. Ask for add_production, which continues from where it stands.")
         cost = self.cost_policy(app.model_copy(update={"target": app.production.target}), spec)
         staging_workflow = "deploy.yml" if source.get("contract") else (source.get("layout") or {}).get("workflow") or app.workflows["deploy"]
+        # GitHub's attestation names the commit its build run started on (main's tip then), not an older commit it built;
+        # a reused image was attested by the run that built it. The run's own commit is what the check compares.
+        builder = source
+        while mode == "github" and builder.get("reused_from_plan"):
+            found = self.store.fetch(builder["reused_from_plan"])
+            if found is None:
+                break
+            builder = found[1]
+        attested = (builder.get("workflow") or {}).get("head_sha") if mode == "github" else None
         plan = {
             "id": uuid.uuid4().hex, "kind": "promotion", "application": app_id, "repository": app.repository, "branch": app.branch,
             "sha": source["sha"], "commit": source.get("commit"), "spec_hash": source["spec_hash"], "spec": source["spec"],
@@ -1662,6 +1671,7 @@ class Controller:
             "cost": cost, "pipeline": platform.repository, "pinned_commit": True,
             "checks": {"approval": "pending", "provenance": "pending", "copy": "pending", "health": "pending_after_deployment"},
             "source": {"plan": source["id"], "image": image, "digest": image.rsplit("@", 1)[1], "provenance": mode, "workflow": staging_workflow,
+                       "attested_commit": attested if attested and re.fullmatch(r"[a-f0-9]{40}", attested) else source["sha"],
                        "revision": receipt.get("revision"), "released_at": (source.get("outcome") or {}).get("completed_at"), "cost": source.get("cost")},
             "bake_seconds": min(production.bake_seconds, MAX_BAKE_SECONDS),
             "layout": {"path": app.path, "workflow": "promote.yml", "github_environment": app.production.environment},
@@ -1701,6 +1711,8 @@ class Controller:
             missing.append(f"the environment {app.production.environment} does not exist on {platform.repository}")
         elif not any(rule.get("prevent_self_review") for rule in reviewed):
             missing.append(f"the environment {app.production.environment} has no required reviewers with self-review prevented")
+        elif environment.get("can_admins_bypass") is not False:
+            missing.append(f"administrators can skip the approval in {app.production.environment}")
         if self.github.contents(platform.repository, platform.branch, f"{PRODUCTION_ROOTS}/{app.production.target.service}/main.tf") is None:
             missing.append("its production root is not on main")
         if not self.promotion_access_on_main(app):
