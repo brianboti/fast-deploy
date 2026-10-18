@@ -1,6 +1,8 @@
 # One application: its identities, registry, Cloud Run service, GitHub trust, recovery bucket and runtime alerts.
 locals {
   service_filter = "resource.type=\"cloud_run_revision\" AND resource.label.service_name=\"${var.service}\""
+  # staging, or production for a production root (docs/ROADMAP.md D37): only names change with it here.
+  environment_name = startswith(var.github_environment, "production-") ? "production" : "staging"
   # Marks what the platform manages: the spending cap closes services with lab-deploy-managed, and the billing export
   # groups cost by lab-deploy-app.
   labels = { lab-deploy-managed = "true", lab-deploy-app = var.service }
@@ -494,7 +496,7 @@ resource "google_monitoring_alert_policy" "log_errors" {
 resource "google_monitoring_dashboard" "service" {
   count = var.runtime_alerts ? 1 : 0
   dashboard_json = jsonencode({
-    displayName = "${var.service} staging"
+    displayName = "${var.service} ${local.environment_name}"
     mosaicLayout = {
       columns = 12
       tiles = [

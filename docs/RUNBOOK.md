@@ -43,6 +43,24 @@ can release it, and nothing in its own pipeline can reach another application's 
   `APPS_APP_PRIVATE_KEY` of a GitHub App installed on those repositories with contents read; each run then gets a token
   narrowed to the one repository, valid for an hour. Until then the runs read public repositories with their own token.
 
+## Production
+
+Since 1.18.0 (Phase 16, decision D37) an application can have a production: a project of its own under the organization,
+with its own foundation, state, identities, budget and spending cap. Staging stays where releases are tried first.
+
+- **Production infrastructure is merged by a person.** `add_production` opens each root as a pull request titled
+  `Production infrastructure for NAME`, and the controller never merges it, whatever `may_merge_own_requests` says.
+  Read its plan comment like any other, merge, then approve the apply in the environment `infra-production`. That
+  approval is the safety net: nothing applies to production unless a person agreed, whoever merged.
+- **Who approves a promotion** is the configuration's `production.reviewers`: the required reviewers of every
+  `production-<service>` environment on the platform repository, with self-review prevented. To change them, edit the
+  list (`scripts/machine.sh config-get` and `config-put`) and ask for `add_production` again for each application; it
+  rewrites the environment's reviewers. While no reviewer is around, nothing reaches production. That is intended.
+- **The foundation** is applied by the operator: `scripts/apply-foundation.sh PROD_PROJECT production`, from
+  `infra/gcp/project/production.tfvars`. Staging's settings are in `staging.tfvars`. Never put a `terraform.tfvars`
+  back: Terraform would load it into both, and the script refuses production while one exists.
+- **The drift check** covers production roots too and names them `production-<service>`.
+
 ## What "up" means
 
 - `GET /healthz` on the controller answers 200 at its address. A Cloud Monitoring uptime check calls it every minute from

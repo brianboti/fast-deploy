@@ -518,6 +518,24 @@ class GitHub:
             if exc.response.status_code not in (303, 422):
                 raise
 
+    def user_id(self, login):
+        """A GitHub user's numeric id, which an environment's required reviewers are named by."""
+        return int(self.request("GET", f"/users/{quote(login, safe='')}").json()["id"])
+
+    def ensure_protected_environment(self, repository, name, branch, reviewers):
+        """A production environment (docs/ROADMAP.md D37): restricted to one branch, every job in it waits for one of
+        `reviewers` (GitHub user names) to approve, and whoever started the run may not approve it. The controller starts
+        promotions as the GitHub App, so its operator approving one is not a self-review. Idempotent."""
+        path = f"/repos/{repository}/environments/{quote(name, safe='')}"
+        self.request("PUT", path, json={"wait_timer": 0, "prevent_self_review": True,
+                                        "reviewers": [{"type": "User", "id": self.user_id(login)} for login in reviewers],
+                                        "deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": True}})
+        try:
+            self.request("POST", path + "/deployment-branch-policies", json={"name": branch, "type": "branch"})
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code not in (303, 422):  # the policy for this branch exists already
+                raise
+
     def set_environment_variables(self, repository, name, variables):
         path = f"/repos/{repository}/environments/{quote(name, safe='')}/variables"
         for key, value in variables.items():

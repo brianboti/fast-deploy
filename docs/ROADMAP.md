@@ -410,7 +410,12 @@ Cost effect: about $3.65 a month (the IPv4 address) to $4.04; $6.11 more if the 
 
 ## Phase 16: a production target (about six days) → version 1.18.0
 
-Status: planned on 2026-10-16 (research review sections 5.1, 5.2 and 5.5).
+Status: planned on 2026-10-16 (research review sections 5.1, 5.2 and 5.5). Item 16.1 built on 2026-10-17 as 1.18.0
+(`docs/CHANGES.md`), with two refinements. An application's production is registered by a step of its own,
+`add_production`, in the controller's database (the same for applications of the file and onboarded ones), instead of an
+`environments` list in the registry entry, so onboarding is unchanged. Production roots live in
+`infra/gcp/apps-production/<service>` and run in pipeline jobs of their own. Production infrastructure is merged by a
+person, never by the controller; the environment `infra-production` that applies it has the operator as required reviewer.
 
 | Item | Change | Where |
 |---|---|---|

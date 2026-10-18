@@ -620,6 +620,23 @@ def draft(view):
                    "a person reviews it (above all `platform.yaml`: size, cost, who may open it), sets `reviewed: true` and merges; then say “deploy it”.")
 
 
+def production(result):
+    """add_production: where the application's production stands, and the one thing that is next."""
+    app, environment = result.get("application"), result.get("environment")
+    if result.get("state") == "ready":
+        reviewers = " or ".join(f"`{name}`" for name in result.get("reviewers") or [])
+        return compose(f"**`{app}` has its production** in `{result.get('project_id')}`.",
+                       [f"Environment `{environment}` on the platform repository: every promotion waits for {reviewers} to approve it on GitHub",
+                        "A promotion copies the exact image staging released, never a rebuild"],
+                       "nothing to do now. Promotion itself arrives with the next platform version (roadmap item 16.2).")
+    pull_request = result.get("pull_request") or {}
+    link = f"[#{pull_request['number']}]({pull_request['url']})" if pull_request.get("number") else "the pull request"
+    return compose(f"**Production for `{app}`, step 1 of 2: its cloud setup in `{result.get('project_id')}`.**",
+                   [f"Pull request {link} adds its production root; the pipeline posts the plan on it",
+                    "A person merges it (production infrastructure is never merged by the controller), then approves the apply in `infra-production`"],
+                   "merge it once the plan reads right and approve the apply, then ask again: the environment and its approvers come next.")
+
+
 def pull_request(result, what="", applies=False):
     """propose_infrastructure and update_app_workflows."""
     app, pr = result.get("application") or "the app", result.get("pull_request") or {}

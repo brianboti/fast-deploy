@@ -58,7 +58,7 @@ resource "google_project_service" "billing_budgets" {
 }
 resource "google_monitoring_notification_channel" "budget_email" {
   count        = var.monthly_budget_usd > 0 && var.budget_alert_email != "" ? 1 : 0
-  display_name = "lab-deploy staging budget alerts"
+  display_name = "lab-deploy ${var.environment} budget alerts"
   type         = "email"
   labels       = { email_address = var.budget_alert_email }
   depends_on   = [google_project_service.apis]
@@ -66,7 +66,7 @@ resource "google_monitoring_notification_channel" "budget_email" {
 resource "google_billing_budget" "staging" {
   count           = var.monthly_budget_usd > 0 ? 1 : 0
   billing_account = var.billing_account
-  display_name    = "${var.project_id} staging monthly budget"
+  display_name    = "${var.project_id} ${var.environment} monthly budget"
   budget_filter {
     projects        = ["projects/${var.project_number}"]
     calendar_period = "MONTH"
@@ -174,6 +174,14 @@ resource "google_project_iam_member" "observer_roles" {
   project  = var.project_id
   role     = each.value
   member   = "serviceAccount:${google_service_account.observer.email}"
+}
+# Identities of another project that may view this one with the observer's roles: in production, the controller's
+# machine in staging (controller.tf there), so live health and logs work for production apps too (docs/ROADMAP.md D37).
+resource "google_project_iam_member" "outside_viewers" {
+  for_each = { for pair in setproduct(var.viewer_members, local.observer_roles) : "${pair[0]} ${pair[1]}" => pair }
+  project  = var.project_id
+  role     = each.value[1]
+  member   = each.value[0]
 }
 resource "google_service_account_iam_member" "observer_impersonators" {
   for_each           = toset(var.observer_impersonators)
