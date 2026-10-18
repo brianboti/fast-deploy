@@ -61,6 +61,28 @@ with its own foundation, state, identities, budget and spending cap. Staging sta
   back: Terraform would load it into both, and the script refuses production while one exists.
 - **The drift check** covers production roots too and names them `production-<service>`.
 
+### Approve or reject a promotion
+
+`promote_to_production` (since 1.18.1) starts the platform repository's **Promote to production** run, which waits in
+`production-<service>`. Open it from the link Claude gives. Its summary holds the approval block, written by code from the
+checked inputs: the commit, the exact image by digest, the staging release it came from, where it goes, its size and its
+cost bounds in production. **Review deployments**, then approve or reject. Rejecting changes nothing. Whoever started the
+run may not approve it; the controller starts runs as the GitHub App, so your approval counts. If the run waits too long
+(GitHub ends an unapproved run after 30 days), ask for the promotion again.
+
+### Undo a promotion
+
+Until the split release (roadmap item 16.3) brings a production rollback, it is done by hand, in seconds and without a
+build. The release receipt of the promotion (`get_deployment_status`, or the run's `release-receipt` artifact) names
+`previous_traffic`, the split that served before it:
+
+```bash
+gcloud run services update-traffic SERVICE --to-revisions PREVIOUS_REVISION=100 --project PROD_PROJECT --region us-central1
+```
+
+Then tell Claude, so the next promotion starts from what serves. A promotion that stopped halfway restores production's
+traffic itself; if its runner was lost, the next promotion restores the checkpoint before anything else.
+
 ## What "up" means
 
 - `GET /healthz` on the controller answers 200 at its address. A Cloud Monitoring uptime check calls it every minute from

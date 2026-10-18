@@ -1,3 +1,49 @@
+# 1.18.1: promotion by digest (Phase 16, part two)
+
+Roadmap item 16.2 (docs/ROADMAP.md D37): a staging release reaches production only by promotion. The promotion takes the
+exact image staging deployed, never a rebuild, and nothing happens until one of production's reviewers approves the run on
+GitHub. Nothing changes for staging, and no application's workflows need regenerating.
+
+1. **`promote_to_production`**, a new tool (26 in all), promotes the newest staging release that succeeded with signed
+   provenance, or the one named. It refuses a release made under the operator's provenance exception, one rolled back since,
+   and one older than 30 days, whose image is no longer scanned. It also refuses while production is not ready: the
+   protected environment, the production root on main, or the staging read access is missing. The plan's approval block
+   names the commit, the image by digest, the staging release it came from, the cost bounds in both environments and who
+   may approve. Promotions stay out of staging's views: the live release, its rollback and its image reuse are unchanged,
+   and `list_applications` shows each production's own live release.
+2. **The platform repository's `promote.yml`**, started by the controller as the GitHub App, has two jobs.
+   - **describe** has no cloud identity. It checks the inputs, reads the exact specification staging released (the
+     application's `platform.yaml` at the commit, or the contract at the platform commit), holds it to production's
+     policy, and writes the approval block to the run's summary for the reviewer.
+   - **promote** waits in `production-<service>` until a reviewer approves, and first refuses to go on unless GitHub
+     recorded that approval for this very run. It then checks the staging image's provenance (GitHub's attestation bound
+     to the commit and `main`, or the statement signed with the application's Cloud KMS key in staging). It copies the image
+     by digest with a carbon copy into production's own registry and checks that the digest is unchanged. It signs a SLSA
+     verification summary with production's key, naming the source and who approved. Finally it releases with the same
+     runner as staging: a candidate with no traffic, the probes, the switch, the bake, and the previous version restored
+     on any failure. The receipt records the staging release, the image and the approvers.
+3. **`add_production` has four steps now.** After the production root is merged, it waits until that root's apply has
+   succeeded (which waits for a person's approval in `infra-production`). Then it creates the environment and opens a second
+   pull request on the application's staging root: `promotion_readers` lets the production deployer read that one
+   registry and see the public half of that one provenance key, nothing else. A person merges it too.
+4. **Plans stay staging-only**: a plan for production is refused with the way forward, and production takes the same limits
+   as staging (2 CPUs, 2048 MiB, 3 instances).
+5. **Claude's answers**: the instructions, the skill and the chat guide say production is reached only by promotion; the
+   status of a promotion reads "waiting for approval" with who may approve and the run's link, then its own steps in plain
+   words.
+
+6. **The foundation script switches on Cloud Resource Manager and Service Usage first.** A new project has neither, and the
+   root reads the project through the first, so the production project's first plan failed (found on 2026-10-18).
+
+Not yet: a production rollback by tool (16.3, with the split release); until then `docs/RUNBOOK.md`, Production, gives the
+command.
+
+Setup: `docs/SETUP.md` 7n, steps 7 and 8. Terraform: each application with a production gets the staging root's read
+access through `add_production`; other roots plan no change. The skill gained the new tool; upload it again.
+
+Tests: 629 pass (13 new in `tests/test_promotion.py`); ruff clean; zizmor clean; `terraform validate` and `fmt` clean.
+
+
 # 1.18.0: production as a project of its own (Phase 16, part one)
 
 The first part of Phase 16 (docs/ROADMAP.md D37): production gets its own Google Cloud project, created under the

@@ -9,6 +9,13 @@ CHECKS = {
     "health": ("deploy", "Deploy, probe, promote; restore traffic on failure"),
     "target": ("deploy", "Validate artifact and deployment configuration"),
 }
+# A promotion (docs/ROADMAP.md D37) proves itself in the promote job of the platform repository's promote.yml.
+PROMOTION_CHECKS = {
+    "approval": ("promote", "Refuse to run without a reviewer's approval"),
+    "provenance": ("promote", "Verify the staging image's provenance"),
+    "copy": ("promote", "Copy the image into production by digest"),
+    "health": ("promote", "Deploy, probe, promote; restore traffic on failure"),
+}
 PASSED = {"passed", "passed_in_earlier_release", "skipped_by_config"}  # reused image: proved earlier; tests: none: declared, and warned about
 RELEASE_STEP = CHECKS["health"][1]
 TERMINAL = {"succeeded", "failed", "cancelled", "timed_out", "completed_unverified", "dispatch_lost"}
@@ -73,8 +80,9 @@ def summarize(workflow, prior, kind=None):
         result = ({"success": "succeeded", "failure": "failed", "cancelled": "cancelled", "timed_out": "timed_out"}.get(conclusion, "completed_unverified")
                   if terminal else ("running" if state == "in_progress" else "queued"))
         return {"state": result, "checks": {}, "timeline": items, "failed_step": failed_step(items), "recovery": "not_requested"}
+    table = PROMOTION_CHECKS if kind == "promotion" else CHECKS
     checks = dict(prior)
-    for name, (job_name, step_name) in CHECKS.items():
+    for name, (job_name, step_name) in table.items():
         job = next((j for j in workflow.get("jobs", []) if j.get("name") == job_name), None)
         step = next((s for s in (job or {}).get("steps", []) if s.get("name") == step_name), None)
         if step is None:
@@ -93,8 +101,10 @@ def summarize(workflow, prior, kind=None):
     conclusion = workflow.get("conclusion")
     if terminal:
         result = {"success": "succeeded", "failure": "failed", "cancelled": "cancelled", "timed_out": "timed_out"}.get(conclusion, "completed_unverified")
-        if result == "succeeded" and any(checks.get(k) not in PASSED for k in CHECKS):
+        if result == "succeeded" and any(checks.get(k) not in PASSED for k in table):
             result = "completed_unverified"
+    elif state == "waiting":
+        result = "awaiting_approval"  # held by an environment's required reviewers: nothing runs until one approves
     else:
         result = "running" if state == "in_progress" else "queued"
     items = timeline(workflow)
@@ -127,10 +137,65 @@ def bake_note(receipt):
     return ""
 
 
+PROMOTION_STEP_ADVICE = [
+    ("Check the dispatch inputs", "The promotion's inputs were refused before anything ran (the run's log says which); nothing changed in production."),
+    ("The commits are on main", "The commit, or the contract it came through, is no longer on main, so it is not promoted; nothing changed in production."),
+    ("Read the reviewed specification", "The reviewed specification no longer matches the staging release, or production's policy refuses it; nothing "
+     "changed in production."),
+    ("Refuse to run without a reviewer's approval", "The promote job started without a recorded approval, so it stopped before touching production: "
+     "ask for add_production, which puts the environment's required reviewers back, then promote again."),
+    ("Validate the production target", "The environment's variables differ from the registered production target; ask for add_production, which sets "
+     "them again, then promote again. Nothing changed in production."),
+    ("google-github-actions/auth", "Signing in to production failed: the production root may not be applied yet, or the environment's variables are "
+     "wrong (add_production repairs them). Nothing changed in production."),
+    ("Recover any interrupted previous release", "An earlier promotion left a checkpoint that could not be restored automatically; inspect production's "
+     "traffic in Cloud Run (docs/RUNBOOK.md, Production) before promoting again."),
+    ("Install Cosign", "Downloading Cosign failed or its checksum did not match; promote again, and if the checksum still differs, stop and investigate."),
+    ("Verify the staging image's provenance", "The staging image's provenance could not be verified, so nothing was copied or deployed; the run's log says "
+     "which part differed."),
+    ("Copy the image into production by digest", "Copying the image into production failed: the production deployer may not read staging's images yet "
+     "(add_production's access step), or the copy came out with another digest. Nothing was deployed."),
+    ("Sign the promotion with production's key", "Signing the promotion with production's key failed: the application's production root must be "
+     "applied, since it creates the key. Nothing was deployed."),
+]
+
+
+def promotion_advice(plan):
+    """The next step for a promotion, where it differs from a staging release's; None to use the release's words."""
+    state, receipt = plan.get("state"), plan.get("receipt") or {}
+    reviewers = " or ".join(plan.get("reviewers") or []) or "a production reviewer"
+    run = (plan.get("workflow") or {}).get("html_url")
+    where = f" ({run})" if run else ""
+    if state == "awaiting_approval":
+        return (f"Waiting for {reviewers} to approve the promotion on GitHub{where}: open the run, choose Review deployments, read the approval "
+                "block and approve or reject it. Nothing changes in production until then.")
+    if state in {"dispatched", "awaiting_workflow", "queued", "running"}:
+        return "The promotion is under way; it waits for a reviewer's approval before anything reaches production. Ask again shortly."
+    if state == "succeeded" and receipt.get("revision"):
+        approved = ", ".join((receipt.get("promotion") or {}).get("approved_by") or []) or "a reviewer"
+        return (f"Revision {receipt['revision']} serves all production traffic at {receipt.get('url', 'the service URL')}: the exact image staging release "
+                f"{((plan.get('source') or {}).get('plan') or '')[:8]} deployed, approved by {approved}. Nothing to do.{bake_note(receipt)}")
+    step = (plan.get("failed_step") or {}).get("step") or ""
+    for needle, text in PROMOTION_STEP_ADVICE:
+        if needle in step:
+            return text
+    if state in {"failed", "cancelled", "timed_out"} and not step and not receipt:
+        return ("Nothing ran in production: a reviewer rejected the promotion, it was cancelled while it waited, or it waited too long for approval. "
+                "Promote again when ready.")
+    if receipt.get("state") in {"preparing", "migrating", "deploying", "promoting", "baking"} and state in {"failed", "cancelled", "timed_out"}:
+        return (f"The runner stopped mid-release at '{receipt['state']}'. The next promotion restores production's traffic from the checkpoint before "
+                "anything else; to restore it now, follow docs/RUNBOOK.md, Production.")
+    return None
+
+
 def advice(plan):
     """One plain sentence on what to do next, derived from the state, the failed step, the receipt and any recovery run."""
     state = plan.get("state")
     receipt = plan.get("receipt") or {}
+    if plan.get("kind") == "promotion":
+        text = promotion_advice(plan)
+        if text:
+            return text
     if plan.get("kind") == "rollback":
         if state == "succeeded" and receipt.get("state") == "rolled_back":
             return f"Traffic is back on {receipt.get('restored_traffic')}; revision {receipt.get('rolled_back_from')} no longer serves. Deploy a fixed commit when ready."

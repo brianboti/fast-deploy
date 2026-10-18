@@ -638,23 +638,50 @@ class GitHub:
         # Current API returns 200 with run ID; older deployments may still return 204.
         return response.json() if response.content else {}
 
+    def dispatch_promotion(self, repository, plan):
+        """Start the platform repository's promote.yml for a promotion plan (docs/ROADMAP.md D37): the staging release, its
+        image by digest and how it was built and signed, and the production target the environment must match."""
+        source, contract = plan["source"], plan.get("contract") or {}
+        inputs = {"plan_id": plan["id"], "application": plan["target"]["service"], "source_plan": source["plan"], "source_image": source["image"],
+                  "commit_sha": plan["sha"], "spec_hash": plan["spec_hash"], "target_json": json.dumps(plan["target"], sort_keys=True),
+                  "repository": plan["repository"], "app_path": (plan.get("layout") or {}).get("path") or "", "contract_commit": contract.get("commit", ""),
+                  "staging_workflow": source["workflow"], "provenance": source["provenance"], "bake_seconds": str(int(plan["bake_seconds"]))}
+        response = self.request("POST", f"/repos/{repository}/actions/workflows/promote.yml/dispatches", json={"ref": "main", "inputs": inputs})
+        return response.json() if response.content else {}
+
+    def deployment_environment(self, repository, name):
+        """A deployment environment with its protection rules, or None when the repository has none of that name."""
+        try:
+            return self.request("GET", f"/repos/{repository}/environments/{quote(name, safe='')}").json()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+
+    def last_commit(self, repository, path, branch="main"):
+        """The newest commit on a branch that changed a file, or None when none did."""
+        commits = self.request("GET", f"/repos/{repository}/commits", params={"sha": branch, "path": path, "per_page": 1}).json()
+        return commits[0]["sha"] if commits else None
+
     def status(self, app, plan):
         result = plan.get("dispatch_result", {})
         run_id = result.get("workflow_run_id")
-        rollback = plan.get("kind") == "rollback"
-        title = f"rollback-{plan['from_plan']}" if rollback else f"deploy-{plan['id']}"
-        workflow = app.workflows["recover"] if rollback else app.workflow
+        rollback, promotion = plan.get("kind") == "rollback", plan.get("kind") == "promotion"
+        # A promotion runs in the platform repository's promote.yml, whatever pipeline released the application in staging.
+        repository = plan["pipeline"] if promotion else pipeline_of(app)
+        title = f"rollback-{plan['from_plan']}" if rollback else (f"promote-{plan['id']}" if promotion else f"deploy-{plan['id']}")
+        workflow = app.workflows["recover"] if rollback else ("promote.yml" if promotion else app.workflow)
         if run_id:
-            run = self.request("GET", f"/repos/{pipeline_of(app)}/actions/runs/{int(run_id)}").json()
+            run = self.request("GET", f"/repos/{repository}/actions/runs/{int(run_id)}").json()
         else:
-            runs = self.request("GET", f"/repos/{pipeline_of(app)}/actions/workflows/{workflow}/runs", params={"event": "workflow_dispatch", "per_page": 100}).json()["workflow_runs"]
+            runs = self.request("GET", f"/repos/{repository}/actions/workflows/{workflow}/runs", params={"event": "workflow_dispatch", "per_page": 100}).json()["workflow_runs"]
             run = next((r for r in runs if r.get("display_title") == title), None)
         if run is None:
             return {"status": "not_visible_yet", "note": "Do not redispatch; inspect GitHub Actions if this persists."}
         # The unique plan id in the run title is the identity. The head SHA is the branch tip the workflow ran on, which
         # only equals the plan's commit for a plan of the tip itself: rollbacks and plans pinned to older commits differ.
         # A platform-pipeline run's head is the platform's main, never the application's commit.
-        tip_only = not rollback and not plan.get("pinned_commit") and not central_of(app)
+        tip_only = not rollback and not promotion and not plan.get("pinned_commit") and not central_of(app)
         if (tip_only and run.get("head_sha") != plan["sha"]) or run.get("display_title") != title:
             # Observed live: for a second or two after dispatch the run exists but its title and commit are not
             # populated yet. Only a run that has started or finished must prove its identity.
@@ -664,13 +691,20 @@ class GitHub:
         jobs = []
         page = 1
         while True:
-            batch = self.request("GET", f"/repos/{pipeline_of(app)}/actions/runs/{int(run['id'])}/attempts/{int(run.get('run_attempt', 1))}/jobs",
+            batch = self.request("GET", f"/repos/{repository}/actions/runs/{int(run['id'])}/attempts/{int(run.get('run_attempt', 1))}/jobs",
                                  params={"per_page": 100, "page": page}).json()["jobs"]
             jobs.extend(batch)
             if len(batch) < 100:
                 break
             page += 1
-        return {**{key: run.get(key) for key in ("id", "status", "conclusion", "html_url", "head_sha", "run_attempt", "created_at", "run_started_at", "updated_at")}, "jobs": jobs}
+        found = {**{key: run.get(key) for key in ("id", "status", "conclusion", "html_url", "head_sha", "run_attempt", "created_at", "run_started_at", "updated_at")}, "jobs": jobs}
+        if run.get("status") == "waiting":
+            # Held by an environment's required reviewers (a promotion): who may approve it, and in which environment.
+            pending = self.request("GET", f"/repos/{repository}/actions/runs/{int(run['id'])}/pending_deployments").json()
+            found["pending"] = [{"environment": (item.get("environment") or {}).get("name"),
+                                 "reviewers": [(r.get("reviewer") or {}).get("login") or (r.get("reviewer") or {}).get("name") for r in item.get("reviewers") or []]}
+                                for item in pending if isinstance(item, dict)]
+        return found
 
     def drift_report(self, repository, workflow="infra-drift.yml", name="drift-report"):
         """The newest report of the platform repository's weekly drift check, or None when it has not produced one yet."""

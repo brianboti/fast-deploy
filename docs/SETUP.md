@@ -359,7 +359,9 @@ a reviewer's approval on GitHub. The steps, once:
    There is no `controller` block and no `billing_export_dataset`: the machine and the billing account's one export stay
    in staging. The spending cap closes production's services at the budget, as in staging; turn it off only when a
    production that stops is worse than the bill.
-4. **The foundation**: `scripts/apply-foundation.sh PROD_PROJECT production`. It prints four `INFRA_PRODUCTION_*` values.
+4. **The foundation**: `scripts/apply-foundation.sh PROD_PROJECT production`, typing **yes** at its prompt. It first switches
+   on the two APIs a new project lacks (Cloud Resource Manager and Service Usage), and at the end it prints four
+   `INFRA_PRODUCTION_*` values.
 5. **On the platform repository**: set the repository variables `INFRA_PRODUCTION_PLAN_WIF_PROVIDER`,
    `INFRA_PRODUCTION_APPLY_WIF_PROVIDER`, `INFRA_PRODUCTION_PLAN_SERVICE_ACCOUNT` and
    `INFRA_PRODUCTION_APPLY_SERVICE_ACCOUNT` from that output; the production jobs stay dormant until they exist. Create
@@ -376,11 +378,22 @@ a reviewer's approval on GitHub. The steps, once:
      reviewers: [your-github-login]   # who approves every promotion, one to six GitHub accounts
    ```
 
-7. **Each application**: ask Claude "add production for APP" (`add_production`). The first answer is a pull request with
-   the production root, `infra/gcp/apps-production/APP`. Read its plan comment and merge it yourself; the controller never
-   merges production infrastructure. Approve the apply in `infra-production`. Then ask again: the controller creates the
-   environment `production-APP` on the platform repository, with your reviewers as required reviewers, self-review
-   prevented, deployments from `main` only, and the eight target variables.
+7. **Each application**: ask Claude "add production for APP" (`add_production`), and again after each step:
+   1. A pull request with the production root, `infra/gcp/apps-production/APP`. Read its plan comment and merge it
+      yourself; the controller never merges production infrastructure.
+   2. Approve its apply in `infra-production` on GitHub; the controller waits until that apply has succeeded.
+   3. The controller creates the environment `production-APP` on the platform repository, with your reviewers as
+      required reviewers, self-review prevented, deployments from `main` only, and the eight target variables. It also opens
+      a second pull request on the app's staging root: read access for the production deployer to the images staging
+      released and to the public half of their signing key, nothing else. Merge it too.
+   4. Asked once more, it answers that production is ready.
+8. **A promotion**: after a staging release you are happy with, ask Claude "promote APP to production"
+   (`promote_to_production`; name a plan to promote an older staging release). The platform repository's **Promote to
+   production** run starts and waits. Open it, read the approval block in its summary (the commit, the exact image by digest,
+   the staging release it came from, the size and cost in production), then choose **Review deployments** and approve or
+   reject it. Approved, it checks the image's provenance, copies it by digest into production's registry (never a rebuild),
+   signs the promotion with production's key and releases it with the same runner as staging: a candidate with no traffic,
+   the probes, the switch, then the bake, restoring the previous version on a failure.
 
 At idle the production project costs a few cents a month (the roadmap's estimate is $0.06); its budget, alerts and
 spending cap work as in staging.

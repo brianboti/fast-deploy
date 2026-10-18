@@ -323,8 +323,9 @@ def spec_hash(spec: AppSpec) -> str:
 
 
 def enforce(spec: AppSpec, cloud="gcp", environment="staging") -> None:
-    if cloud != "gcp" or environment != "staging":
-        raise ValueError("MVP supports GCP staging only")
+    # Production takes exactly what staging released, under the same limits (docs/ROADMAP.md D37): only a promotion reaches it.
+    if cloud != "gcp" or environment not in ("staging", "production"):
+        raise ValueError("The platform supports GCP staging, and production through promotion, only")
     if not spec.reviewed:
         raise ValueError("Review assumptions and merge reviewed: true in platform.yaml first")
     if spec.dependencies:
@@ -333,5 +334,5 @@ def enforce(spec: AppSpec, cloud="gcp", environment="staging") -> None:
     if spec.gpu:
         raise ValueError("GPUs are not supported")
     if spec.resources.cpu > 2 or spec.resources.memory_mib > 2048 or spec.scaling.maximum > 3:
-        raise ValueError("Staging policy: maximum 2 CPUs, 2048 MiB, 3 instances")
+        raise ValueError(f"{environment.capitalize()} policy: maximum 2 CPUs, 2048 MiB, 3 instances")
 

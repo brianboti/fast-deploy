@@ -416,6 +416,11 @@ Status: planned on 2026-10-16 (research review sections 5.1, 5.2 and 5.5). Item 
 `environments` list in the registry entry, so onboarding is unchanged. Production roots live in
 `infra/gcp/apps-production/<service>` and run in pipeline jobs of their own. Production infrastructure is merged by a
 person, never by the controller; the environment `infra-production` that applies it has the operator as required reviewer.
+Item 16.2 built on 2026-10-17 as 1.18.1: `promote_to_production` and the platform repository's `promote.yml`. The image is
+copied by digest with a carbon copy (`docker buildx imagetools create --prefer-index=false`) rather than a new tool, the
+staging provenance is checked by the production deployer with read access to that one application's registry and the
+public half of its key (a second pull request of `add_production`), and production's key signs a SLSA verification summary
+that names the source and who approved it. A production rollback waits for 16.3; until then the runbook gives the command.
 
 | Item | Change | Where |
 |---|---|---|

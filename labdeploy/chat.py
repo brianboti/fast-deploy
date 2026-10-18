@@ -34,6 +34,16 @@ STEP_WORDS = (
     ("Verify build provenance", "verifying the image's signature"),
     ("Summarize image vulnerabilities", "scanning the image"),
     ("Deploy, probe, promote", "releasing"),
+    # A promotion's steps (.github/workflows/promote.yml).
+    ("Check the dispatch inputs", "checking the request"),
+    ("The commits are on main", "checking the commit is on main"),
+    ("Read the reviewed specification", "checking platform.yaml"),
+    ("Write the approval block", "writing the approval block"),
+    ("Refuse to run without a reviewer's approval", "checking the approval"),
+    ("Validate the production target", "checking the production target"),
+    ("Verify the staging image's provenance", "verifying the staging image's signature"),
+    ("Copy the image into production by digest", "copying the image into production"),
+    ("Sign the promotion", "signing the promotion"),
 )
 PHASE_WORDS = {"preparing": "getting the new version ready", "migrating": "updating the database (the migration)",
                "deploying": "starting the new version beside the old one", "promoting": "moving visitors to the new version",
@@ -60,6 +70,9 @@ PLAN_WORDS = {"planned": "planned but not released", "dispatching": "release sta
               "queued": "release started", "running": "in progress", "succeeded": "released", "failed": "failed", "cancelled": "cancelled",
               "timed_out": "timed out", "dispatch_lost": "never started", "dispatch_unknown": "unclear", "completed_unverified": "finished, not verified",
               "release_requested": "waiting for a merge", "expired": "expired"}
+PROMOTION_WORDS = {"succeeded": "promoted to production", "failed": "promotion failed", "cancelled": "promotion cancelled", "timed_out": "promotion timed out",
+                   "dispatched": "promotion started", "dispatching": "promotion started", "dispatch_unknown": "promotion unclear",
+                   "dispatch_lost": "promotion never started", "completed_unverified": "promoted, not verified"}
 ROLLBACK_WORDS = {"succeeded": "rolled back", "failed": "rollback failed", "cancelled": "rollback cancelled", "timed_out": "rollback timed out",
                   "dispatch_unknown": "rollback unclear"}
 SETTING_WORDS = {"resources.memory_mib": "memory (MiB)", "resources.cpu": "CPUs", "concurrency": "requests in parallel per instance",
@@ -84,6 +97,17 @@ PLAIN_STEP_ADVICE = (
     ("Attest build provenance", "signing the image's provenance failed; the operator checks the workflow's attestations permission."),
     ("Summarize image vulnerabilities", "the image scan found serious problems with fixes available; the developer updates the libraries or the base "
      "image, then release again."),
+    # A promotion's steps: nothing reached production before the release step.
+    ("Check the dispatch inputs", "the promotion's request was refused before anything ran; ask me to promote again."),
+    ("The commits are on main", "the commit is no longer on main, so it is not promoted; release the current main to staging, then promote that."),
+    ("Read the reviewed specification", "`platform.yaml` no longer matches the staging release, or production's limits refuse it; release to staging again."),
+    ("Refuse to run without a reviewer's approval", "the run had no recorded approval, so it stopped; ask me to add production again (it restores the "
+     "environment's reviewers), then promote again."),
+    ("Validate the production target", "the production environment's settings differ from the registered target; ask me to add production again, then promote."),
+    ("Verify the staging image's provenance", "the staging image's signature did not verify, so nothing was copied; the GitHub run says which part differed."),
+    ("Copy the image into production by digest", "copying the image into production failed; ask me to add production again (it checks the read "
+     "access), then promote."),
+    ("Sign the promotion", "signing the promotion with production's key failed; the operator checks that production's cloud setup was applied."),
 )
 CANCELLED_ERRORS = ("the run was cancelled", "KeyboardInterrupt", "SystemExit")  # a cancel's exception text is not an error to show
 
@@ -321,6 +345,8 @@ def release(plan):
     cancel_deployment and get_deployment_status."""
     if plan.get("kind") == "rollback":
         return rollback(plan)
+    if plan.get("kind") == "promotion":
+        return promotion(plan)
     app = plan.get("application") or "the app"
     state = plan.get("state")
     phases, receipt, workflow, checks = plan.get("phases") or {}, plan.get("receipt") or {}, plan.get("workflow") or {}, plan.get("checks") or {}
@@ -397,6 +423,71 @@ def release(plan):
                 "cancelled": f"**Release cancelled for `{app}`.** Nothing new is serving."}[state]
         return compose(head, [checks_line(checks)], plain_next(plan), foot)
     return compose(f"**`{app}`: {str(state).replace('_', ' ')}.**", [], plan.get("next_action"), foot)
+
+
+def promotion(plan):
+    """promote_to_production, and get_deployment_status or cancel_deployment for a promotion (docs/ROADMAP.md D37)."""
+    app = plan.get("application") or "the app"
+    state = plan.get("state")
+    phases, receipt, workflow, source = plan.get("phases") or {}, plan.get("receipt") or {}, plan.get("workflow") or {}, plan.get("source") or {}
+    what = version(plan.get("sha"), (plan.get("commit") or {}).get("message"))
+    run = workflow.get("html_url") or (plan.get("dispatch_result") or {}).get("html_url")
+    foot = f"Plan `{str(plan.get('id') or '')[:8]}`" + (f" · {link('GitHub run', run)}" if run else "")
+    digest = str(source.get("digest") or "").removeprefix("sha256:")[:12]
+    image = (f"The exact image staging release `{str(source.get('plan') or '')[:8]}` deployed (`sha256:{digest}…`), copied by digest, never rebuilt"
+             if digest else None)
+    reviewers = " or ".join(f"`{name}`" for name in plan.get("reviewers") or []) or "a production reviewer"
+    project = (plan.get("target") or {}).get("project_id")
+    minutes = max(1, round(int(plan.get("bake_seconds") or 300) / 60))
+    restored = "traffic_restored" in (phases.get("state"), receipt.get("state"))
+    stuck = "rollback_failed_manual_recovery_required" in (phases.get("state"), receipt.get("state"))
+    approved = ", ".join(f"`{name}`" for name in (receipt.get("promotion") or {}).get("approved_by") or [])
+    if state in ("dispatching", "dispatched", "awaiting_workflow", "queued", "awaiting_approval"):
+        approve = (f"approve it on GitHub: open {link('the run', run)}, choose Review deployments, read its approval block, then approve or reject."
+                   if run else "approve it on GitHub: the platform repository's Actions tab, Promote to production, Review deployments.")
+        return compose(f"**Waiting for approval: promote `{app}` to production** with {what}.",
+                       [image, cost_line(plan.get("cost")), f"Only {reviewers} may approve it; nothing changes in production until then",
+                        *[f"Note: {clip(item, 220)}" for item in (plan.get("warnings") or [])[:2]]],
+                       approve, foot)
+    if state == "running":
+        facts = [f"Now: {doing(plan)}", f"Approved by {approved}" if approved else None]
+        if phases.get("state") == "baking":
+            facts.append(f"The new version already serves production; if it fails within {minutes} min, production goes back to its previous version on its own")
+        return compose(f"**Promotion in progress for `{app}`**: {what}.", facts, "nothing to do; it continues on its own.", foot)
+    if state == "succeeded" or (state in ("failed", "cancelled", "timed_out") and receipt.get("state") == "succeeded" and not restored):
+        url = phases.get("url") or receipt.get("url")
+        took = duration(workflow.get("created_at"), (plan.get("outcome") or {}).get("completed_at") or workflow.get("updated_at"))
+        facts = [f"Address: {url} ({access((plan.get('spec') or {}).get('exposure'))})" if url else None, image,
+                 f"Approved by {approved}" if approved else None, f"In project `{project}`" if project else None,
+                 bake_line(phases, minutes), f"Took {took}, the wait for approval included" if took and state == "succeeded" else None]
+        return compose(f"**`{app}` is live in production** with {what}.", facts,
+                       "nothing to do. To undo it before the split release arrives, follow docs/RUNBOOK.md, Production.", foot)
+    if stuck:
+        error = phases.get("restore_error") or receipt.get("restore_error")
+        return compose(f"**Needs you now: production for `{app}` could not be put back on its previous version.**",
+                       [f"Error: `{clip(error, 240)}`" if error else None, f"Before the promotion it served: {traffic(phases.get('previous_traffic'))}"],
+                       "restore production's traffic by hand (docs/RUNBOOK.md, Production), then tell me.", foot)
+    if restored:
+        error = phases.get("error") or receipt.get("error")
+        cancelled = bool(receipt.get("cancelled")) or str(error or "").strip().startswith(CANCELLED_ERRORS)
+        reason = ("it was cancelled" if cancelled else
+                  {"preparing": "it stopped before deploying anything", "migrating": "the database migration failed, so nothing new was deployed",
+                   "baking": "the new version took over, then failed its watch with real traffic"}.get(phases.get("failed_phase") or receipt.get("failed_phase"),
+                                                                                                        "the new version failed its health check"))
+        return compose(f"**Promotion stopped for `{app}`: production's previous version is serving.**",
+                       [f"Why: {reason}", None if cancelled or not error else f"Error: `{clip(error, 240)}`"],
+                       "promote again when ready." if cancelled else "the developer fixes the app and releases it to staging; then promote that release.", foot)
+    if state == "dispatch_unknown":
+        return compose(f"**It is unclear whether GitHub received the promotion of `{app}`.**", [],
+                       "I'll look for its run on the platform repository before trying again.", foot)
+    if state == "dispatch_lost":
+        return compose(f"**The promotion of `{app}` never started**: GitHub never ran it, so nothing changed.", [], "ask me to promote it again.", foot)
+    if state in ("failed", "timed_out", "cancelled"):
+        step = (plan.get("failed_step") or {}).get("step")
+        head = (f"**The promotion of `{app}` stopped while {step_words(step)}.** Nothing changed in production." if step
+                else f"**The promotion of `{app}` did not run.** Nothing changed in production.")
+        return compose(head, [], plain_next(plan) if step else plan.get("next_action"), foot)
+    return compose(f"**Promotion of `{app}`: {str(state).replace('_', ' ')}.**", [], plan.get("next_action"), foot)
 
 
 def recovery_words(plan):
@@ -621,18 +712,31 @@ def draft(view):
 
 
 def production(result):
-    """add_production: where the application's production stands, and the one thing that is next."""
-    app, environment = result.get("application"), result.get("environment")
-    if result.get("state") == "ready":
-        reviewers = " or ".join(f"`{name}`" for name in result.get("reviewers") or [])
-        return compose(f"**`{app}` has its production** in `{result.get('project_id')}`.",
+    """add_production: which of its four steps the application's production is at, and the one thing that is next."""
+    app, environment, project = result.get("application"), result.get("environment"), result.get("project_id")
+    state = result.get("state")
+    pull_request = result.get("pull_request") or {}
+    numbered = link(f"#{pull_request['number']}", pull_request.get("url")) if pull_request.get("number") else "the pull request"
+    reviewers = " or ".join(f"`{name}`" for name in result.get("reviewers") or [])
+    if state == "ready":
+        return compose(f"**`{app}` has its production** in `{project}`.",
                        [f"Environment `{environment}` on the platform repository: every promotion waits for {reviewers} to approve it on GitHub",
                         "A promotion copies the exact image staging released, never a rebuild"],
-                       "nothing to do now. Promotion itself arrives with the next platform version (roadmap item 16.2).")
-    pull_request = result.get("pull_request") or {}
-    link = f"[#{pull_request['number']}]({pull_request['url']})" if pull_request.get("number") else "the pull request"
-    return compose(f"**Production for `{app}`, step 1 of 2: its cloud setup in `{result.get('project_id')}`.**",
-                   [f"Pull request {link} adds its production root; the pipeline posts the plan on it",
+                       f"say “promote {app} to production” after a staging release you are happy with.")
+    if state == "applying":
+        run = (result.get("apply_run") or {}).get("url")
+        waiting = (result.get("apply_run") or {}).get("state") == "waiting"
+        return compose(f"**Production for `{app}`, step 2 of 4: its cloud setup is being built in `{project}`.**",
+                       ["The production root is merged; the infrastructure pipeline applies it",
+                        f"It waits for a person to approve the apply in `infra-production`: {link('the run', run)}" if waiting and run else None],
+                       "approve the apply on GitHub, then ask again." if waiting else "ask again once the apply has finished.")
+    if state == "access":
+        return compose(f"**Production for `{app}`, step 3 of 4: its environment is ready; one pull request left.**",
+                       [f"Environment `{environment}`: every promotion waits for {reviewers} to approve it on GitHub",
+                        f"Pull request {numbered} lets production's deployer read the images staging released, so a promotion can copy one"],
+                       "merge it once its plan reads right, then ask again.")
+    return compose(f"**Production for `{app}`, step 1 of 4: its cloud setup in `{project}`.**",
+                   [f"Pull request {numbered} adds its production root; the pipeline posts the plan on it",
                     "A person merges it (production infrastructure is never merged by the controller), then approves the apply in `infra-production`"],
                    "merge it once the plan reads right and approve the apply, then ask again: the environment and its approvers come next.")
 
@@ -676,6 +780,10 @@ def applications(apps):
         if "new commit" in state:
             waiting.append(app_id)
         rows.append(f"| {name} | {shown} | {day(live.get('completed_at')) if live else '—'} | {state} |")
+        if app.get("production") is not None:
+            promoted = app.get("production_release") or {}
+            notes.append(f"`{app_id}` in production: {version(promoted['sha'], (promoted.get('commit') or {}).get('message'))} since "
+                         f"{day(promoted.get('completed_at'))}" if promoted.get("sha") else f"`{app_id}` has a production; nothing promoted to it yet")
         if app.get("paused"):
             notes.append(f"`{app_id}` is paused: releases are refused")
         if (app.get("platform_pin") or {}).get("supported") is False:
@@ -842,6 +950,8 @@ def plan_words(item):
     state = item.get("state")
     if item.get("kind") == "rollback":
         return ROLLBACK_WORDS.get(state, "rollback " + PLAN_WORDS.get(state, str(state).replace("_", " ")))
+    if item.get("kind") == "promotion":
+        return PROMOTION_WORDS.get(state, "promotion " + PLAN_WORDS.get(state, str(state).replace("_", " ")))
     return PLAN_WORDS.get(state, str(state).replace("_", " "))
 
 

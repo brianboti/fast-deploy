@@ -31,8 +31,10 @@ def settings(tmp_path, **extra):
 
 
 class ProductionGitHub(FakeGitHub):
+    LAST = "c" * 40
+
     def __init__(self):
-        self.on_main, self.environments, self.variables, self.platform_prs = {}, {}, {}, []
+        self.on_main, self.environments, self.variables, self.platform_prs, self.apply_runs = {}, {}, {}, [], {}
 
     def contents(self, repository, ref, path):
         if path.endswith(".terraform.lock.hcl"):
@@ -44,6 +46,19 @@ class ProductionGitHub(FakeGitHub):
 
     def set_environment_variables(self, repository, name, variables):
         self.variables[(repository, name)] = dict(variables)
+
+    def deployment_environment(self, repository, name):
+        found = self.environments.get((repository, name))
+        if found is None:
+            return None
+        return {"name": name, "protection_rules": [{"type": "required_reviewers", "prevent_self_review": True,
+                                                    "reviewers": [{"type": "User", "reviewer": {"login": login}} for login in found["reviewers"]]}]}
+
+    def last_commit(self, repository, path, branch="main"):
+        return self.LAST if path in self.on_main else None
+
+    def workflow_runs(self, repository, workflow, head_sha=None, limit=5):
+        return list(self.apply_runs.get((workflow, head_sha), []))
 
 
 def controller(tmp_path, **extra):
@@ -116,10 +131,15 @@ def test_production_roots_have_their_own_folder_and_a_module_change_reaches_them
 
 
 # ---- 16.1 add_production, one step at a time
-def test_add_production_registers_proposes_the_root_then_makes_the_protected_environment(tmp_path):
+def apply_run(status, conclusion=None):
+    return [{"id": 5, "status": status, "conclusion": conclusion, "url": "https://github.com/lab/platform/actions/runs/5", "head_sha": ProductionGitHub.LAST}]
+
+
+def test_add_production_goes_step_by_step_and_a_person_merges_both_pull_requests(tmp_path):
     c, brian, gh = controller(tmp_path)
     first = c.add_production(brian, "demo")
-    assert first["state"] == "infrastructure" and first["environment"] == "production-demo" and first["steps"]["registered"]["project_id"] == "lab-deploy-prod-abcd"
+    assert first["state"] == "infrastructure" and first["step"] == 1 and first["environment"] == "production-demo"
+    assert first["steps"]["registered"]["project_id"] == "lab-deploy-prod-abcd"
     app = c.config.applications["demo"]
     assert app.production.target.deploy_service_account == "demo-deploy@lab-deploy-prod-abcd.iam.gserviceaccount.com"
     assert app.production.target.wif_provider == "projects/987654321/locations/global/workloadIdentityPools/demo-gh/providers/github"
@@ -129,11 +149,27 @@ def test_add_production_registers_proposes_the_root_then_makes_the_protected_env
                                    "infra/gcp/apps-production/demo/main.tf", "infra/gcp/apps-production/demo/outputs.tf"]
     assert "never merged by the controller" in first["next_action"] and gh.environments == {}
     gh.on_main["infra/gcp/apps-production/demo/main.tf"] = pr["files"]["infra/gcp/apps-production/demo/main.tf"]  # a person merged it
-    ready = c.add_production(brian, "demo")
-    assert ready["state"] == "ready" and "registered" not in ready["steps"] and len(gh.platform_prs) == 1
+    # step 2: nothing more until the production apply has succeeded, which waits for a person's approval in infra-production
+    assert c.add_production(brian, "demo")["apply_run"]["state"] == "none"
+    gh.apply_runs[("infra-apply.yml", gh.LAST)] = apply_run("waiting")
+    waiting = c.add_production(brian, "demo")
+    assert waiting["state"] == "applying" and "approve it in the environment infra-production" in waiting["next_action"] and gh.environments == {}
+    gh.apply_runs[("infra-apply.yml", gh.LAST)] = apply_run("completed", "failure")
+    assert "run Infrastructure apply again" in c.add_production(brian, "demo")["next_action"]
+    gh.apply_runs[("infra-apply.yml", gh.LAST)] = apply_run("completed", "success")
+    # step 3: the protected environment, then the staging root's read access for the production deployer, merged by a person too
+    access = c.add_production(brian, "demo")
+    assert access["state"] == "access" and access["step"] == 3 and "registered" not in access["steps"]
     assert gh.environments[("lab/platform", "production-demo")] == {"branch": "main", "reviewers": ["brianboti"]}
     assert gh.variables[("lab/platform", "production-demo")]["GCP_PROJECT_ID"] == "lab-deploy-prod-abcd"
-    assert {e["outcome"] for e in c.store.recent_events(10) if e["kind"] == "production"} == {"registered", "ready"}
+    staging = gh.platform_prs[-1]
+    staging_main = staging["files"]["infra/gcp/apps/demo/main.tf"]
+    assert staging["branch"] == "lab-deploy/infra-demo" and 'promotion_readers' in staging_main
+    assert '"demo-deploy@lab-deploy-prod-abcd.iam.gserviceaccount.com"' in staging_main
+    gh.on_main["infra/gcp/apps/demo/main.tf"] = staging_main
+    ready = c.add_production(brian, "demo")
+    assert ready["state"] == "ready" and ready["step"] == 4 and len(gh.platform_prs) == 2 and "promote_to_production" in ready["next_action"]
+    assert {e["outcome"] for e in c.store.recent_events(20) if e["kind"] == "production"} == {"registered", "access_proposed", "ready"}
     # the registration survives a restart, for an application of the file
     again = Controller(LiveConfig(Config.model_validate(settings(tmp_path, production=PRODUCTION))), gh, Store(c.config.database))
     assert again.config.applications["demo"].production.environment == "production-demo"
@@ -181,6 +217,8 @@ def test_the_foundation_script_keeps_staging_values_out_of_production(tmp_path):
     assert "*.tfvars" in Path(".gitignore").read_text().splitlines()  # staging.tfvars and production.tfvars never reach git
     script = Path("scripts/apply-foundation.sh").read_text()
     assert 'Rename infra/gcp/project/terraform.tfvars to staging.tfvars first' in script
+    assert 'gcloud services enable cloudresourcemanager.googleapis.com serviceusage.googleapis.com --project "$PROJECT"' in script  # a new project
+    assert script.index("gcloud services enable") > script.index("names another project_id")  # only once the settings file names this project
     assert '-var-file="$VARS" -var="environment=$ENVIRONMENT"' in script and 'prefix = "INFRA_PRODUCTION_" if os.environ["ENVIRONMENT"] == "production"' in script
     if shutil.which("zsh"):
         work = tmp_path / "repo"
@@ -211,12 +249,15 @@ def test_the_pipeline_plans_applies_and_watches_production_roots_with_production
     assert re.search(r"infra/gcp/apps-production/\*\*", Path(".github/workflows/infra-plan.yml").read_text())
 
 
-def test_the_chat_says_which_of_the_two_steps_production_is_at():
+def test_the_chat_says_which_of_the_four_steps_production_is_at():
     from labdeploy import chat
-    step = chat.production({"application": "demo", "environment": "production-demo", "project_id": "lab-deploy-prod-abcd", "state": "infrastructure",
-                            "pull_request": {"number": 9, "url": "https://github.com/lab/platform/pull/9"}})
-    assert step.startswith("**Production for `demo`, step 1 of 2") and "[#9](https://github.com/lab/platform/pull/9)" in step
+    base = {"application": "demo", "environment": "production-demo", "project_id": "lab-deploy-prod-abcd", "reviewers": ["brianboti"]}
+    step = chat.production({**base, "state": "infrastructure", "pull_request": {"number": 9, "url": "https://github.com/lab/platform/pull/9"}})
+    assert step.startswith("**Production for `demo`, step 1 of 4") and "[#9](https://github.com/lab/platform/pull/9)" in step
     assert "never merged by the controller" in step and "infra-production" in step
-    ready = chat.production({"application": "demo", "environment": "production-demo", "project_id": "lab-deploy-prod-abcd", "state": "ready",
-                             "reviewers": ["brianboti"]})
-    assert ready.startswith("**`demo` has its production**") and "`brianboti`" in ready and "16.2" in ready
+    applying = chat.production({**base, "state": "applying", "apply_run": {"state": "waiting", "url": "https://github.com/lab/platform/actions/runs/5"}})
+    assert "step 2 of 4" in applying and "approve the apply on GitHub" in applying
+    access = chat.production({**base, "state": "access", "pull_request": {"number": 10, "url": "https://github.com/lab/platform/pull/10"}})
+    assert "step 3 of 4" in access and "read the images staging released" in access and "`brianboti`" in access
+    ready = chat.production({**base, "state": "ready"})
+    assert ready.startswith("**`demo` has its production**") and "`brianboti`" in ready and "promote demo to production" in ready
