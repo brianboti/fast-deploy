@@ -91,7 +91,8 @@ resource "google_project_iam_member" "controller_roles" {
   member   = "serviceAccount:${google_service_account.controller[0].email}"
 }
 # The machine's own folder of the backup bucket: its nightly copies, its configuration, the Litestream replica and the
-# commit it runs. Listing is limited to that folder too, and the laptop's copies (controller/) stay out of its reach.
+# commit it runs. Listing is limited to names in that folder too (gcloud lists a folder by its name without the slash,
+# `machine`, so the prefix is matched without it), and the laptop's copies (controller/) stay out of its reach.
 resource "google_storage_bucket_iam_member" "controller_backups" {
   count  = local.controller_enabled ? 1 : 0
   bucket = google_storage_bucket.backups.name
@@ -100,8 +101,18 @@ resource "google_storage_bucket_iam_member" "controller_backups" {
   condition {
     title       = "The machine's own folder"
     description = "Objects under machine/, and listing them"
-    expression  = "resource.name.startsWith(\"projects/_/buckets/${google_storage_bucket.backups.name}/objects/machine/\") || (resource.type == \"storage.googleapis.com/Bucket\" && api.getAttribute(\"storage.googleapis.com/objectListPrefix\", \"\").startsWith(\"machine/\"))"
+    expression  = "resource.name.startsWith(\"projects/_/buckets/${google_storage_bucket.backups.name}/objects/machine/\") || (resource.type == \"storage.googleapis.com/Bucket\" && api.getAttribute(\"storage.googleapis.com/objectListPrefix\", \"\").startsWith(\"machine\"))"
   }
+}
+
+# Google's guest agent and the startup script write their own lines to Cloud Logging (scripts/machine.sh logs startup
+# reads the same on the machine); without this they retry and fill the serial console with refusals. Inside Logging's
+# free allotment. The controller's own log stays on the machine.
+resource "google_project_iam_member" "controller_log_writer" {
+  count   = local.controller_enabled ? 1 : 0
+  project = var.project_id
+  role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${google_service_account.controller[0].email}"
 }
 
 # The GitHub App's private key (docs/SETUP.md section 4). Terraform makes the empty secret; the operator adds the key as

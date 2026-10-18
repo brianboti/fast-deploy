@@ -594,3 +594,25 @@ checked without them:
 | The copy the move takes | A `VACUUM INTO` copy of a WAL database is in rollback-journal mode and passes `sqlite3 -readonly ... PRAGMA quick_check` without creating files, so the machine checks it before it replaces anything |
 | No DNS name (2026-10-17) | Caddy 2.11.7 (`caddy adapt`) takes both Caddyfiles the script writes: for an address, an automation policy for `34.123.45.67` with the `acme` issuer and `profile: shortlived`, `default_sni` set on the connection policies, HTTP/3 off and the admin endpoint disabled. Its certificate library (certmagic v0.25.6) allows IP certificates from Let's Encrypt. Google's automatic name for an address can not be used: `googleusercontent.com` has CAA `issue "pki.goog"` only. The foundation's `controller` variable takes no `domain` and refuses `dns_zone` without one |
 | `main`'s protection and the App | `main` requires the `test` and `terraform` checks and no approvals, with no bypass for admins: the controller's merges never relied on an admin's rights, so the App can make them too |
+
+## Live exercise of 1.17.0: the controller off the laptop (2026-10-18 UTC)
+
+Asked for by the operator after the merge of #74 (d2f4bfe), with no DNS name: Claude reaches the machine at its own
+address. The operator made the GitHub App and its key; the rest ran from the laptop.
+
+| Trial | What was done | Observed |
+|---|---|---|
+| The free tier is still free | Every project on the billing account listed | No machine anywhere: the `e2-micro` is the account's one free machine |
+| The foundation apply | `controller = { install_commit = d2f4bfe }` in tfvars; `scripts/apply-foundation.sh` | 19 added, 1 changed (the bucket's Litestream rule), 0 destroyed; `fast-deploy` at 34.133.114.245 |
+| The machine sets itself up | Its startup script, read from the serial console | About four minutes: Caddy 2.11.7 and Litestream 0.5.17 installed after their checksums, the controller from d2f4bfe, then "the controller waits for its configuration and database" |
+| A certificate for the address itself | `openssl s_client` without a server name; `curl` with the system's trust store | Let's Encrypt `YE1`, `IP Address:34.133.114.245`, valid Oct 18 to Oct 24 (160 hours); verified; Google's uptime checker connected without a server name too |
+| The GitHub App | `fast-deploy-ai` (App ID 5363822), on all of the account's repositories; key version 1 added by the operator | On the machine: its metadata token, then Secret Manager 200, installation 172563532, access tokens 201; `get_controller_status`: `github_app`, no warning. GitHub's settings now say Credentials, Key pairs, New key |
+| The move | `scripts/install-machine.sh 5363822` with the laptop's controller stopped | A 1.4 MB copy with 71 plans and 8 applications, imported through Identity-Aware Proxy; `/healthz` answered; `machine_url` recorded; `CONTROLLER_HEALTH_URL` updated |
+| Claude through the address | The connector at `https://34.133.114.245/mcp` | The first attempt failed: the pasted address ended in `)` (Claude asked `/mcp%29`). Added again exactly: registration, sign-in (the audit's `sign_in` from the operator's own address, not 127.0.0.1: Caddy's forwarded address reaches the limits), connected |
+| The live copy | The bucket's `machine/` folder | Litestream's files within minutes; the first nightly copy `deployments-20261018-021027.db` |
+| The restore drill | `scripts/machine.sh drill` | **Failed, and found a bug**: `gcloud storage ls` lists a folder by its name without the slash (`prefix=machine`), which the bucket condition refused (403; `machine/` gave 200). 1.17.1 matches the prefix without the slash; the drill runs again after its apply |
+| A power cycle | `gcloud compute instances reset fast-deploy` | `/healthz` answered again 50 seconds after the reset began; all three services active; the startup script ran again and changed nothing |
+| Noise | The serial console | The guest agent's writes to Cloud Logging were refused (no log writer role); 1.17.1 grants `roles/logging.logWriter` |
+
+Not yet: a tool call from Claude through the new connector (the sign-in passed), an onboarding with an App token, and a
+restore on a fresh machine.
