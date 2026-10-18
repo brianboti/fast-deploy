@@ -17,7 +17,7 @@ import yaml
 
 from .analyzer import TEST_PATH
 from .config import SERVICE_PATH, Application, Principal
-from .github import explain
+from .github import checks_verdict, explain
 from .models import AppSpec
 from .reader import GENERIC_FOLDERS, slug_of
 from .scaffold import SERVICE_NAME
@@ -572,6 +572,12 @@ class Onboarder:
         if waiting:
             step.update(waiting=waiting)
             return
+        verdict, why = checks_verdict(self.c.github.head_checks(app.repository, pr["head_sha"]), pr.get("created_at"))
+        if verdict == "wait":
+            step.update(waiting=f"{why}: {pr['url']}")
+            return
+        if verdict == "failed":
+            raise Blocked(f"The workflows pull request's checks failed: {why}. Fix the repository so they pass, then ask again: {pr['url']}")
         if pr["mergeable_state"] == "dirty":
             raise Blocked(f"The workflows pull request has conflicts; resolve them by hand: {pr['url']}")
         if pr["mergeable_state"] not in ("clean", "unstable", "has_hooks"):
