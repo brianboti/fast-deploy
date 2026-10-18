@@ -5,15 +5,17 @@ import re
 import sqlite3
 import threading
 import time
+import types
 import uuid
 
 from .analyzer import COMPOSE_FILES, FILES, analyze
+from .bake import MAX_BAKE_SECONDS
 from .config import Application, Principal, Production
 from .contract import Contracts, contract_path
 from .cost import estimate, findings
 from .github import explain
 from .infra import BOOTSTRAP_IMAGE, PRODUCTION_ROOTS, PRODUCTION_WORKFLOWS, app_root
-from .models import containment, enforce, needs_env, parse_contract, parse_spec, spec_hash
+from .models import AppSpec, containment, enforce, needs_env, parse_contract, parse_spec, spec_hash
 from .rightsize import SETTINGS, apply_settings
 from .status import TERMINAL, advice, release_phases, summarize
 from .workflows import TEMPLATES, pinned_commit, render
@@ -180,11 +182,17 @@ class Store:
             row = db.execute(query + " ORDER BY rowid DESC LIMIT 1", params).fetchone()
         return {**json.loads(row[1]), "state": row[0]} if row else None
 
-    def latest_success(self, application, sha=None, include_rolled_back=False, signed=False):
+    def latest_success(self, application, sha=None, include_rolled_back=False, signed=False, kind=None):
         """The newest release that succeeded for an application, by default excluding ones rolled back since (optionally for one commit).
-        `signed`: only releases whose image carries signed provenance, so not one released under the operator's exception."""
-        query = "SELECT payload FROM plans WHERE state='succeeded' AND json_extract(payload, '$.application')=? AND json_extract(payload, '$.kind') IS NULL"
+        `signed`: only releases whose image carries signed provenance, so not one released under the operator's exception.
+        `kind`: None for staging releases, "promotion" for what was promoted to production (docs/ROADMAP.md D37)."""
+        query = "SELECT payload FROM plans WHERE state='succeeded' AND json_extract(payload, '$.application')=?"
         params = [application]
+        if kind is None:
+            query += " AND json_extract(payload, '$.kind') IS NULL"
+        else:
+            query += " AND json_extract(payload, '$.kind')=?"
+            params.append(kind)
         if not include_rolled_back:
             query += " AND json_extract(payload, '$.rolled_back') IS NULL"
         if signed:
@@ -296,6 +304,40 @@ def release_approval(plan, requested_by=None):
         block["contract"] = {"repository": contract["repository"], "commit": contract["commit"], "path": contract["path"],
                              "source": {"repository": plan.get("repository"), "commit": plan.get("sha")}}
     return block
+
+
+def promotion_approval(plan, requested_by=None):
+    """The fixed approval block of a promotion (docs/ROADMAP.md D37), built by code from the plan's fields: which staging
+    release and exact image, where it goes, what it may cost in each environment, who approves it on GitHub, how far a
+    rollback undoes it, and the identifiers that tie the request to the plan and the run."""
+    spec, cost, target, source = plan.get("spec") or {}, plan.get("cost") or {}, plan.get("target") or {}, plan.get("source") or {}
+    needs = spec.get("needs") or {}
+    lines = ((plan.get("commit") or {}).get("message") or "").strip().splitlines()
+    migrates = bool(needs.get("migrate"))
+    reversibility = ({"tier": "data-bearing", "detail": "the migration changes production's database; a rollback restores traffic only"} if migrates
+                     else {"tier": "reversible", "detail": "traffic returns to the previous production revision if a check fails"})
+
+    def bounds(numbers):
+        numbers = numbers or {}
+        return {"idle_floor_usd_month": numbers.get("idle_floor_usd_month"), "compute_ceiling_usd_month": numbers.get("compute_ceiling_usd_month"),
+                "needs_floor_usd_month": numbers.get("needs_floor_usd_month")}
+    return {
+        "commit": {"sha": plan.get("sha"), "message": lines[0][:100] if lines else None},
+        "image": {"digest": source.get("digest"), "from": source.get("image"), "staging_release": source.get("plan"), "provenance": source.get("provenance"),
+                  "released_at": source.get("released_at")},
+        "spec_hash": plan.get("spec_hash"),
+        "target": {"project_id": target.get("project_id"), "region": target.get("region"), "service": target.get("service"),
+                   "environment": (plan.get("layout") or {}).get("github_environment")},
+        "cost": {"production": {**bounds(cost), "ceiling_policy": (cost.get("ceiling_policy") or {}).get("status")}, "staging": bounds(source.get("cost"))},
+        "exposure": spec.get("exposure", "authenticated"),
+        "needs": {"buckets": list(needs.get("buckets") or []), "topics": list(needs.get("topics") or []), "database": needs.get("database", "none"),
+                  "migrate": migrates},
+        "approvers": list(plan.get("reviewers") or []),
+        "warnings": len(plan.get("warnings") or []),
+        "reversibility": reversibility,
+        "identifiers": {"plan": plan.get("id"), "commit": plan.get("sha"), "requested_by": requested_by, "staging_release": source.get("plan"),
+                        "run": None, "run_url": None},
+    }
 
 
 def link_run(plan):
@@ -891,6 +933,9 @@ class Controller:
     def plan(self, principal, app_id, cloud="gcp", environment="staging", commit_sha=None):
         app = self.app(principal, app_id)
         self.require_active(app_id)
+        if cloud != "gcp" or environment != "staging":
+            # Production takes only what staging released, by promotion (docs/ROADMAP.md D37); nothing is built for it.
+            raise ValueError("A plan releases to GCP staging only; production is reached by promote_to_production after a staging release")
         behind = 0
         if app.central:
             return self.plan_contract(principal, app_id, app, cloud, environment, commit_sha)
@@ -1182,18 +1227,25 @@ class Controller:
             health_path, needs, exposure = spec.health_path, spec.needs.model_dump(), spec.exposure
         except ValueError as exc:
             health_path, note = "/health", f"Defaults used until the app has a reviewed platform.yaml: {exc}"
+        # A staging root lets the application's production deployer read what staging released, to promote it (16.2).
+        readers = [app.production.target.deploy_service_account] if environment == "staging" and app.production is not None else []
         files = app_root(target.service, project_id=target.project_id, region=target.region, state_bucket=state_bucket or f"{target.project_id}-tfstate",
                          github_repository=trusted, github_repository_id=ids["repository_id"], github_owner_id=ids["owner_id"],
                          bootstrap_image=bootstrap_image or BOOTSTRAP_IMAGE, health_path=health_path, settings={**app.infra, **(settings or {})}, needs=needs,
-                         exposure=exposure, viewers=self.viewers(app), environment=environment, **layout)
+                         exposure=exposure, viewers=self.viewers(app), environment=environment, promotion_readers=readers, **layout)
         return {"application": app_id, "service": target.service, "environment": environment, "directory": directory, "files": files, "note": note}
 
     def add_production(self, principal, app_id):
-        """Give an application its production (docs/ROADMAP.md D37), one step at a time and safe to repeat: its production
-        target registered by convention in the production project; its production root proposed as a pull request that a
-        person merges (production infrastructure is never merged by the controller), which the pipeline plans and applies
-        with the production identities; then its environment production-<service> in the platform repository, whose
-        required reviewers approve every promotion, with the target's variables. Returns where it stands and what is next."""
+        """Give an application its production (docs/ROADMAP.md D37), one step at a time and safe to repeat:
+        1. its production target, registered by convention in the production project;
+        2. its production root, proposed as a pull request that a person merges (production infrastructure is never merged
+           by the controller), which the pipeline plans and applies with the production identities once a person approves
+           the apply in the environment infra-production;
+        3. its environment production-<service> in the platform repository, whose required reviewers approve every
+           promotion, with the target's variables;
+        4. read access for its production deployer to the images staging released, a change of its staging root that a
+           person merges too.
+        Returns where it stands and what is next."""
         app = self.app(principal, app_id, write=True)
         if not principal.can_deploy:
             raise ValueError("Identity has read-only access")
@@ -1222,21 +1274,61 @@ class Controller:
         if on_main is None or on_main["text"] != rendered["files"]["main.tf"]:
             proposed = self.propose_infrastructure(principal, app_id, allow_writes=True, through="add_production", environment="production")
             pull_request = proposed["pull_request"]
-            return {**base, "state": "infrastructure", "pull_request": pull_request,
+            return {**base, "state": "infrastructure", "step": 1, "pull_request": pull_request,
                     "next_action": f"A person merges {pull_request.get('url') or 'the production infrastructure pull request'} once its plan has run "
                                    "(production infrastructure is never merged by the controller), then approves the apply in the environment "
                                    "infra-production. Ask again after the apply for the environment and its approvers."}
+        applied = self.root_applied(platform, rendered["directory"])
+        if applied["state"] != "succeeded":
+            run = f" ({applied['url']})" if applied.get("url") else ""
+            waiting = {"waiting": "waits for a person to approve it in the environment infra-production",
+                       "running": "is running", "none": "has not started yet",
+                       "failed": f"ended {applied.get('conclusion')}: read its log, fix the cause and run Infrastructure apply again for production"}
+            return {**base, "state": "applying", "step": 2, "apply_run": applied,
+                    "next_action": f"The production root is on main and its apply{run} {waiting[applied['state']]}. Ask again once it has succeeded."}
         target = app.production.target
         variables = {"GCP_PROJECT_ID": target.project_id, "GCP_REGION": target.region, "CLOUD_RUN_SERVICE": target.service,
                      "ARTIFACT_REPOSITORY": target.registry, "WIF_PROVIDER": target.wif_provider, "DEPLOY_SERVICE_ACCOUNT": target.deploy_service_account,
                      "PROBE_SERVICE_ACCOUNT": target.probe_service_account, "RECOVERY_BUCKET": target.recovery_bucket}
         self.github.ensure_protected_environment(platform.repository, app.production.environment, platform.branch, production.reviewers)
         self.github.set_environment_variables(platform.repository, app.production.environment, variables)
+        steps["environment"] = {"name": app.production.environment, "reviewers": list(production.reviewers), "variables": sorted(variables)}
+        if not self.promotion_access_on_main(app):
+            proposed = self.propose_infrastructure(principal, app_id, allow_writes=True, through="add_production")
+            pull_request = proposed["pull_request"]
+            self.store.record_event("production", name=app_id, identity=principal.name, application=app_id, outcome="access_proposed",
+                                    detail=pull_request.get("url"))
+            return {**base, "state": "access", "step": 3, "pull_request": pull_request, "reviewers": list(production.reviewers),
+                    "next_action": f"The environment {app.production.environment} is ready. A person merges {pull_request.get('url') or 'the pull request'}: "
+                                   "it lets the production deployer read the images staging released, so a promotion can copy one. Ask again "
+                                   "after its apply."}
         self.store.record_event("production", name=app_id, identity=principal.name, application=app_id, outcome="ready",
                                 detail=f"{app.production.environment}: reviewers {', '.join(production.reviewers)}")
-        return {**base, "state": "ready", "reviewers": list(production.reviewers), "variables": sorted(variables),
-                "next_action": f"Production is ready for {app_id}: its root is on main, and every promotion into {app.production.environment} waits "
-                               f"for {' or '.join(production.reviewers)} to approve it on GitHub."}
+        return {**base, "state": "ready", "step": 4, "reviewers": list(production.reviewers), "variables": sorted(variables),
+                "next_action": f"Production is ready for {app_id}: every promotion into {app.production.environment} waits for "
+                               f"{' or '.join(production.reviewers)} to approve it on GitHub. Promote a staging release with promote_to_production."}
+
+    def root_applied(self, platform, directory):
+        """Whether the platform's apply ran for the newest commit that changed a root: succeeded, waiting (for a person's
+        approval in the environment that applies it), running, failed, or none (no run yet)."""
+        commit = self.github.last_commit(platform.repository, f"{directory}/main.tf", platform.branch)
+        runs = self.github.workflow_runs(platform.repository, "infra-apply.yml", head_sha=commit) if commit else []
+        if not runs:
+            return {"state": "none", "commit": commit}
+        run = runs[0]
+        if run["status"] == "waiting":
+            state = "waiting"
+        elif run["status"] != "completed":
+            state = "running"
+        else:
+            state = "succeeded" if run.get("conclusion") == "success" else "failed"
+        return {"state": state, "commit": commit, "url": run.get("url"), "conclusion": run.get("conclusion")}
+
+    def promotion_access_on_main(self, app):
+        """Whether the application's staging root on main lets its production deployer read the images staging released."""
+        platform = self.config.platform
+        text = (self.github.contents(platform.repository, platform.branch, f"infra/gcp/apps/{app.target.service}/main.tf") or {}).get("text") or ""
+        return "promotion_readers" in text and f'"{app.production.target.deploy_service_account}"' in text
 
     def viewers(self, app):
         """Who may open the app's pages: the lab-wide list plus the app's own, as the root grants them."""
@@ -1301,6 +1393,14 @@ class Controller:
                                          "url": receipt.get("url"), "completed_at": (live.get("outcome") or {}).get("completed_at")}
                 compare = getattr(self.github, "compare", None)
                 entry["undeployed_commits"] = compare(app, live["sha"]) if callable(compare) else None
+            if app.production is not None:
+                # What production serves: the newest promotion that succeeded (docs/ROADMAP.md D37).
+                promoted = self.store.latest_success(app_id, kind="promotion")
+                receipt = (promoted or {}).get("receipt") or {}
+                entry["production_release"] = None if promoted is None else {
+                    "plan_id": promoted["id"], "sha": promoted["sha"], "commit": promoted.get("commit"), "revision": receipt.get("revision"),
+                    "url": receipt.get("url"), "completed_at": (promoted.get("outcome") or {}).get("completed_at"),
+                    "approved_by": (receipt.get("promotion") or {}).get("approved_by"), "staging_release": (promoted.get("source") or {}).get("plan")}
             result[app_id] = entry
         return result
 
@@ -1477,7 +1577,7 @@ class Controller:
         run_id = (plan.get("dispatch_result") or {}).get("workflow_run_id")
         if plan["state"] not in DISPATCHED or not run_id:
             raise ValueError(f"Plan is '{plan['state']}' and has no running workflow to cancel")
-        result = self.github.cancel_run(app, run_id)
+        result = self.github.cancel_run(self.promotion_pipeline(plan) if plan.get("kind") == "promotion" else app, run_id)
         with self.store.connect() as db:
             db.execute("INSERT INTO audit VALUES (?, ?, ?, 'cancel_requested')", (time.time(), owner, plan_id))
         status = self.refresh(principal, plan_id)
@@ -1507,6 +1607,111 @@ class Controller:
                 "next_action": (f"Release pull request #{request['pull_request']} moves {app.service} to {request['target'][:12]}: "
                                 + (f"waiting for {request['waiting']}." if request.get("waiting") else "it merges once the checks pass.")
                                 + " Merging it starts the release within a minute; ask for list_plans or the application's status then.")}
+
+    def promote(self, principal, app_id, plan_id=None):
+        """Promote a staging release to production (docs/ROADMAP.md D37, 16.2): the exact image it deployed, never a rebuild,
+        through the platform repository's promote.yml. The run waits in production-<service> until one of production's
+        reviewers approves it on GitHub; it then checks the image's provenance, copies it by digest into production's registry,
+        signs the promotion with production's key and releases it there with the same runner as staging. `plan_id` names
+        the staging release to promote; by default the newest that succeeded with signed provenance."""
+        app = self.app(principal, app_id, write=True)
+        if not principal.can_deploy:
+            raise ValueError("Identity has read-only access")
+        self.require_active(app_id)
+        production, platform = self.config.production, self.config.platform
+        if production is None or platform is None or app.production is None:
+            raise ValueError(f"{app_id} has no production yet: ask for add_production first")
+        if not self.config.live_dispatch:
+            raise ValueError("Dispatch is disabled (live_dispatch: false); nothing can be promoted from here")
+        if plan_id:
+            found = self.store.fetch(plan_id)
+            source = found[1] if found else None
+            if source is None or source.get("application") != app_id or source.get("kind") or source.get("state") != "succeeded":
+                raise ValueError(f"{plan_id[:8]} is not a staging release of {app_id} that succeeded; list_plans shows them")
+            if source.get("rolled_back"):
+                raise ValueError("That staging release was rolled back since; promote one that still stands")
+        else:
+            source = self.store.latest_success(app_id, signed=True)
+            if source is None:
+                raise ValueError(f"No staging release of {app_id} with signed provenance yet: deploy it to staging first, then promote that release")
+        receipt = source.get("receipt") or {}
+        image, mode = receipt.get("image") or "", receipt.get("provenance")
+        staging = app.target
+        prefix = f"{staging.region}-docker.pkg.dev/{staging.project_id}/{staging.registry}/{staging.service}@sha256:"
+        if mode not in ("github", "cosign-kms"):
+            raise ValueError("That staging release carries no signed provenance (the operator's exception), so it is never promoted; release the commit "
+                             "to staging again without the exception")
+        if not image.startswith(prefix) or not re.fullmatch(r"[a-f0-9]{64}", image[len(prefix):]):
+            raise ValueError("The staging release's image is not in this application's staging registry; deploy to staging again")
+        if not recent(source):
+            raise ValueError(f"That staging release is over {IMAGE_RESCAN_DAYS} days old, so its image is no longer scanned; release the commit to staging "
+                             "again and promote that release")
+        spec = AppSpec.model_validate(source["spec"])
+        if spec_hash(spec) != source.get("spec_hash") or spec.name != app.service:
+            raise ValueError("The staging release's recorded specification does not match its plan; deploy to staging again")
+        enforce(spec, "gcp", "production")
+        missing = self.production_missing(app)
+        if missing:
+            raise ValueError(f"Production for {app_id} is not ready: {'; '.join(missing)}. Ask for add_production, which continues from where it stands.")
+        cost = self.cost_policy(app.model_copy(update={"target": app.production.target}), spec)
+        staging_workflow = "deploy.yml" if source.get("contract") else (source.get("layout") or {}).get("workflow") or app.workflows["deploy"]
+        plan = {
+            "id": uuid.uuid4().hex, "kind": "promotion", "application": app_id, "repository": app.repository, "branch": app.branch,
+            "sha": source["sha"], "commit": source.get("commit"), "spec_hash": source["spec_hash"], "spec": source["spec"],
+            "cloud": "gcp", "environment": "production", "target": app.production.target.model_dump(), "expires_at": time.time() + 900,
+            "cost": cost, "pipeline": platform.repository, "pinned_commit": True,
+            "checks": {"approval": "pending", "provenance": "pending", "copy": "pending", "health": "pending_after_deployment"},
+            "source": {"plan": source["id"], "image": image, "digest": image.rsplit("@", 1)[1], "provenance": mode, "workflow": staging_workflow,
+                       "revision": receipt.get("revision"), "released_at": (source.get("outcome") or {}).get("completed_at"), "cost": source.get("cost")},
+            "bake_seconds": min(production.bake_seconds, MAX_BAKE_SECONDS),
+            "layout": {"path": app.path, "workflow": "promote.yml", "github_environment": app.production.environment},
+            "reviewers": list(production.reviewers), "containment": source.get("containment"), "warnings": [],
+        }
+        if source.get("contract"):
+            plan["contract"] = source["contract"]
+        if spec.needs.migrate:
+            plan["warnings"].append("Runs its migration against production's database before the switch; a rollback restores traffic, not data.")
+        if spec.secrets:
+            plan["warnings"].append("References secrets " + ", ".join(f"{app.service}-{name}" for name in spec.secrets) + f" that must exist in "
+                                    f"{app.production.target.project_id} with an enabled version, or the release stops before deploying.")
+        if not plan["bake_seconds"]:
+            plan["warnings"].append("production.bake_seconds is 0: nothing watches the new revision after its final probe.")
+        plan["approval"] = promotion_approval(plan, principal.name)
+        try:
+            plan["dispatch_result"] = self.github.dispatch_promotion(platform.repository, plan)
+        except Exception:
+            self.store.add(principal.name, plan, "dispatch_unknown")
+            raise ValueError("Promotion dispatch outcome unknown: look for a Promote to production run titled with this plan id on the platform "
+                             "repository before asking again.") from None
+        link_run(plan)
+        self.store.add(principal.name, plan, "dispatched")
+        self.store.record_event("promotion", name=app_id, identity=principal.name, application=app_id, outcome="dispatched",
+                                detail=f"staging {source['id'][:8]} {plan['source']['digest'][:19]}")
+        return {**plan, "state": "dispatched", "next_action": advice({**plan, "state": "dispatched"})}
+
+    def production_missing(self, app):
+        """What a promotion of this application still needs, in plain words; empty when production is ready: the protected
+        environment, the production root on main, and the staging root's read access for the production deployer."""
+        platform = self.config.platform
+        missing = []
+        environment = self.github.deployment_environment(platform.repository, app.production.environment)
+        rules = (environment or {}).get("protection_rules") or []
+        reviewed = [rule for rule in rules if rule.get("type") == "required_reviewers" and rule.get("reviewers")]
+        if environment is None:
+            missing.append(f"the environment {app.production.environment} does not exist on {platform.repository}")
+        elif not any(rule.get("prevent_self_review") for rule in reviewed):
+            missing.append(f"the environment {app.production.environment} has no required reviewers with self-review prevented")
+        if self.github.contents(platform.repository, platform.branch, f"{PRODUCTION_ROOTS}/{app.production.target.service}/main.tf") is None:
+            missing.append("its production root is not on main")
+        if not self.promotion_access_on_main(app):
+            missing.append("its staging root does not yet let the production deployer read the images staging released")
+        return missing
+
+    @staticmethod
+    def promotion_pipeline(plan):
+        """Where a promotion's run lives, in the shape the GitHub adapter reads: the platform repository's promote.yml."""
+        return types.SimpleNamespace(repository=plan["pipeline"], pipeline_repo=plan["pipeline"], central=True, branch="main",
+                                     service=plan["target"]["service"], workflow="promote.yml", workflows={"deploy": "promote.yml"})
 
     def rollback(self, principal, app_id):
         """Move traffic back to the split that served before the live release, through the recovery workflow. No build."""
@@ -1629,8 +1834,10 @@ class Controller:
                 self.store.mark(plan["from_plan"], rolled_back=True, rolled_back_by=plan["id"])
             plan["vulnerabilities"] = None
         else:
+            # A promotion's receipt is uploaded by the platform repository's promote.yml, a release's by its own pipeline.
+            where = self.promotion_pipeline(plan) if plan.get("kind") == "promotion" else app
             fetch = getattr(self.github, "release_receipt", None)
-            receipts = fetch(app, workflow["id"]) if callable(fetch) and workflow.get("id") else None
+            receipts = fetch(where, workflow["id"]) if callable(fetch) and workflow.get("id") else None
             plan["receipt"] = (receipts or {}).get("release")
             plan["vulnerabilities"] = (receipts or {}).get("vulnerabilities")
             if plan["state"] in {"failed", "cancelled", "timed_out"} and (plan["receipt"] or {}).get("state") == "succeeded":
@@ -1646,6 +1853,8 @@ class Controller:
         self.persist(owner, plan)
 
     def record_recovery(self, owner, app, plan, persist=True):
+        if plan.get("kind") == "promotion":
+            return  # a promotion restores production's traffic itself; the next promotion recovers a lost runner's checkpoint first
         lookup = getattr(self.github, "recovery_after", None)
         if not callable(lookup) or not (plan.get("workflow") or {}).get("id"):
             return

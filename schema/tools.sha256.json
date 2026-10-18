@@ -1,5 +1,5 @@
 {
-  "add_production": "7c1e1192cde8721eb8f5e8534ee44e6bb1ed2f20712ba90ac41ec75691c403fe",
+  "add_production": "efda9e7afddb15a39c60da383b4ca0791f694c469e736bf8a061ccc535dbbf2d",
   "analyze_repository": "faed0dc7c63326be1b701330cf7ab9ecec0f485db53271b987e568c19b31ad0e",
   "cancel_deployment": "51421a97d823567413c43c1a6cfae2a2c28857261cd2df062a0c54d086eb7c52",
   "check_repository": "78bdb07ea03479420eac195ff1f1041ead3e92a96595aebb5e2897a45b8f7af9",
@@ -19,6 +19,7 @@
   "list_events": "c70ffd168767d77f4dd42ca5e9920e13642c879133d36bec0e88a9c29d87539e",
   "list_plans": "a82ab57b05e540d4ae8a7714fff8c9211f006e2033299c1f73ceab53eedb1ce8",
   "onboard_application": "75378202cc8d47228e26878e06bbac04386c18ba545d58b976c573aaccd18956",
+  "promote_to_production": "4da734b3f4e68520b27896cef7bc9d30e53d8433bba25fa6d5f4b075709de5eb",
   "propose_configuration": "6b91c77c47e6ff4bfa2b16e8ba4a8a0875ace935634b4b58406aa7f2dec0f64e",
   "propose_infrastructure": "ac80cb18b9011de66f99ce663dae4d3f90ab93641b2c07049c80b2e3bfa94996",
   "propose_rightsizing": "ffcdebcabdb08209be55390488776b5fe994497b9dda693723861ce3c4e6a147",

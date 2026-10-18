@@ -165,3 +165,12 @@ variable "kms_key_ring" {
     error_message = "kms_key_ring must be a key ring id (projects/P/locations/L/keyRings/K) or empty."
   }
 }
+variable "promotion_readers" {
+  type        = list(string)
+  default     = []
+  description = "The application's production deployer (NAME@PROJECT.iam.gserviceaccount.com), which copies the images staging released into production after checking their provenance (docs/ROADMAP.md D37)."
+  validation {
+    condition     = alltrue([for email in var.promotion_readers : can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9][.]iam[.]gserviceaccount[.]com$", email))])
+    error_message = "promotion_readers are service account emails."
+  }
+}
