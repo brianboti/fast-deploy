@@ -53,6 +53,39 @@ FRAMEWORKS = {"fastapi": "FastAPI", "flask": "Flask", "django": "Django", "starl
 CHANGE_WORDS = {"application_code": "application code", "dependencies": "dependencies", "dockerfile": "the Dockerfile",
                 "platform_config": "platform.yaml (settings)", "workflows": "the release workflows"}
 NEED_WORDS = {"postgres": "Postgres database", "firestore": "Firestore database", "bucket": "file bucket", "topic": "message topic"}
+LEVEL_WORDS = {"DEFAULT": "log", "DEBUG": "debug", "INFO": "info", "NOTICE": "notice", "WARNING": "warning", "ERROR": "error", "CRITICAL": "critical"}
+SERIOUS_LEVELS = {"WARNING", "ERROR", "CRITICAL"}  # lines worth a rollback suggestion; INFO and below are the app's ordinary output
+# A plan's state as the operator reads it in the plan list (releases; a rollback's words are in rollback_words).
+PLAN_WORDS = {"planned": "planned but not released", "dispatching": "release started", "dispatched": "release started", "awaiting_workflow": "release started",
+              "queued": "release started", "running": "in progress", "succeeded": "released", "failed": "failed", "cancelled": "cancelled",
+              "timed_out": "timed out", "dispatch_lost": "never started", "dispatch_unknown": "unclear", "completed_unverified": "finished, not verified",
+              "release_requested": "waiting for a merge", "expired": "expired"}
+ROLLBACK_WORDS = {"succeeded": "rolled back", "failed": "rollback failed", "cancelled": "rollback cancelled", "timed_out": "rollback timed out",
+                  "dispatch_unknown": "rollback unclear"}
+SETTING_WORDS = {"resources.memory_mib": "memory (MiB)", "resources.cpu": "CPUs", "concurrency": "requests in parallel per instance",
+                 "scaling.minimum": "warm instances", "scaling.maximum": "most instances", "billing_model": "billing mode"}
+# What to do after a release failed at a step, in plain words (labdeploy/status.py keeps the technical sentence in next_action).
+PLAIN_STEP_ADVICE = (
+    ("Validate dispatch inputs", "main moved on since the plan, or the request was malformed; ask me for a new plan."),
+    ("Validate reviewed specification", "`platform.yaml` on main changed since the plan; ask me for a new plan."),
+    ("Run unit tests", "the tests failed on main; the developer fixes them, then release again. The GitHub run names the failing tests."),
+    ("Audit Python dependencies", "a library has a known vulnerability; the developer updates the libraries the GitHub run names, then release again."),
+    ("Lint the Dockerfile", "the Dockerfile has problems that stop a release; the developer fixes the lines the GitHub run marks, then release again."),
+    ("Build without cloud credentials", "the image did not build; the developer checks the Dockerfile and the GitHub run, then release again."),
+    ("Validate artifact and deployment configuration", "the GitHub environment's settings differ from the reviewed target; the operator compares them "
+     "with the cloud setup's outputs (docs/RUNBOOK.md)."),
+    ("google-github-actions/auth", "signing in to Google Cloud failed; the operator checks the GitHub environment's variables and the identity federation."),
+    ("Recover any interrupted previous release", "an earlier release left an unfinished checkpoint; the operator runs the recovery workflow before releasing again."),
+    ("Push image and resolve immutable digest", "uploading the image failed; the operator checks the deployer's registry permission and the registry name."),
+    ("Choose the provenance path", "the image could not be signed the way the plan asked; release again, or ask me for a new plan."),
+    ("Install Cosign", "the signing tool could not be downloaded or did not match its checksum; release again, and tell the operator if it repeats."),
+    ("Sign build provenance", "signing with the app's cloud key failed; the operator checks that the key exists (docs/SETUP.md, Build provenance)."),
+    ("Verify build provenance", "the image's signature did not verify, so nothing was deployed; the GitHub run says which part differed."),
+    ("Attest build provenance", "signing the image's provenance failed; the operator checks the workflow's attestations permission."),
+    ("Summarize image vulnerabilities", "the image scan found serious problems with fixes available; the developer updates the libraries or the base "
+     "image, then release again."),
+)
+CANCELLED_ERRORS = ("the run was cancelled", "KeyboardInterrupt", "SystemExit")  # a cancel's exception text is not an error to show
 
 
 # ---- small pieces
@@ -61,6 +94,8 @@ def money(value):
     if value is None:
         return "unknown"
     value = float(value)
+    if 0 < value < 0.005:
+        return "under $0.01"
     return "$0" if value == 0 else f"${value:,.2f}"
 
 
@@ -70,16 +105,25 @@ def clip(text, limit=200):
     return line if len(line) <= limit else line[: limit - 1].rstrip() + "…"
 
 
+def sentence_clip(text, limit=240):
+    """Like clip, but never mid-sentence: the text up to the last sentence end that fits, else the plain clip."""
+    line = clip(text, 10_000)
+    if len(line) <= limit:
+        return line
+    cut = max(line.rfind(". ", 0, limit), line.rfind("! ", 0, limit), line.rfind("? ", 0, limit))
+    return line[: cut + 1] if cut >= limit // 3 else clip(line, limit)
+
+
 def title(message, limit=60):
     first = (message or "").strip().splitlines()[0] if (message or "").strip() else ""
     return clip(first, limit)
 
 
-def version(sha, message=None):
+def version(sha, message=None, limit=60):
     """A commit as the operator reads it: the short id, then its first line."""
     if not sha:
         return "an unknown commit"
-    first = title(message)
+    first = title(message, limit)
     return f"`{sha[:7]}` ({first})" if first else f"`{sha[:7]}`"
 
 
@@ -99,6 +143,12 @@ def moment(value):
 def day(value):
     when = moment(value)
     return f"{when.day} {when:%b %Y}" if when else "unknown"
+
+
+def when(value):
+    """A moment as a table shows it, in UTC: 16 Oct 04:56."""
+    at = moment(value)
+    return f"{at.day} {at:%b %H:%M}" if at else "unknown"
 
 
 def duration(start, end):
@@ -121,7 +171,15 @@ def link(text, url):
 
 
 def plural(count, word):
-    return f"{count} {word}" + ("" if count == 1 else "s")
+    if count == 1:
+        return f"{count} {word}"
+    return f"{count} {word[:-1]}ies" if word.endswith("y") and word[-2] not in "aeiou" else f"{count} {word}s"
+
+
+def about(value):
+    """A rough amount: about $0.78, or under $0.01."""
+    text = money(value)
+    return text if text.startswith("under") else f"about {text}"
 
 
 def access(exposure):
@@ -129,14 +187,17 @@ def access(exposure):
             "lab-members": "lab members open it in a browser after a Google sign-in"}.get(exposure, exposure or "unknown")
 
 
-def compose(head, facts=(), next_line=None, foot=None, block=None):
-    """The one shape of every answer: the bold outcome, the facts as bullets (or a ready block), Next, then a small footer."""
+def compose(head, facts=(), next_line=None, foot=None, block=None, after=None):
+    """The one shape of every answer: the bold outcome, the facts as bullets (or a ready block), Next, then a small footer.
+    `block` (a table, a numbered list) comes before the facts; `after` is a block that follows them."""
     parts = [head]
     if block:
         parts.append(block)
     facts = [fact for fact in facts if fact]
     if facts:
         parts.append("\n".join(f"- {fact}" for fact in facts))
+    if after:
+        parts.append(after)
     if next_line:
         parts.append(f"**Next:** {next_line}")
     if foot:
@@ -302,16 +363,17 @@ def release(plan):
                        "run the recovery workflow and check Cloud Run (docs/RUNBOOK.md), then tell me.", foot)
     if restored:
         failed_phase = phases.get("failed_phase") or receipt.get("failed_phase")
-        if receipt.get("cancelled"):
-            reason = "it was cancelled"
+        error = phases.get("error") or receipt.get("error")
+        cancelled = bool(receipt.get("cancelled")) or str(error or "").strip().startswith(CANCELLED_ERRORS)  # found live: a raw `KeyboardInterrupt:`
+        if cancelled:
+            reason, error = "it was cancelled", None
         else:
             reason = {"preparing": "it stopped before deploying anything", "migrating": "the database migration failed, so nothing new was deployed",
                       "baking": "the new version took over, then failed its watch with real traffic"}.get(failed_phase, "the new version failed its health check")
-        error = phases.get("error") or receipt.get("error")
         facts = [f"Why: {reason}", f"Error: `{clip(error, 240)}`" if error else None,
                  "The new version's last log lines are in the release details; ask me to show them" if phases.get("candidate_logs") else None]
         fix = ("fix the migration (check whether part of it ran), then release again." if failed_phase == "migrating"
-               else "release again when ready." if receipt.get("cancelled") else "the developer fixes the app, then release again.")
+               else "release again when ready." if cancelled else "the developer fixes the app, then release again.")
         serving = "is serving again" if failed_phase == "baking" else "is still serving"
         return compose(f"**Release stopped for `{app}`: the previous version {serving}.**", facts, fix, foot)
     if state == "dispatch_lost":
@@ -333,8 +395,43 @@ def release(plan):
         head = {"failed": f"**Release failed for `{app}` while {where}.** Nothing new is serving.",
                 "timed_out": f"**Release timed out for `{app}`.** Nothing new is serving.",
                 "cancelled": f"**Release cancelled for `{app}`.** Nothing new is serving."}[state]
-        return compose(head, [checks_line(checks)], plan.get("next_action"), foot)
+        return compose(head, [checks_line(checks)], plain_next(plan), foot)
     return compose(f"**`{app}`: {str(state).replace('_', ' ')}.**", [], plan.get("next_action"), foot)
+
+
+def recovery_words(plan):
+    """What the recovery check that runs after a stopped release found, in plain words; empty when none ran."""
+    recovery = plan.get("recovery_run") or {}
+    if not recovery:
+        return ""
+    if recovery.get("conclusion") is None:
+        return " The check that runs after a stopped release is still running."
+    found = (recovery.get("receipt") or {}).get("state")
+    if recovery.get("conclusion") == "success" and found in (None, "no_recovery_needed"):
+        return " The check that followed confirmed nothing needed restoring."
+    if recovery.get("conclusion") == "success" and found in ("rolled_back", "traffic_restored"):
+        return " The check that followed put visitors back on the previous version."
+    if recovery.get("conclusion") == "success":
+        return f" The check that followed ended with '{str(found).replace('_', ' ')}'."
+    return f" The check that followed did not succeed ('{recovery.get('conclusion')}'); open its run."
+
+
+def plain_next(plan):
+    """The Next line of a failed, cancelled or timed-out release in the operator's words. The pipeline's own sentence
+    (next_action, from labdeploy/status.py) names files and run states they cannot open; the GitHub run link in the footer keeps the detail."""
+    step = (plan.get("failed_step") or {}).get("step") or ""
+    for needle, words in PLAIN_STEP_ADVICE:
+        if needle in step:
+            return words
+    state = plan.get("state")
+    if state == "cancelled":
+        return "it was cancelled before anything changed, so the previous version kept serving." + recovery_words(plan) + " Release again when ready."
+    if state == "timed_out":
+        return "the run took too long and GitHub stopped it; nothing new is serving." + recovery_words(plan) + " Release again, and tell the operator if it repeats."
+    if state == "failed":
+        where = f" while {step_words(step)}" if step else ""
+        return f"it failed{where}; the GitHub run has the detail." + recovery_words(plan) + " Release again once that is fixed."
+    return plan.get("next_action")
 
 
 def rollback(plan):
@@ -342,13 +439,20 @@ def rollback(plan):
     state, receipt = plan.get("state"), plan.get("receipt") or {}
     run = (plan.get("workflow") or {}).get("html_url") or (plan.get("dispatch_result") or {}).get("html_url")
     foot = f"Plan `{str(plan.get('id') or '')[:8]}`" + (f" · {link('GitHub run', run)}" if run else "")
+    # The commit, not the revision name (found live: `lab-notebook-r9111fd55b0d94066`): the controller resolves the
+    # previous version's commit when it has released it; the release rolled back from is the plan's own commit.
+    previous = plan.get("previous") or {}
+    back_to = version(previous["sha"], previous.get("message")) if previous.get("sha") else "the previous version"
+    undone = version(plan.get("sha"), (plan.get("commit") or {}).get("message")) if plan.get("sha") else f"`{receipt.get('rolled_back_from')}`"
     if state == "succeeded" and receipt.get("state") == "rolled_back":
+        split = receipt.get("restored_traffic")
+        shared = f" (traffic split {traffic(split)})" if isinstance(split, dict) and len(split) > 1 else ""
         return compose(f"**`{app}` is back on its previous version.**",
-                       [f"Now serving: {traffic(receipt.get('restored_traffic'))}", f"No longer serving: `{receipt.get('rolled_back_from')}`",
+                       [f"Now serving: {back_to}{shared}", f"No longer serving: {undone}",
                         "Database changes and anything the app already did are not undone"],
                        "the developer fixes the code; then release again.", foot)
     if state in ("dispatching", "dispatched", "awaiting_workflow", "queued", "running"):
-        return compose(f"**Rolling `{app}` back**: visitors move to the previous version within about a minute.", [],
+        return compose(f"**Rolling `{app}` back**: visitors move to {back_to} within about a minute.", [],
                        "nothing to do; ask me in a minute.", foot)
     if state in ("failed", "cancelled", "timed_out"):
         return compose(f"**The rollback of `{app}` did not complete**; visitors were not moved.", [],
@@ -357,10 +461,17 @@ def rollback(plan):
 
 
 # ---- onboarding and repositories
-def onboarding(view):
+def onboarding(view, now=None):
     """onboard_application and get_onboarding_status."""
     app, state, steps = view.get("application") or "the app", view.get("state"), view.get("steps") or {}
     where = f"`{view.get('repository')}`" + (f", folder `{view['path']}`" if view.get("path") else "") + (", as it is" if view.get("as_is") else "")
+    if state == "registered_by_hand":  # found live: a registered app without an onboarding record was told to onboard itself
+        live = view.get("live_release") or {}
+        facts = [f"From {where}",
+                 f"Live: {version(live['sha'], (live.get('commit') or {}).get('message'))}, released {day(live.get('completed_at'))}" if live.get("sha")
+                 else "Not released by this controller yet"]
+        return compose(f"**`{app}` was registered by hand**, not onboarded from chat, so there is no onboarding to follow.", facts,
+                       f"ask me how `{app}` is doing (its health) or which apps are live.")
     listed = AS_IS_STEPS if view.get("as_is") else ONBOARDING_STEPS
     names, order = dict(listed), [key for key, _ in listed]
     prs = [link(f"#{(steps.get(key) or {})['pull_request']}", (steps.get(key) or {}).get("url"))
@@ -369,10 +480,16 @@ def onboarding(view):
     if state == "complete":
         measures = view.get("measures") or {}
         took = f" in {measures['minutes']:g} min" if measures.get("minutes") is not None else ""
+        plan_id = str(view.get("plan_id") or "")[:8]
+        finished = moment(view.get("completed_at"))
+        age = ((moment(now) or datetime.datetime.now(datetime.UTC)) - finished).total_seconds() if finished else 0
+        recent = age < 3600  # found live: days later the answer still promised to follow the first release
         facts = [f"From {where}", pull_requests,
                  f"Stopped {plural(measures['blocked'], 'time')} on the way; each was fixed and it continued" if measures.get("blocked") else None,
-                 f"First release started: plan `{str(view.get('plan_id') or '')[:8]}`" if view.get("plan_id") else None]
-        return compose(f"**`{app}` is onboarded**{took}.", facts, "I'll follow the first release; ask me how it is going.")
+                 (f"First release started: plan `{plan_id}`" if recent else f"Its first release was plan `{plan_id}`") if plan_id else None]
+        head = f"**`{app}` is onboarded**{took}." if recent else f"**`{app}` was onboarded** on {day(view.get('completed_at'))}{took}."
+        return compose(head, facts, "I'll follow the first release; ask me how it is going." if recent
+                       else f"ask me about `{app}`'s health or releases.")
     if state == "blocked":
         at = view.get("blocked_at")
         facts = [f"Why: {clip(view.get('error'), 400)}", "Nothing was created" if at == "validating" else "Nothing after this step was done", pull_requests]
@@ -410,9 +527,12 @@ def check(result):
         next_line = ("say “deploy it as it is” and I'll propose its contract to the platform repository (a person's merge is the review), or "
                      + (next_line if next_line.startswith("I ") else next_line[0].lower() + next_line[1:]))
         return compose(f"**Not ready to deploy as it stands: {where}.** {plural(len(missing), 'required item')} missing:", facts, next_line, block=block)
-    if as_is.get("refusals"):
-        block += "\n\nAs it is, it is refused too: " + "; ".join(f"{files} {problem} (fix: {fix})"
-                                                                for files, problem, fix in grouped_refusals(as_is["refusals"])[:3]) + "."
+    if as_is.get("refusals"):  # one refusal per line (found live: three in one 400-character sentence)
+        groups = grouped_refusals(as_is["refusals"])
+        block += "\n\nAs it is, it is refused too:\n" + "\n".join(f"{number}. {files} {str(problem).rstrip('.')}. Fix: {str(fix).rstrip('.')}."
+                                                               for number, (files, problem, fix) in enumerate(groups[:5], 1))
+        if len(groups) > 5:
+            block += f"\n…and {len(groups) - 5} more in the details"
     return compose(f"**Not ready yet: {where}.** {plural(len(missing), 'required item')} missing:", [], next_line, block=block)
 
 
@@ -585,18 +705,21 @@ def health(result):
 def logs(result):
     """get_recent_logs."""
     app, minutes, count = result.get("application") or "the app", result.get("minutes") or 30, result.get("count") or 0
-    level = (result.get("severity") or "ERROR").lower()
+    severity = str(result.get("severity") or "ERROR").upper()
+    level = LEVEL_WORDS.get(severity, severity.lower())
     if not count:
         return compose(f"**No {level} lines for `{app}`** in the last {minutes} minutes.", [], "nothing to do.")
     shown = (result.get("lines") or [])[:5]
 
     def line(item):
-        when = moment(item.get("at"))
-        return (f"{when:%H:%M:%S} " if when else "") + clip(item.get("message"), 160)
+        at = moment(item.get("at"))
+        return (f"{at:%H:%M:%S} " if at else "") + clip(item.get("message"), 160)
     block = "```\n" + "\n".join(line(item) for item in shown) + "\n```"
     more = f" (the newest {len(shown)} shown)" if count > len(shown) else ""
-    return compose(f"**{plural(count, level + ' line')} for `{app}`** in the last {minutes} minutes{more}:",
-                   [], f"if this started with the latest release, “roll {app} back”; otherwise the developer reads the full lines.", block=block)
+    # A rollback is worth suggesting for warnings and worse; INFO and DEFAULT lines are the app's ordinary output (found live).
+    next_line = (f"if this started with the latest release, “roll {app} back”; otherwise the developer reads the full lines." if severity in SERIOUS_LEVELS
+                 else f"nothing to do: these are ordinary lines, not problems. Ask me for `{app}`'s ERROR lines to see only what went wrong.")
+    return compose(f"**{plural(count, level + ' line')} for `{app}`** in the last {minutes} minutes{more}:", [], next_line, block=block)
 
 
 def compare(result):
@@ -628,6 +751,11 @@ def estimate(result, application=None):
     floor = (result.get("idle_floor_usd_month") or 0) + (result.get("needs_floor_usd_month") or 0)
     facts = [f"{NEED_WORDS.get(item.get('need'), item.get('need'))} `{item.get('name')}`: {money(item.get('floor_usd_month'))} a month from the moment it exists"
              for item in result.get("needs") or [] if item.get("floor_usd_month")]
+    scenario = result.get("scenario") or {}
+    if scenario.get("requests_per_month") is not None:
+        usd = scenario.get("usd_month") or {}
+        facts.insert(0, f"With {int(scenario['requests_per_month']):,} requests a month of {float(scenario.get('average_request_seconds') or 0):g} s each: "
+                        f"between {money(usd.get('best_case'))} and {money(usd.get('worst_case'))} a month, depending on how many overlap")
     scan = (result.get("release_overheads") or {}).get("image_scan_usd_per_release")
     if scan:
         facts.append(f"Each release with a new image adds about {money(scan)} for the image scan")
@@ -637,7 +765,7 @@ def estimate(result, application=None):
         said.add("needs_by_use")  # how buckets, topics and Firestore are billed matters only to an app that has one
     findings = sorted((item for item in result.get("findings") or [] if item.get("id") not in said and item.get("message")),
                       key=lambda item: item.get("severity") != "warning")
-    facts += [clip(item["message"], 240) for item in findings[:3]]
+    facts += [sentence_clip(item["message"], 240) for item in findings[:3]]  # whole sentences (found live: a finding cut mid-sentence)
     return compose(f"**Cost of `{app}`: about {money(floor)} a month with no visitors; compute at most "
                    f"{money(result.get('compute_ceiling_usd_month'))} a month even if fully busy.**", facts, None,
                    f"Bounds from Google's list prices (checked {result.get('pricing_verified') or 'unknown'}), not a bill.")
@@ -678,7 +806,178 @@ def controller(status):
     reports = sorted({problem.split(":")[0] for problem in problems if "no scheduled run recorded yet" in problem})
     others = [problem for problem in problems if "no scheduled run recorded yet" not in problem]
     if reports:
-        facts.append("Weekly cost report not run yet for: " + ", ".join(f"`{name}`" for name in reports))
+        facts.append("Weekly cost report not run yet for: " + ", ".join(f"`{name}`" for name in reports) + "; it runs on its own every week")
     facts += [f"Watchdog: {clip(problem, 220)}" for problem in others[:5]]
     attention = bool(others or credential.get("warning") or drift.get("drifted") or (status.get("configuration") or {}).get("error"))
-    return compose(head, facts, "ask me about any item above." if attention else "nothing to do.")
+    next_line = ("ask me about any item above." if attention
+                 else "nothing to do; the weekly cost report runs on its own. Tell the operator only if it is still missing after a week." if reports
+                 else "nothing to do.")
+    return compose(head, facts, next_line)
+
+
+# ---- history, costs and the reader (the five tools that answered with raw JSON until 1.17.1)
+def started(item):
+    """When a plan was made: it expires 15 minutes after that."""
+    return item["expires_at"] - 900 if isinstance(item.get("expires_at"), (int, float)) else None
+
+
+def plan_words(item):
+    state = item.get("state")
+    if item.get("kind") == "rollback":
+        return ROLLBACK_WORDS.get(state, "rollback " + PLAN_WORDS.get(state, str(state).replace("_", " ")))
+    return PLAN_WORDS.get(state, str(state).replace("_", " "))
+
+
+def plans(result, shown=8):
+    """list_plans: the newest plans as one table, and what the whole history adds up to."""
+    items = [item for item in result.get("plans") or [] if isinstance(item, dict)]
+    if not items:
+        return compose("**No plans yet**: nothing has been planned or released from this controller.", [], "say “deploy the latest APP” to make the first.")
+    counts = {}
+    for item in items:
+        counts[plan_words(item)] = counts.get(plan_words(item), 0) + 1
+    tally = ", ".join(f"{count} {words}" for words, count in sorted(counts.items(), key=lambda pair: -pair[1]))
+    rows = [f"| `{item.get('application')}` | {plan_words(item)} | {version(item.get('sha'), item.get('summary'), 40)} | "
+            f"{when(item.get('completed_at') or started(item))} |" for item in items[:shown]]
+    table = "| App | Outcome | Version | When (UTC) |\n|---|---|---|---|\n" + "\n".join(rows)
+    apps = sorted({item.get("application") for item in items if item.get("application")})
+    head = f"**{plural(len(items), 'plan')} for {plural(len(apps), 'app')}**: {tally}." + (f" The newest {len(rows)}:" if len(items) > len(rows) else "")
+    newest = items[0]
+    if newest.get("kind") != "rollback" and newest.get("state") in ("dispatching", "dispatched", "awaiting_workflow", "queued", "running"):
+        next_line = f"the newest release (`{newest.get('application')}`) is still on its way; ask me how it is going."
+    else:
+        next_line = "ask me about any of these (“where is lab-bare's release?”); the full list is in the details."
+    return compose(head, [], next_line, block=table)
+
+
+def event_words(item):
+    kind, name = item.get("kind") or "", item.get("name") or ""
+    if kind == "tool":
+        return f"`{name}`" if name else "a tool call"
+    if kind == "rest":
+        return f"REST {name}" if name else "a REST call"
+    return (kind.replace("_", " ") + (f" {name}" if name else "")).strip() or "an event"
+
+
+def events(result, shown=8):
+    """list_events: the audit trail as a short table with readable times."""
+    items = [item for item in result.get("events") or [] if isinstance(item, dict)]
+    if not items:
+        return compose("**No events recorded** for this question.", [], "nothing to do.")
+    errors = [item for item in items if item.get("outcome") in ("error", "throttled")]
+    who = sorted({item.get("identity") or item.get("client") or "unknown" for item in items})
+    rows = []
+    for item in items[:shown]:
+        outcome = str(item.get("outcome") or "")
+        said = f"error: {clip(item.get('detail'), 70)}" if outcome == "error" and item.get("detail") else outcome.replace("_", " ") or "—"
+        app = f"`{item['application']}`" if item.get("application") else "—"
+        rows.append(f"| {when(item.get('at'))} | {item.get('identity') or item.get('client') or 'unknown'} | {event_words(item)} | {app} | {said} |")
+    table = "| When (UTC) | Who | What | App | Outcome |\n|---|---|---|---|---|\n" + "\n".join(rows)
+    head = (f"**{plural(len(items), 'event')}**, {plural(len(errors), 'error')}, from {plural(len(who), 'identity')}"
+            + (f"; the newest {len(rows)}:" if len(items) > len(rows) else ":"))
+    next_line = "ask me what went wrong in the errors." if errors else "nothing to do; ask me for one app's events, or for more of them."
+    return compose(head, [], next_line, block=table)
+
+
+def proposal_words(item):
+    setting = SETTING_WORDS.get(item.get("setting"), str(item.get("setting")))
+    saving = item.get("estimated_monthly_saving_usd")
+    saves = f"; saves {about(saving)} a month" if saving and saving > 0 else ""
+    return f"{setting} {item.get('current')} to {item.get('recommended')} ({clip(item.get('reason'), 60)}{saves})"
+
+
+def cost_report(result, application=None):
+    """get_cost_report: the weekly measured report; nothing in it is estimated except the bounds it repeats."""
+    report = result.get("report")
+    app = application or (report or {}).get("service") or "the app"
+    if not report:
+        return compose(f"**No measured cost report yet for `{app}`.**", [clip(result.get("note"), 200) if result.get("note") else None],
+                       "it runs on its own every week; ask again after the first run, or the operator starts the right-sizing workflow in GitHub Actions.")
+    window = report.get("window_days")
+    made = day(report.get("generated_at") or result.get("generated_at"))
+    head = f"**Measured costs for `{app}`**" + (f", the {window} days to {made}." if window else f", from {made}.")
+    facts = []
+    actual = report.get("actual_spend") or {}
+    if actual.get("total_net_cost_usd") is not None:
+        line = f"Actual spend, last {actual.get('window_days') or window} days: {money(actual['total_net_cost_usd'])} for the whole project, net of credits"
+        if (actual.get("app") or {}).get("net_cost_usd") is not None:
+            line += f"; `{app}`'s share {money(actual['app']['net_cost_usd'])}"
+        facts.append(line)
+    elif actual.get("warning"):
+        facts.append(f"Actual spend unknown: {sentence_clip(actual['warning'], 200)}")
+    observed = (report.get("rightsizing") or {}).get("observed") or {}
+    if observed:
+        facts.append(f"Measured use: {plural(observed.get('requests') or 0, 'request')} in the window, worth "
+                     f"{about(observed.get('usd_month_at_list_price'))} a month at list prices")
+    else:
+        facts.append("No usage was measured in the window")
+    bounds = report.get("estimate") or {}
+    if bounds:
+        facts.append(f"Bounds: {money(bounds.get('idle_floor_usd_month'))} a month with no visitors; compute at most {money(bounds.get('compute_ceiling_usd_month'))} a month")
+    proposals = [item for item in (report.get("rightsizing") or {}).get("recommendations") or [] if item.get("setting")]
+    concrete = [item for item in proposals if item["setting"] in SETTING_WORDS and item["setting"] != "billing_model"]
+    if proposals:
+        facts.append("Proposals: " + "; ".join(proposal_words(item) for item in proposals[:3]) + (f"; and {len(proposals) - 3} more" if len(proposals) > 3 else ""))
+    else:
+        facts.append("Proposals: none; the settings fit the measured use")
+    drift = report.get("drift")
+    if isinstance(drift, list) and drift:
+        facts.append("Live settings differ from `platform.yaml`: " + "; ".join(f"{item.get('setting')} is {item.get('live')} live but {item.get('platform_yaml')} reviewed"
+                                                                         for item in drift[:3]))
+    tolls = report.get("release_tolls") or {}
+    if tolls.get("fresh_images") is not None:
+        facts.append(f"This month: {plural(tolls['fresh_images'], 'new image')} scanned, {about(tolls.get('image_scans_usd'))}")
+    if ((result.get("spending_guards") or {}).get("cloud_run_spend_cap") or {}).get("status") == "not_recorded":
+        facts.append("Google's own spend cap is not recorded for this project")
+    next_line = (f"say “make {app} cheaper” and I'll open a pull request with these proposals; a person merges it." if concrete
+                 else "nothing to do; the report runs again next week.")
+    return compose(head, facts, next_line, link("GitHub run", result.get("run_url")) if result.get("run_url") else None)
+
+
+def analysis(result, application=None):
+    """analyze_repository: what the reader found in a registered app's repository, and what a person must confirm."""
+    app = application or "the app"
+    draft = result.get("draft_spec") or {}
+    where = f" at {version(result.get('commit_sha'))}" if result.get("commit_sha") else ""
+    folder = f", folder `{result['path']}`" if result.get("path") else ""
+    if result.get("supported_candidate"):
+        head = f"**`{app}`{folder} read{where}: a Python web service the platform can run.**"
+    else:
+        head = f"**`{app}`{folder} read{where}: no Python dependency list was found**, so the platform cannot tell what it is."
+    resources, scaling = draft.get("resources") or {}, draft.get("scaling") or {}
+    settings = [f"port {draft['port']}" if draft.get("port") else None, f"Python {draft['python']}" if draft.get("python") else None,
+                f"{draft['concurrency']} requests in parallel per instance" if draft.get("concurrency") else None,
+                f"{resources.get('cpu')} CPU and {resources.get('memory_mib')} MiB" if resources.get("cpu") and resources.get("memory_mib") else None,
+                f"up to {scaling['maximum']} instances" if scaling.get("maximum") else None]
+    facts = ["Draft settings: " + ", ".join(item for item in settings if item) if any(settings) else None]
+    facts += [f"Found: {sentence_clip(line, 200)}" for line in (result.get("evidence") or [])[:3]]
+    if draft.get("dependencies"):
+        facts.append("Services it uses that the platform does not provide: " + ", ".join(str(item) for item in draft["dependencies"]))
+    if result.get("suggested_needs"):
+        facts.append("Needs the dependencies suggest: " + "; ".join(clip(item, 80) for item in result["suggested_needs"][:3]))
+    parts = (result.get("compose") or {}).get("parts")
+    if parts:
+        facts.append(f"Its Compose file names {plural(len(parts), 'part')}; the details say where each one goes")
+    questions = result.get("review_required") or []
+    after = ("To confirm before deploying:\n" + "\n".join(f"{number}. {sentence_clip(question, 220)}" for number, question in enumerate(questions[:5], 1))
+             + (f"\n…and {len(questions) - 5} more in the details" if len(questions) > 5 else "")) if questions else None
+    return compose(head, facts, "nothing changed; a person confirms these and reviews `platform.yaml` (ask me to draft it if the repository has none).", after=after)
+
+
+def rightsizing(result):
+    """propose_rightsizing."""
+    app, pr = result.get("application") or "the app", result.get("pull_request")
+    if not isinstance(pr, dict) or not pr.get("number"):
+        note = clip(result.get("note") or "the latest report proposes no setting change", 200).rstrip(".")
+        return compose(f"**Nothing to propose for `{app}`**: {note[0].lower() + note[1:] if note else note}.", [], "nothing to do; the report runs again next week.")
+    number = link(f"#{pr['number']}", pr.get("url"))
+    if not pr.get("changed"):
+        return compose(f"**A right-sizing pull request is already open for `{app}`**: {number}.", [], "review and merge it; the next release applies it.")
+    saving = result.get("estimated_monthly_saving_usd")
+    changes = ", ".join(f"{SETTING_WORDS.get(item.get('setting'), item.get('setting'))} to {item.get('value')}" for item in result.get("changes") or [])
+    cost = result.get("cost") or {}
+    facts = [f"Changes: {changes}" if changes else None,
+             (f"Compute at most {money(cost.get('worst_case_before_usd_month'))} a month now, {money(cost.get('worst_case_after_usd_month'))} after; "
+              f"with no visitors {money(cost.get('idle_floor_before_usd_month'))} now, {money(cost.get('idle_floor_after_usd_month'))} after") if cost else None]
+    head = f"**Right-sizing pull request opened for `{app}`**: {number}" + (f", saving about {money(saving)} a month" if saving and saving > 0 else "") + "."
+    return compose(head, facts, "a person reviews and merges it; the next release applies it. Nothing changes until then.")

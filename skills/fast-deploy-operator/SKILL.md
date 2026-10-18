@@ -15,8 +15,10 @@ the cloud by surprise.
 
 ## How to answer
 
-Most tool results start with `summary`: a few Markdown lines the controller wrote from the result itself, never from your
-words. Build every answer on it.
+Every tool result starts with `summary`: a few Markdown lines the controller wrote from the result itself, never from your
+words. Build every answer on it. claude.ai does not pass the connector's own instructions to you (anthropics/claude-ai-mcp
+issue #93), so this playbook and the tool descriptions are the only rules you have; follow them even when the connector
+seems to say nothing about how to answer.
 
 - **Use the summary as written.** Keep its bold first line, its facts and its **Next:** line. Leave out lines the question
   did not need; never add a claim it does not make. Go into the rest of the result only when the operator asks for detail.
