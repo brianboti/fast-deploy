@@ -1,3 +1,21 @@
+# 1.20.1: the lock for a Node.js 22 service
+
+Found on 2026-10-19 while preparing the live exercise of Phase 18, by running the platform's own lock container on Docker
+for a Node.js 22 service without a lockfile. The unit tests had replaced Docker with a stand-in, so they never ran it.
+
+1. **The lock for Node.js 22 works.** Node 22's npm 10.9.9 cannot hold back new releases, so its container first installs
+   npm 11.19.1 into a folder of its own. That folder had no `package.json`, so npm walked up to the service's
+   `package.json` one folder above, installed itself there (adding npm to the service's dependencies) and left no
+   lockfile in its own folder; the integrity check then crashed, and no Node.js 22 service without a lockfile could be
+   imported. The folder now gets a `package.json` first. Run on Docker: npm 11.19.1 installed and checked, 65 packages
+   locked, the service's own dependencies untouched. Node.js 24 and 26 use their own npm and were not affected.
+2. **A failed lock says what failed.** The error quoted the last line the container printed, which after a crash is
+   Node's bare version ("npm could not lock the dependencies: Node.js v22.23.3"). It now quotes npm's own error, else the
+   error a crash names, else the last line.
+
+Tests: 778 pass; ruff clean.
+
+
 # 1.20.0: Node.js web services (Phase 18)
 
 Roadmap Phase 18 (docs/ROADMAP.md 18.1 to 18.7, decisions D41 to D46), from the research review of 2026-10-19
