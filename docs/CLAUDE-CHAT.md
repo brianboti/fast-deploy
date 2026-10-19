@@ -133,8 +133,9 @@ workers go; nothing from Compose is deployed as such.
 For a repository the lab should not change (someone else's project, a paper's code, a repository with a messy layout),
 say: *"Deploy https://github.com/ORG/REPO as it is."* Nothing is added to that repository (since 1.15.0):
 
-1. The platform reads it: how it is built, which Python, its packages, what starts it, its port and health check, its
-   tests. Each choice names the file it came from; what it cannot read safely, it refuses, and says the file and the fix.
+1. The platform reads it: how it is built, which Python or Node.js, its packages, what starts it, its port and health
+   check, its tests. Each choice names the file it came from; what it cannot read safely, it refuses, and says the file
+   and the fix.
 2. It opens one pull request on the platform repository with the contract (`apps/NAME/platform.yaml`) and the locks it
    made. **A person reviews and merges it: that merge is the review.** The controller never merges a contract.
 3. Then the usual steps run on their own: the cloud setup, the GitHub environment (`staging-NAME`, in the platform
@@ -145,6 +146,27 @@ request. Later releases work like this: *"Deploy the latest NAME"* opens a pull 
 and nothing else; it merges itself when the app's auto-merge is on and the checks pass, otherwise a person merges it,
 and the merge starts the release within a minute. A change to any other line of the contract is reviewed the same way,
 and merging it releases it too.
+
+**A Node.js repository** (since 1.20.0) goes the same way, with the same sentence. The answer names the runtime ("Node.js:
+24 (from `.nvmrc`)") and reads it like a Python one, with its own rules (`docs/DEVELOPER-CONTRACT.md`, "What the platform
+assumes" and section 1b):
+
+- It needs `package.json`; its `package-lock.json` is checked entry by entry, and without one the pull request carries
+  `apps/NAME/package-lock.json`, made by the platform with every install script off and nothing younger than three days.
+- No package's install script runs, except those the contract lists under `build.scripts`. The pull request says why its
+  list is what it is ("none run: onnxruntime-node@1.30.0: its postinstall only downloads the CUDA libraries..."), and a
+  person who adds one is approving that package's code.
+- What it refuses comes with the fix: a start script with `nodemon` or `tsx`, a server listening on `localhost`, a
+  `yarn.lock` or `pnpm-lock.yaml` (convert it to `package-lock.json`), a project that must be built first. A host the code
+  reads from a variable that defaults to `127.0.0.1` gets `HOST: 0.0.0.0` in the contract instead.
+- Every release runs a dependency audit before anything is installed: a known malicious package, or a serious
+  vulnerability with a fix, stops it whoever wrote the code; the release's answer says how many packages it checked.
+- Google's buildpacks (a Procfile without a Dockerfile) build a Node.js service only once the lab has reviewed its code
+  (`trust: reviewed`), because they run install scripts; otherwise the platform's own Node.js image runs the Procfile's
+  command.
+
+*"Analyze REPO"* and *"Draft the files for REPO"* work for a Node.js repository that follows the contract too: the draft
+holds a Dockerfile on `node:<line>-slim`, a `node --test` health check, CI on `actions/setup-node` and Dependabot for npm.
 
 ## Pages for people
 
@@ -186,6 +208,8 @@ bake's numbers and the revision's log lines are in the status. A bake with too l
 - Code nobody has reviewed (a repository taken as it is) is built and run under stricter rules (since 1.16.0): a working
   key in it or a fixable serious vulnerability stops it, and it reaches no internet unless its reviewed contract says
   `egress: internet` (`docs/DEVELOPER-CONTRACT.md` 5a).
+- A Node.js service never runs a package's install script unless its reviewed contract names that package and version,
+  and a known malicious package in its lockfile stops every release (since 1.20.0).
 
 ## When something is off
 

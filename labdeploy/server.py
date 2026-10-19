@@ -129,7 +129,7 @@ CREATES_RECORD = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idem
 CHANGES_CLOUD = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False)
 
 INSTRUCTIONS = (
-    "Fast Deploy puts the lab's Python web apps on Google Cloud (a staging project) through reviewed GitHub workflows. You act for "
+    "Fast Deploy puts the lab's Python and Node.js web apps on Google Cloud (a staging project) through reviewed GitHub workflows. You act for "
     "the lab's operator, who is not a cloud specialist and may forward your words to developers.\n\n"
     "How to answer. Most results start with summary: a few Markdown lines the controller wrote from that result, never from your "
     "words. Build the answer on it: keep its bold first line, its facts and its **Next:** line as written; you may leave out lines "

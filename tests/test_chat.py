@@ -399,7 +399,7 @@ def test_the_repository_analysis_gives_the_facts_and_the_questions():
     assert "5. Q5.\n…and 1 more in the details" in text and text.index("- Draft settings") < text.index("To confirm") < text.index("**Next:**")
     assert "**Next:** nothing changed; a person confirms these and reviews `platform.yaml`" in text
     unknown = chat.analysis({"commit_sha": SHA, "path": "backend", "supported_candidate": False, "evidence": [], "draft_spec": {}, "review_required": []}, application="x")
-    assert unknown.startswith("**`x`, folder `backend` read at `dede786`: no Python dependency list was found**")
+    assert unknown.startswith("**`x`, folder `backend` read at `dede786`: no Python or Node.js dependency list was found**")
 
 
 def test_a_rightsizing_proposal_names_its_pull_request_or_says_there_is_nothing():

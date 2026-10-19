@@ -625,8 +625,8 @@ def promotion_from(env):
 
 
 def build_checks(folder="bundle"):
-    """What the build job's gates found (docs/ROADMAP.md 14.1, 14.2, 14.7), from the files it left in the bundle: counts only,
-    never a secret. Empty for a reused image, whose first release recorded them."""
+    """What the build job's gates found (docs/ROADMAP.md 14.1, 14.2, 14.7, D44), from the files it left in the bundle: counts
+    only, never a secret. Empty for a reused image, whose first release recorded them."""
     def read(name):
         try:
             return json.loads(Path(folder, name).read_text())
@@ -644,6 +644,12 @@ def build_checks(folder="bundle"):
             findings = scan.get("findings") or []
             checks[key] = {"findings": len(findings), "verified": sum(1 for f in findings if f.get("verified")),
                            "in_installed_packages": int(scan.get("installed") or 0)}
+    audit = read("dependency-audit.json")  # a Node.js service's OSV-Scanner audit (docs/ROADMAP.md D44)
+    if isinstance(audit, dict):
+        counts = audit.get("by_severity") or {}
+        checks["dependency_audit"] = {"tool": audit.get("tool"), "status": audit.get("status"), "packages": audit.get("packages"),
+                                      "critical": counts.get("CRITICAL", 0), "high": counts.get("HIGH", 0), "medium": counts.get("MEDIUM", 0),
+                                      "low": counts.get("LOW", 0), "malicious": len(audit.get("malicious") or [])}
     from .sbom import summary as sbom_summary
     sbom = sbom_summary(Path(folder, "sbom.cdx.json"))
     if sbom:

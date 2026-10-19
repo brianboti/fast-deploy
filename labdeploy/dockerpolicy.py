@@ -2,12 +2,14 @@
 
 Read as text, never built or run. Each finding names its line, the rule and the fix. Every rule refuses the build, except
 that a final image running as root is refused only for code nobody has reviewed (D35: trust `unknown`) and reported for
-the lab's own (`reviewed`). The build itself never passes `--allow`, so BuildKit's privileged and host-network entitlements
-stay off whatever a Dockerfile asks for; this gate refuses the asking.
+the lab's own (`reviewed`), and that the two Node.js notes (D45) only report: an image started through npm, and an Alpine
+image for dependencies with native code. The build itself never passes `--allow`, so BuildKit's privileged and host-network
+entitlements stay off whatever a Dockerfile asks for; this gate refuses the asking.
 
-    python -m labdeploy.dockerpolicy DOCKERFILE --trust unknown|reviewed [--shown PATH] [--trivy REPORT] [--json OUT]
+    python -m labdeploy.dockerpolicy DOCKERFILE --trust unknown|reviewed [--shown PATH] [--trivy REPORT] [--lockfile LOCK] [--json OUT]
         annotations, a line in the step summary; exit 1 on a refusal. --trivy adds Trivy's configuration findings (high and
-        critical as warnings), which inform and never stop a build.
+        critical as warnings), which inform and never stop a build. --lockfile, a Node.js service's npm lockfile, says
+        whether its dependencies hold native code.
 """
 import argparse
 import json
@@ -96,17 +98,39 @@ def sources_of(arguments):
     return [str(word) for word in words[:-1]]
 
 
-def check(text, trust="unknown"):
-    """Every finding in a Dockerfile, in line order; `refuses` says whether it stops the build for this trust level."""
+MANAGERS = ("npm", "npx", "yarn", "pnpm", "bun")
+ALPINE_NODE = re.compile(r"(?i)(?:^|\s|/)node:[^\s@]*alpine")
+
+
+def through_manager(arguments):
+    """Whether a CMD or ENTRYPOINT starts a package manager (npm start), directly or through sh -c."""
+    try:
+        words = [str(word) for word in (json.loads(arguments) if arguments.startswith("[") else shlex.split(arguments))]
+    except ValueError:
+        return False
+    if len(words) > 2 and words[0].rsplit("/", 1)[-1] in ("sh", "bash") and words[1] == "-c":
+        try:
+            words = shlex.split(words[2])
+        except ValueError:
+            return False
+    words = words[1:] if words[:1] == ["exec"] else words
+    return bool(words) and words[0].rsplit("/", 1)[-1] in MANAGERS
+
+
+def check(text, trust="unknown", native=None):
+    """Every finding in a Dockerfile, in line order; `refuses` says whether it stops the build for this trust level.
+    `native` says whether a Node.js service's dependencies hold native code (None when unknown)."""
     findings = []
 
     def add(line, rule, problem, fix, refuses=True):
         findings.append(Finding(rule=rule, line=line, problem=problem, fix=fix, refuses=refuses))
 
-    final_user, final_stage_line = None, None
+    final_user, final_stage_line, final_from, final_start = None, None, "", None
     for line, keyword, arguments in instructions(text):
         if keyword == "FROM":
-            final_user, final_stage_line = None, line
+            final_user, final_stage_line, final_from, final_start = None, line, arguments, None
+        if keyword in ("CMD", "ENTRYPOINT"):
+            final_start = (line, keyword, arguments)
         if keyword == "USER":
             final_user = arguments.split()[0] if arguments else ""
         if keyword == "RUN":
@@ -143,6 +167,14 @@ def check(text, trust="unknown"):
     if final_stage_line is not None and (final_user is None or final_user.lower() in ROOT_USERS or final_user == ""):
         add(final_stage_line, "runs-as-root", "the final image runs as root: it has no USER, or USER root",
             "add USER 65532:65532 (a numeric user that is not root) near the end", refuses=trust == "unknown")
+    # The Node.js notes (docs/ROADMAP.md D45): they report and never stop a build.
+    if final_start and through_manager(final_start[2]):
+        add(final_start[0], "start-through-npm", f"the image starts through a package manager ({final_start[1]} {final_start[2][:60]}), which adds "
+            "latency and does not pass SIGTERM on, so Cloud Run's shutdown cuts requests off", "start node itself: CMD [\"node\", \"server.js\"]",
+            refuses=False)
+    if final_stage_line is not None and native and ALPINE_NODE.search(final_from):
+        add(final_stage_line, "alpine-native-code", "the image builds on Alpine (musl), and the dependencies hold native code, whose binaries are "
+            "usually built for glibc and may not load", "build on node:<line>-slim (Debian) instead", refuses=False)
     return sorted(findings, key=lambda finding: finding["line"])
 
 
@@ -173,8 +205,13 @@ def main(argv=None):
     parser.add_argument("--shown", help="the Dockerfile's path as the repository names it, for annotations")
     parser.add_argument("--json", help="write the findings here")
     parser.add_argument("--trivy", help="Trivy's `config --format json` report for the same Dockerfile")
+    parser.add_argument("--lockfile", help="a Node.js service's npm lockfile, to say whether its dependencies hold native code")
     args = parser.parse_args(argv)
-    findings = check(Path(args.dockerfile).read_text(), args.trust)
+    native = None
+    if args.lockfile and Path(args.lockfile).is_file():
+        from .node import has_native_code, read_lockfile
+        native = has_native_code(read_lockfile(Path(args.lockfile).read_text())[0])
+    findings = check(Path(args.dockerfile).read_text(), args.trust, native)
     shown = args.shown or args.dockerfile
     extra = trivy_findings(Path(args.trivy).read_text()) if args.trivy and Path(args.trivy).is_file() else []
     for item in extra:

@@ -5,7 +5,7 @@ description: Run Fast Deploy from chat. Deploy or onboard a GitHub repo to Googl
 
 # Fast Deploy operator playbook
 
-Fast Deploy (formerly Lab Deploy) puts the lab's Python web apps on Google Cloud (Cloud Run, in a staging project). You are the operator's
+Fast Deploy (formerly Lab Deploy) puts the lab's Python and Node.js web apps on Google Cloud (Cloud Run, in a staging project). You are the operator's
 hands: you call the tools of the **Fast Deploy** connector (listed under the name the operator gave it, perhaps still Lab Deploy), the controller behind them decides what is allowed, GitHub
 Actions does the work, and Google Cloud runs the result. In one line: Claude asks, the code decides.
 
@@ -144,6 +144,12 @@ laptop).
    shell or runs as root): turn them into the developer message. Such code runs contained: a working key in it or a
    fixable serious vulnerability stops its release, and it reaches no internet unless a person merges `egress: internet`
    into its contract. Say so when its plan or status shows it.
+   A **Node.js** repository (a `package.json`, since 1.20.0) goes the same way. Its own refusals have fixes too: a start
+   script with `nodemon` or `tsx`, a server on `localhost`, a `yarn.lock` or `pnpm-lock.yaml` (convert to
+   `package-lock.json`), a project that must be built first, a Node.js line other than 22, 24 or 26. No package's install
+   script runs unless the contract names it under `build.scripts`: a person who adds one approves that package's code, so
+   never suggest adding one to make a build pass; say what the package needs and let the developer decide. A known
+   malicious package in its lockfile stops every release.
 6. When it is blocked:
    - At the repository check: nothing was created. Turn the checklist into a message for the developer (template at the
      end).
@@ -253,8 +259,9 @@ The platform refuses these. Explain the rule; do not look for a way around it.
 - Production except by promotion: a release goes to staging first, `promote_to_production` copies that exact image, and
   only a production reviewer's approval on GitHub lets it through. Never build or release straight to production.
 - More than 2 CPUs, 2048 MiB of memory or 3 instances per app; requests longer than 300 seconds.
-- Anything other than a Python web service, built from a Dockerfile (or from a Procfile with Google's buildpacks) at the
-  repository's root or in one of its folders; any branch other than main.
+- Anything other than a Python or Node.js web service, built from a Dockerfile (or from a Procfile with Google's
+  buildpacks, for Node.js only once its code is reviewed) at the repository's root or in one of its folders; any branch
+  other than main. For Node.js not yet: pnpm, Yarn and Bun lockfiles, a build step, workspaces.
 - Secret values in the chat. Never ask for, accept or repeat a password, key or token. The operator stores a secret with
   `gcloud` (named `<service>-NAME` in Secret Manager) and `platform.yaml` only names it. If someone pastes one anyway,
   tell the operator to replace (rotate) it.

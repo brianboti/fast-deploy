@@ -36,10 +36,63 @@ URL_DRIVERS = r"psycopg|asyncpg|sqlalchemy|databases|tortoise-orm|peewee"
 CONNECTOR = r"cloud-sql-python-connector"
 
 
+def analyze_node(files, name, paths, package):
+    """analyze() for a Node.js service (docs/ROADMAP.md D41): package.json read as text, the draft with runtime: node-http and
+    the line its Dockerfile or engines.node names, else the newest Active LTS."""
+    from . import node as nodejs
+    from .models import default_node
+    evidence, review = ["Node.js package.json found"], []
+    dependencies = nodejs.dependency_names(package)
+    evidence += [f"{framework} appears in dependencies" for framework in ("express", "fastify", "koa", "@hapi/hapi", "hono") if framework in dependencies]
+    dockerfile = files.get("Dockerfile", "")
+    ports = re.findall(r"^\s*EXPOSE\s+(\d+)(?:/tcp)?\s*$", dockerfile, re.M)
+    port = int(ports[0]) if len(ports) == 1 and 1024 <= int(ports[0]) <= 65535 else 8080
+    base = re.search(r"^\s*FROM\s+(?:--platform=\S+\s+)?(?:docker\.io/)?(?:library/)?node:(\d+)", dockerfile, re.M | re.I)
+    engines = (package.get("engines") or {}).get("node") if isinstance(package.get("engines"), dict) else None
+    fits = nodejs.lines_meeting(engines) if isinstance(engines, str) else None
+    line = base.group(1) if base and base.group(1) in nodejs.NODES else (fits[-1] if fits else default_node())
+    if base and base.group(1) not in nodejs.NODES:
+        review.append(f"The Dockerfile builds on Node.js {base.group(1)}, which the platform does not test or audit on (supported: "
+                      f"{', '.join(nodejs.NODES)}); move the image to node:{default_node()}-slim.")
+    elif line != default_node():
+        evidence.append(f"The draft sets node: \"{line}\" from " + ("the Dockerfile" if base else "engines.node") + ", so the tests and the audit run on it")
+    if not any(name_ in (paths or ()) for name_ in nodejs.LOCKFILES):
+        evidence.append("No package-lock.json: installs are not reproducible. Commit one (npm install --package-lock-only --ignore-scripts), "
+                        "or let the platform make it when it takes the repository as it is.")
+    unprovided = [label for label, pattern in nodejs.UNPROVIDED if any(re.search(pattern, item) for item in dependencies)]
+    evidence += [f"{label} appears in dependencies: the platform does not provide it" for label in unprovided]
+    suggested = [need for need, pattern in nodejs.NEEDS_HINTS if any(re.search(pattern, item) for item in dependencies)]
+    how, _, notes = nodejs.tests_of(package, paths or [], line)
+    if how:
+        evidence.append(f"Tests found; they run with {how} before every build")
+    draft = AppSpec(name=name, runtime="node-http", node=line, port=port, dependencies=unprovided)
+    review += ["Confirm stateless HTTP service; source files cannot prove this.",
+               "Confirm port and health endpoint: the service listens on PORT on 0.0.0.0 and answers its health path at once.",
+               "CPU/RAM/scaling are conservative defaults, not measured requirements; Node.js sizes its heap from the memory limit.",
+               "Confirm all external services, secrets, data classification, and access needs.",
+               "Dependency matches are hints; unknown dependencies require review."]
+    if suggested:
+        review.append("The dependencies suggest these needs; add the ones the app really uses under `needs` (nothing was added): " + "; ".join(suggested) + ".")
+    review += notes or ([] if how else ["Add tests (a test script, or node --test files), or declare tests: none knowingly; every plan for an app "
+                                        "without tests carries a warning."])
+    review.append("List configuration as env (plain values) and secrets (names of Secret Manager secrets called <service>-NAME); "
+                  "nothing else reaches the container.")
+    result = {"supported_candidate": True, "runtime": "node-http", "evidence": evidence, "draft_spec": draft_dump(draft),
+              "suggested_needs": suggested, "review_required": review}
+    if files.get("compose"):
+        result["compose"] = compose_drafts(files["compose"])
+    return result
+
+
 def analyze(files: dict[str, str], name: str, paths: list[str] | None = None) -> dict:
     """`paths`, the repository's file list when known, lets the checks see tests and a lock file without reading them."""
     deps = files.get("requirements.txt", "") + "\n" + files.get("pyproject.toml", "")
     python = bool(deps.strip())
+    if not python and files.get("package.json"):
+        from .node import package_data
+        package = package_data(files["package.json"])
+        if package:
+            return analyze_node(files, name, paths, package)
     evidence = []
     if python:
         evidence.append("Python dependency manifest found")

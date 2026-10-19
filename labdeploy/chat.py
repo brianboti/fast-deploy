@@ -21,6 +21,8 @@ STEP_WORDS = (
     ("Validate reviewed specification", "checking platform.yaml"),
     ("Run unit tests", "running the tests"),
     ("Audit Python dependencies", "checking the libraries for known vulnerabilities"),
+    ("Audit Node.js dependencies", "checking the libraries for known vulnerabilities and malicious packages"),
+    ("Install Node.js dependencies", "installing the libraries, with their install scripts off"),
     ("Lint the Dockerfile", "checking the Dockerfile"),
     ("Build without cloud credentials", "building the image"),
     ("Validate artifact and deployment configuration", "checking the release target"),
@@ -58,7 +60,7 @@ AS_IS_STEPS = (("validating", "read the repository as it is"), ("contract", "pro
                ("merging_contract", "wait for a person to merge the contract"), ("registering", "register the app"),
                ("infrastructure", "prepare its cloud setup (a pull request)"), ("planning", "plan the cloud setup and check the safety rules"),
                ("applying", "build the cloud setup"), ("environment", "prepare its GitHub environment"), ("releasing", "start the first release"))
-CHOICE_ORDER = ("Build", "Python", "Dependencies", "Application", "Start command", "Port", "Health", "Needs", "Tests")
+CHOICE_ORDER = ("Build", "Python", "Node.js", "Dependencies", "Application", "Start command", "Port", "Host", "Health", "Install scripts", "Needs", "Tests")
 FRAMEWORKS = {"fastapi": "FastAPI", "flask": "Flask", "django": "Django", "starlette": "Starlette", "litestar": "Litestar", "bottle": "Bottle"}
 CHANGE_WORDS = {"application_code": "application code", "dependencies": "dependencies", "dockerfile": "the Dockerfile",
                 "platform_config": "platform.yaml (settings)", "workflows": "the release workflows"}
@@ -86,6 +88,10 @@ PLAIN_STEP_ADVICE = (
     ("Validate reviewed specification", "`platform.yaml` on main changed since the plan; ask me for a new plan."),
     ("Run unit tests", "the tests failed on main; the developer fixes them, then release again. The GitHub run names the failing tests."),
     ("Audit Python dependencies", "a library has a known vulnerability; the developer updates the libraries the GitHub run names, then release again."),
+    ("Audit Node.js dependencies", "a library is a known malicious package, has a serious vulnerability with a fix, or comes from outside the npm "
+     "registry; the developer updates the libraries the GitHub run names and commits the lockfile, then release again."),
+    ("Install Node.js dependencies", "the libraries did not install: package.json and its lockfile disagree; the developer runs npm install, "
+     "commits both, then release again."),
     ("Lint the Dockerfile", "the Dockerfile has problems that stop a release; the developer fixes the lines the GitHub run marks, then release again."),
     ("Build without cloud credentials", "the image did not build; the developer checks the Dockerfile and the GitHub run, then release again."),
     ("Validate artifact and deployment configuration", "the GitHub environment's settings differ from the reviewed target; the operator compares them "
@@ -306,11 +312,24 @@ def scan_line(vulnerabilities):
     return f"Image scan: {found_words} findings ({fixes}); {verdict}"
 
 
+def runtime_words(spec):
+    """The runtime a contract names, in words: "Python 3.12" or "Node.js 24" (docs/ROADMAP.md D41)."""
+    if not isinstance(spec, dict) or not spec.get("runtime"):
+        return None
+    return f"Node.js {spec.get('node')}" if spec["runtime"] == "node-http" else f"Python {spec.get('python') or '3.12'}"
+
+
 def gates_line(checks):
-    """The checks before the build (docs/ROADMAP.md 14.1, 14.2, 14.7), in words: the Dockerfile, keys, the parts list."""
+    """The checks before the build (docs/ROADMAP.md 14.1, 14.2, 14.7, D44), in words: the Dockerfile, keys, the parts list and
+    a Node.js service's dependency audit."""
     if not checks:
         return None
     parts = []
+    audit = checks.get("dependency_audit")
+    if audit:
+        serious = (audit.get("critical") or 0) + (audit.get("high") or 0)
+        parts.append(f"dependency audit passed ({plural(audit.get('packages') or 0, 'package')}"
+                     + (f", {plural(serious, 'critical or high finding')} without a fix yet" if serious else "") + ")")
     policy = checks.get("dockerfile_policy")
     if policy:
         parts.append("Dockerfile rules passed" + (f" ({policy['reported']} noted)" if policy.get("reported") else ""))
@@ -365,8 +384,10 @@ def release(plan):
     restored = "traffic_restored" in (phases.get("state"), receipt.get("state"))
     stuck = "rollback_failed_manual_recovery_required" in (phases.get("state"), receipt.get("state"))
     if state == "planned":
+        runs = runtime_words(plan.get("spec"))
         return compose(f"**Ready to release `{app}`**: {what}. Nothing has changed yet.",
-                       [cost_line(plan.get("cost")), *[f"Note: {clip(item, 220)}" for item in (plan.get("warnings") or [])[:2]]],
+                       [f"A {runs} web service" if runs else None, cost_line(plan.get("cost")),
+                        *[f"Note: {clip(item, 220)}" for item in (plan.get("warnings") or [])[:2]]],
                        "say “release it” within 15 minutes, or ask for a new plan later.", foot)
     if state in ("dispatching", "dispatched", "awaiting_workflow", "queued"):
         return compose(f"**Release started for `{app}`**: {what}.", ["GitHub has the job; nothing is live until it finishes"],
@@ -731,7 +752,9 @@ def detected_words(found):
     parts = []
     if found.get("framework"):
         parts.append(f"{FRAMEWORKS.get(found['framework'], found['framework'])} app" + (f" `{found['application']}`" if found.get("application") else ""))
-    if found.get("python"):
+    if found.get("node"):
+        parts.append(f"Node.js {found['node']}")
+    elif found.get("python"):
         parts.append(f"Python {found['python']}")
     if found.get("port"):
         parts.append(f"port {found['port']}")
@@ -1141,12 +1164,13 @@ def analysis(result, application=None):
     draft = result.get("draft_spec") or {}
     where = f" at {version(result.get('commit_sha'))}" if result.get("commit_sha") else ""
     folder = f", folder `{result['path']}`" if result.get("path") else ""
+    runs = runtime_words({**draft, "runtime": draft.get("runtime") or "python-http"}) if draft.get("python") or draft.get("node") else None
     if result.get("supported_candidate"):
-        head = f"**`{app}`{folder} read{where}: a Python web service the platform can run.**"
+        head = f"**`{app}`{folder} read{where}: a {(runs or 'Python').split(' ')[0]} web service the platform can run.**"
     else:
-        head = f"**`{app}`{folder} read{where}: no Python dependency list was found**, so the platform cannot tell what it is."
+        head = f"**`{app}`{folder} read{where}: no Python or Node.js dependency list was found**, so the platform cannot tell what it is."
     resources, scaling = draft.get("resources") or {}, draft.get("scaling") or {}
-    settings = [f"port {draft['port']}" if draft.get("port") else None, f"Python {draft['python']}" if draft.get("python") else None,
+    settings = [f"port {draft['port']}" if draft.get("port") else None, runs,
                 f"{draft['concurrency']} requests in parallel per instance" if draft.get("concurrency") else None,
                 f"{resources.get('cpu')} CPU and {resources.get('memory_mib')} MiB" if resources.get("cpu") and resources.get("memory_mib") else None,
                 f"up to {scaling['maximum']} instances" if scaling.get("maximum") else None]

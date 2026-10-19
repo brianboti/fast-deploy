@@ -329,8 +329,11 @@ def test_paths_names_and_repositories_that_are_not_python_are_refused_or_skipped
     with pytest.raises(ValueError, match="valid service name"):
         scaffold.draft_files(["main.py"], {}, name="Bad_Name")
     assert scaffold.clean_path("/services/web/") == "services/web" and scaffold.clean_path(".") == ""
-    nothing = scaffold.draft_files(["package.json", "index.js"], {"package.json": "{}"})
-    assert nothing["files"] == {} and "Python HTTP services only" in nothing["review"][0]
+    nothing = scaffold.draft_files(["README.md", "notes.txt"], {})
+    assert nothing["files"] == {} and "Python and Node.js web services" in nothing["review"][0]
+    # A Node.js repository the reader refuses (nothing says what starts it) gets nothing but the reasons.
+    refused = scaffold.draft_files(["package.json", "lib/util.js"], {"package.json": "{}"})
+    assert refused["files"] == {} and refused["review"][0].startswith("Nothing was drafted") and "start" in refused["review"][1]
     named = scaffold.draft_files(["services/lab_notes_api/main.py"], {}, path="services/lab_notes_api")
     assert parse_spec(named["files"]["services/lab_notes_api/platform.yaml"]["content"]).name == "lab-notes-api"
     fallback = scaffold.draft_files(["main.py"], {})

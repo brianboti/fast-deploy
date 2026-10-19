@@ -42,7 +42,8 @@ def test_the_audit_runs_on_the_app_s_python_and_reads_the_lock_without_installin
     # Live finding (2026-10-14): the audit always ran on the platform's 3.12, so numpy==1.24.4, a normal pin on 3.11 that
     # has no 3.12 build, failed to install there and stopped the release; and markers were judged for 3.12, not the app's.
     setup = step(id="app-python")
-    assert "if" not in setup and setup["with"]["python-version"] == "${{ steps.policy.outputs.python }}"  # tests: none audits too
+    # Python services only (a Node.js service has its own steps), whatever the tests policy: tests: none audits too.
+    assert setup["if"] == "steps.policy.outputs.runtime == 'python-http'" and setup["with"]["python-version"] == "${{ steps.policy.outputs.python }}"
     audit = step(name="Audit Python dependencies")
     assert audit["env"]["APP_PYTHON"] == "${{ steps.app-python.outputs.python-path }}"
     run = audit["run"]

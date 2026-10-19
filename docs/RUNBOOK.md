@@ -475,6 +475,8 @@ annotations and the step summary name the file, the line and the fix, and Claude
 | `Secret scan: ... a key that works right now` | TruffleHog found a credential and its provider accepted it | Treat it as leaked: rotate it at the provider first, then have it removed from the repository and its history; values go to Secret Manager |
 | `... critical or high finding with a fix available, in code nobody has reviewed` | The vulnerability gate (14.4) | Update the base image or the packages; or a person reviews the code and merges `trust: reviewed` in its contract |
 | `known malicious package` | A dependency is a known malicious package (OSV's MAL- advisories) | Remove it; check whether the build machine or any key it saw may be affected |
+| `Dependency audit: ...` (a Node.js service, since 1.20.0) | OSV-Scanner found, in the lockfile and before anything was installed, a known malicious package, a critical or high finding with a fixed version, or an entry from outside the npm registry, or the audit did not finish | `dependency-audit.json` in the release bundle names each package; the developer updates them and commits the lockfile. A malicious one: nothing of it ran (install scripts are off), but remove it at once. An audit that did not finish: run the release again |
+| `Buildpacks: ... reviewed code only` | A Node.js service without a Dockerfile asked for Google's buildpacks, which run install scripts, while nobody has reviewed its code | Leave it on the platform's Node.js image (`build.recipe: platform`), or a person reviews it and merges `trust: reviewed` |
 | `The build context is ... MiB` | Over 1 GiB | Move the data to a bucket (`needs.buckets`) |
 
 Threat detection for unknown code (14.6) is the operator's switch: Security Command Center Premium at project level
@@ -482,6 +484,29 @@ detects reverse shells, credential hunting, cryptomining and malicious Python in
 generation only, which unknown code always uses). It bills about $0.0071 per vCPU-hour of running instances, close to
 nothing for services that scale to zero; turn it on in the console (Security Command Center, project-level activation)
 and read its findings there.
+
+## Node.js lines and their end of life
+
+A Node.js service (`runtime: node-http`, since 1.20.0) names its line in `node`, and every release refuses a line from
+the day it reaches its end of life (Node's release schedule, read 2026-10-19; `labdeploy/models.py` NODE_END_OF_LIFE):
+
+| Line | Status on 2026-10-19 | Refused from |
+|---|---|---|
+| 22 | Maintenance LTS | **2027-04-30** |
+| 24 | Active LTS until 2026-10-20, then Maintenance | **2028-04-30** |
+| 26 | Current; Active LTS from 2026-10-28, and from then the default of a new contract | 2029-04-30 |
+
+A month before each date, ask Claude which applications run that line (the contracts say `node: "22"`), and have each one
+move: its contract's `node` (and its Dockerfile's `FROM node:X`) to the newer line, through a reviewed pull request. From
+the date, a plan or a promotion on the old line is refused with the reason (the pipeline's "Validate reviewed
+specification" refuses it too); what already serves keeps serving.
+
+The pins to refresh with the line's releases, as for Python's: the `node:<line>-slim` index digests in
+`labdeploy/scaffold.py` (`docker buildx imagetools inspect node:24-slim`, the top "Digest:" line, resolved 2026-10-19),
+`actions/setup-node` in `templates/deploy-gcp.yml` and `templates/repo/ci-node.yml` (7.1.0 by commit), OSV-Scanner's
+version and SHA-256 in `templates/deploy-gcp.yml` (2.7.0, from its release's checksums), and the npm a Node 22 lock is
+made with (`LOCK_NPM` in `labdeploy/scaffold.py`: 11.19.1 and its registry integrity hash; it goes when 22 does). Regenerate
+`.github/workflows/deploy.yml` with `labdeploy.workflows.central_deploy` after a template change; a test keeps them equal.
 
 ## Someone cannot open an app's pages
 
@@ -636,4 +661,6 @@ and the apps' pins carry the name, so the order matters:
 - Any `lab-deploy-cap-lifted` label left from the previous month (`gcloud run services list --format="table(name,labels)"`).
 - The native spend cap still exists (`scripts/spend-cap.sh check PROJECT`) and the drift issue on the platform repository is closed.
 - Dependabot pull requests on the platform repository; `pip-audit` runs every Monday in CI.
+- Node.js lines within a month of their end of life (section "Node.js lines and their end of life"): 22 on 2027-04-30,
+  24 on 2028-04-30.
 - The GitHub token's expiry in the watchdog findings, while a laptop uses one.

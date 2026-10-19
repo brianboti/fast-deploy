@@ -1,0 +1,21 @@
+# Drafted by Fast Deploy from docs/DEVELOPER-CONTRACT.md, section 2. Review it, then it is yours: the platform never rewrites it.
+# node:__NODE__-slim (Debian) multi-architecture index digest resolved __RESOLVED__. Refresh deliberately after review with
+#   docker buildx imagetools inspect node:__NODE__-slim
+# or merge the pull request Dependabot opens for it; keep the line equal to node in platform.yaml.
+FROM node:__NODE__-slim@__DIGEST__
+# Libraries read NODE_ENV to run in production mode. The user below has no home directory: what npm and other tools write
+# under ~ goes to /tmp, memory on Cloud Run.
+ENV NODE_ENV=production HOME=/tmp
+WORKDIR /app
+# Dependencies before the code: a code change then rebuilds one layer instead of reinstalling every dependency. npm ci
+# installs exactly the lockfile with every install script off; only the packages platform.yaml lists under build.scripts
+# run theirs afterwards.
+COPY package.json __LOCKFILE__ ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund__REBUILD__ && npm cache clean --force
+# Only what .dockerignore lets in is copied.
+COPY . .
+# A numeric user that does not exist in the image: the service never runs as root.
+USER 65532:65532
+EXPOSE __PORT__
+# node itself, never npm start: npm adds latency and does not pass SIGTERM on, so Cloud Run's shutdown would cut requests off.
+CMD __CMD__

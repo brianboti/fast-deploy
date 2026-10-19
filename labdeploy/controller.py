@@ -1117,7 +1117,8 @@ class Controller:
         here in a container of the app's own Python when Docker is available (D27). The platform never merges it."""
         from types import SimpleNamespace
 
-        from . import scaffold
+        from . import reader, scaffold
+        from .models import default_node
         from .onboarding import normalize_path, normalize_repository, slug
         if app_id:
             app = self.app(principal, app_id, write=True)
@@ -1138,21 +1139,34 @@ class Controller:
         if folder and folder not in paths:
             raise ValueError(f"{target.repository} has no folder {folder} on {target.branch}")
         texts, too_large = {}, []
-        for item in scaffold.files_to_read(paths, folder):
-            try:
-                found = self.github.contents(target.repository, sha, item)
-            except ValueError as exc:
-                # A real project has large files among the ones read for hints (a 241 KB module, a 190 KB test, a hashed lock):
-                # one of them is skipped and named, it never stops the draft.
-                if "exceeds 64 KiB" not in str(exc):
-                    raise
-                too_large.append(item)
-                continue
-            if found is not None:
-                texts[item] = found["text"]
+        wanted = scaffold.files_to_read(paths, folder)
+        for _ in range(4):  # a Node.js service's entry file and its imports are read in up to three more passes
+            for item in wanted:
+                try:
+                    # An npm lockfile is read up to GitHub's 1 MB contents limit; every other input stays within 64 KiB.
+                    big = {"limit": 1_000_000} if item.rsplit("/", 1)[-1] in ("package-lock.json", "npm-shrinkwrap.json") else {}
+                    found = self.github.contents(target.repository, sha, item, **big)
+                except ValueError as exc:
+                    # A real project has large files among the ones read for hints (a 241 KB module, a 190 KB test, a hashed lock):
+                    # one of them is skipped and named, it never stops the draft.
+                    if "exceeds" not in str(exc):
+                        raise
+                    too_large.append(item)
+                    continue
+                if found is not None:
+                    texts[item] = found["text"]
+            wanted = [item for item in reader.more_files_to_read(paths, texts, folder) if item not in too_large]
+            if not wanted:
+                break
         requirements, locked = (f"{folder}/requirements.txt", f"{folder}/requirements.lock") if folder else ("requirements.txt", "requirements.lock")
         lock = {"text": None, "command": None, "error": None}
-        if requirements in texts and locked not in paths and self.config.live_dispatch:
+        package = f"{folder}/package.json" if folder else "package.json"
+        node_service = reader.runtime_of(scaffold.Repository(paths, texts, folder), set()) == "node-http"
+        if node_service and package in texts and not any((f"{folder}/{name}" if folder else name) in paths for name in ("package-lock.json", "npm-shrinkwrap.json")) \
+                and self.config.live_dispatch:
+            read = reader.read(paths, texts, folder)
+            lock = scaffold.node_lock(texts[package], read["spec"].node if read["spec"] else default_node(), path=folder)
+        elif requirements in texts and locked not in paths and self.config.live_dispatch:
             lock = scaffold.compile_lock(texts[requirements], scaffold.detect(paths, texts, folder)["python"], path=folder)
         # Before registration the repository's own name is the last resort for the service's name (after the folder and
         # pyproject.toml), so the draft is not left saying my-service.
@@ -1160,8 +1174,8 @@ class Controller:
         if too_large:
             result["review"].append("Not read, over 64 KiB each, so the draft could not use them as hints: " + ", ".join(too_large) + ".")
         if lock["error"]:
-            result["review"].append(f"requirements.lock was not compiled on the controller's machine ({lock['error']}): run `{lock['command']}` "
-                                    "and commit the file.")
+            made = "package-lock.json was not made" if node_service else "requirements.lock was not compiled"
+            result["review"].append(f"{made} on the controller's machine ({lock['error']}): run `{lock['command']}` and commit the file.")
         view = {"repository": target.repository, "path": folder, "commit_sha": sha,
                 "files": {target_path: item["purpose"] for target_path, item in sorted(result["files"].items())},
                 "existing": result["existing"], "review": result["review"], "detected": result["detected"]}
