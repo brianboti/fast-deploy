@@ -10,11 +10,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from labdeploy import scaffold
+from labdeploy import pins, scaffold
 from labdeploy.models import parse_spec
 
 DEMO = Path("examples/demo-app")
-HADOLINT_IMAGE = "hadolint/hadolint:v2.15.1"
+HADOLINT_IMAGE = f"hadolint/hadolint:v{pins.read()['hadolint']['version']}"
 
 
 def demo_texts():
@@ -403,7 +403,7 @@ def drafted_variants():
 
 
 def hadolint_command():
-    """hadolint 2.15.1 as the platform pins it: the binary CI downloads by checksum, one on PATH, or the image already pulled."""
+    """hadolint as the platform pins it: the binary CI downloads by checksum, one on PATH, or the image already pulled."""
     for candidate in (os.environ.get("HADOLINT"), shutil.which("hadolint"), os.path.join(os.environ.get("RUNNER_TEMP", "/nonexistent"), "hadolint")):
         if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return [candidate]
@@ -413,7 +413,7 @@ def hadolint_command():
     return None
 
 
-@pytest.mark.skipif(hadolint_command() is None, reason="hadolint 2.15.1 is not available (CI downloads it; locally: docker pull " + HADOLINT_IMAGE + ")")
+@pytest.mark.skipif(hadolint_command() is None, reason="the pinned hadolint is not available (CI downloads it; locally: docker pull " + HADOLINT_IMAGE + ")")
 def test_drafted_dockerfiles_pass_hadolint():
     command = hadolint_command()
     for name, text in drafted_variants().items():

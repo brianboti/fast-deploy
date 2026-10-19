@@ -15,7 +15,7 @@ import yaml
 from conftest import TARGET, FakeGitHub
 from fastapi.testclient import TestClient
 
-from labdeploy import toolpin
+from labdeploy import pins, toolpin
 from labdeploy.config import Application, Config, LiveConfig, Principal
 from labdeploy.controller import Controller, Store, release_approval
 from labdeploy.infra import (
@@ -590,8 +590,8 @@ def test_ci_validates_every_root_with_opentofu_on_a_copy():
     workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
     step = next(s for s in workflow["jobs"]["terraform"]["steps"] if "OpenTofu" in s.get("name", ""))
     run = step["run"]
-    assert "releases/download/v1.12.6/tofu_1.12.6_linux_amd64.tar.gz" in run and "sha256sum --check --strict" in run
-    assert "50a6106fa4de523d09c87af85f3db1dd47535fc005727fdca6852146476b88ec" in run
+    url, checksum = pins.mentions("opentofu", ".github/workflows/ci.yml")  # by version and SHA-256, as labdeploy/pins.py reads them
+    assert url in run and run.index(url) < run.index(checksum + " | sha256sum --check --strict") < run.index("tar -xzf")
     assert "git archive HEAD infra/gcp" in run and "tofu\" init -backend=false" in run and "tofu\" validate" in run and "${{" not in run
 
 

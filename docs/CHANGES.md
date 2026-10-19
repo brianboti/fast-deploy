@@ -1,3 +1,54 @@
+# 1.20.5: the weekly pin refresh
+
+Asked for on 2026-10-19: the pins Dependabot does not follow were refreshed by hand, and some were behind (TruffleHog
+3.97.4 against 3.99.2, Trivy 0.74.0 against 0.76.0; the research review of 2026-10-19). Dependabot follows only the
+platform's GitHub Actions and Terraform providers: it cannot follow a download held to a checksum, a digest in Python
+code or a machine's startup script. Renovate could, with regular expressions, but its source for release files finds a
+new checksum by downloading small files as checksum lists or by hashing the file itself, never by reading the digest
+GitHub records, and its hosted app does not run the command that regenerates `.github/workflows/deploy.yml`. So the
+platform has a small job of its own. It was built as 1.20.3 and takes 1.20.5, because 1.20.1 (#100), 1.20.2 (#101)
+and 1.20.4 (#102) merged before it; 1.20.3 is not used.
+
+1. **`labdeploy/pins.py`** lists the 23 pins with their official source, the line the platform follows and every place
+   each one is written: TruffleHog, Trivy, OSV-Scanner, hadolint, pack and Cosign in the pipeline, the four buildpacks
+   images, `python:X.Y-slim` and `node:<line>-slim`, uv with its wheel hashes and the npm for Node 22 locks with its
+   integrity (`labdeploy/scaffold.py`), CI's hadolint and OpenTofu, and the machine's Caddy and Litestream. `list` and
+   `check` show the pins and what a refresh would do; `refresh` writes; `verify` checks the downloads.
+2. **The rules.** Only a release at least seven days old, counted from the later of its publication and its files'
+   upload, and only from the line followed: a newer line is listed, never proposed (uv 0.13 and npm 12 today). Checksums
+   come from official metadata, never from hashing a download: GitHub's SHA-256 of a release file, which the project's
+   own checksum list must repeat (and the list must be the file GitHub recorded); Docker Hub's index digest once its tag
+   has pointed to it for seven days, with linux/amd64 and linux/arm64 in it; for the buildpacks images, the newest one
+   Google published for the stack that is seven days old (Google uploads them about weekly, so the tag's own image rarely
+   is); PyPI's and the npm registry's hashes. A newer npm must ask for the same Node.js versions and run no install
+   script. Every week the current pins are checked too: a file GitHub now records differently, or a buildpacks image
+   gone from its registry, is reported.
+3. **`.github/workflows/pins.yml`**, Mondays at 05:23 UTC. The first job reads the metadata with the read-only token,
+   writes the new pins, regenerates `deploy.yml` from the template, and downloads each new file to check it against its
+   new pin, without running it. The second, in the environment `pins`, holds the key of a small GitHub App (Contents,
+   Pull requests and Workflows) and reads nothing from the internet: it opens one pull request, replaces last week's if it
+   is still open, or closes it when nothing is left, and the change may touch only the files that hold pins. It never
+   merges. The pull request names each change with its release notes, GitHub's record and the checksum list, what waits,
+   the newer lines, what needs a look, and what to review. Without the App (`docs/SETUP.md` 7o), the proposal stays in the
+   run's summary.
+4. **Tests the job never edits.** The tests that spelled out TruffleHog, Trivy, OSV-Scanner, hadolint, pack, Cosign,
+   OpenTofu and npm read them through `labdeploy.pins` now, and check a little more than before (for TruffleHog, Trivy,
+   OSV-Scanner and OpenTofu, that the checksum is checked before the tool is unpacked or run). New tests fail when a place is reworded, when two places disagree, when a
+   download held to a checksum or an image digest is missing from the list, and when a test spells out a pinned value.
+5. The comments of `BASE_IMAGES`, `NODE_IMAGES`, `UV_VERSION` and `LOCK_NPM` moved onto the pinned lines, so each line
+   carries its own release and date. The runbook has a section for the refresh, and its monthly checklist names the pull
+   request; the setup guide has section 7o.
+
+Checked live, reading only, on 2026-10-19: every current pin equals its official metadata. A refresh on a copy of the
+repository would propose TruffleHog 3.99.2, Trivy 0.75.0 (0.76.0 waits until 2026-10-21), OpenTofu 1.13.1 and npm
+11.21.0, and its four downloads matched their new pins. With them, three of the old tests failed, which is why the tests
+read the pins now. Cost: nothing on this public repository (about 11 runner minutes a week with the CI it starts), and no
+cloud resource.
+
+Tests: 797 pass (19 new); ruff and zizmor clean.
+
+
+
 # 1.20.4: after a release, the machine and the re-pins by themselves
 
 Two chores followed every merge into the platform repository's `main`, by hand: updating the controller's machine
