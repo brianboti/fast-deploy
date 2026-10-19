@@ -44,7 +44,8 @@ refresh), so the number may move with the order they merge in.
    apply, `scripts/machine.sh logs update` reads the update service's log, and `status` shows the service and its last
    result.
 7. **What an independent review of this change found, and what changed for it.** One request at a time,
-   and nothing new until the machine has reported on it; a commit that went back blocks the later commits that leave the
+   and nothing new until the machine has reported on it (or two hours have passed without a report); a commit that went
+   back blocks the later commits that leave the
    controller's code as it was; an install that changed nothing (`not_installed`: GitHub away, held, another install) is
    asked for again after half an hour instead of never; the commit that runs is read under the lock, so an install by
    hand that finishes meanwhile is never undone; the request is moved into root's own folder before it is read (a link,
