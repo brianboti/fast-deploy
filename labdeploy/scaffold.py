@@ -644,7 +644,10 @@ def node_lock_container(line):
     if line in LOCK_NPM:
         version, integrity = LOCK_NPM[line]
         pinned = f"{CONTAINER_HOME}/npm-pinned"
+        # The folder gets a package.json of its own first: without one, npm walks up to the service's package.json in the
+        # folder above, installs itself there (adding npm to the service's dependencies) and leaves no lockfile here to check.
         steps += [f"mkdir {pinned}",
+                  f"echo '{{\"private\": true}}' > {pinned}/package.json",
                   f"(cd {pinned} && npm install --no-audit --no-fund --ignore-scripts --loglevel=error npm@{version} >&2)",
                   f"node -e {shlex.quote(pinned_npm_check(version, pinned))} {shlex.quote(integrity)}",
                   f'npm() {{ node {pinned}/node_modules/npm/bin/npm-cli.js "$@"; }}']
@@ -661,6 +664,15 @@ def node_lock_container(line):
             "-e", "npm_config_update_notifier=false", "-w", CONTAINER_HOME, node_base_image(line), "sh", "-c", script]
 
 
+def failure_line(output):
+    """The line of a failed container's output that says what went wrong: npm's own error, else the error a crash names
+    (Node.js ends a crash with its bare version, "Node.js v22.23.3", which says nothing), else the last line."""
+    lines = [line.strip() for line in (output or "").splitlines() if line.strip() and not re.fullmatch(r"Node\.js v[\d.]+", line.strip())]
+    found = [line for line in lines if re.match(r"(npm (error|ERR!) |\w*Error\b)", line)
+             and not re.match(r"npm (error|ERR!) (code|errno|syscall|A complete log|Log files)\b", line)]
+    return (found[0] if found else lines[-1] if lines else "")[:300]
+
+
 def node_lock(package_text, line, runner=docker_runner, path=""):
     """D42 in the pattern of D27: package-lock.json made in a container on the controller's machine, by npm 11.10 or later,
     with every install script off and no version younger than three days. Every entry must carry its integrity hash and a
@@ -674,8 +686,7 @@ def node_lock(package_text, line, runner=docker_runner, path=""):
     except FileNotFoundError:
         return {"text": None, "command": command, "error": "Docker is not installed on this machine"}
     except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or exc.stdout or "").strip().splitlines()
-        return {"text": None, "command": command, "error": f"npm could not lock the dependencies: {detail[-1][:300] if detail else exc}"}
+        return {"text": None, "command": command, "error": f"npm could not lock the dependencies: {failure_line(exc.stderr or exc.stdout) or exc}"}
     except Exception as exc:  # noqa: BLE001 - a timeout or a daemon that is not running is reported the same way
         return {"text": None, "command": command, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
     data, problem = read_lockfile(output or "")

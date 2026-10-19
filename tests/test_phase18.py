@@ -500,6 +500,13 @@ def test_the_lock_is_made_by_npm_11_10_or_later_with_every_script_off():
         # Node 22's npm 10.9.9 has no min-release-age: its container installs the pinned npm 11 first and checks its integrity hash.
         version, integrity = scaffold.LOCK_NPM["22"]
         assert (f"npm@{version}" in script and integrity in script) == (line == "22")
+        if line == "22":
+            # Live 2026-10-19: without a package.json of its own, the pinned folder's install walked up to the service's
+            # package.json one folder above, installed npm there and left no lockfile to check (Node crashed on require).
+            steps = script.split("; ")
+            own = steps.index("echo '{\"private\": true}' > /tmp/npm-pinned/package.json")
+            assert steps.index("cat > package.json") < steps.index("mkdir /tmp/npm-pinned") < own < next(
+                index for index, step in enumerate(steps) if f"npm@{version}" in step)
     assert scaffold.node_lock_command("api") == "cd api && npm install --package-lock-only --ignore-scripts --min-release-age=3"
     assert scaffold.node_lock(package, "24", fake_npm([], "not json"))["error"].startswith("the container did not return a usable package-lock.json")
     bad = json.loads(lockfile({"name": "svc", "dependencies": {"x": "1"}}))
@@ -515,6 +522,18 @@ def test_the_lock_is_made_by_npm_11_10_or_later_with_every_script_off():
 
     assert scaffold.node_lock(package, "24", missing)["error"] == "Docker is not installed on this machine"
     assert "min-release-age needs npm 11.10" in scaffold.node_lock(package, "24", failing)["error"]
+
+    def crashing(args, stdin):  # what the container printed live on 2026-10-19: Node's crash ends with its bare version
+        raise subprocess.CalledProcessError(1, args, stderr="added 66 packages in 9s\nnode:internal/modules/cjs/loader:1433\n  throw err;\n  ^\n\n"
+                                                            "Error: Cannot find module '/tmp/npm-pinned/package-lock.json'\nRequire stack:\n"
+                                                            "- /tmp/[eval]\n  code: 'MODULE_NOT_FOUND',\n}\n\nNode.js v22.23.3\n")
+
+    def not_found(args, stdin):
+        raise subprocess.CalledProcessError(1, args, stderr="npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/nope - Not found\n"
+                                                            "npm error A complete log of this run can be found in: /tmp/.npm/_logs/x.log\n")
+
+    assert scaffold.node_lock(package, "22", crashing)["error"].endswith("Error: Cannot find module '/tmp/npm-pinned/package-lock.json'")
+    assert scaffold.node_lock(package, "24", not_found)["error"].endswith("npm error 404 Not Found - GET https://registry.npmjs.org/nope - Not found")
 
 
 def test_importing_a_node_service_proposes_its_contract_and_the_platforms_lock(tmp_path):
