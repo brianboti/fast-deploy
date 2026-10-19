@@ -13,7 +13,7 @@
   "get_deployment_status": "9f462953d806d94f31d4c3d50cbca2169989ce258110cf5e1c3f325902846da5",
   "get_onboarding_status": "528be7c52fbd0f904387b8175889d2f775ec0513f2e22ac693b803285e3383cd",
   "get_recent_logs": "7a61a4e5635b144222b7e7cba774e80530b0f37f8f2b89b8530457fe94bb60c4",
-  "get_service_health": "eccb10adc508fab59be1eeea7eeccce7d26e9f0cf3f239ee2b8d71b93c986bc0",
+  "get_service_health": "20ece9fc3d76261d438a7e0a31bca9883220dabb64c6c9cfa8e7389635632f1a",
   "import_contract": "15f4949542dc5f16cdfbbf699b39a86cdf6d93f585ccfabcfb428ac9a220e1e8",
   "list_applications": "d84cb6be0d802b63d4916824b2bd0ff4be964b29e4e3ab84b21e129c05967fe7",
   "list_events": "c70ffd168767d77f4dd42ca5e9920e13642c879133d36bec0e88a9c29d87539e",

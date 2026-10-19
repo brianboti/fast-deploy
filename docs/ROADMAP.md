@@ -429,7 +429,9 @@ application's workflows change), secrets pinned to their version at release in p
 as the rollback of `promote.yml`, which production's deployer already trusts, so no root changes either. Exercised live on
 2026-10-18 (`docs/VALIDATION.md`, the rollback drill): a fault the probes cannot see failed its bake at 10 percent and
 the earlier split came back; the fix passed every step on real traffic; the rollback by tool moved production back in 16
-seconds; 1.18.4 fixed what that showed.
+seconds; 1.18.4 fixed what that showed. Item 16.4 built on 2026-10-18 as 1.18.5: production's objective counts Cloud Run's
+own requests (a request-based objective on a custom service, so nothing depends on Service Monitoring finding the
+service), with Google's starting points for its two alerts (ten times over an hour, twice over a day); staging gets none.
 
 | Item | Change | Where |
 |---|---|---|

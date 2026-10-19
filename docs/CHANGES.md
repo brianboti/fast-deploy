@@ -1,3 +1,32 @@
+# 1.18.5: production's objective and its error budget (Phase 16, part four)
+
+Roadmap item 16.4 (docs/ROADMAP.md D39). Every production application gets one objective with two burn-rate alerts and a
+faster uptime check. The health view shows the budget left, and an application's first promotion carries a readiness
+checklist. Staging is unchanged: its roots plan no change.
+
+1. **One objective per production application.** 99.5 percent of requests are answered without a server error over a
+   rolling 30 days. It is counted from Cloud Run's own request metric as server errors out of all requests, so the uptime
+   check's calls to the health path count too and a quiet application still has a measure. It is a request-based
+   objective on a custom service, so nothing depends on Service Monitoring detecting the service.
+2. **Two alerts on its error budget**, with Google's starting points: burning fast (ten times the sustainable rate over an
+   hour, an outage) and burning slowly (twice over a day, a leak). Both say what to do.
+3. **The uptime check runs every minute from three US regions in production**, the regions the controller's own check
+   uses: about 130,000 checks a month per application, inside the free allotment. Staging keeps every five minutes.
+4. **`get_service_health` takes `environment: production`.** It reads production's project, its live promotion and what is
+   left of the error budget, and says so when less than a quarter remains. A production root rendered before this
+   version has no objective, and the view says to propose it again with `add_production`.
+5. **The readiness checklist at an application's first promotion** is built by code from what is true now. It covers the
+   health probe, the alerts and objective in the production root, the runbook, backups, capacity, and the rollback path.
+   It appears in the approval block, and each shortfall becomes a warning with what to do.
+
+Cost: none. Objectives are free, and alerting policies are free until at least 2027-09-01.
+
+Applying it: after the machine runs this version, ask for `add_production` for each application with a production. It
+proposes the production root again with its objective; a person merges it and approves the apply in `infra-production`.
+
+Tests: 648 pass (7 new in `tests/test_slo.py`); ruff clean; `terraform validate` and `fmt` clean.
+
+
 # 1.18.4: what the rollback drill showed
 
 Found on 2026-10-18 in the rollback drill of 1.18.3 (`docs/VALIDATION.md`). A fault the probes cannot see failed its bake

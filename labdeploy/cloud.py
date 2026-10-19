@@ -141,6 +141,33 @@ class Observer:
                 "latest_ready_revision": (data.get("latestReadyRevision") or "").rsplit("/", 1)[-1] or None,
                 "updated_at": data.get("updateTime"), "traffic": traffic}
 
+    def error_budget(self, target, service_id, slo_id="availability"):
+        """Production's objective (docs/ROADMAP.md D39) and what is left of its error budget now: the goal, the share of good
+        requests since the start of its 30-day window, and the budget's remaining fraction, below zero once it is spent.
+        None when the service has no objective (staging, or a production root not rendered with one yet)."""
+        name = f"projects/{target.project_id}/services/{service_id}/serviceLevelObjectives/{slo_id}"
+        response = self.client.get(f"https://monitoring.googleapis.com/v3/{name}", headers={"Authorization": "Bearer " + self.token()})
+        if response.status_code == 404:
+            return None
+        if response.status_code == 403:
+            raise ValueError("The observer identity is not allowed to read this; apply the Terraform that grants it the viewer roles")
+        response.raise_for_status()
+        slo = response.json()
+        end = datetime.datetime.now(datetime.UTC)
+        start = end - datetime.timedelta(minutes=30)
+
+        def newest(selector):
+            data = self.get("https://monitoring.googleapis.com/v3/projects/" + target.project_id + "/timeSeries", filter=f'{selector}("{name}")',
+                            **{"interval.startTime": start.isoformat().replace("+00:00", "Z"), "interval.endTime": end.isoformat().replace("+00:00", "Z")})
+            points = [point for series in data.get("timeSeries", []) for point in series.get("points", [])]
+            if not points:
+                return None
+            value = max(points, key=lambda point: (point.get("interval") or {}).get("endTime") or "").get("value") or {}
+            return float(value["doubleValue"]) if "doubleValue" in value else None
+        days = int(str(slo.get("rollingPeriod") or "2592000s").rstrip("s")) // 86400
+        return {"goal": slo.get("goal"), "days": days, "compliance": newest("select_slo_compliance"),
+                "budget_remaining": newest("select_slo_budget_fraction"), "name": name}
+
     def needs(self, target, needs):
         """Whether each declared need exists, with the facts that matter; a missing one is reported, not raised."""
         items = []

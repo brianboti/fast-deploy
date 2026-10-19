@@ -68,6 +68,7 @@ the skill must be re-uploaded after every release that changes `skills/` (the re
 | "Which apps do we have and what is live?" | `list_applications` | Each app, its live commit, platform pin, schedules and open proposals |
 | "What is waiting on main for demo?" | `compare_with_live` | Commits and files since the live release, kinds of change, cost before and after |
 | "How is demo doing right now?" | `get_service_health` | Serving revisions, requests, errors, latency, instances, memory, declared needs |
+| "How is demo doing in production?" | `get_service_health` with `environment: production` | The same for production, with the error budget its objective has left |
 | "Show me demo's recent logs" | `get_recent_logs` | Last log lines through the read-only observer identity |
 | "What would demo cost?" | `estimate_cost` | Floor, compute ceiling, needs' floor, optional traffic scenario, findings |
 | "What did we actually spend?" | `get_cost_report` | The weekly right-sizing report with measured usage, proposals and billing export |

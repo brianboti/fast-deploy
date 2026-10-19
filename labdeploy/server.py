@@ -9,7 +9,7 @@ import logging
 import os
 import threading
 import time
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import httpx
 import pydantic
@@ -413,10 +413,12 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
 
     @tool(title="Get service health (live)", annotations=READ_ONLY)
     @plain_errors
-    def get_service_health(application: APP, minutes: Annotated[int, described("The window to measure, in minutes (default 60).")] = 60) -> dict[str, Any]:
+    def get_service_health(application: APP, minutes: Annotated[int, described("The window to measure, in minutes (default 60).")] = 60,
+                           environment: Annotated[Literal["staging", "production"], described(
+                               "staging (default), or production: its own project, its live promotion and its error budget.")] = "staging") -> dict[str, Any]:
         """Live view from Cloud Run and Cloud Monitoring: readiness, serving revisions with their plan and commit, requests, errors, latency,
-        instances, memory, and whether it matches what this controller recorded."""
-        return chat.attach(chat.health, controller.service_health(identity.get(), application, minutes))
+        instances, memory, whether it matches what this controller recorded, and in production the error budget left."""
+        return chat.attach(chat.health, controller.service_health(identity.get(), application, minutes, environment))
 
     @tool(title="Get recent logs (live)", annotations=READ_ONLY)
     @plain_errors

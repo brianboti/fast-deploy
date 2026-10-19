@@ -74,7 +74,7 @@ changes until a person merges. **Act** tools change the cloud.
 | `get_controller_status` | Look | Is the controller healthy: version, dispatch on or off, pauses, GitHub credential expiry, background jobs |
 | `analyze_repository` | Look | A registered app's repository read conservatively, with a draft `platform.yaml` and review questions |
 | `compare_with_live` | Look | What changed on main since the live release, and the cost before and after |
-| `get_service_health` | Look | Live: is it serving, requests, errors, latency, instances, memory, declared needs, who may open its pages |
+| `get_service_health` | Look | Live: is it serving, requests, errors, latency, instances, memory, declared needs, who may open its pages; with `environment: production`, production and its error budget |
 | `get_recent_logs` | Look | Newest log lines at or above a severity (ERROR by default) |
 | `get_deployment_status` | Look | Where a release is: every step, the release phases, the new version's last log lines on failure, the next action. `wait_seconds` (up to 45) waits for a change |
 | `check_repository` | Look | Is a repository (or one service folder) ready to deploy: each contract item, why it matters, what the platform can draft |

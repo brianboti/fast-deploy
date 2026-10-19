@@ -174,3 +174,26 @@ variable "promotion_readers" {
     error_message = "promotion_readers are service account emails."
   }
 }
+variable "slo_goal" {
+  type        = number
+  default     = 0
+  description = "Production's objective (docs/ROADMAP.md D39): the share of requests answered without a server error over 30 days, such as 0.995; 0 sets none, as in staging."
+  validation {
+    condition     = var.slo_goal == 0 || (var.slo_goal >= 0.9 && var.slo_goal <= 0.999)
+    error_message = "slo_goal is 0 (none) or a share from 0.9 to 0.999."
+  }
+}
+variable "uptime_period" {
+  type        = string
+  default     = "300s"
+  description = "How often the uptime check calls the health path: every five minutes in staging, every minute in production (D39)."
+  validation {
+    condition     = contains(["60s", "300s", "600s", "900s"], var.uptime_period)
+    error_message = "uptime_period is 60s, 300s, 600s or 900s."
+  }
+}
+variable "uptime_regions" {
+  type        = list(string)
+  default     = []
+  description = "Where the uptime check calls from: every region when empty (staging); production uses three US regions (D39)."
+}
