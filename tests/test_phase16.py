@@ -255,8 +255,11 @@ def test_the_pipeline_plans_applies_and_watches_production_roots_with_production
 def test_the_chat_says_which_of_the_four_steps_production_is_at():
     from labdeploy import chat
     base = {"application": "demo", "environment": "production-demo", "project_id": "lab-deploy-prod-abcd", "reviewers": ["brianboti"]}
-    step = chat.production({**base, "state": "infrastructure", "pull_request": {"number": 9, "url": "https://github.com/lab/platform/pull/9"}})
-    assert step.startswith("**Production for `demo`, step 1 of 4") and "[#9](https://github.com/lab/platform/pull/9)" in step
+    step = chat.production({**base, "state": "infrastructure", "pull_request": {"number": 9, "url": "https://github.com/lab/platform/pull/9"},
+                            "steps": {"registered": {"project_id": "lab-deploy-prod-abcd"}}})
+    assert step.startswith("**Production for `demo`, step 1 of 4") and "[#9](https://github.com/lab/platform/pull/9) adds its production root" in step
+    again = chat.production({**base, "state": "infrastructure", "pull_request": {"number": 9, "url": "https://github.com/lab/platform/pull/9"}, "steps": {}})
+    assert "updates its production root" in again  # found live on 2026-10-19: a production that exists gets its root updated
     assert "never merged by the controller" in step and "infra-production" in step
     applying = chat.production({**base, "state": "applying", "apply_run": {"state": "waiting", "url": "https://github.com/lab/platform/actions/runs/5"}})
     assert "step 2 of 4" in applying and "approve the apply on GitHub" in applying

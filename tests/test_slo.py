@@ -95,7 +95,9 @@ def test_production_health_reads_production_and_names_what_is_left_of_the_budget
     assert text.startswith("**`demo` in production is healthy.**") and "Error budget: 96% left, 99.98% of requests fine so far" in text
     c.observer.budget = {"goal": 0.995, "days": 30, "compliance": 0.99, "budget_remaining": -0.1, "name": "x"}
     low = c.service_health(brian, "demo", environment="production")
-    assert any("of the 30-day error budget is left" in note for note in low["notes"]) and "Error budget: spent" in chat.health(low)
+    assert any("The 30-day error budget is spent, 10% beyond it" in note for note in low["notes"]) and "Error budget: spent" in chat.health(low)
+    c.observer.budget = {"goal": 0.995, "days": 30, "compliance": 0.999, "budget_remaining": 0.2, "name": "x"}
+    assert any("The 30-day error budget has only 20% left" in note for note in c.service_health(brian, "demo", environment="production")["notes"])
     c.observer.budget = None
     assert any("No objective yet in production" in note for note in c.service_health(brian, "demo", environment="production")["notes"])
     staging = c.service_health(brian, "demo")

@@ -791,8 +791,11 @@ class Controller:
         if environment == "production" and budget is None:
             notes.append("No objective yet in production: ask for add_production, which proposes the production root with its SLO")
         elif budget and budget.get("budget_remaining") is not None and budget["budget_remaining"] < 0.25:
-            notes.append(f"Only {budget['budget_remaining']:.0%} of the {budget['days']}-day error budget is left: keep risky changes out of production "
-                         "until it recovers")
+            left = budget["budget_remaining"]
+            # Found live on 2026-10-19: a quiet application's budget went below zero after the rollback drill, and "only -28%
+            # is left" read as nonsense. A spent budget says so, and by how much.
+            amount = (f"is spent, {-left:.0%} beyond it" if left < 0 else "is spent" if left == 0 else f"has only {left:.0%} left")
+            notes.append(f"The {budget['days']}-day error budget {amount}: keep risky changes out of production until older errors leave the window")
         for item in needs:
             if item["exists"] is None:
                 notes.append(f"Need {item['need']} {item['name']} not checked: {item.get('unreadable', 'not readable')}")

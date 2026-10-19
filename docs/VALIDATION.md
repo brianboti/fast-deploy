@@ -681,3 +681,12 @@ fine. Every production run was approved through the API with the operator's `gh`
 
 What the drill showed (1.18.4): a bake that fails at a step of the split said "after promotion"; it now names the switch
 ("after the switch to 10 percent of the traffic"). The traffic for the drill became `scripts/promotion-traffic.sh`.
+
+## Live exercise of 1.18.5: production's objective (2026-10-19 UTC)
+
+| Trial | What was done | Observed |
+|---|---|---|
+| The objective proposed | `scripts/machine.sh update 88b9f3a`, then `add_production` for `demo` | #87 adds three lines to the production root (`slo_goal = 0.995`, `uptime_period = "60s"`, the three US regions); its plan: 4 to add (the custom service, the objective, the fast and slow alerts), the uptime check changed in place, reversible, no cost, no access change, policy passed |
+| The applies | #86's merge had started its own apply (the shared module changed), whose production job waited in `infra-production` and held #87's in the queue; both approved through the API at the operator's request | #86's run applied every root with nothing to change; #87's applied the objective |
+| In production | The Monitoring API | The objective `availability` with goal 0.995 over 2592000 s; the alerts "lab-demo: error budget burning fast" (above 10, `60m`) and "burning slow" (above 2, `1440m`), both enabled and sent to the alert email; the uptime check every 60 seconds from Oregon, Iowa and Virginia |
+| The health view | `get_service_health` with `environment: production` | Healthy (72 requests in the hour, no server errors, uptime checks 100 percent), and **"Error budget: spent, 99.36% of requests fine so far"**: the 30-day window holds the rollback drill's planted errors, more than the 0.5 percent a quiet application may miss. The note read "Only -28% ... is left"; 1.18.6 says "is spent, 28% beyond it" |

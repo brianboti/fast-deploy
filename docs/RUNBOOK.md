@@ -118,7 +118,7 @@ health path every minute from three US regions. Two alerts reach the alert chann
 - **"error budget burning fast"**: ten times the sustainable rate over the last hour, which is an outage. Ask Claude for
   "demo's health in production" and its errors. If the newest promotion caused it, roll production back
   (`rollback_production`); otherwise follow the error lines.
-- **"error budget burning slowly"**: twice the sustainable rate over the last day, which is a leak. Look at the errors when
+- **"error budget burning slow"**: twice the sustainable rate over the last day, which is a leak. Look at the errors when
   convenient and fix it before the budget runs out.
 
 `get_service_health` with `environment: production` shows how much of the budget is left. Below a quarter it says so:
@@ -150,6 +150,11 @@ Twice a year, and after a change to the release: a planted fault the probes cann
    step's bake passes on real traffic. Then ask for `rollback_production` and approve it: traffic returns to the earlier
    revision in seconds. Promote again to end on the fixed version.
 5. Record the results in `docs/VALIDATION.md`. Done first on 2026-10-18.
+
+The drill spends error budget: its planted errors count against production's objective for 30 days. On a quiet
+application a few dozen of them exceed the 0.5 percent it may miss, so the health view shows the budget spent until they
+leave the window (found on 2026-10-19). Run the drill when a spent budget for a month is acceptable, or send more good
+traffic around it.
 
 ## What "up" means
 
