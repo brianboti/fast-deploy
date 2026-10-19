@@ -778,8 +778,9 @@ def production(result):
                        [f"Environment `{environment}`: every promotion waits for {reviewers} to approve it on GitHub",
                         f"Pull request {numbered} lets production's deployer read the images staging released, so a promotion can copy one"],
                        "merge it once its plan reads right, then ask again.")
+    again = not (result.get("steps") or {}).get("registered")  # its production existed: the root changes (a newer platform, say)
     return compose(f"**Production for `{app}`, step 1 of 4: its cloud setup in `{project}`.**",
-                   [f"Pull request {numbered} adds its production root; the pipeline posts the plan on it",
+                   [f"Pull request {numbered} {'updates' if again else 'adds'} its production root; the pipeline posts the plan on it",
                     "A person merges it (production infrastructure is never merged by the controller), then approves the apply in `infra-production`"],
                    "merge it once the plan reads right and approve the apply, then ask again: the environment and its approvers come next.")
 

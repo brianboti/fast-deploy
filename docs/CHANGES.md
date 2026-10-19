@@ -1,3 +1,19 @@
+# 1.18.6: what the objective showed
+
+Found on 2026-10-19 in the live exercise of 1.18.5 (`docs/VALIDATION.md`). Demo's production objective, its two alerts and
+the minute uptime check are live, and the health view showed the error budget spent: the rollback drill's planted errors
+are still in the 30-day window.
+
+1. **A spent budget says so.** The note read "Only -28% of the 30-day error budget is left". It now says "The 30-day error
+   budget is spent, 28% beyond it", or "has only 20% left" while some remains.
+2. **"Updates its production root."** `add_production` for an application whose production exists, asked after a newer
+   platform changed the root, said it "adds" the root. It now says "updates".
+3. **The runbook** names the alerts as Cloud Monitoring shows them ("burning fast", "burning slow"). It also says the
+   rollback drill spends a quiet application's error budget for 30 days.
+
+Tests: 648 pass; ruff clean.
+
+
 # 1.18.5: production's objective and its error budget (Phase 16, part four)
 
 Roadmap item 16.4 (docs/ROADMAP.md D39). Every production application gets one objective with two burn-rate alerts and a
