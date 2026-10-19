@@ -49,7 +49,7 @@ python -m labdeploy.cli render-workflow \
   --output /path/to/app/.github/workflows/rightsize-gcp.yml
 ```
 
-All three workflows must use the same pinned platform commit. After the first onboarding, `python -m labdeploy.cli update-workflows --all` (or Claude's `update_app_workflows`) regenerates them against the platform's current commit and opens one pull request per app; set `platform: {repository: OWNER/lab-deploy}` in the controller configuration first. Deployment and recovery share a concurrency group; right-sizing is read-only and queues separately. The generator refuses placeholder SHAs and will not overwrite files. If the platform repository is private, add `PLATFORM_READ_TOKEN` as a read-only Contents credential scoped only to that repository. GitHub's app-repository token cannot read a different private repository. An organization-managed GitHub App installation token can replace the development token. Do not use this credential for cloud access.
+All three workflows must use the same pinned platform commit. After the first onboarding, `python -m labdeploy.cli update-workflows --all` (or Claude's `update_app_workflows`) regenerates them against the platform's current commit and opens one pull request per app; set `platform: {repository: OWNER/lab-deploy}` in the controller configuration first. On the machine, `platform_updates` does this by itself after each release (`docs/RUNBOOK.md`, "After a release"). Deployment and recovery share a concurrency group; right-sizing is read-only and queues separately. The generator refuses placeholder SHAs and will not overwrite files. If the platform repository is private, add `PLATFORM_READ_TOKEN` as a read-only Contents credential scoped only to that repository. GitHub's app-repository token cannot read a different private repository. An organization-managed GitHub App installation token can replace the development token. Do not use this credential for cloud access.
 
 Create a GitHub environment named **staging**. Restrict deployment branches to `main`. Add a reviewer during initial integration if supported by your GitHub plan; routine staging releases can run without manual approval after validation. No production environment is used by this implementation.
 
@@ -307,6 +307,11 @@ anyone who has one. The steps, once:
    laptop off while the machine answers) and points `CONTROLLER_HEALTH_URL` at the machine.
 5. **Claude**: remove the old connector and add the `url` from the `controller` output (`https://ADDRESS/mcp`), then sign
    in with your operator token.
+6. **After a release, by itself** (optional, 1.20.4): add `platform_updates: {}` to the machine's configuration
+   (`scripts/machine.sh config-get`, edit, `config-put`). After each merge into `main`, the machine then installs the new
+   code once its checks have passed and an hour has gone by, and re-pins the applications' workflows an hour after that;
+   `docs/RUNBOOK.md`, "After a release", says how to stop either. A machine created before 1.20.4 needs the foundation
+   applied and `scripts/machine.sh startup` once first.
 
 ## 7n. Production (Phase 16)
 
@@ -593,7 +598,7 @@ Terraform's member resources check only their own members.
 
 ## 7o. The weekly pin refresh
 
-`.github/workflows/pins.yml` (since 1.20.3) proposes, every Monday at 05:23 UTC, the new releases of the pins Dependabot
+`.github/workflows/pins.yml` (since 1.20.5) proposes, every Monday at 05:23 UTC, the new releases of the pins Dependabot
 does not follow, in one pull request; `docs/RUNBOOK.md` ("The weekly pin refresh") says what it follows and how to review
 it. Its first job reads the official release metadata with the workflow's read-only token and needs nothing set up. The
 pull request needs a small GitHub App of its own: a pull request opened with the workflow's own token starts no CI until

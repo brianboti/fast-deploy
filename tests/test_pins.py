@@ -408,7 +408,7 @@ def test_the_pull_request_names_each_change_its_source_what_waits_and_what_to_re
     assert "- [uv 0.99.1](https://github.com/astral-sh/uv/releases/tag/0.99.1) (2026-10-14); the platform follows 0.12. uv's minor versions" in text
     assert "- **buildpacks builder (Ubuntu 22.04)**: its metadata could not be read: timed out (its pin stays as it is)" in text
     assert "The release notes of TruffleHog, linked above" in text and "CI does not run the new tools or images on a real release" in text
-    assert "   - Caddy: the controller's machine only after the foundation is applied (`scripts/apply-foundation.sh`)" in text
+    assert f"   - Caddy: {pins.MACHINE}." in text and "`scripts/machine.sh startup`" in pins.MACHINE
     assert "never hashed a download to make a pin" in text and "Nothing merges by itself" in text and "([this run](https://github.com/o/r/actions/runs/7))" in text
     assert "## What changes (2)" in text and text.index("## What changes") < text.index("## Waiting") < text.index("## Newer lines") < text.index("## Needs a look") < text.index("## What to review")
     planned, caddy = pins.plan(finding_set(), "2026-10-26"), pins.read()["caddy"]["version"]

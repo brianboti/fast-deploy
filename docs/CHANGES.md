@@ -1,4 +1,4 @@
-# 1.20.3: the weekly pin refresh
+# 1.20.5: the weekly pin refresh
 
 Asked for on 2026-10-19: the pins Dependabot does not follow were refreshed by hand, and some were behind (TruffleHog
 3.97.4 against 3.99.2, Trivy 0.74.0 against 0.76.0; the research review of 2026-10-19). Dependabot follows only the
@@ -6,7 +6,8 @@ platform's GitHub Actions and Terraform providers: it cannot follow a download h
 code or a machine's startup script. Renovate could, with regular expressions, but its source for release files finds a
 new checksum by downloading small files as checksum lists or by hashing the file itself, never by reading the digest
 GitHub records, and its hosted app does not run the command that regenerates `.github/workflows/deploy.yml`. So the
-platform has a small job of its own. 1.20.1 (#100) and 1.20.2 (#101) merged before it.
+platform has a small job of its own. It was built as 1.20.3 and takes 1.20.5, because 1.20.1 (#100), 1.20.2 (#101)
+and 1.20.4 (#102) merged before it; 1.20.3 is not used.
 
 1. **`labdeploy/pins.py`** lists the 23 pins with their official source, the line the platform follows and every place
    each one is written: TruffleHog, Trivy, OSV-Scanner, hadolint, pack and Cosign in the pipeline, the four buildpacks
@@ -47,6 +48,80 @@ cloud resource.
 Tests: 797 pass (19 new); ruff and zizmor clean.
 
 
+
+# 1.20.4: after a release, the machine and the re-pins by themselves
+
+Two chores followed every merge into the platform repository's `main`, by hand: updating the controller's machine
+(`scripts/machine.sh update`) and re-pinning each application's three workflow files (`update_app_workflows`, one pull
+request per application). With `platform_updates` in the machine's configuration both now happen by themselves, in that
+order, with an hour in which a release can still be stopped; without the block nothing changes. Built and checked
+locally; the live trial waits for the operator's go (docs/RUNBOOK.md, "After a release", has the one-time steps). 1.20.1
+to 1.20.3 are other pull requests of the same day (the Node.js 22 lock, GitHub's malware advisories, the weekly pin
+refresh), so the number may move with the order they merge in.
+
+1. **The machine updates itself.** The controller follows `main`: once the **Platform tests** run that the merge started
+   has passed, and only when the merge changed something the controller runs (`labdeploy/`, `templates/`, `schema/`,
+   `requirements.lock`), it waits `delay_minutes` (60; a newer change to those files starts it again, a contract release
+   or a document does not), then for a quiet moment (no tool call for `quiet_minutes`, 10, and no release on its way to
+   GitHub). Then it writes the commit into a request file next to its database. The controller has no privileges and
+   cannot restart itself, so a small service of the machine's own takes the request as root (`fast-deploy-update`, which a
+   systemd path unit starts). It installs the commit with `fast-deploy-install`: only a commit on `main`, now never one
+   older than the commit that runs, with the existing minute of health checks and the way back. Then it watches two more
+   minutes, and the previous commit comes back if the controller stops answering or restarts. Its result goes to a folder
+   only root writes, and the controller records it once. A commit that went back is not tried again.
+2. **The re-pins open themselves.** An hour after the controller started on a new commit, each application whose
+   workflows pin an older runner gets the usual re-pin pull request to that commit, and the one it opened for an earlier
+   commit is closed (never one a person opened). "An older runner" is now exact: the templates, the three lock files the
+   workflows install, or one of the sixteen modules they import (`labdeploy/updates.py`; a test works the list out again
+   from the templates). A release that changes only the controller re-pins nothing, so it starts no application release.
+   Applications that are paused, still onboarding or whose contract the platform keeps are left alone.
+3. **They merge themselves exactly where they may.** The controller merges a re-pin only where it merges an application's
+   own pull requests: the application's `auto_merge` allows it, its checks have passed, it merges cleanly, and it changes
+   exactly the three workflow files with the content the platform rendered (their hashes are kept when it opens). Anything
+   else waits for a person, and one a person closes is not opened again for that commit.
+4. **One change at a time.** The controller moves first; applications follow only after it has run the new commit for the
+   delay, so a runner is never rolled out ahead of a controller that could not read what it reports.
+   `platform.minimum_commit` never moves by itself.
+5. **The background jobs read a changed configuration on their own.** Before, a configuration put on the machine with
+   `config-put` reached auto-deploy and contract releases only with the next request; now every pass of the background
+   thread reads it, so a pause or a switch applies within fifteen seconds.
+6. **The machine's side.** The startup script writes `fast-deploy-update`, its oneshot service and the path unit that
+   starts it, and `/var/lib/fast-deploy-update`. `fast-deploy-install` takes one install at a time (a lock in a folder
+   only root can open, which both paths share, so a hand update never lands in the middle of an automatic one's watch),
+   tells "did not answer, switched back" (exit status 75) apart from "stopped before the switch", never fails over what
+   follows a healthy switch, always keeps the release it replaced (the way back), and removes the Python environments no
+   kept release uses. Each script is written beside the old one and moved into place, so one that runs while the startup
+   script runs again keeps its own text. `scripts/machine.sh startup` runs the startup script again after a foundation
+   apply, `scripts/machine.sh logs update` reads the update service's log, and `status` shows the service and its last
+   result.
+7. **What an independent review of this change found, and what changed for it.** One request at a time, and nothing new
+   until the machine has reported on it (or two hours have passed without a report); a commit that went back blocks the
+   later commits that leave the controller's code as it was; an install that changed nothing (`not_installed`: GitHub
+   away, held, another install) is asked for again after half an hour instead of never; the commit that runs is read
+   under the lock, so an install by hand that finishes meanwhile is never undone; the request is moved into root's own
+   folder before it is read (a link, a folder or a pipe from the controller's side is never followed or read); a
+   dispatch left behind by a killed process no longer holds updates forever; a refused sign-in from anywhere no longer
+   postpones them; a failing part (the machine or the re-pins) is recorded once and never stops the other; re-pins wait
+   at least ten minutes and never run while the machine installs; a re-pin is merged only at the head the gate read, and
+   what GitHub blocks for an hour, or refuses, is named as waiting for a person.
+8. **What the chat says.** `get_controller_status` adds `platform_updates`: the commit the controller runs, what happens
+   next and when, the last automatic update, and each application's re-pin. Its answer names a re-pin that waits for a
+   person, an update that went back and a step that fails. `list_events` shows every step ("platform update", "workflow
+   update").
+9. **Documents.** The runbook's new section "After a release" (what happens, how to stop each part, what to do when
+   something goes wrong, the one-time setup), the machine table, the monthly checklist, the setup guide (7m), the
+   configuration example, the roadmap's re-pin rule and the handoff.
+
+Sources read on 2026-10-19 (docs/SOURCES.md): systemd's path units (the service starts again while the request file is
+there, so it removes the file first) and service and execution environment pages (a restart passes through inactive and
+gets a new invocation ID). Also Google's startup scripts (root, each boot, `google_metadata_script_runner startup` to run
+one again), Identity-Aware Proxy's TCP forwarding, GitHub's workflow runs API (filters by commit and event), the GitHub
+token's rule that installation tokens start workflows, Google's SRE workbook on canarying (a small part first, time to
+judge it, automatic rollback, one change at a time) and Dependabot's cooldown (a delay on purpose).
+
+Requires regeneration of app workflows: no (no template or runner module changed). Terraform apply: the foundation once
+(the startup script in the machine's metadata, in place), then `scripts/machine.sh startup` on the machine.
+
 # 1.20.2: GitHub's malware advisories stop a Node.js release
 
 Found on 2026-10-19 while preparing the live exercise of Phase 18, by running the pinned OSV-Scanner 2.7.0 on a lockfile
@@ -64,7 +139,6 @@ The image's scan (Artifact Analysis) is unchanged: its notes carry no CWE list, 
 
 Tests: 778 pass; ruff clean.
 
-
 # 1.20.1: the lock for a Node.js 22 service
 
 Found on 2026-10-19 while preparing the live exercise of Phase 18, by running the platform's own lock container on Docker
@@ -81,7 +155,6 @@ for a Node.js 22 service without a lockfile. The unit tests had replaced Docker 
    error a crash names, else the last line.
 
 Tests: 778 pass; ruff clean.
-
 
 # 1.20.0: Node.js web services (Phase 18)
 

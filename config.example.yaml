@@ -5,6 +5,13 @@ database: deployments.db
 #   repository: YOUR_ORG/lab-deploy
 #   commit: null              # default: the tip of main
 #   minimum_commit: null      # refuse apps pinned to older platform commits
+# After a release, by itself (on the machine only; docs/RUNBOOK.md "After a release"): the machine installs main once its
+# checks have passed and the delay is over, then re-pins the applications' workflows to the commit it runs.
+# platform_updates:
+#   machine: true
+#   workflows: true
+#   delay_minutes: 60         # the window in which a release can still be stopped
+#   quiet_minutes: 10         # restart only after this long without a tool call
 # paused: false               # the kill switch; also available per application
 # observer:                   # viewer-only identity for live health and logs (Terraform creates it)
 #   service_account: lab-deploy-observer@your-staging-project.iam.gserviceaccount.com

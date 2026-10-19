@@ -63,10 +63,10 @@ FIELDS = {"version": r"\d+(?:\.\d+){1,3}", "sha256": SHA256, "sha512": r"[0-9a-f
 
 # When a merged change reaches where it runs, in the pull request's words.
 PIPELINE = ("the platform pipeline's next release of each service under apps/; an application with its own workflows once "
-            "they are re-pinned (`update_app_workflows`)")
-CONTROLLER = "the controller once it runs the merged commit (`scripts/machine.sh update <commit>`)"
-MACHINE = ("the controller's machine only after the foundation is applied (`scripts/apply-foundation.sh`) and the machine "
-           "restarts, which runs its startup script again")
+            "they are re-pinned (`update_app_workflows`, or by themselves with `platform_updates`)")
+CONTROLLER = "the controller once it runs the merged commit (`scripts/machine.sh update <commit>`, or by itself with `platform_updates`)"
+MACHINE = ("the controller's machine only after the foundation is applied (`scripts/apply-foundation.sh`) and its startup "
+           "script runs again (`scripts/machine.sh startup`, or a restart)")
 AT_ONCE = "this repository's CI as soon as it merges"
 
 
