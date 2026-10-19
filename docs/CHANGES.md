@@ -1,3 +1,23 @@
+# 1.20.8: a repository whose services live in folders
+
+Found on 2026-10-19 in the live exercise of Phase 18, by `check_repository` on the root of
+`brianboti/fast-deploy-node-trial`, which keeps eight Node.js services in folders and nothing at its root. The answer said
+the root "has Node.js code but no package.json", told the developer to add one there, listed a Python `requirements.txt`
+among the missing files, and offered to draft a Dockerfile and a contract for the root. The reader had found the eight
+folders, but nothing said so.
+
+1. **The reader names the folders.** At a root with no `package.json` whose folders hold services, the fix reads "the
+   service lives in node-bare, node-docker, node-localhost and 5 more: take that folder (path node-bare), or add a
+   package.json at the root", as it already did for Python.
+2. **The check says which folder to take.** When the root's only refusal is that it holds no service of its own,
+   `check_repository` names the folders and asks which one to check or deploy, instead of listing files for the root.
+   A root refused for something of its own (a committed secret) still shows that refusal.
+
+1.20.5 to 1.20.7 are the weekly pin refresh (#103, #108) and the docker command on the machine (#109).
+
+Tests: 837 pass; ruff clean.
+
+
 # 1.20.7: the docker command on the controller's machine
 
 Found on 2026-10-19 in the live exercise of Phase 18: importing `node-nolock` (a Node.js 22 service without a lockfile)
