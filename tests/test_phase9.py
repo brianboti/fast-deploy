@@ -5,6 +5,7 @@ import subprocess
 
 import pytest
 
+from labdeploy import pins
 from labdeploy.bake import BakeFailed, bake, crashes, judge, p95, request_stats
 from labdeploy.models import AppSpec
 from labdeploy.release import CloudRun, lint_summary, recover, rollout
@@ -642,7 +643,8 @@ def test_deploy_template_carries_the_bake_and_the_lint():
     assert workflow["jobs"]["deploy"]["timeout-minutes"] == 35
     assert text.count('[[ "$BAKE_SECONDS" =~ ^[0-9]{1,3}$ ]] && [ "$BAKE_SECONDS" -le 900 ]') == 2
     lint = next(step for step in workflow["jobs"]["build"]["steps"] if step.get("name") == "Lint the Dockerfile")
-    assert "hadolint/releases/download/v2.15.1/hadolint-linux-x86_64" in lint["run"] and "sha256sum --check --strict" in lint["run"]
+    url, checksum, summary = pins.mentions("hadolint", "templates/deploy-gcp.yml")  # by version and SHA-256, named in the summary line
+    assert url in lint["run"] and checksum + " | sha256sum --check --strict" in lint["run"] and summary in lint["run"]
     assert "--no-fail" in lint["run"] and "HADOLINT_BLOCKING" in lint["run"]
     names = [step.get("name") for step in workflow["jobs"]["build"]["steps"]]
     assert names.index("Lint the Dockerfile") < names.index("Build without cloud credentials")

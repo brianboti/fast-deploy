@@ -13,9 +13,131 @@ folders, but nothing said so.
    `check_repository` names the folders and asks which one to check or deploy, instead of listing files for the root.
    A root refused for something of its own (a committed secret) still shows that refusal.
 
-1.20.5 to 1.20.7 are open at the time of writing (#103, #108, #109).
+1.20.5 to 1.20.7 are the weekly pin refresh (#103, #108) and the docker command on the machine (#109).
 
-Tests: 812 pass; ruff clean.
+Tests: 837 pass; ruff clean.
+
+
+# 1.20.7: the docker command on the controller's machine
+
+Found on 2026-10-19 in the live exercise of Phase 18: importing `node-nolock` (a Node.js 22 service without a lockfile)
+stopped with "The dependencies could not be locked: Docker is not installed on this machine". The machine has Docker's
+daemon (Debian 13's `docker.io` 26.1.5, its socket active, the controller's user in the `docker` group) but no `docker`
+command: Debian 13 ships the command in `docker-cli`, which `docker.io` only recommends, and the startup script installs
+with `--no-install-recommends`. So every lock the platform makes on the machine failed, a Python service's (D27) as well
+as a Node.js one's (D42), since the controller moved there on 2026-10-18; no import had needed one until now.
+
+1. **The startup script installs `docker-cli`** beside `docker.io`. The script is the machine's metadata, which changes in
+   place: the next foundation apply updates it without replacing the machine, and the script installs the package at the
+   next boot. A running machine gets it at once with `sudo apt-get install -y --no-install-recommends docker-cli`.
+
+1.20.5 and 1.20.6 are the weekly pin refresh (#103, #108).
+
+Tests: 836 pass; ruff clean.
+
+
+# 1.20.6: the actions the templates use, in the weekly pin refresh
+
+Asked for on 2026-10-19: Dependabot's pull requests #47 (`actions/download-artifact` 4.3.0 to 8.0.2) and #48
+(`actions/upload-artifact` 4.6.2 to 7.0.2) fail CI. Dependabot reads only `.github/workflows` and a root `action.yml` (its
+options reference), so it changes `.github/workflows/deploy.yml`, which is made from `templates/deploy-gcp.yml`, and never
+the template; the test that keeps them equal fails, and the templates fall behind the platform's own workflows. Two ways
+were weighed: the weekly job copying Dependabot's bumps into the templates, or following these actions itself. Copying
+cannot work well: a Dependabot pull request cannot pass CI until the templates move, so main never holds a bump to copy
+and the job would have to push to Dependabot's branches; it would copy whatever Dependabot proposes, a new major included,
+one pull request per action; and `labdeploy/workflows.py`, whose anchors name the template's actions, would still need a
+hand. So the weekly job follows them itself. This builds on the weekly pin refresh (1.20.5, #103).
+
+1. **Ten actions join `labdeploy/pins.py`** (`PINS`, kind `action`): checkout, setup-python, setup-node, upload-artifact,
+   download-artifact, attest-build-provenance, attest-sbom and create-github-app-token, and Google's auth and
+   setup-gcloud: every action a template or `labdeploy/workflows.py` uses. Each is written `owner/name@<commit> # vX.Y.Z`
+   wherever it appears (`templates/*.yml`, `templates/repo/*.yml`, `labdeploy/workflows.py` and every workflow), with one
+   commit everywhere. Four carried `# v4`, `# v3` or no comment; they now name their release (upload-artifact 4.6.2,
+   download-artifact 4.3.0, auth 3.0.0, setup-gcloud 3.0.1), with the same commits as before.
+2. **The rules**, as for the other pins: the newest release of the action's major version at least seven days after its
+   publication, never a draft or a pre-release; a newer major is listed under "Newer lines" and never proposed
+   (upload-artifact 7 and download-artifact 8 today). The commit is the one the release's tag names in the action's own
+   repository, read from GitHub's git refs API (an annotated tag is followed to its commit): a commit from the action's
+   repository, never a fork's, as GitHub's secure-use reference asks. Each week the pinned release's tag must still name
+   the pinned commit; a release's tag never needs to move, so a moved or deleted one holds that action and says so under
+   "Needs a look".
+3. **Written everywhere at once.** `deploy.yml` is regenerated first, then the new commit is written in the template,
+   `labdeploy/workflows.py` and every workflow alike, so `deploy.yml` stays what the new generator makes of the new
+   template (a test loads the rewritten generator to check it). The pull request names each action with its release
+   notes, its tag and the changes since the pinned commit, and says what to look for: an input or output renamed or
+   removed.
+4. **Dependabot leaves them alone**: `.github/dependabot.yml` ignores those ten, at every version. Dependabot raises no
+   alerts for actions pinned by commit (About Dependabot alerts), so this loses no security update. It still follows
+   `hashicorp/setup-terraform`, which no template uses, and the Terraform providers. A test keeps the ignore list equal
+   to the actions in `PINS`, and those equal to the actions the templates use.
+5. **What merging starts.** When an action `.github/workflows/infra-apply.yml` uses moves (checkout, Google's auth), the
+   pull request says that merging it starts Infrastructure apply for every application root: that workflow runs when a
+   push to main changes it, and `labdeploy.infra.roots` counts a change to an infrastructure workflow as one to every
+   root. Dependabot's bumps of those actions did the same, without a word. This change is one itself: it writes the
+   release of Google's auth in `infra-apply.yml`.
+6. The tests that spelled out the checkout and setup-node commits read them through `labdeploy.pins` now.
+
+Checked live, reading only, on 2026-10-19: every pinned action commit is the one its release's tag names, and zizmor's
+online audits (`ref-version-mismatch`, `impostor-commit`) find nothing. No action has a newer release on its line, so the
+first refresh proposes none of them; it lists upload-artifact 7.0.2 and download-artifact 8.0.2 as newer lines. Moving
+to them is a decision for a person, and worth making soon: the pinned 4.6.2 and 4.3.0 declare Node.js 20, which GitHub
+removed from its runners on 2026-09-23, so every run that uses them warns that they are "being forced to run on Node.js
+24" (the promotion of 2026-10-19, for one) and GitHub asks for versions that support it; their release notes list
+breaking changes (download-artifact 8 fails on a digest mismatch by default and no longer unzips a file that is not a
+zip). Cost: about twenty more reads of GitHub's API a week, well within the workflow token's allowance, seconds of runner
+time, and no cloud resource.
+
+Tests: 836 pass (6 new); ruff and zizmor clean.
+
+
+# 1.20.5: the weekly pin refresh
+
+Asked for on 2026-10-19: the pins Dependabot does not follow were refreshed by hand, and some were behind (TruffleHog
+3.97.4 against 3.99.2, Trivy 0.74.0 against 0.76.0; the research review of 2026-10-19). Dependabot follows only the
+platform's GitHub Actions and Terraform providers: it cannot follow a download held to a checksum, a digest in Python
+code or a machine's startup script. Renovate could, with regular expressions, but its source for release files finds a
+new checksum by downloading small files as checksum lists or by hashing the file itself, never by reading the digest
+GitHub records, and its hosted app does not run the command that regenerates `.github/workflows/deploy.yml`. So the
+platform has a small job of its own. It was built as 1.20.3 and takes 1.20.5, because 1.20.1 (#100), 1.20.2 (#101)
+and 1.20.4 (#102) merged before it; 1.20.3 is not used.
+
+1. **`labdeploy/pins.py`** lists the 23 pins with their official source, the line the platform follows and every place
+   each one is written: TruffleHog, Trivy, OSV-Scanner, hadolint, pack and Cosign in the pipeline, the four buildpacks
+   images, `python:X.Y-slim` and `node:<line>-slim`, uv with its wheel hashes and the npm for Node 22 locks with its
+   integrity (`labdeploy/scaffold.py`), CI's hadolint and OpenTofu, and the machine's Caddy and Litestream. `list` and
+   `check` show the pins and what a refresh would do; `refresh` writes; `verify` checks the downloads.
+2. **The rules.** Only a release at least seven days old, counted from the later of its publication and its files'
+   upload, and only from the line followed: a newer line is listed, never proposed (uv 0.13 and npm 12 today). Checksums
+   come from official metadata, never from hashing a download: GitHub's SHA-256 of a release file, which the project's
+   own checksum list must repeat (and the list must be the file GitHub recorded); Docker Hub's index digest once its tag
+   has pointed to it for seven days, with linux/amd64 and linux/arm64 in it; for the buildpacks images, the newest one
+   Google published for the stack that is seven days old (Google uploads them about weekly, so the tag's own image rarely
+   is); PyPI's and the npm registry's hashes. A newer npm must ask for the same Node.js versions and run no install
+   script. Every week the current pins are checked too: a file GitHub now records differently, or a buildpacks image
+   gone from its registry, is reported.
+3. **`.github/workflows/pins.yml`**, Mondays at 05:23 UTC. The first job reads the metadata with the read-only token,
+   writes the new pins, regenerates `deploy.yml` from the template, and downloads each new file to check it against its
+   new pin, without running it. The second, in the environment `pins`, holds the key of a small GitHub App (Contents,
+   Pull requests and Workflows) and reads nothing from the internet: it opens one pull request, replaces last week's if it
+   is still open, or closes it when nothing is left, and the change may touch only the files that hold pins. It never
+   merges. The pull request names each change with its release notes, GitHub's record and the checksum list, what waits,
+   the newer lines, what needs a look, and what to review. Without the App (`docs/SETUP.md` 7o), the proposal stays in the
+   run's summary.
+4. **Tests the job never edits.** The tests that spelled out TruffleHog, Trivy, OSV-Scanner, hadolint, pack, Cosign,
+   OpenTofu and npm read them through `labdeploy.pins` now, and check a little more than before (for TruffleHog, Trivy,
+   OSV-Scanner and OpenTofu, that the checksum is checked before the tool is unpacked or run). New tests fail when a place is reworded, when two places disagree, when a
+   download held to a checksum or an image digest is missing from the list, and when a test spells out a pinned value.
+5. The comments of `BASE_IMAGES`, `NODE_IMAGES`, `UV_VERSION` and `LOCK_NPM` moved onto the pinned lines, so each line
+   carries its own release and date. The runbook has a section for the refresh, and its monthly checklist names the pull
+   request; the setup guide has section 7o.
+
+Checked live, reading only, on 2026-10-19: every current pin equals its official metadata. A refresh on a copy of the
+repository would propose TruffleHog 3.99.2, Trivy 0.75.0 (0.76.0 waits until 2026-10-21), OpenTofu 1.13.1 and npm
+11.21.0, and its four downloads matched their new pins. With them, three of the old tests failed, which is why the tests
+read the pins now. Cost: nothing on this public repository (about 11 runner minutes a week with the CI it starts), and no
+cloud resource.
+
+Tests: 797 pass (19 new); ruff and zizmor clean.
 
 
 # 1.20.4: after a release, the machine and the re-pins by themselves

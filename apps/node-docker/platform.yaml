@@ -1,0 +1,9 @@
+# Imported by Fast Deploy from brianboti/fast-deploy-node-trial (node-docker) at 00b11f642b1a on 2026-10-19, read as it is: the pull request that added
+# this file lists every choice and where it came from. Merging is the review (docs/ROADMAP.md D32); a release moves source.commit.
+source:
+  repository: brianboti/fast-deploy-node-trial
+  path: node-docker
+  commit: e027aa13d964faee0ef2ecf5cff8717ae16dfc2f
+name: node-docker
+runtime: node-http
+node: '24'

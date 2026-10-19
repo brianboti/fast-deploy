@@ -55,7 +55,9 @@ grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fs
 # the morning in Texas), and the controller is back within a minute.
 export DEBIAN_FRONTEND=noninteractive
 missing=()
-for package in git python3 python3-venv sqlite3 ca-certificates curl unattended-upgrades docker.io nftables; do
+# Debian 13's docker.io holds the daemon only, and only recommends docker-cli, the docker command itself, which
+# --no-install-recommends leaves out: without it every lock the platform makes on this machine fails.
+for package in git python3 python3-venv sqlite3 ca-certificates curl unattended-upgrades docker.io docker-cli nftables; do
   dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' || missing+=("$package")
 done
 if (( ${#missing[@]} )); then

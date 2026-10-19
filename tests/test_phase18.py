@@ -15,7 +15,7 @@ from test_phase11 import DraftingGitHub
 from test_phase13 import controller_with
 from test_scaffold import hadolint_command, zizmor_command
 
-from labdeploy import chat, dockerpolicy, node, reader, scaffold, scan
+from labdeploy import chat, dockerpolicy, node, pins, reader, scaffold, scan
 from labdeploy.contract import Contracts, node_lock_path
 from labdeploy.models import NODE_END_OF_LIFE, AppSpec, default_node, draft_dump, enforce, parse_contract, parse_spec, spec_hash
 from labdeploy.onboarding import contract_check
@@ -497,15 +497,16 @@ def test_the_lock_is_made_by_npm_11_10_or_later_with_every_script_off():
         script = args[-1]
         assert "npm install --package-lock-only --ignore-scripts --min-release-age=3" in script and "--no-audit" in script
         assert 'if [ "$major" -lt 11 ] || { [ "$major" -eq 11 ] && [ "$minor" -lt 10 ]; }' in script  # npm 10 would ignore the hold
-        # Node 22's npm 10.9.9 has no min-release-age: its container installs npm 11.19.1 first and checks its integrity hash.
-        assert ("npm@11.19.1" in script and scaffold.LOCK_NPM["22"][1] in script) == (line == "22")
+        # Node 22's npm 10.9.9 has no min-release-age: its container installs the pinned npm 11 first and checks its integrity hash.
+        version, integrity = scaffold.LOCK_NPM["22"]
+        assert (f"npm@{version}" in script and integrity in script) == (line == "22")
         if line == "22":
             # Live 2026-10-19: without a package.json of its own, the pinned folder's install walked up to the service's
             # package.json one folder above, installed npm there and left no lockfile to check (Node crashed on require).
             steps = script.split("; ")
             own = steps.index("echo '{\"private\": true}' > /tmp/npm-pinned/package.json")
             assert steps.index("cat > package.json") < steps.index("mkdir /tmp/npm-pinned") < own < next(
-                index for index, step in enumerate(steps) if "npm@11.19.1" in step)
+                index for index, step in enumerate(steps) if f"npm@{version}" in step)
     assert scaffold.node_lock_command("api") == "cd api && npm install --package-lock-only --ignore-scripts --min-release-age=3"
     assert scaffold.node_lock(package, "24", fake_npm([], "not json"))["error"].startswith("the container did not return a usable package-lock.json")
     bad = json.loads(lockfile({"name": "svc", "dependencies": {"x": "1"}}))
@@ -581,7 +582,7 @@ def test_the_node_steps_are_pinned_and_run_for_node_services_only():
         workflow, steps = build_steps(text) if "__LAB_" in text else (yaml.safe_load(text), yaml.safe_load(text)["jobs"]["build"]["steps"])
         names = [step.get("name") or step.get("id") for step in steps]
         setup = next(step for step in steps if step.get("id") == "app-node")
-        assert setup["uses"] == "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0".split(" # ")[0]
+        assert setup["uses"] == pins.mentions("actions/setup-node")[0].split(" # ")[0]  # by commit, as labdeploy/pins.py reads it
         assert setup["with"] == {"node-version": "${{ steps.policy.outputs.node }}", "package-manager-cache": False}
         assert setup["if"] == "steps.policy.outputs.runtime == 'node-http'"
         for name in ("Run unit tests", "Audit Python dependencies"):
@@ -593,8 +594,8 @@ def test_the_node_steps_are_pinned_and_run_for_node_services_only():
                                                 "Install Node.js dependencies with their scripts off", "Run unit tests (Node.js)", "Build without cloud credentials")]
         assert order == sorted(order)
         audit = next(step for step in steps if step.get("name") == "Audit Node.js dependencies")["run"]
-        assert "osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64" in audit
-        assert "160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b" in audit and "sha256sum --check --strict" in audit
+        url, checksum = pins.mentions("osv-scanner", "templates/deploy-gcp.yml")  # by version and SHA-256, as labdeploy/pins.py reads them
+        assert url in audit and audit.index(url) < audit.index(checksum + " | sha256sum --check --strict") < audit.index('chmod +x "$RUNNER_TEMP/osv-scanner"')
         assert '--config "$RUNNER_TEMP/osv-scanner.toml"' in audit and ': > "$RUNNER_TEMP/osv-scanner.toml"' in audit  # nothing of the repository's
         assert "python -m labdeploy.scan osv" in audit and "bundle/dependency-audit.json" in audit
         install = next(step for step in steps if step.get("name") == "Install Node.js dependencies with their scripts off")["run"]
@@ -683,7 +684,7 @@ def test_the_dependency_audit_stops_malicious_and_fixable_serious_findings_for_e
 
 
 def test_an_audit_that_did_not_finish_or_a_lockfile_from_elsewhere_stops_the_release():
-    assert "did not finish (OSV-Scanner 2.7.0 exited 127)" in scan.osv_verdict(scan.osv_summary(None, 127, LOCK))
+    assert f"did not finish ({scan.OSV_SCANNER} exited 127)" in scan.osv_verdict(scan.osv_summary(None, 127, LOCK))
     assert "did not finish" in scan.osv_verdict(scan.osv_summary(None, 128, LOCK))  # no packages found, but the lockfile has some
     empty = lockfile({"name": "svc", "version": "1.0.0"}, packages={})
     assert scan.osv_verdict(scan.osv_summary(None, 128, empty)) is None  # a service with no dependencies at all
@@ -700,9 +701,9 @@ def test_the_audit_command_writes_its_json_and_the_receipt_counts_it(tmp_path, c
     lock.write_text(LOCK)
     assert scan.main(["osv", str(report), "--exit-code", "1", "--lockfile", str(lock), "--json", str(out)]) == 0
     written = json.loads(out.read_text())
-    assert written["blocked"] is False and written["by_severity"]["MEDIUM"] == 1 and written["tool"] == "OSV-Scanner 2.7.0"
+    assert written["blocked"] is False and written["by_severity"]["MEDIUM"] == 1 and written["tool"] == scan.OSV_SCANNER
     assert "medium: express@1.2.3 GHSA-q, fixed in 2.0.0" in capsys.readouterr().out
-    assert build_checks(str(out.parent))["dependency_audit"] == {"tool": "OSV-Scanner 2.7.0", "status": "finished", "packages": 2, "critical": 0,
+    assert build_checks(str(out.parent))["dependency_audit"] == {"tool": scan.OSV_SCANNER, "status": "finished", "packages": 2, "critical": 0,
                                                                   "high": 0, "medium": 1, "low": 0, "malicious": 0}
     report.write_text(json.dumps(osv_report(("left-pad", "1.2.3", "MAL-2026-9", "", None, []))))
     assert scan.main(["osv", str(report), "--exit-code", "1", "--lockfile", str(lock), "--json", str(out)]) == 1
@@ -743,7 +744,8 @@ def test_the_chat_names_the_runtime_and_the_audit():
 def test_every_supported_line_has_a_well_formed_index_digest():
     assert tuple(scaffold.NODE_IMAGES) == node.NODES == ("22", "24", "26")
     assert all(digest.startswith("sha256:") and len(digest) == 71 for digest in scaffold.NODE_IMAGES.values())
-    assert len(set(scaffold.NODE_IMAGES.values())) == 3 and scaffold.NODE_IMAGES_RESOLVED == "2026-10-19"
+    # Resolved no earlier than the Node.js lines arrived, and never in the future (the weekly pin refresh dates each change).
+    assert len(set(scaffold.NODE_IMAGES.values())) == 3 and "2026-10-19" <= scaffold.NODE_IMAGES_RESOLVED <= datetime.datetime.now(datetime.UTC).date().isoformat()
     assert set(scaffold.LOCK_NPM) == {"22"} and scaffold.LOCK_NPM["22"][1].startswith("sha512-")
     with pytest.raises(ValueError, match="not supported"):
         scaffold.node_base_image("20")
@@ -765,7 +767,7 @@ def test_the_platforms_node_dockerfile():
     assert not [finding for finding in dockerpolicy.check(plain, "unknown")]  # the platform's own image meets its own policy
 
 
-@pytest.mark.skipif(hadolint_command() is None, reason="hadolint 2.15.1 is not available")
+@pytest.mark.skipif(hadolint_command() is None, reason="the pinned hadolint is not available")
 def test_the_node_dockerfiles_pass_hadolint():
     for text in (scaffold.platform_dockerfile(node_spec(scripts=["sharp@0.34.4"]), True), scaffold.node_dockerfile(
             {"node": "22", "port": 8080, "command": ["node", "server.js"], "lockfile": "package-lock.json", "scripts": []})):
@@ -821,7 +823,7 @@ def test_a_bare_node_service_gets_every_file_the_standard_asks_for():
     assert (spec.runtime, spec.node, spec.reviewed, spec.tests, spec.build.recipe) == ("node-http", default_node(), False, "required", "repository")
     ci = yaml.safe_load(files[".github/workflows/ci.yml"])
     setup = ci["jobs"]["tests"]["steps"][1]
-    assert setup["uses"].startswith("actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1") and setup["with"]["package-manager-cache"] is False
+    assert setup["uses"] == pins.mentions("actions/setup-node")[0].split(" # ")[0] and setup["with"]["package-manager-cache"] is False
     assert "npm ci --ignore-scripts" in files[".github/workflows/ci.yml"] and "node --test" in files[".github/workflows/ci.yml"]
     dependabot = yaml.safe_load(files[".github/dependabot.yml"])
     npm = next(entry for entry in dependabot["updates"] if entry["package-ecosystem"] == "npm")
@@ -843,8 +845,8 @@ def test_the_drafter_keeps_what_exists_and_says_what_it_cannot_draft():
 
 def test_the_drafted_ci_and_dependabot_pin_what_the_platform_pins():
     template = (scaffold.TEMPLATES / "ci-node.yml").read_text()
-    assert "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0" in template
-    assert "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0" in Path("templates/deploy-gcp.yml").read_text()
+    setup_node = pins.mentions("actions/setup-node")[0]  # by commit with its release, as labdeploy/pins.py reads it
+    assert setup_node in template and setup_node in Path("templates/deploy-gcp.yml").read_text()
     checkout = Path(".github/workflows/ci.yml").read_text().split("actions/checkout@")[1].split(" ")[0]
     assert f"actions/checkout@{checkout}" in template
 

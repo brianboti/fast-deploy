@@ -17,7 +17,7 @@ from labdeploy.models import AppSpec
 from labdeploy.server import build_app
 
 MCP = {"Authorization": "Bearer test-token", "Accept": "application/json, text/event-stream"}
-NEW_CHECKOUT = "3d3c42e5aac5ba805825da76410c181273ba90b1"
+NEW_CHECKOUT = "b4" * 20  # a commit the CI fixture pins: never the real pin, which the weekly refresh moves (tests/test_pins.py)
 OLD_CHECKOUT = "11d5960a326750d5838078e36cf38b85af677262"
 
 

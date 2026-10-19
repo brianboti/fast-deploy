@@ -69,7 +69,7 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           path: platform-main
           persist-credentials: false
-      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.INFRA_PLAN_WIF_PROVIDER }}
           service_account: ${{ vars.INFRA_PLAN_SERVICE_ACCOUNT }}
@@ -157,7 +157,7 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           path: platform-main
           persist-credentials: false
-      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.INFRA_PRODUCTION_PLAN_WIF_PROVIDER }}
           service_account: ${{ vars.INFRA_PRODUCTION_PLAN_SERVICE_ACCOUNT }}

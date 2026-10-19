@@ -6,7 +6,7 @@ import pytest
 import yaml
 from test_onboarding import DOCKERFILE, GOOD_SPEC, PLATFORM, make
 
-from labdeploy import scaffold
+from labdeploy import pins, scaffold
 from labdeploy.cost import issue_body
 from labdeploy.onboarding import contract_check, missing_message, summary
 from labdeploy.workflows import lay_out
@@ -174,7 +174,8 @@ def test_without_a_dockerfile_the_build_uses_pinned_buildpacks():
     build = next(step for step in steps if step.get("name") == "Build without cloud credentials")
     run = build["run"]
     assert build["env"]["PYTHON_VERSION"] == "${{ steps.policy.outputs.python }}"
-    assert "pack-v0.40.9-linux.tgz" in run and "dc0ee1e931cf8a106d7555a01a214864f9acb60b77adf15d69b74df4404758e9" in run
+    url, checksum = pins.mentions("pack", "templates/deploy-gcp.yml")  # by version and SHA-256, as labdeploy/pins.py reads them
+    assert url in run and checksum + " | sha256sum --check --strict" in run
     # Both builders and run images by digest; 3.11 and 3.12 need the Ubuntu 22.04 one.
     assert run.count("gcr.io/buildpacks/builder@sha256:") == 2 and "google-22/run@sha256:" in run and "google-24/run@sha256:" in run
     assert "3.11|3.12)" in run and '--env "GOOGLE_PYTHON_VERSION=$PYTHON_VERSION.x"' in run and "--platform linux/amd64" in run
