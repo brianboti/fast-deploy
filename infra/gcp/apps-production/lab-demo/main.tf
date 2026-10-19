@@ -33,6 +33,9 @@ module "service" {
   instance_alert_count         = 4
   exposure                     = "authenticated"
   viewers                      = []
+  slo_goal                     = 0.995
+  uptime_period                = "60s"
+  uptime_regions               = ["USA_OREGON", "USA_IOWA", "USA_VIRGINIA"]
   github_environment           = "production-lab-demo"
   workflow_files               = ["promote.yml"]
   needs                        = { buckets = ["uploads"], topics = ["events"], database = "none", migrate = [] }
