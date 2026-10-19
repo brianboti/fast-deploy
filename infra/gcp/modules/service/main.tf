@@ -305,10 +305,11 @@ resource "google_cloud_run_v2_service_iam_member" "uptime_probe" {
   member   = "serviceAccount:service-${var.project_number}@gcp-sa-monitoring-notification.iam.gserviceaccount.com"
 }
 resource "google_monitoring_uptime_check_config" "health" {
-  count        = var.runtime_alerts ? 1 : 0
-  display_name = "${var.service} health"
-  timeout      = "10s"
-  period       = "300s"
+  count            = var.runtime_alerts ? 1 : 0
+  display_name     = "${var.service} health"
+  timeout          = "10s"
+  period           = var.uptime_period
+  selected_regions = length(var.uptime_regions) > 0 ? var.uptime_regions : null
   http_check {
     path           = var.health_path
     port           = 443

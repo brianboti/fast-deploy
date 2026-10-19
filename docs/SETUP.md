@@ -379,8 +379,9 @@ a reviewer's approval on GitHub. The steps, once:
    ```
 
 7. **Each application**: ask Claude "add production for APP" (`add_production`), and again after each step:
-   1. A pull request with the production root, `infra/gcp/apps-production/APP`. Read its plan comment and merge it
-      yourself; the controller never merges production infrastructure.
+   1. A pull request with the production root, `infra/gcp/apps-production/APP`, with its objective, its error-budget
+      alerts and an uptime check every minute (docs/RUNBOOK.md, Production). Read its plan comment and merge it yourself;
+      the controller never merges production infrastructure.
    2. Approve its apply in `infra-production` on GitHub; the controller waits until that apply has succeeded.
    3. The controller creates the environment `production-APP` on the platform repository, with your reviewers as
       required reviewers, self-review prevented, deployments from `main` only, and the eight target variables. It also opens

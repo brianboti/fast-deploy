@@ -840,21 +840,35 @@ def applications(apps):
     return compose(head, notes, next_line, block=table)
 
 
+def budget_line(budget):
+    """Production's objective and its error budget in plain words, or None where there is none (docs/ROADMAP.md D39)."""
+    if not isinstance(budget, dict) or not budget.get("goal"):
+        return None
+    goal, left, good = budget["goal"], budget.get("budget_remaining"), budget.get("compliance")
+    target = f"objective {goal * 100:g}% of requests without a server error over {budget.get('days', 30)} days"
+    if left is None:
+        return f"Error budget: no data yet ({target})"
+    shown = "spent" if left <= 0 else f"{left:.0%} left"
+    return f"Error budget: {shown}" + (f", {good * 100:.2f}% of requests fine so far" if good is not None else "") + f" ({target})"
+
+
 def health(result):
-    """get_service_health."""
+    """get_service_health, for staging or for production (its error budget too)."""
     app = result.get("application") or "the app"
+    production = result.get("environment") == "production"
+    name = f"`{app}`" + (" in production" if production else "")
     service, metrics = result.get("service") or {}, result.get("metrics") or {}
     window = metrics.get("window_minutes") or 60
     errors, uptime, requests = metrics.get("server_errors"), metrics.get("uptime_checks_passed"), metrics.get("requests")
     unreachable = uptime is not None and uptime < 0.99
     if service.get("ready") is False:
-        head = f"**`{app}` is not ready**" + (f": {clip(service.get('ready_message'), 200)}" if service.get("ready_message") else ".")
+        head = f"**{name} is not ready**" + (f": {clip(service.get('ready_message'), 200)}" if service.get("ready_message") else ".")
     elif errors:
-        head = f"**`{app}` is serving, with {plural(errors, 'server error')} in the last {window} min.**"
+        head = f"**{name} is serving, with {plural(errors, 'server error')} in the last {window} min.**"
     elif unreachable:
-        head = f"**`{app}` may not be reachable**: the uptime check passed in only {percent(uptime)} of its probes."
+        head = f"**{name} may not be reachable**: the uptime check passed in only {percent(uptime)} of its probes."
     else:
-        head = f"**`{app}` is healthy.**"
+        head = f"**{name} is healthy.**"
     serving = (service.get("traffic") or [{}])[0]
     p95 = metrics.get("request_latency_ms_p95")
     facts = [(f"Last {window} min: {plural(requests, 'request')}, {plural(errors or 0, 'server error')}"
@@ -864,9 +878,11 @@ def health(result):
               else " (not the release the controller recorded; ask me to compare)")) if serving.get("commit") else None,
              f"Access: {access((result.get('access') or {}).get('exposure'))}",
              f"Memory: {percent(metrics['memory_utilization_p95'])} of its limit at the busiest" if metrics.get("memory_utilization_p95") is not None else None,
+             budget_line(result.get("error_budget")),
              *[f"Note: {clip(note, 220)}" for note in (result.get("notes") or [])[:3]]]
     trouble = bool(errors) or service.get("ready") is False or unreachable
-    return compose(head, facts, (f"look at the error lines (“show {app}'s errors”); if the latest release caused it, “roll {app} back”."
+    where = " in production" if production else ""
+    return compose(head, facts, (f"look at the error lines (“show {app}'s errors”); if the latest release caused it, “roll {app} back{where}”."
                                  if trouble else "nothing to do."), link("Cloud console", result.get("console_url")) if result.get("console_url") else None)
 
 

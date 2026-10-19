@@ -333,6 +333,7 @@ def promotion_approval(plan, requested_by=None):
         "needs": {"buckets": list(needs.get("buckets") or []), "topics": list(needs.get("topics") or []), "database": needs.get("database", "none"),
                   "migrate": migrates},
         "approvers": list(plan.get("reviewers") or []),
+        "readiness": plan.get("readiness"),
         "warnings": len(plan.get("warnings") or []),
         "reversibility": reversibility,
         "identifiers": {"plan": plan.get("id"), "commit": plan.get("sha"), "requested_by": requested_by, "staging_release": source.get("plan"),
@@ -741,13 +742,26 @@ class Controller:
             raise ValueError("Live cloud views need observer.service_account in the controller configuration and the Terraform observer identity")
         return self.observer
 
-    def service_health(self, principal, app_id, minutes=60):
-        """What serves right now and how it behaves, from Cloud Run and Cloud Monitoring, next to what this controller recorded."""
+    def service_health(self, principal, app_id, minutes=60, environment="staging"):
+        """What serves right now and how it behaves, from Cloud Run and Cloud Monitoring, next to what this controller recorded.
+        environment: staging, or production (its project, its live promotion and its error budget, docs/ROADMAP.md D39)."""
+        import httpx
         app = self.app(principal, app_id)
         observer = self.require_observer()
-        service = observer.service(app.target)
-        metrics = observer.metrics(app.target, max(5, min(int(minutes), 1440)))
-        live = self.store.latest_success(app_id)
+        if environment not in ("staging", "production"):
+            raise ValueError("environment is staging or production")
+        if environment == "production" and app.production is None:
+            raise ValueError(f"{app_id} has no production yet: ask for add_production first")
+        target = app.production.target if environment == "production" else app.target
+        service = observer.service(target)
+        metrics = observer.metrics(target, max(5, min(int(minutes), 1440)))
+        live = self.store.latest_success(app_id, kind="promotion" if environment == "production" else None)
+        budget = None
+        if environment == "production" and callable(getattr(observer, "error_budget", None)):
+            try:
+                budget = observer.error_budget(target, f"{target.service}-production")
+            except (ValueError, httpx.HTTPError) as exc:  # the budget is one part of the view; the rest still answers
+                budget = {"unreadable": str(exc)[:160]}
         serving = [t for t in service["traffic"] if t.get("percent")]
         recorded = ((live or {}).get("receipt") or {}).get("revision")
         agreement = None if live is None else any(t.get("revision") == recorded for t in serving)
@@ -771,9 +785,14 @@ class Controller:
             spec = self.spec_at(app, (live or {}).get("sha") or self.github.head(app))
             declared = spec.needs.model_dump()
             if declared["buckets"] or declared["topics"] or declared["database"] != "none":
-                needs = observer.needs(app.target, declared)
+                needs = observer.needs(target, declared)
         except ValueError as exc:  # no reviewed spec yet, or the observer may not look: say so instead of hiding the view
             notes.append(f"Needs not checked: {str(exc)[:160]}")
+        if environment == "production" and budget is None:
+            notes.append("No objective yet in production: ask for add_production, which proposes the production root with its SLO")
+        elif budget and budget.get("budget_remaining") is not None and budget["budget_remaining"] < 0.25:
+            notes.append(f"Only {budget['budget_remaining']:.0%} of the {budget['days']}-day error budget is left: keep risky changes out of production "
+                         "until it recovers")
         for item in needs:
             if item["exists"] is None:
                 notes.append(f"Need {item['need']} {item['name']} not checked: {item.get('unreadable', 'not readable')}")
@@ -791,9 +810,10 @@ class Controller:
             notes.append("platform.yaml says lab-members but Identity-Aware Proxy is not enabled on the service; render and merge the infrastructure")
         if access["exposure"] == "authenticated" and access["iap_enabled"]:
             notes.append("Identity-Aware Proxy is enabled although platform.yaml says authenticated; render and merge the infrastructure")
-        return {"application": app_id, "service": service, "metrics": metrics, "recorded_live_release": live and {"plan_id": live["id"], "sha": live["sha"], "revision": recorded},
-                "agreement": agreement, "needs": needs, "access": access, "notes": notes,
-                "console_url": f"https://console.cloud.google.com/run/detail/{app.target.region}/{app.target.service}/metrics?project={app.target.project_id}"}
+        return {"application": app_id, "environment": environment, "service": service, "metrics": metrics,
+                "recorded_live_release": live and {"plan_id": live["id"], "sha": live["sha"], "revision": recorded},
+                "agreement": agreement, "needs": needs, "access": access, "notes": notes, "error_budget": budget,
+                "console_url": f"https://console.cloud.google.com/run/detail/{target.region}/{target.service}/metrics?project={target.project_id}"}
 
     def recent_logs(self, principal, app_id, minutes=30, severity="ERROR", limit=50):
         app = self.app(principal, app_id)
@@ -1691,6 +1711,10 @@ class Controller:
                                     f"{plan['bake_seconds']} seconds: it serves everyone about {minutes} minutes after the approval.")
         if not plan["bake_seconds"]:
             plan["warnings"].append("production.bake_seconds is 0: nothing watches the new revision after its final probe.")
+        if self.store.latest_success(app_id, include_rolled_back=True, kind="promotion") is None:
+            # The application's first promotion: the readiness checklist, rendered by code from what is true now (D39).
+            plan["readiness"] = self.readiness(app, spec)
+            plan["warnings"] += [f"Readiness: {item['detail']}" for item in plan["readiness"] if not item["ok"]]
         plan["approval"] = promotion_approval(plan, principal.name)
         try:
             plan["dispatch_result"] = self.github.dispatch_promotion(platform.repository, plan)
@@ -1745,6 +1769,34 @@ class Controller:
         self.store.record_event("production_rollback", name=app_id, identity=principal.name, application=app_id, outcome="dispatched",
                                 detail=f"undoes {live['id'][:8]}")
         return {**record, "state": "dispatched", "next_action": advice({**record, "state": "dispatched"})}
+
+    def readiness(self, app, spec):
+        """Production readiness at an application's first promotion (docs/ROADMAP.md D39, roadmap item 16.4): each item what is
+        true now, from the reviewed specification and the production root on main, with what to do where it falls short."""
+        platform = self.config.platform
+        root = (self.github.contents(platform.repository, platform.branch, f"{PRODUCTION_ROOTS}/{app.production.target.service}/main.tf") or {}).get("text") or ""
+        database = spec.needs.database
+        items = [
+            {"item": "probes", "ok": spec.health_path is not None,
+             "detail": f"the health route {spec.health_path} answers every probe and the uptime check" if spec.health_path
+             else "no health route: only a TCP connection proves the service is up; add one to platform.yaml (health_path)"},
+            {"item": "alerts", "ok": "slo_goal" in root,
+             "detail": "the production root has its objective, its error-budget alerts and the minute uptime check" if "slo_goal" in root
+             else "the production root on main predates the objective: ask for add_production to propose it again, then merge"},
+            {"item": "runbook", "ok": True, "detail": "docs/RUNBOOK.md, Production: approving, undoing, a new secret version, the rollback drill"},
+            {"item": "backup", "ok": True,
+             "detail": {"postgres": "Cloud SQL keeps automated backups, and the infrastructure policy refuses a database without them",
+                        "firestore": "Firestore keeps its delete protection; the restore drill does not cover it yet (roadmap item 16.5)"}.get(
+                 database, "nothing to back up: the application declares no database")},
+            {"item": "capacity", "ok": spec.scaling.maximum >= 1,
+             "detail": f"up to {spec.scaling.maximum} instance(s) of {spec.resources.cpu} CPU and {spec.resources.memory_mib} MiB, {spec.concurrency} "
+                       "requests each at once" + ("; with no warm instance the first request after a quiet spell waits for one to start"
+                                                  if spec.scaling.minimum == 0 else "")},
+            {"item": "rollback", "ok": True,
+             "detail": "rollback_production returns traffic to the split before this promotion in seconds; the first promotion's earlier split is "
+                       "the placeholder image the infrastructure started with"},
+        ]
+        return items
 
     def production_missing(self, app):
         """What a promotion of this application still needs, in plain words; empty when production is ready: the protected

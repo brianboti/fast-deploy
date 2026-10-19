@@ -108,6 +108,25 @@ gcloud run services update-traffic SERVICE --to-revisions PREVIOUS_REVISION=100 
 A promotion that stopped halfway restores production's traffic itself; if its runner was lost, the next promotion
 restores the checkpoint before anything else.
 
+### The objective and its error budget
+
+Since 1.18.5 (roadmap item 16.4, decision D39) every production application has one objective: 99.5 percent of its
+requests answered without a server error over 30 days, counted from Cloud Run's own request metric, so the uptime
+check's calls to the health path count too. The 0.5 percent it may miss is the error budget. Its uptime check calls the
+health path every minute from three US regions. Two alerts reach the alert channels:
+
+- **"error budget burning fast"**: ten times the sustainable rate over the last hour, which is an outage. Ask Claude for
+  "demo's health in production" and its errors. If the newest promotion caused it, roll production back
+  (`rollback_production`); otherwise follow the error lines.
+- **"error budget burning slowly"**: twice the sustainable rate over the last day, which is a leak. Look at the errors when
+  convenient and fix it before the budget runs out.
+
+`get_service_health` with `environment: production` shows how much of the budget is left. Below a quarter it says so:
+keep risky changes out of production until it recovers. An application's first promotion carries a readiness checklist
+in its approval block, covering probes, alerts, runbook, backup, capacity and the rollback path, with what to do where
+one falls short. A production root made before 1.18.5 has no objective yet: ask for `add_production` again, which
+proposes the root again, and merge it.
+
 ### A new secret version
 
 Add the version with `gcloud secrets versions add SERVICE-NAME --project PROD_PROJECT --data-file=-`, then ask Claude to

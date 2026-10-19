@@ -88,6 +88,8 @@ CENTRAL_WORKFLOWS = ("deploy.yml", "recover.yml", "rightsize.yml")  # the platfo
 # Production (docs/ROADMAP.md D37): every promotion runs the platform repository's promote.yml in production-<service>,
 # whose required reviewer is the approval; nothing else may sign in as a production deploy identity.
 PRODUCTION_WORKFLOWS = ("promote.yml",)
+PRODUCTION_SLO_GOAL = 0.995  # D39: 99.5 percent of requests without a server error over 30 days
+PRODUCTION_UPTIME_REGIONS = ("USA_OREGON", "USA_IOWA", "USA_VIRGINIA")
 PRODUCTION_ROOTS = "infra/gcp/apps-production"
 
 
@@ -202,6 +204,10 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
     inputs["viewers"] = viewers
     if promotion_readers:  # only a root whose application has a production carries it; the others stay as they were
         inputs["promotion_readers"] = promotion_readers
+    if environment == "production":
+        # Production's reliability (docs/ROADMAP.md D39): one objective with its burn-rate alerts, and the uptime check every
+        # minute from three US regions; staging keeps the module's defaults.
+        inputs.update(slo_goal=PRODUCTION_SLO_GOAL, uptime_period="60s", uptime_regions=list(PRODUCTION_UPTIME_REGIONS))
     if suffix:  # only a further application of a repository carries these; the first keeps the module's defaults
         inputs["github_environment"] = github_environment
         inputs["workflow_files"] = list(workflow_files)
