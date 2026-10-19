@@ -1,4 +1,4 @@
-# 1.20.6: the docker command on the controller's machine
+# 1.20.7: the docker command on the controller's machine
 
 Found on 2026-10-19 in the live exercise of Phase 18: importing `node-nolock` (a Node.js 22 service without a lockfile)
 stopped with "The dependencies could not be locked: Docker is not installed on this machine". The machine has Docker's
@@ -11,7 +11,7 @@ as a Node.js one's (D42), since the controller moved there on 2026-10-18; no imp
    place: the next foundation apply updates it without replacing the machine, and the script installs the package at the
    next boot. A running machine gets it at once with `sudo apt-get install -y --no-install-recommends docker-cli`.
 
-1.20.5 is the weekly pin refresh (#103), open at the time of writing.
+1.20.5 and 1.20.6 are the weekly pin refresh's (#103, #108), open at the time of writing.
 
 Tests: 811 pass; ruff clean.
 
