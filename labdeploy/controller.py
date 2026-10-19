@@ -18,6 +18,7 @@ from .infra import BOOTSTRAP_IMAGE, PRODUCTION_ROOTS, PRODUCTION_WORKFLOWS, app_
 from .models import AppSpec, containment, enforce, needs_env, parse_contract, parse_spec, spec_hash
 from .rightsize import SETTINGS, apply_settings
 from .status import TERMINAL, advice, release_phases, summarize
+from .updates import PlatformUpdates
 from .workflows import TEMPLATES, pinned_commit, render
 
 DISPATCHED = {"dispatched", "dispatch_unknown", "dispatching"}
@@ -42,6 +43,9 @@ class Store:
             db.execute("CREATE TABLE IF NOT EXISTS onboardings (id TEXT PRIMARY KEY, updated REAL NOT NULL, payload TEXT NOT NULL)")
             # The newest release pull request of each application whose contract the platform keeps (docs/ROADMAP.md D32).
             db.execute("CREATE TABLE IF NOT EXISTS release_requests (id TEXT PRIMARY KEY, updated REAL NOT NULL, payload TEXT NOT NULL)")
+            # What follows a platform release (labdeploy/updates.py): the machine's record under `machine`, each application's
+            # re-pin under `workflows:<id>`.
+            db.execute("CREATE TABLE IF NOT EXISTS platform_updates (id TEXT PRIMARY KEY, updated REAL NOT NULL, payload TEXT NOT NULL)")
             db.execute("PRAGMA journal_mode=WAL")  # readers never block the scheduler's and the request handlers' writes
 
     # ---- applications registered by onboarding, and the onboarding records themselves
@@ -91,6 +95,21 @@ class Store:
         record["updated_at"] = time.time()
         with self.connect() as db:
             db.execute("INSERT OR REPLACE INTO release_requests VALUES (?, ?, ?)", (app_id, record["updated_at"], json.dumps(record)))
+
+    def platform_update(self, key):
+        with self.connect() as db:
+            row = db.execute("SELECT payload FROM platform_updates WHERE id=?", (key,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_platform_update(self, key, record):
+        record["updated_at"] = time.time()
+        with self.connect() as db:
+            db.execute("INSERT OR REPLACE INTO platform_updates VALUES (?, ?, ?)", (key, record["updated_at"], json.dumps(record)))
+
+    def platform_updates(self, prefix=""):
+        with self.connect() as db:
+            rows = db.execute("SELECT id, payload FROM platform_updates WHERE substr(id, 1, ?) = ? ORDER BY id", (len(prefix), prefix)).fetchall()
+        return {row[0]: json.loads(row[1]) for row in rows}
 
     @contextlib.contextmanager
     def connect(self):
@@ -177,6 +196,11 @@ class Store:
                               "OR (state = 'completed_unverified' AND json_extract(payload, '$.outcome.conclusion') = 'success' "
                               "AND json_extract(payload, '$.outcome.recorded_at') > ?) ORDER BY rowid DESC LIMIT ?", (since, limit)).fetchall()
         return [(row[0], row[1]) for row in rows]
+
+    def dispatching(self):
+        """How many plans are between their claim and GitHub's answer: the moment a restart would leave a dispatch unknown."""
+        with self.connect() as db:
+            return db.execute("SELECT COUNT(*) FROM plans WHERE state='dispatching'").fetchone()[0]
 
     def latest_plan(self, application, sha=None):
         """The newest plan of any state for an application, optionally for one commit; rollback records excluded."""
@@ -363,6 +387,7 @@ class Controller:
         self._onboarding_lock = threading.Lock()
         self.config, self.github, self.store, self.observer = config, github, store, observer
         self.contracts = Contracts(self)
+        self.updates = PlatformUpdates(self)
         self.refresh_registry()
 
     def refresh_registry(self):
@@ -407,6 +432,11 @@ class Controller:
     def contract_tick(self):
         """The scheduler's pass over contracts the platform keeps: release pull requests, and merged contracts not released."""
         return self.contracts.tick()
+
+    def platform_updates_tick(self):
+        """The scheduler's pass over what follows a platform release on main: the machine's update, then the re-pins
+        (labdeploy/updates.py; off unless `platform_updates` is configured)."""
+        return self.updates.tick()
 
     def check_repository(self, principal, repository, path=None):
         """The contract's checklist for a repository, or one service folder of it, before anything is registered or created:
@@ -1235,13 +1265,19 @@ class Controller:
         # so the app follows the rename.
         if current == sha and self.pinned_platform(app, [platform.repository]) == sha:
             return {"application": app_id, "platform_commit": sha, "current_pin": current, "pull_request": None, "note": "Already pinned to this platform commit."}
+        files = self.rendered_workflows(app, sha)
+        return {"application": app_id, "platform_commit": sha, "current_pin": current, "pull_request": self.github.update_workflows(app, sha, files)}
+
+    def rendered_workflows(self, app, sha):
+        """The application's three workflow files rendered from the platform's templates at one commit, by their path in its repository."""
+        platform = self.config.platform
         files = {}
         for name, kind in zip(TEMPLATES, ("deploy", "recover", "rightsize"), strict=True):
             template = self.github.contents(platform.repository, sha, f"templates/{name}")
             if template is None:
                 raise ValueError(f"templates/{name} does not exist at platform commit {sha[:12]}")
             files[f".github/workflows/{app.workflows[kind]}"] = render(template["text"], platform.repository, sha, app)
-        return {"application": app_id, "platform_commit": sha, "current_pin": current, "pull_request": self.github.update_workflows(app, sha, files)}
+        return files
 
     def render_infrastructure(self, principal, app_id, state_bucket=None, bootstrap_image=None, settings=None, environment="staging"):
         """The app's Terraform root as the pipeline will plan it: literal inputs from the configuration, the reviewed spec and GitHub's ids.

@@ -308,6 +308,22 @@ class GitHub:
         files = sorted({name for f in listed for name in (f.get("filename"), f.get("previous_filename")) if name})
         return files, data.get("status") in ("ahead", "identical") and len(listed) < 300
 
+    def comparison(self, repository, base, head):
+        """How `head` stands to `base` (ahead, behind, identical or diverged) and the paths between them; `complete` is false
+        when GitHub listed its maximum of 300 files, so a caller cannot rule a path out."""
+        data = self.request("GET", f"/repos/{repository}/compare/{quote(base, safe='')}...{quote(head, safe='')}").json()
+        listed = data.get("files", [])
+        files = sorted({name for f in listed for name in (f.get("filename"), f.get("previous_filename")) if name})
+        return {"status": data.get("status"), "files": files, "complete": len(listed) < 300}
+
+    def push_runs(self, repository, workflow, sha):
+        """The runs of one workflow that a push of exactly this commit started (a merge into main starts one; scheduled runs
+        on the same commit are left out), newest first, with when each was last updated."""
+        params = {"head_sha": sha, "event": "push", "per_page": 10}
+        runs = self.request("GET", f"/repos/{repository}/actions/workflows/{quote(workflow, safe='')}/runs", params=params).json().get("workflow_runs", [])
+        return [{"id": run["id"], "status": run.get("status"), "conclusion": run.get("conclusion"), "url": run.get("html_url"),
+                 "updated_at": run.get("updated_at"), "head_sha": run.get("head_sha")} for run in runs if run.get("head_sha") == sha]
+
     def schedule_health(self, app, workflow):
         """Whether GitHub still runs a scheduled workflow and when it last did; GitHub pauses schedules in idle repositories."""
         state = self.request("GET", f"/repos/{pipeline_of(app)}/actions/workflows/{workflow}").json().get("state")

@@ -1,3 +1,60 @@
+# 1.20.2: after a release, the machine and the re-pins by themselves
+
+Two chores followed every merge into the platform repository's `main`, by hand: updating the controller's machine
+(`scripts/machine.sh update`) and re-pinning each application's three workflow files (`update_app_workflows`, one pull
+request per application). With `platform_updates` in the machine's configuration both now happen by themselves, in that
+order, with an hour in which a release can still be stopped; without the block nothing changes. Built and checked
+locally; the live trial waits for the operator's go (docs/RUNBOOK.md, "After a release", has the one-time steps). 1.20.1
+is the Node.js 22 lock in its own pull request.
+
+1. **The machine updates itself.** The controller follows `main`: once the **Platform tests** run that the merge started
+   has passed, and only when the merge changed something the controller runs (`labdeploy/`, `templates/`, `schema/`,
+   `requirements.lock`), it waits `delay_minutes` (60; a newer change to those files starts it again, a contract release
+   or a document does not), then for a quiet moment (no tool call for `quiet_minutes`, 10, and no release on its way to
+   GitHub). Then it writes the commit into a request file next to its database. The controller has no privileges and
+   cannot restart itself, so a small service of the machine's own takes the request as root (`fast-deploy-update`, which a
+   systemd path unit starts). It installs the commit with `fast-deploy-install`: only a commit on `main`, now never one
+   older than the commit that runs, with the existing minute of health checks and the way back. Then it watches two more
+   minutes, and the previous commit comes back if the controller stops answering or restarts. Its result goes to a folder
+   only root writes, and the controller records it once. A commit that went back is not tried again.
+2. **The re-pins open themselves.** An hour after the controller started on a new commit, each application whose
+   workflows pin an older runner gets the usual re-pin pull request to that commit, and the one it opened for an earlier
+   commit is closed (never one a person opened). "An older runner" is now exact: the templates, the three lock files the
+   workflows install, or one of the sixteen modules they import (`labdeploy/updates.py`; a test works the list out again
+   from the templates). A release that changes only the controller re-pins nothing, so it starts no application release.
+   Applications that are paused, still onboarding or whose contract the platform keeps are left alone.
+3. **They merge themselves exactly where they may.** The controller merges a re-pin only where it merges an application's
+   own pull requests: the application's `auto_merge` allows it, its checks have passed, it merges cleanly, and it changes
+   exactly the three workflow files with the content the platform rendered (their hashes are kept when it opens). Anything
+   else waits for a person, and one a person closes is not opened again for that commit.
+4. **One change at a time.** The controller moves first; applications follow only after it has run the new commit for the
+   delay, so a runner is never rolled out ahead of a controller that could not read what it reports.
+   `platform.minimum_commit` never moves by itself.
+5. **The background jobs read a changed configuration on their own.** Before, a configuration put on the machine with
+   `config-put` reached auto-deploy and contract releases only with the next request; now every pass of the background
+   thread reads it, so a pause or a switch applies within fifteen seconds.
+6. **The machine's side.** The startup script writes `fast-deploy-update`, its oneshot service and the path unit that
+   starts it, and `/var/lib/fast-deploy-update`. `fast-deploy-install` takes one install at a time (a lock both paths
+   share, so a hand update never lands in the middle of an automatic one's watch), and removes the Python environments no
+   kept release uses. `scripts/machine.sh startup` runs the startup script again after a foundation apply,
+   `scripts/machine.sh logs update` reads the update service's log, and `status` shows the service and its last result.
+7. **What the chat says.** `get_controller_status` adds `platform_updates`: the commit the controller runs, what happens
+   next and when, the last automatic update, and each application's re-pin. Its answer names a re-pin that waits for a
+   person and an update that went back. `list_events` shows every step ("platform update", "workflow update").
+8. **Documents.** The runbook's new section "After a release" (what happens, how to stop each part, what to do when
+   something goes wrong, the one-time setup), the machine table, the monthly checklist, the setup guide (7m), the
+   configuration example, the roadmap's re-pin rule and the handoff.
+
+Sources read on 2026-10-19 (docs/SOURCES.md): systemd's path units (the service starts again while the request file is
+there, so it removes the file first) and service and execution environment pages (a restart passes through inactive and
+gets a new invocation ID). Also Google's startup scripts (root, each boot, `google_metadata_script_runner startup` to run
+one again), Identity-Aware Proxy's TCP forwarding, GitHub's workflow runs API (filters by commit and event), the GitHub
+token's rule that installation tokens start workflows, Google's SRE workbook on canarying (a small part first, time to
+judge it, automatic rollback, one change at a time) and Dependabot's cooldown (a delay on purpose).
+
+Requires regeneration of app workflows: no (no template or runner module changed). Terraform apply: the foundation once
+(the startup script in the machine's metadata, in place), then `scripts/machine.sh startup` on the machine.
+
 # 1.20.0: Node.js web services (Phase 18)
 
 Roadmap Phase 18 (docs/ROADMAP.md 18.1 to 18.7, decisions D41 to D46), from the research review of 2026-10-19

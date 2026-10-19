@@ -231,7 +231,8 @@ def test_scheduler_runs_due_jobs_and_records_outcomes(tmp_path):
     cfg = config(tmp_path)
     c = Controller(cfg, FakeGitHub(), Store(cfg.database))
     scheduler = Scheduler(c, cfg)
-    assert set(scheduler.state) == {"auto_deploy", "watchdog", "backup", "onboarding", "follow", "contracts"} and all(e["last_run"] is None for e in scheduler.state.values())
+    assert set(scheduler.state) == {"auto_deploy", "watchdog", "backup", "onboarding", "follow", "contracts", "platform_updates"}
+    assert all(e["last_run"] is None for e in scheduler.state.values())
     entry = scheduler.run_job("auto_deploy")
     assert entry["last_result"] == {} and entry["last_error"] is None and entry["next_run"] > time.time() + 200
     scheduler.jobs["backup"] = (lambda: (_ for _ in ()).throw(RuntimeError("disk full")), lambda: 10, 0)
