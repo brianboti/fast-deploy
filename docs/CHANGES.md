@@ -35,14 +35,29 @@ refresh), so the number may move with the order they merge in.
    `config-put` reached auto-deploy and contract releases only with the next request; now every pass of the background
    thread reads it, so a pause or a switch applies within fifteen seconds.
 6. **The machine's side.** The startup script writes `fast-deploy-update`, its oneshot service and the path unit that
-   starts it, and `/var/lib/fast-deploy-update`. `fast-deploy-install` takes one install at a time (a lock both paths
-   share, so a hand update never lands in the middle of an automatic one's watch), and removes the Python environments no
-   kept release uses. `scripts/machine.sh startup` runs the startup script again after a foundation apply,
-   `scripts/machine.sh logs update` reads the update service's log, and `status` shows the service and its last result.
-7. **What the chat says.** `get_controller_status` adds `platform_updates`: the commit the controller runs, what happens
+   starts it, and `/var/lib/fast-deploy-update`. `fast-deploy-install` takes one install at a time (a lock in a folder
+   only root can open, which both paths share, so a hand update never lands in the middle of an automatic one's watch),
+   tells "did not answer, switched back" (exit status 75) apart from "stopped before the switch", never fails over what
+   follows a healthy switch, always keeps the release it replaced (the way back), and removes the Python environments no
+   kept release uses. Each script is written beside the old one and moved into place, so one that runs while the startup
+   script runs again keeps its own text. `scripts/machine.sh startup` runs the startup script again after a foundation
+   apply, `scripts/machine.sh logs update` reads the update service's log, and `status` shows the service and its last
+   result.
+7. **What an independent review of this change found, and what changed for it.** One request at a time,
+   and nothing new until the machine has reported on it; a commit that went back blocks the later commits that leave the
+   controller's code as it was; an install that changed nothing (`not_installed`: GitHub away, held, another install) is
+   asked for again after half an hour instead of never; the commit that runs is read under the lock, so an install by
+   hand that finishes meanwhile is never undone; the request is moved into root's own folder before it is read (a link,
+   a folder or a pipe from the controller's side is never followed or read); a dispatch left behind by a killed process
+   no longer holds updates forever; a refused sign-in from anywhere no longer postpones them; a failing part (the machine
+   or the re-pins) is recorded once and never stops the other; re-pins wait at least ten minutes and never run while the
+   machine installs; a re-pin is merged only at the head the gate read, and what GitHub blocks for an hour, or refuses,
+   is named as waiting for a person.
+8. **What the chat says.** `get_controller_status` adds `platform_updates`: the commit the controller runs, what happens
    next and when, the last automatic update, and each application's re-pin. Its answer names a re-pin that waits for a
-   person and an update that went back. `list_events` shows every step ("platform update", "workflow update").
-8. **Documents.** The runbook's new section "After a release" (what happens, how to stop each part, what to do when
+   person, an update that went back and a step that fails. `list_events` shows every step ("platform update", "workflow
+   update").
+9. **Documents.** The runbook's new section "After a release" (what happens, how to stop each part, what to do when
    something goes wrong, the one-time setup), the machine table, the monthly checklist, the setup guide (7m), the
    configuration example, the roadmap's re-pin rule and the handoff.
 

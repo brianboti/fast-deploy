@@ -94,7 +94,8 @@ class Platform(FakeGitHub):
     def pull_request_files(self, repository, number):
         return sorted(self.heads[self.prs[number]["head_sha"]])
 
-    def merge_pull_request(self, repository, number, title):
+    def merge_pull_request(self, repository, number, title, sha=None):
+        assert sha == self.prs[number]["head_sha"]  # exactly the head the gate read
         self.merged.append((repository, number, title))
         self.prs[number].update(merged=True, state="closed", merged_by="fast-deploy-ai[bot]")
         return {"merged": True, "sha": "e" * 40, "reason": None}
@@ -103,9 +104,10 @@ class Platform(FakeGitHub):
 DEFAULT = {"delay_minutes": 60, "quiet_minutes": 10}
 
 
-def make(tmp_path, updates=DEFAULT, running=RUNNING, unit=True, **extra):
-    """A controller on the machine (running RUNNING) whose clock the test moves; `updates` None leaves the block out."""
-    now = [time.time()]
+def make(tmp_path, updates=DEFAULT, running=RUNNING, unit=True, fresh=False, **extra):
+    """A controller on the machine (running RUNNING for a day, or `fresh`ly started) whose clock the test moves; `updates`
+    None leaves the block out."""
+    now = [float(int(time.time()))]  # whole seconds, as GitHub writes its times: a time read back is never later than the clock
     clock = lambda: now[0]  # noqa: E731 - the tests move it
     data = {"live_dispatch": True, "database": str(tmp_path / "plans.db"), "platform": {"repository": PLATFORM}, "platform_updates": updates,
             "onboarding": {"project_id": "test-project", "project_number": "123456789"},
@@ -117,7 +119,8 @@ def make(tmp_path, updates=DEFAULT, running=RUNNING, unit=True, **extra):
     unit_path = tmp_path / "fast-deploy-update.path"
     if unit:
         unit_path.write_text("[Path]\n")
-    c.updates = PlatformUpdates(c, running=running, started=now[0], result_path=tmp_path / "result" / "result.json", unit_path=unit_path, clock=clock)
+    started = now[0] if fresh else now[0] - 86_400
+    c.updates = PlatformUpdates(c, running=running, started=started, result_path=tmp_path / "result" / "result.json", unit_path=unit_path, clock=clock)
     return c, github, now
 
 
@@ -215,7 +218,7 @@ def test_only_what_the_controller_runs_restarts_it_and_it_never_goes_back(tmp_pa
 def test_a_release_on_its_way_to_github_or_a_missing_update_service_holds_the_request(tmp_path):
     c, github, now = make(tmp_path, unit=False)
     now[0] += 3700
-    plan = {"id": "p1", "application": "demo", "sha": "1" * 40, "expires_at": time.time() + 900}
+    plan = {"id": "p1", "application": "demo", "sha": "1" * 40, "expires_at": now[0] + 600}
     c.store.add("manager", plan, state="dispatching")
     assert "once the release being dispatched" in c.updates.machine_step()
     with c.store.connect() as db:
@@ -236,7 +239,7 @@ def test_the_machine_s_result_is_recorded_once_and_a_commit_that_went_back_is_no
     c.platform_updates_tick()
     outcomes = [outcome for outcome, _ in kinds(c, "platform_update")]
     assert outcomes == ["running", "requested", "rolled_back"]  # once each
-    assert request_of(c) is None and "did not work on the machine" in c.updates.status()["next"]
+    assert request_of(c) is None and "dddddddddddd went back on the machine" in c.updates.status()["next"]
     newer = "e" * 40  # a fix on main is asked for
     github.main = newer
     github.runs[newer] = [{"id": 3, "status": "completed", "conclusion": "success", "url": "u", "updated_at": iso(now[0]), "head_sha": newer}]
@@ -253,6 +256,132 @@ def test_the_machine_s_result_is_recorded_once_and_a_commit_that_went_back_is_no
     garbage = {"commit": "../../etc/passwd", "outcome": "installed", "finished_at": "x"}
     result.write_text(json.dumps(garbage))
     assert c.updates.collect_result() is None  # only a full commit with a known outcome is read
+
+
+def result_file(c, commit, outcome, detail="", finished="2026-10-19T10:03:00Z"):
+    """What the machine's update service leaves for the controller (and it has taken the request)."""
+    Path(c.config.database).parent.joinpath("update-request").unlink(missing_ok=True)
+    c.updates.result_path.parent.mkdir(exist_ok=True)
+    c.updates.result_path.write_text(json.dumps({"commit": commit, "previous": RUNNING, "outcome": outcome, "detail": detail, "finished_at": finished}))
+
+
+def passing(github, commit, at):
+    github.runs[commit] = [{"id": 9, "status": "completed", "conclusion": "success", "url": "u", "updated_at": iso(at), "head_sha": commit}]
+
+
+def test_code_that_went_back_is_not_asked_for_again_through_a_contract_release_on_top_of_it(tmp_path):
+    c, github, now = make(tmp_path, updates={"delay_minutes": 0, "quiet_minutes": 0, "workflows": False})
+    c.platform_updates_tick()
+    result_file(c, MAIN, "rolled_back", "did not answer")
+    contract, fix = "e" * 40, "f" * 40
+    github.main = contract  # a contract release lands on top of the code that went back
+    github.comparisons[(MAIN, contract)] = {"status": "ahead", "files": ["apps/sophia/platform.yaml"], "complete": True}
+    passing(github, contract, now[0])
+    c.platform_updates_tick()
+    assert request_of(c) is None and "runs the same controller code as dddddddddddd, which went back" in c.updates.status()["next"]
+    github.main = fix  # a change to what the controller runs may be the fix: it is asked for
+    github.comparisons[(MAIN, fix)] = {"status": "ahead", "files": ["labdeploy/server.py"], "complete": True}
+    passing(github, fix, now[0])
+    c.platform_updates_tick()
+    assert request_of(c) == fix
+
+
+def test_one_request_at_a_time_and_an_install_that_changed_nothing_is_asked_for_again_later(tmp_path):
+    c, github, now = make(tmp_path, updates={"delay_minutes": 0, "quiet_minutes": 0, "workflows": False})
+    c.platform_updates_tick()
+    Path(c.config.database).parent.joinpath("update-request").unlink()  # the machine took it and is still installing
+    newer = "e" * 40
+    github.main = newer
+    passing(github, newer, now[0])
+    c.platform_updates_tick()
+    assert request_of(c) is None and c.updates.status()["next"].startswith("the machine installs dddddddddddd")  # never two at once
+    github.main = MAIN
+    result_file(c, MAIN, "not_installed", "main could not be fetched from GitHub; nothing changed")
+    c.platform_updates_tick()
+    assert request_of(c) is None and "asks for dddddddddddd again after" in c.updates.status()["next"]
+    now[0] += 1801
+    c.platform_updates_tick()
+    assert request_of(c) == MAIN
+    outcomes = [outcome for outcome, _ in kinds(c, "platform_update")]
+    assert outcomes == ["running", "requested", "not_installed", "requested"]
+
+
+def test_a_refused_sign_in_or_a_dispatch_left_behind_by_a_killed_process_postpones_nothing(tmp_path):
+    c, github, now = make(tmp_path, updates={"delay_minutes": 0, "quiet_minutes": 10, "workflows": False}, unit=False)
+    with c.store.connect() as db:
+        db.execute("INSERT INTO events VALUES (?, NULL, '203.0.113.9', 'sign_in', 'claude', NULL, 'rejected', NULL, NULL)", (now[0] - 30,))
+    c.store.add("manager", {"id": "old", "application": "demo", "sha": "1" * 40, "expires_at": now[0] - 60}, state="dispatching")
+    assert "update service is not installed yet" in c.updates.machine_step()  # past the quiet check: nothing held it
+    with c.store.connect() as db:
+        db.execute("INSERT INTO events VALUES (?, 'manager', '198.51.100.7', 'sign_in', 'claude', NULL, 'ok', NULL, NULL)", (now[0] - 30,))
+    assert "at a quiet moment" in c.updates.machine_step()
+
+
+def test_a_failing_part_is_recorded_once_and_never_stops_the_other(tmp_path):
+    c, github, now = make(tmp_path, updates={"delay_minutes": 0, "quiet_minutes": 0})
+
+    def gone(repository, workflow, sha):
+        raise ValueError("ci.yml was renamed")
+    github.push_runs = gone
+    first = c.platform_updates_tick()
+    second = c.platform_updates_tick()
+    assert first["machine"] == second["machine"] == "error: ci.yml was renamed" and first["workflows"] == {"demo": "merged"}
+    assert [detail for outcome, detail in kinds(c, "platform_update") if outcome == "error"] == ["machine: ci.yml was renamed"]
+    view = c.updates.status()
+    assert view["errors"] == {"machine": "ci.yml was renamed"}
+    facts, attention = chat.after_release(view)
+    assert attention and any("the machine step fails and is tried every five minutes: ci.yml was renamed" in fact for fact in facts)
+    del github.push_runs
+    c.platform_updates_tick()
+    assert (c.store.platform_update("machine") or {}).get("error_machine") is None and c.updates.status()["errors"] == {}
+
+
+def test_re_pins_wait_ten_minutes_whatever_the_delay_and_never_while_the_machine_changes_commit(tmp_path):
+    c, github, now = make(tmp_path, updates={"machine": False, "delay_minutes": 0}, fresh=True)
+    assert c.updates.workflows_step()["demo"].startswith("waits until") and github.opened == []  # the machine may still be watching it
+    c.store.save_platform_update("machine", {"requested": MAIN, "requested_at": now[0]})
+    now[0] += 601
+    assert c.updates.workflows_step().startswith("waits: the machine installs dddddddddddd first") and github.opened == []
+    c.store.save_platform_update("machine", {"requested": None})
+    assert c.updates.workflows_step() == {"demo": "merged"}
+
+
+def test_a_new_commit_forgets_what_was_worked_out_for_the_old_one_and_waits_for_its_own_watch(tmp_path):
+    c, github, now = make(tmp_path, updates={"delay_minutes": 0, "quiet_minutes": 0, "workflows": False})
+    github.comparisons[(RUNNING, MAIN)] = {"status": "ahead", "files": ["docs/a.md"], "complete": True}
+    c.platform_updates_tick()
+    assert "nothing it runs changed" in c.updates.status()["next"]
+    c.updates.running = "b" * 40  # installed by hand; main is still MAIN
+    github.comparisons[("b" * 40, MAIN)] = {"status": "ahead", "files": ["labdeploy/server.py"], "complete": True}
+    c.platform_updates_tick()
+    assert request_of(c) == MAIN  # worked out again against the commit that runs now
+    Path(c.config.database).parent.joinpath("update-request").unlink()
+    c.updates.running = MAIN  # the machine installed it and is watching it: nothing is asked for until it reports
+    newer = "e" * 40
+    github.main = newer
+    passing(github, newer, now[0])
+    c.platform_updates_tick()
+    assert request_of(c) is None and c.updates.status()["next"].startswith("the machine installs dddddddddddd")
+    now[0] += 7201  # the machine never reported, and the controller has run it for two hours: it counts as installed
+    c.platform_updates_tick()
+    assert request_of(c) == newer and "reported nothing" in kinds(c, "platform_update")[-2][1]
+
+
+def test_what_github_blocks_needs_a_person_after_an_hour_and_a_refused_merge_at_once(tmp_path):
+    c, github, now = make(tmp_path, updates={"machine": False, "delay_minutes": 0})
+    github.checks = [{"name": "tests", "status": "in_progress", "conclusion": None, "url": "u"}]
+    c.updates.workflows_step()
+    github.checks = [{"name": "tests", "status": "completed", "conclusion": "success", "url": "u"}]
+    github.prs[20]["mergeable_state"] = "blocked"
+    c.updates.workflows_step()
+    assert c.store.platform_update("workflows:demo")["waiting"].startswith("GitHub to call")
+    now[0] += 3601
+    c.updates.workflows_step()
+    assert c.store.platform_update("workflows:demo")["waiting"].startswith("a person: GitHub to call") and github.merged == []
+    github.prs[20]["mergeable_state"] = "clean"
+    github.merge_pull_request = lambda repository, number, title, sha=None: {"merged": False, "sha": None, "reason": "At least 1 approving review is required"}
+    c.updates.workflows_step()
+    assert c.store.platform_update("workflows:demo")["waiting"].startswith("a person: GitHub refused the merge")
 
 
 def test_paused_switched_off_or_a_fixed_platform_commit_keeps_everything_manual(tmp_path):
@@ -284,7 +413,7 @@ def test_the_scheduler_runs_the_job_and_reads_a_changed_configuration_file_witho
 
 # ---- the applications' workflows
 def test_apps_are_re_pinned_to_the_controller_s_commit_after_the_delay_and_merged_where_auto_merge_allows(tmp_path):
-    c, github, now = make(tmp_path, updates={"machine": False, "delay_minutes": 60})
+    c, github, now = make(tmp_path, updates={"machine": False, "delay_minutes": 60}, fresh=True)
     assert c.updates.workflows_step()["demo"].startswith("waits until")  # the controller runs its commit for the delay first
     assert github.opened == []
     now[0] += 3601
@@ -463,17 +592,24 @@ def test_the_startup_script_installs_the_update_service_started_by_the_request_f
     service = re.search(r"cat > /etc/systemd/system/fast-deploy-update\.service <<'EOF'\n(.*?)\nEOF", text, re.S).group(1)
     assert "Type=oneshot" in service and "ExecStart=/usr/local/sbin/fast-deploy-update" in service and "User=" not in service  # root
     assert "systemctl enable --quiet --now fast-deploy-update.path" in text and "install -d -m 0755 /var/lib/fast-deploy-update" in text
-    install = re.search(r"cat > /usr/local/sbin/fast-deploy-install <<'EOF'\n(.*?)\nEOF", text, re.S).group(1)
-    assert 'exec 9>/run/fast-deploy-install.lock' in install and "flock -w 900 9" in install and 'FAST_DEPLOY_INSTALL_LOCKED' in install
+    # A script that runs while the startup script runs again keeps its own text: each is written beside it, then moved.
+    for name in ("fast-deploy-install", "fast-deploy-update", "fast-deploy-import"):
+        assert f"cat > /usr/local/sbin/{name}.new <<'EOF'" in text and f"mv -f /usr/local/sbin/{name}.new /usr/local/sbin/{name}\n" in text
+        assert f"cat > /usr/local/sbin/{name} <<" not in text
+    install = sbin("fast-deploy-install")
+    assert "install -d -m 0700 /run/fast-deploy" in install and "exec 9>/run/fast-deploy/install.lock" in install and "flock -w 900 9" in install
     assert 'merge-base --is-ancestor "$COMMIT" origin/main' in install  # still: only merged code runs here
-    assert 'rm -rf "$environment"' in install and '!= "$(readlink "$OPT/venv")"' in install  # the environment in use is never removed
-    update = script_text()
-    assert update.index('rm -f "$REQUEST"') < update.index("exec 9>")  # the request leaves first, whatever happens next
-    assert '! -L "$REQUEST"' in update and "head -c 100" in update
+    assert "exit 75" in install and "exit 1\n  fi\nfi" not in install  # "did not answer" is told apart from "never switched"
+    assert '|| echo "Warning: gs://$BUCKET/machine/installed-commit' in install  # what follows a healthy switch never fails it
+    assert '"$OPT/releases/$old" != "$previous"' in install and '"$environment" != "$previous_venv"' in install  # the way back stays
+    update = sbin("fast-deploy-update")
+    assert update.index('mv "$DATA/update-request" "$taken"') < update.index("head -c 100")  # read only in root's own folder
+    assert update.index('flock -w 900 9') < update.index('previous=$(readlink "$OPT/current"')  # the commit that runs, read under the lock
+    assert 'install -d -m 0700 "$LOCKS"' in update and "(( status == 75 ))" in update
 
 
-def script_text():
-    return re.search(r"cat > /usr/local/sbin/fast-deploy-update <<'EOF'\n(.*?)\nEOF", STARTUP.read_text(), re.S).group(1)
+def sbin(name):
+    return re.search(rf"cat > /usr/local/sbin/{name}\.new <<'EOF'\n(.*?)\nEOF", STARTUP.read_text(), re.S).group(1)
 
 
 def executable(path, body):
@@ -483,7 +619,7 @@ def executable(path, body):
 
 @pytest.fixture
 def machine(tmp_path):
-    """The update service run against a folder that stands for the machine, with git, systemd and curl replaced."""
+    """The update service run against a folder that stands for the machine, with git, flock, systemd and curl replaced."""
     if not shutil.which("bash") or not shutil.which("python3"):
         pytest.skip("needs bash and python3")
     root = tmp_path / "machine"
@@ -493,18 +629,23 @@ def machine(tmp_path):
     (root / "opt" / "current").symlink_to(root / "opt" / "releases" / RUNNING)
     (root / "invocation").write_text("first\n")
     script = root / "fast-deploy-update"
-    executable(script, script_text())
+    executable(script, sbin("fast-deploy-update"))
     bin_ = root / "bin"
     # git: commits are ordered by their first letter; nothing starting with 9 is on main.
     executable(bin_ / "git", "#!/usr/bin/env python3\nimport sys\nargs = sys.argv[1:]\n"
                "if 'merge-base' in args:\n    a, b = args[-2], args[-1]\n    b = 'f' * 40 if b == 'origin/main' else b\n"
                "    sys.exit(0 if not a.startswith('9') and a <= b else 1)\nsys.exit(0)\n")
-    executable(bin_ / "flock", "#!/bin/sh\nexit 0\n")
+    # flock: an install by hand may finish while this one waits for the lock (the commit named in `hand-update`).
+    executable(bin_ / "flock", "#!/bin/sh\nif [ -f \"$FAKE/hand-update\" ]; then c=$(cat \"$FAKE/hand-update\"); mkdir -p \"$FAKE/opt/releases/$c\"; "
+               "ln -sfn \"$FAKE/opt/releases/$c\" \"$FAKE/opt/current\"; rm \"$FAKE/hand-update\"; fi\nexit 0\n")
     executable(bin_ / "sleep", "#!/bin/sh\n[ -f \"$FAKE/restart-during-watch\" ] && echo second > \"$FAKE/invocation\"\nexit 0\n")
     executable(bin_ / "curl", "#!/bin/sh\n[ -f \"$FAKE/unhealthy\" ] && exit 7\nexit 0\n")
     executable(bin_ / "systemctl", "#!/bin/sh\ncase \"$*\" in\n  *InvocationID*) cat \"$FAKE/invocation\" ;;\n  *is-active*) exit 0 ;;\nesac\nexit 0\n")
-    # fast-deploy-install: switches `current`, or fails when told to; every call is written down.
-    executable(root / "install", "#!/bin/sh\necho \"$1\" >> \"$FAKE/installs\"\n[ -f \"$FAKE/fail-$1\" ] && { echo 'The controller did not answer.'; exit 1; }\n"
+    # fast-deploy-install: switches `current`; `no-answer-SHA` makes it switch back and exit 75, `no-switch-SHA` makes it stop
+    # before the switch (a failed download). Every call is written down.
+    executable(root / "install", "#!/bin/sh\necho \"$1\" >> \"$FAKE/installs\"\n"
+               "[ -f \"$FAKE/no-answer-$1\" ] && { echo 'The controller did not answer.'; exit 75; }\n"
+               "[ -f \"$FAKE/no-switch-$1\" ] && { echo 'ERROR: No matching distribution found'; exit 1; }\n"
                "mkdir -p \"$FAKE/opt/releases/$1\" && ln -sfn \"$FAKE/opt/releases/$1\" \"$FAKE/opt/current\"\necho \"The controller runs $1.\"\n")
 
     def run(content, soak=10):
@@ -512,10 +653,11 @@ def machine(tmp_path):
         if content is not None:
             request.write_text(content)
         env = {"PATH": f"{bin_}:{os.environ['PATH']}", "FAKE": str(root), "FAST_DEPLOY_DATA": str(root / "data"), "FAST_DEPLOY_OPT": str(root / "opt"),
-               "FAST_DEPLOY_UPDATE_OUT": str(root / "out"), "FAST_DEPLOY_INSTALL": str(root / "install"), "FAST_DEPLOY_LOCK": str(root / "lock"),
+               "FAST_DEPLOY_UPDATE_OUT": str(root / "out"), "FAST_DEPLOY_INSTALL": str(root / "install"), "FAST_DEPLOY_LOCKS": str(root / "locks"),
                "FAST_DEPLOY_SOAK_SECONDS": str(soak)}
         done = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, timeout=60)
-        assert not request.exists(), "the request must leave the folder whatever happens"
+        assert not os.path.lexists(request), "the request must leave the folder whatever happens"
+        assert sorted(os.listdir(root / "out")) == ["result.json"], "nothing the controller wrote stays in root's folder"
         result = json.loads((root / "out" / "result.json").read_text())
         installs = (root / "installs").read_text().split() if (root / "installs").exists() else []
         return result, installs, done
@@ -527,37 +669,58 @@ def test_the_update_service_installs_a_newer_commit_on_main_and_watches_it(machi
     result, installs, done = machine(MAIN + "\n")
     assert result["outcome"] == "installed" and result["commit"] == MAIN and result["previous"] == RUNNING and installs == [MAIN], done.stdout + done.stderr
     assert result["finished_at"].endswith("Z") and oct(stat.S_IMODE((machine.root / "out" / "result.json").stat().st_mode)) == "0o644"
+    assert oct(stat.S_IMODE((machine.root / "locks").stat().st_mode)) == "0o700"  # the controller cannot open the lock, let alone hold it
 
 
 def test_the_update_service_refuses_anything_but_a_newer_commit_on_main(machine):
-    for content, expected in (("not a commit", "full 40-character commit"), ("b" * 40, "does not contain the commit that runs"),
-                              ("9" * 40, "not on main"), (RUNNING, "runs it already")):
+    for content, outcome, expected in (("not a commit", "refused", "full 40-character commit"), ("b" * 40, "refused", "does not contain the commit that runs"),
+                                       ("9" * 40, "refused", "not on main"), (RUNNING, "current", "runs it already")):
         result, installs, _ = machine(content)
-        assert expected in result["detail"] and installs == [], (content, result)
-    assert result["outcome"] == "current"
+        assert result["outcome"] == outcome and expected in result["detail"] and installs == [], (content, result)
     (machine.root / "data" / "held").write_text("")
     result, installs, _ = machine(MAIN)
-    assert result["outcome"] == "refused" and "held" in result["detail"] and installs == []
+    assert result["outcome"] == "not_installed" and "held" in result["detail"] and installs == []  # asked for again later
 
 
-def test_a_symlinked_request_is_never_read(machine):
+def test_the_commit_that_runs_is_read_under_the_lock_so_a_hand_update_is_never_undone(machine):
+    newer = "e" * 40
+    (machine.root / "hand-update").write_text(newer)  # scripts/machine.sh update finishes while this request waits for the lock
+    result, installs, _ = machine(MAIN)
+    assert result["outcome"] == "refused" and f"({newer[:12]})" in result["detail"] and installs == []
+    assert os.readlink(machine.root / "opt" / "current").endswith(newer)
+
+
+def test_a_request_that_is_not_a_plain_file_is_never_read_and_never_stays(machine):
     secret = machine.root / "secret"
     secret.write_text(MAIN)
     (machine.root / "data" / "update-request").symlink_to(secret)
     result, installs, _ = machine(None)
-    assert result["outcome"] == "refused" and result["commit"] == "" and installs == [] and secret.exists()
+    assert result["outcome"] == "refused" and result["commit"] == "" and installs == [] and secret.read_text() == MAIN
+    (machine.root / "data" / "update-request").mkdir()  # a folder would otherwise start the service again and again
+    result, installs, _ = machine(None)
+    assert result["outcome"] == "refused" and installs == []
+    os.mkfifo(machine.root / "data" / "update-request")  # a pipe would otherwise hold the service until its timeout
+    result, installs, _ = machine(None)
+    assert result["outcome"] == "refused" and installs == []
 
 
 def test_the_update_service_goes_back_when_the_new_commit_does_not_answer_or_restarts(machine):
-    (machine.root / f"fail-{MAIN}").write_text("")
+    (machine.root / f"no-answer-{MAIN}").write_text("")
     result, installs, _ = machine(MAIN)
-    assert result["outcome"] == "rolled_back" and "cccccccccccc still runs" in result["detail"] and installs == [MAIN]
-    (machine.root / f"fail-{MAIN}").unlink()
+    assert result["outcome"] == "rolled_back" and "did not answer within a minute; cccccccccccc runs again" in result["detail"] and installs == [MAIN]
+    (machine.root / f"no-answer-{MAIN}").unlink()
     (machine.root / "installs").unlink()
     (machine.root / "restart-during-watch").write_text("")  # it answers at first, then systemd restarts it during the watch
     result, installs, _ = machine(MAIN)
     assert result["outcome"] == "rolled_back" and installs == [MAIN, RUNNING] and "runs again" in result["detail"]
     assert os.readlink(machine.root / "opt" / "current").endswith(RUNNING)
+
+
+def test_an_install_that_stops_before_the_switch_changes_nothing_and_is_tried_again(machine):
+    (machine.root / f"no-switch-{MAIN}").write_text("")
+    result, installs, _ = machine(MAIN)
+    assert result["outcome"] == "not_installed" and "cccccccccccc still runs" in result["detail"] and "No matching distribution" in result["detail"]
+    assert installs == [MAIN] and os.readlink(machine.root / "opt" / "current").endswith(RUNNING)
 
 
 def test_the_operator_can_run_the_startup_script_again_and_read_the_update_s_log_and_result():

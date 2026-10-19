@@ -359,10 +359,11 @@ What happens after each merge, in this order:
    request file next to its database. The controller cannot restart itself, so the machine's own update service
    (`fast-deploy-update`, run as root) takes the request: it installs the commit with `fast-deploy-install` (only a
    commit on `main`, and never one older than the commit that runs), waits for `/healthz`, watches the controller two more
-   minutes, and puts the previous commit back if it stops answering or restarts. Claude's tools are away while the
-   controller restarts (seconds, up to a minute when a background job is finishing); releases already running carry on
-   on GitHub.
-3. **The workflows.** An hour after the controller started on the new commit, each application whose workflows pin an
+   minutes, and puts the previous commit back if it stops answering or restarts. It asks for one commit at a time and
+   waits for the machine's report before the next. Claude's tools are away while the controller restarts (seconds, up
+   to a minute when a background job is finishing); releases already running carry on on GitHub.
+3. **The workflows.** An hour after the controller started on the new commit (never less than ten minutes, whatever the
+   delay, and never while the machine is installing), each application whose workflows pin an
    older runner gets the usual pull request, "Update Fast Deploy workflows to platform X", and the one it opened for an
    earlier commit is closed. An older runner means a change to the templates, the lock files or the modules the workflows
    run (the list in `labdeploy/updates.py`, checked by a test); a release that changes only the controller re-pins
@@ -391,8 +392,11 @@ their own. An update the machine has already started finishes, with its own way 
 When something goes wrong:
 
 - **"went back from X"**: the new commit did not answer or restarted. `scripts/machine.sh logs` (the controller) and
-  `scripts/machine.sh logs update` say why. The machine does not try X again; fix it on `main`, and the next commit that
-  passes is installed.
+  `scripts/machine.sh logs update` say why. The machine does not try X again, nor a later commit that leaves the
+  controller's code as X had it (a contract release or a document on top of it); fix it on `main`, and the next commit
+  that changes what the controller runs and passes is installed.
+- **"could not install X yet"** (`not_installed`): nothing changed on the machine (GitHub could not be reached, the
+  controller was held, or another install held the machine); it is asked for again half an hour later.
 - **"nothing reported for over an hour"**: `scripts/machine.sh status` shows the update service and its last result,
   `scripts/machine.sh logs update` what it did.
 - **A re-pin waiting for you**: `get_controller_status` names the pull request and why (its checks failed, it changes more

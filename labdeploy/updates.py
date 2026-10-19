@@ -51,8 +51,14 @@ RUNNER_PATHS = ("templates/", "requirements.lock", "tests.lock", "audit.lock", *
 REQUEST = "update-request"  # next to the controller's database, the one folder the controller may write
 RESULT = Path("/var/lib/fast-deploy-update/result.json")  # root's folder: the controller reads it, never writes it
 UNIT = Path("/etc/systemd/system/fast-deploy-update.path")
-OUTCOMES = ("installed", "rolled_back", "failed", "refused", "current")
+OUTCOMES = ("installed", "rolled_back", "failed", "not_installed", "refused", "current")
+# That code did not run well, or the machine needs a person: it is not asked for again, nor is a later commit of main that
+# leaves what the controller runs as it was.
+WENT_BACK = ("rolled_back", "failed")
+RETRY_SECONDS = 1800  # nothing changed (GitHub away, the controller held, another install running): asked for again after this
 STALE_REQUEST_SECONDS = 1800
+TRUSTED_AFTER_SECONDS = 7200  # an install the machine never reported on counts as done once the controller has run it this long
+REPIN_FLOOR_MINUTES = 10  # never re-pin while the machine may still be watching a new commit, whatever the delay
 MERGEABLE = ("clean", "unstable", "has_hooks")
 # Settled for one target commit: nothing more to do for that application until the controller runs another commit.
 SETTLED = ("current", "merged", "closed", "ahead", "no_workflows")
@@ -120,15 +126,35 @@ class PlatformUpdates:
                                                           "nor re-pins applications to its own commit"}
         self.collect_result()
         self.note_running()
-        return {"machine": self.machine_step() if settings.machine else "off", "workflows": self.workflows_step() if settings.workflows else "off"}
+        return {"machine": self.guarded("machine", self.machine_step) if settings.machine else "off",
+                "workflows": self.guarded("workflows", self.workflows_step) if settings.workflows else "off"}
+
+    def guarded(self, part, step):
+        """Run one part of the pass; its failure is recorded once and never stops the other part."""
+        try:
+            outcome = step()
+        except Exception as exc:  # noqa: BLE001 - the next pass tries again; the trail and the status keep the reason
+            message = (explain(exc) or str(exc))[:300]
+            state = self.c.store.platform_update("machine") or {}
+            if state.get(f"error_{part}") != message:
+                self.event("platform_update", "error", f"{part}: {message}")
+                self.save_machine({f"error_{part}": message})
+            return f"error: {message[:160]}"
+        if (self.c.store.platform_update("machine") or {}).get(f"error_{part}"):
+            self.save_machine({f"error_{part}": None})
+        return outcome
 
     def note_running(self):
-        """One event whenever the controller finds itself on another commit, whoever installed it (by hand, or the machine)."""
+        """One event whenever the controller finds itself on another commit, whoever installed it (by hand, or the machine).
+        What it worked out about main against the commit it ran is forgotten; an automatic install of this very commit
+        stays outstanding until the machine reports on its watch."""
         state = self.c.store.platform_update("machine") or {}
         if state.get("runs") != self.running:
             self.event("platform_update", "running", f"the controller runs {self.running[:12]}" + (f", was {state['runs'][:12]}" if state.get("runs") else ""),
                        name=self.running[:12])
-            self.save_machine({"runs": self.running})
+            requested = state.get("requested") if state.get("requested") == self.running else None
+            self.save_machine({"runs": self.running, "requested": requested, "head": None, "checks": None, "passed_at": None, "relation": None,
+                               "relevant": None, "since": None, "blocked_checked": None, "blocked_by": None, "retry": None})
 
     # ---- the machine
     def collect_result(self):
@@ -146,8 +172,12 @@ class PlatformUpdates:
         result = {key: str(data.get(key) or "")[:300] for key in ("commit", "previous", "outcome", "detail", "started_at", "finished_at")}
         detail = f"{result['commit'][:12]} (was {result['previous'][:12] or 'nothing'}): {result['detail']}"
         self.event("platform_update", result["outcome"], detail, name=result["commit"][:12])
-        if result["outcome"] in ("rolled_back", "failed", "refused"):
-            state["refused"] = [*[commit for commit in state.get("refused", []) if commit != result["commit"]], result["commit"]][-20:]
+        listed = "went_back" if result["outcome"] in WENT_BACK else "refused" if result["outcome"] == "refused" else None
+        if listed:
+            state[listed] = [*[commit for commit in state.get(listed, []) if commit != result["commit"]], result["commit"]][-20:]
+            state["blocked_checked"] = None  # worked out again against the longer list
+        if result["outcome"] == "not_installed":
+            state["retry"] = {"commit": result["commit"], "after": self.clock() + RETRY_SECONDS, "why": result["detail"]}
         state.update(result_seen=seen, last_result=result)
         if state.get("requested") == result["commit"]:
             state["requested"] = None
@@ -172,11 +202,11 @@ class PlatformUpdates:
     def busy(self):
         """When the controller may restart, if not now: someone is using it, or a release is on its way to GitHub."""
         now, quiet = self.clock(), self.settings.quiet_minutes * 60
-        for kind in ("tool", "rest", "sign_in"):
-            used = self.c.store.newest_event(kind)
+        for kind, outcome in (("tool", None), ("rest", None), ("sign_in", "ok")):  # a refused sign-in from anywhere postpones nothing
+            used = self.c.store.newest_event(kind, outcome)
             if used and now - used["at"] < quiet:
                 return f"at a quiet moment: the tools were last used at {stamp(used['at'])}, and it waits {self.settings.quiet_minutes} minutes after that"
-        if self.c.store.dispatching():
+        if self.c.store.dispatching(now):
             return "once the release being dispatched right now has reached GitHub"
         return None
 
@@ -201,8 +231,16 @@ class PlatformUpdates:
         if pending:
             late = "; its update service has not taken it yet (scripts/machine.sh logs update)" if now - pending["since"] > STALE_REQUEST_SECONDS else ""
             return self.next(f"the machine installs {pending['commit'][:12]}, asked for at {stamp(pending['since'])}{late}")
-        head = github.branch_head(platform.repository, platform.branch)
         state = self.c.store.platform_update("machine") or {}
+        requested = state.get("requested")
+        if requested and requested == running and now - state["requested_at"] > TRUSTED_AFTER_SECONDS:
+            self.event("platform_update", "installed", f"{running[:12]}: the machine reported nothing, and the controller has run it for two hours",
+                       name=running[:12])
+            state, requested = self.save_machine({"requested": None}), None
+        if requested:  # one request at a time: nothing else is asked for until the machine reports on this one
+            late = "; nothing reported for over an hour (scripts/machine.sh logs update)" if now - state["requested_at"] > 2 * STALE_REQUEST_SECONDS else ""
+            return self.next(f"the machine installs {requested[:12]}, asked for at {stamp(state['requested_at'])}{late}")
+        head = github.branch_head(platform.repository, platform.branch)
         if head == running:
             return self.next(f"nothing: the controller runs the tip of main, {head[:12]}", head=head, checks=None)
         if state.get("head") != head:
@@ -213,7 +251,8 @@ class PlatformUpdates:
                 step = github.comparison(platform.repository, state["head"], head)
                 if step["status"] == "ahead" and step["complete"] and not touches(step["files"], CONTROLLER_PATHS):
                     since = state["since"]
-            state = self.save_machine({"head": head, "seen_at": now, "checks": None, "passed_at": None, "relation": None, "relevant": None, "since": since})
+            state = self.save_machine({"head": head, "seen_at": now, "checks": None, "passed_at": None, "relation": None, "relevant": None, "since": since,
+                                       "blocked_checked": None, "blocked_by": None})
         if state.get("checks") != "passed":
             verdict, passed_at, why = self.main_checks(head)
             if verdict == "failed" and state.get("checks") != "failed":
@@ -232,10 +271,15 @@ class PlatformUpdates:
         if not state["relevant"]:
             return self.next(f"nothing: the controller keeps {running[:12]}, since nothing it runs changed up to main ({head[:12]})")
         if head in state.get("refused", []):
-            return self.next(f"waits for a newer commit on main: {head[:12]} did not work on the machine (the last result says why)")
-        if state.get("requested") == head:  # taken by the machine's service, which reports when it is done: never asked twice
-            late = "; nothing reported for over an hour (scripts/machine.sh logs update)" if now - state["requested_at"] > 2 * STALE_REQUEST_SECONDS else ""
-            return self.next(f"the machine installs {head[:12]}, asked for at {stamp(state['requested_at'])}{late}")
+            return self.next(f"waits for a newer commit on main: the machine refused {head[:12]} (the last result says why)")
+        blocked = self.blocked_by(state, head)
+        if blocked == head:
+            return self.next(f"waits for a newer commit on main: {head[:12]} went back on the machine (the last result says why)")
+        if blocked:
+            return self.next(f"waits for a change on main to what the controller runs: {head[:12]} runs the same controller code as {blocked[:12]}, which went back")
+        retry = state.get("retry") or {}
+        if retry.get("commit") == head and now < retry["after"]:
+            return self.next(f"asks for {head[:12]} again after {stamp(retry['after'])}: {retry['why']}")
         if not state.get("since"):  # the delay counts from when main's checks first passed on this change to the controller
             state = self.save_machine({"since": state["passed_at"]})
         due = state["since"] + settings.delay_minutes * 60
@@ -252,6 +296,23 @@ class PlatformUpdates:
                    name=head[:12])
         return self.next(f"the machine installs {head[:12]}, asked for at {stamp(now)}", requested=head, requested_at=now)
 
+    def blocked_by(self, state, head):
+        """A commit that went back on the machine whose controller code `head` still carries unchanged (itself, or a contract
+        release or a document on top of it), or None; worked out once for each tip of main."""
+        if state.get("blocked_checked") == head:
+            return state.get("blocked_by")
+        found = None
+        for commit in reversed(state.get("went_back", [])):
+            if commit == head:
+                found = commit
+                break
+            comparison = self.c.github.comparison(self.c.config.platform.repository, commit, head)
+            if comparison["status"] == "ahead" and comparison["complete"] and not touches(comparison["files"], CONTROLLER_PATHS):
+                found = commit
+                break
+        self.save_machine({"blocked_checked": head, "blocked_by": found})
+        return found
+
     def save_machine(self, changes):
         state = {**(self.c.store.platform_update("machine") or {}), **changes}
         self.c.store.save_platform_update("machine", state)
@@ -266,7 +327,10 @@ class PlatformUpdates:
         if not self.c.config.live_dispatch:
             return "writes are disabled (live_dispatch: false): no workflows are re-pinned"
         target, now = self.running, self.clock()
-        due = self.started + self.settings.delay_minutes * 60
+        machine = self.c.store.platform_update("machine") or {}
+        if machine.get("requested") or self.pending_request():
+            return f"waits: the machine installs {str(machine.get('requested') or 'a new commit')[:12]} first"
+        due = self.started + max(self.settings.delay_minutes, REPIN_FLOOR_MINUTES) * 60
         results = {}
         for app_id, app in sorted(self.c.config.applications.items()):
             if app.central:
@@ -284,7 +348,7 @@ class PlatformUpdates:
                 elif record.get("target") == target and record.get("state") == "open":
                     results[app_id] = self.advance(app_id, app, record)["state"]
                 elif now < due:
-                    results[app_id] = f"waits until {stamp(due)}: the controller runs {target[:12]} for {self.settings.delay_minutes} minutes first"
+                    results[app_id] = f"waits until {stamp(due)}: the controller runs {target[:12]} for a while first"
                 else:
                     results[app_id] = self.evaluate(app_id, app, target, record)["state"]
             except Exception as exc:  # noqa: BLE001 - one application's trouble must not stop the others; the next pass looks again
@@ -354,12 +418,13 @@ class PlatformUpdates:
         else:
             waiting = self.merge_gate(app_id, app, record, pr)
             if waiting is None:
-                merged = github.merge_pull_request(app.repository, number, f"Update Fast Deploy workflows to platform {record['target'][:12]}")
+                # Exactly the head the gate read: GitHub refuses the merge if anything was pushed in between.
+                merged = github.merge_pull_request(app.repository, number, f"Update Fast Deploy workflows to platform {record['target'][:12]}", sha=pr["head_sha"])
                 if merged.get("merged"):
                     record.update(state="merged", merged_by="the controller", waiting=None)
                     self.event("workflow_update", "merged", f"#{number} by the controller: pins {record['target'][:12]}", application=app_id)
                 else:
-                    waiting = f"the merge: {merged.get('reason') or 'not mergeable yet'}"
+                    waiting = f"a person: GitHub refused the merge of {pr['url']}: {merged.get('reason') or 'no reason given'}"
             if waiting is not None:
                 if waiting.startswith("a person") and not str(record.get("waiting") or "").startswith("a person"):
                     self.event("workflow_update", "waiting", waiting, application=app_id)
@@ -383,7 +448,10 @@ class PlatformUpdates:
         if pr.get("mergeable_state") == "dirty":
             return f"a person: {pr['url']} has conflicts"
         if pr.get("mergeable_state") not in MERGEABLE:
-            return f"GitHub to call {pr['url']} mergeable (it says {pr.get('mergeable_state')})"
+            waiting = f"GitHub to call {pr['url']} mergeable (it says {pr.get('mergeable_state')}"
+            if pr.get("mergeable_state") in ("blocked", "behind") and self.clock() - record.get("opened_at", self.clock()) > 3600:
+                return f"a person: {waiting}: a required review, a required check or an out-of-date branch)"
+            return waiting + ")"
         if sorted(github.pull_request_files(app.repository, number)) != sorted(record["files"]):
             return f"a person: {pr['url']} changes more than the three workflow files"
         for path, expected in sorted(record["files"].items()):
@@ -403,6 +471,7 @@ class PlatformUpdates:
         return {"enabled": True, "machine": settings.machine, "workflows": settings.workflows, "delay_minutes": settings.delay_minutes,
                 "quiet_minutes": settings.quiet_minutes, "runs": self.running, "main": machine.get("head"), "main_checks": machine.get("checks"),
                 "next": machine.get("next"), "last_result": machine.get("last_result"),
+                "errors": {part: machine[f"error_{part}"] for part in ("machine", "workflows") if machine.get(f"error_{part}")},
                 "workflows_due": None if self.running is None else stamp(self.started + settings.delay_minutes * 60), "applications": applications,
                 "note": None if self.running else "this controller does not run from a release folder of the machine, so it neither installs main "
                                                   "nor re-pins applications to its own commit"}

@@ -1007,6 +1007,9 @@ def after_release(view):
         facts.append(f"Last automatic update ({when(last.get('finished_at'))}): {words} `{str(last.get('commit'))[:12]}`"
                      + (f": {clip(last['detail'], 160)}" if last.get("detail") else ""))
         attention = last["outcome"] in ("rolled_back", "failed")
+    for part, message in sorted((view.get("errors") or {}).items()):
+        facts.append(f"After a release, the {'machine' if part == 'machine' else 're-pin'} step fails and is tried every five minutes: {clip(message, 160)}")
+        attention = True
     applications = view.get("applications") or {}
     if not view.get("workflows"):
         facts.append("Re-pinning the applications' workflows is off (platform_updates.workflows)")

@@ -482,10 +482,11 @@ class GitHub:
     def pull_request_files(self, repository, number):
         return [item["filename"] for item in self.request("GET", f"/repos/{repository}/pulls/{number}/files", params={"per_page": 100}).json()]
 
-    def merge_pull_request(self, repository, number, title):
-        """Squash-merge; a refusal (checks pending, protection, conflicts) is reported, never forced."""
+    def merge_pull_request(self, repository, number, title, sha=None):
+        """Squash-merge; a refusal (checks pending, protection, conflicts, a head other than `sha`) is reported, never forced."""
+        body = {"merge_method": "squash", "commit_title": title, **({"sha": sha} if sha else {})}
         try:
-            data = self.request("PUT", f"/repos/{repository}/pulls/{number}/merge", json={"merge_method": "squash", "commit_title": title}).json()
+            data = self.request("PUT", f"/repos/{repository}/pulls/{number}/merge", json=body).json()
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in (405, 409, 422):
                 try:

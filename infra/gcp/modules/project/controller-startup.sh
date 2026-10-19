@@ -129,8 +129,10 @@ BUCKET=$BUCKET
 EOF
 
 # fast-deploy-install COMMIT: the update path (scripts/machine.sh update, and fast-deploy-update below). Only a commit on
-# main runs here; the old release comes back if the new one does not answer within a minute. One install at a time.
-cat > /usr/local/sbin/fast-deploy-install <<'EOF'
+# main runs here; the old release comes back if the new one does not answer within a minute (exit status 75 then). One
+# install at a time. Each script here is written beside the old one and moved into place, so a copy that is running while
+# this startup script runs again keeps reading its own text.
+cat > /usr/local/sbin/fast-deploy-install.new <<'EOF'
 #!/bin/bash
 set -euo pipefail
 source /etc/fast-deploy/machine.env
@@ -138,11 +140,13 @@ COMMIT=${1:?usage: fast-deploy-install COMMIT}
 OPT=/opt/fast-deploy
 [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "Give a full 40-character commit."; exit 1; }
 if [[ -z "${FAST_DEPLOY_INSTALL_LOCKED:-}" ]]; then  # fast-deploy-update holds the lock already, for its watch afterwards too
-  exec 9>/run/fast-deploy-install.lock
+  install -d -m 0700 /run/fast-deploy  # root's only: nothing else can open the lock, let alone hold it
+  exec 9>/run/fast-deploy/install.lock
   flock -w 900 9 || { echo "Another install has held the machine for fifteen minutes; try again later."; exit 1; }
 fi
 [[ -d "$OPT/repo/.git" ]] || git clone --quiet --no-checkout "https://github.com/$REPOSITORY" "$OPT/repo"
-git -C "$OPT/repo" fetch --quiet --prune origin main
+# Without GitHub, main as it was last fetched decides: a release that ran before can come back, nothing new is taken.
+git -C "$OPT/repo" fetch --quiet --prune origin main || echo "Main could not be fetched from GitHub; main as it was last fetched decides."
 git -C "$OPT/repo" merge-base --is-ancestor "$COMMIT" origin/main || { echo "$COMMIT is not on $REPOSITORY's main branch: only merged code runs here."; exit 1; }
 release="$OPT/releases/$COMMIT"
 [[ -d "$release" ]] || git -C "$OPT/repo" worktree add --quiet --detach "$release" "$COMMIT"
@@ -168,12 +172,17 @@ elif [[ -f /var/lib/fast-deploy/config.yaml && -f /var/lib/fast-deploy/deploymen
       systemctl restart fast-deploy
       echo "Back on $(basename "$previous"); see journalctl -u fast-deploy for why the new one failed."
     fi
-    exit 1
+    exit 75
   fi
 fi
-echo "$COMMIT" | gcloud storage cp - "gs://$BUCKET/machine/installed-commit" --quiet
+# What follows a healthy switch never fails the install: the new commit runs either way.
+echo "$COMMIT" | gcloud storage cp - "gs://$BUCKET/machine/installed-commit" --quiet \
+  || echo "Warning: gs://$BUCKET/machine/installed-commit still names the commit before; a fresh disk would start from that one."
+# The three newest releases stay, and the one this install replaced, which is the way back.
 for old in $(ls -1t "$OPT/releases" | tail -n +4); do
-  if [[ "$OPT/releases/$old" != "$(readlink "$OPT/current")" ]]; then git -C "$OPT/repo" worktree remove --force "$OPT/releases/$old"; fi
+  if [[ "$OPT/releases/$old" != "$(readlink "$OPT/current")" && "$OPT/releases/$old" != "$previous" ]]; then
+    git -C "$OPT/repo" worktree remove --force "$OPT/releases/$old" || echo "Warning: $OPT/releases/$old could not be removed."
+  fi
 done
 # An environment that no kept release installs from goes too: each holds a few hundred megabytes of the 30 GB disk, and
 # updates that install themselves would otherwise pile them up.
@@ -181,11 +190,14 @@ kept=$(for folder in "$OPT"/releases/*/; do sha256sum "$folder/requirements.lock
 for environment in "$OPT"/venvs/*/; do
   environment=${environment%/}
   [[ -d "$environment" ]] || continue
-  if ! grep -qxF "$(basename "$environment")" <<<"$kept" && [[ "$environment" != "$(readlink "$OPT/venv")" ]]; then rm -rf "$environment"; fi
+  if ! grep -qxF "$(basename "$environment")" <<<"$kept" && [[ "$environment" != "$(readlink "$OPT/venv")" && "$environment" != "$previous_venv" ]]; then
+    rm -rf "$environment" || true
+  fi
 done
 echo "The controller runs $COMMIT."
 EOF
-chmod 0755 /usr/local/sbin/fast-deploy-install
+chmod 0755 /usr/local/sbin/fast-deploy-install.new
+mv -f /usr/local/sbin/fast-deploy-install.new /usr/local/sbin/fast-deploy-install
 
 # fast-deploy-update: the machine's own update after a platform release (docs/RUNBOOK.md, "After a release"). The
 # controller cannot restart itself (its service has no privileges), so once main's checks have passed and the delay is
@@ -193,27 +205,31 @@ chmod 0755 /usr/local/sbin/fast-deploy-install
 # It installs only a commit on main that contains the one running (never an older one), through fast-deploy-install and
 # its minute of health checks, then watches the controller for two more minutes and puts the previous commit back if it
 # stops answering or restarts. The result goes to /var/lib/fast-deploy-update/result.json, in a folder only root writes,
-# and the controller records it in its audit trail. Its log: `scripts/machine.sh logs update`.
-cat > /usr/local/sbin/fast-deploy-update <<'EOF'
+# and the controller records it in its audit trail: installed, rolled_back or failed (that code is not tried again),
+# not_installed (nothing changed; tried again later), refused or current. Its log: `scripts/machine.sh logs update`.
+cat > /usr/local/sbin/fast-deploy-update.new <<'EOF'
 #!/bin/bash
 set -uo pipefail
 DATA=${FAST_DEPLOY_DATA:-/var/lib/fast-deploy}
 OPT=${FAST_DEPLOY_OPT:-/opt/fast-deploy}
 OUT=${FAST_DEPLOY_UPDATE_OUT:-/var/lib/fast-deploy-update}
 INSTALL=${FAST_DEPLOY_INSTALL:-/usr/local/sbin/fast-deploy-install}
-LOCK=${FAST_DEPLOY_LOCK:-/run/fast-deploy-install.lock}
+LOCKS=${FAST_DEPLOY_LOCKS:-/run/fast-deploy}
 SOAK=${FAST_DEPLOY_SOAK_SECONDS:-120}
 HEALTH=http://127.0.0.1:8000/healthz
-REQUEST="$DATA/update-request"
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-# The request leaves the folder first, whatever it holds: the path unit starts this again for as long as it is there.
+install -d -m 0755 "$OUT"
+# The request leaves the controller's folder first, whatever it is (a file, a link, a folder, a pipe): it is renamed into
+# root's own folder, where the controller cannot swap it, and read there only if it is a plain file. The path unit starts
+# this again for as long as a request is there.
+taken="$OUT/request"
+rm -rf "$taken"
+mv "$DATA/update-request" "$taken" 2>/dev/null || true
 requested=""
-if [[ -f "$REQUEST" && ! -L "$REQUEST" ]]; then requested=$(head -c 100 "$REQUEST" | tr -d '[:space:]'); fi
-rm -f "$REQUEST"
-previous=$(readlink "$OPT/current" 2>/dev/null || true)
-previous=${previous##*/}
+if [[ -f "$taken" && ! -L "$taken" ]]; then requested=$(head -c 100 "$taken" | tr -d '[:space:]'); fi
+rm -rf "$taken"
+previous=""
 result() {  # OUTCOME DETAIL: the one line the controller reads, written whole
-  install -d -m 0755 "$OUT"
   python3 -c 'import datetime, json, sys; print(json.dumps(dict(zip(("commit", "previous", "outcome", "detail", "started_at"), sys.argv[1:]),
               finished_at=datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))))' \
     "$requested" "$previous" "$1" "$2" "$started" > "$OUT/result.json.next"
@@ -226,12 +242,16 @@ if [[ ! "$requested" =~ ^[0-9a-f]{40}$ ]]; then
   result refused "the request did not hold a full 40-character commit"
   exit 0
 fi
-exec 9>"$LOCK"
-flock -w 900 9 || { result failed "another install held the machine for fifteen minutes"; exit 1; }
+install -d -m 0700 "$LOCKS"  # root's only: the controller can neither open the lock nor hold it
+exec 9>"$LOCKS/install.lock"
+flock -w 900 9 || { result not_installed "another install held the machine for fifteen minutes; nothing changed"; exit 1; }
 export FAST_DEPLOY_INSTALL_LOCKED=1
-if [[ -f "$DATA/held" ]]; then result refused "the controller is held (scripts/machine.sh start releases it)"; exit 0; fi
+# Read under the lock: an install by hand that just finished has moved it.
+previous=$(readlink "$OPT/current" 2>/dev/null || true)
+previous=${previous##*/}
+if [[ -f "$DATA/held" ]]; then result not_installed "the controller is held (scripts/machine.sh start releases it)"; exit 0; fi
 if [[ "$requested" == "$previous" ]]; then result current "the controller runs it already"; exit 0; fi
-git -C "$OPT/repo" fetch --quiet --prune origin main || { result failed "main could not be fetched from GitHub; nothing changed"; exit 1; }
+git -C "$OPT/repo" fetch --quiet --prune origin main || { result not_installed "main could not be fetched from GitHub; nothing changed"; exit 1; }
 if ! git -C "$OPT/repo" merge-base --is-ancestor "$requested" origin/main 2>/dev/null; then
   result refused "it is not on main: only merged code runs here"
   exit 0
@@ -240,14 +260,23 @@ if [[ -n "$previous" ]] && ! git -C "$OPT/repo" merge-base --is-ancestor "$previ
   result refused "it does not contain the commit that runs (${previous:0:12}): the machine never goes back by itself"
   exit 0
 fi
-if ! output=$("$INSTALL" "$requested" 2>&1); then
-  echo "$output"
-  why=$(tail -n 2 <<<"$output" | tr '\n' ' ')
-  now=$(readlink "$OPT/current" 2>/dev/null || true)
-  if [[ "${now##*/}" == "$previous" ]]; then result rolled_back "${previous:0:12} still runs: $why"; else result failed "$why"; fi
+output=$("$INSTALL" "$requested" 2>&1)
+status=$?
+echo "$output"
+why=$(tail -n 2 <<<"$output" | tr '\n' ' ')
+now=$(readlink "$OPT/current" 2>/dev/null || true)
+now=${now##*/}
+if (( status == 75 )); then  # it did not answer within its first minute, and fast-deploy-install switched back
+  if [[ -n "$previous" && "$now" == "$previous" ]]; then
+    result rolled_back "it did not answer within a minute; ${previous:0:12} runs again (scripts/machine.sh logs says why)"
+  else
+    result failed "it did not answer, and no earlier commit could take over: scripts/machine.sh status"
+  fi
+  exit 1
+elif (( status != 0 )); then
+  if [[ "$now" == "$previous" ]]; then result not_installed "${previous:0:12} still runs; the install stopped before the switch: $why"; else result failed "$why"; fi
   exit 1
 fi
-echo "$output"
 # Two more minutes: the controller must keep answering and must not have restarted. With RestartMode at its default, a
 # restart by Restart=always passes through inactive, and systemd gives every new run of a unit a new invocation ID.
 invocation=$(systemctl show -p InvocationID --value fast-deploy)
@@ -265,12 +294,13 @@ for _ in $(seq 1 $((SOAK / 10))); do
 done
 result installed "the controller answered for $SOAK seconds after its first minute, without a restart"
 EOF
-chmod 0755 /usr/local/sbin/fast-deploy-update
+chmod 0755 /usr/local/sbin/fast-deploy-update.new
+mv -f /usr/local/sbin/fast-deploy-update.new /usr/local/sbin/fast-deploy-update
 install -d -m 0755 /var/lib/fast-deploy-update
 
 # fast-deploy-import [--replace] DIR: the move (scripts/install-machine.sh copies a database and a configuration into
 # DIR). A machine that already has a database keeps it unless --replace is given; then the old one stays beside it.
-cat > /usr/local/sbin/fast-deploy-import <<'EOF'
+cat > /usr/local/sbin/fast-deploy-import.new <<'EOF'
 #!/bin/bash
 set -euo pipefail
 source /etc/fast-deploy/machine.env
@@ -308,7 +338,8 @@ for _ in $(seq 1 30); do curl -fsS --max-time 2 http://127.0.0.1:8000/healthz >/
 echo "The controller did not answer; see journalctl -u fast-deploy."
 exit 1
 EOF
-chmod 0755 /usr/local/sbin/fast-deploy-import
+chmod 0755 /usr/local/sbin/fast-deploy-import.new
+mv -f /usr/local/sbin/fast-deploy-import.new /usr/local/sbin/fast-deploy-import
 
 # Caddy: HTTPS with Let's Encrypt, in front of the controller on 127.0.0.1:8000. Its admin endpoint is off, so nothing on
 # the machine can reconfigure it; HTTP/3 is off because the firewall opens TCP only. For the machine's own address,

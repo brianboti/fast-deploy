@@ -197,10 +197,12 @@ class Store:
                               "AND json_extract(payload, '$.outcome.recorded_at') > ?) ORDER BY rowid DESC LIMIT ?", (since, limit)).fetchall()
         return [(row[0], row[1]) for row in rows]
 
-    def dispatching(self):
-        """How many plans are between their claim and GitHub's answer: the moment a restart would leave a dispatch unknown."""
+    def dispatching(self, now=None):
+        """How many plans are between their claim and GitHub's answer, the moment a restart would leave a dispatch unknown.
+        Only plans that have not expired count: one left behind by a process that was killed is not on its way any more."""
         with self.connect() as db:
-            return db.execute("SELECT COUNT(*) FROM plans WHERE state='dispatching'").fetchone()[0]
+            return db.execute("SELECT COUNT(*) FROM plans WHERE state='dispatching' AND json_extract(payload, '$.expires_at') > ?",
+                              (now or time.time(),)).fetchone()[0]
 
     def latest_plan(self, application, sha=None):
         """The newest plan of any state for an application, optionally for one commit; rollback records excluded."""
