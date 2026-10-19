@@ -499,6 +499,13 @@ def test_the_lock_is_made_by_npm_11_10_or_later_with_every_script_off():
         assert 'if [ "$major" -lt 11 ] || { [ "$major" -eq 11 ] && [ "$minor" -lt 10 ]; }' in script  # npm 10 would ignore the hold
         # Node 22's npm 10.9.9 has no min-release-age: its container installs npm 11.19.1 first and checks its integrity hash.
         assert ("npm@11.19.1" in script and scaffold.LOCK_NPM["22"][1] in script) == (line == "22")
+        if line == "22":
+            # Live 2026-10-19: without a package.json of its own, the pinned folder's install walked up to the service's
+            # package.json one folder above, installed npm there and left no lockfile to check (Node crashed on require).
+            steps = script.split("; ")
+            own = steps.index("echo '{\"private\": true}' > /tmp/npm-pinned/package.json")
+            assert steps.index("cat > package.json") < steps.index("mkdir /tmp/npm-pinned") < own < next(
+                index for index, step in enumerate(steps) if "npm@11.19.1" in step)
     assert scaffold.node_lock_command("api") == "cd api && npm install --package-lock-only --ignore-scripts --min-release-age=3"
     assert scaffold.node_lock(package, "24", fake_npm([], "not json"))["error"].startswith("the container did not return a usable package-lock.json")
     bad = json.loads(lockfile({"name": "svc", "dependencies": {"x": "1"}}))
@@ -514,6 +521,18 @@ def test_the_lock_is_made_by_npm_11_10_or_later_with_every_script_off():
 
     assert scaffold.node_lock(package, "24", missing)["error"] == "Docker is not installed on this machine"
     assert "min-release-age needs npm 11.10" in scaffold.node_lock(package, "24", failing)["error"]
+
+    def crashing(args, stdin):  # what the container printed live on 2026-10-19: Node's crash ends with its bare version
+        raise subprocess.CalledProcessError(1, args, stderr="added 66 packages in 9s\nnode:internal/modules/cjs/loader:1433\n  throw err;\n  ^\n\n"
+                                                            "Error: Cannot find module '/tmp/npm-pinned/package-lock.json'\nRequire stack:\n"
+                                                            "- /tmp/[eval]\n  code: 'MODULE_NOT_FOUND',\n}\n\nNode.js v22.23.3\n")
+
+    def not_found(args, stdin):
+        raise subprocess.CalledProcessError(1, args, stderr="npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/nope - Not found\n"
+                                                            "npm error A complete log of this run can be found in: /tmp/.npm/_logs/x.log\n")
+
+    assert scaffold.node_lock(package, "22", crashing)["error"].endswith("Error: Cannot find module '/tmp/npm-pinned/package-lock.json'")
+    assert scaffold.node_lock(package, "24", not_found)["error"].endswith("npm error 404 Not Found - GET https://registry.npmjs.org/nope - Not found")
 
 
 def test_importing_a_node_service_proposes_its_contract_and_the_platforms_lock(tmp_path):
@@ -642,6 +661,20 @@ def test_the_dependency_audit_stops_malicious_and_fixable_serious_findings_for_e
     assert high["by_severity"]["HIGH"] == 1 and "1 critical or high finding with a fix available: express@1.2.3 (GHSA-aaaa-bbbb-cccc, fixed in 4.21.2)" in scan.osv_verdict(high)
     unfixed = scan.osv_summary(osv_report(("express", "1.2.3", "GHSA-x", "9.8", None, [])), 1, LOCK)
     assert unfixed["by_severity"]["CRITICAL"] == 1 and scan.osv_verdict(unfixed) is None  # listed, not blocking: there is nothing to move to
+    # GitHub's malware advisories carry CWE-506 and may have neither a MAL- record nor a fixed version (live 2026-10-19:
+    # GHSA-9x64-5r7x-2q53, "Malicious Package in flatmap-stream"): they stop the release like a MAL- record.
+    github = osv_report(("left-pad", "1.2.3", "GHSA-9x64-5r7x-2q53", "9.8", None, []))
+    github["results"][0]["packages"][0]["vulnerabilities"][0]["database_specific"] = {"cwe_ids": ["CWE-506"], "severity": "CRITICAL"}
+    flagged = scan.osv_summary(github, 1, LOCK)
+    assert flagged["malicious"] == ["GHSA-9x64-5r7x-2q53 (left-pad@1.2.3)"] and "1 known malicious package" in scan.osv_verdict(flagged)
+    other = osv_report(("express", "1.2.3", "GHSA-w", "9.8", None, []))
+    other["results"][0]["packages"][0]["vulnerabilities"][0]["database_specific"] = {"cwe_ids": ["CWE-79"]}
+    assert scan.osv_summary(other, 1, LOCK)["malicious"] == []
+    # One package with both records counts once, named by its MAL- record, whichever comes first.
+    both = osv_report(("left-pad", "1.2.3", "GHSA-9x64-5r7x-2q53", "9.8", None, []), ("left-pad", "1.2.3", "MAL-2025-20690", "", None, []))
+    both["results"][0]["packages"][0]["vulnerabilities"][0]["database_specific"] = {"cwe_ids": ["CWE-506"]}
+    counted = scan.osv_summary(both, 1, LOCK)
+    assert counted["malicious"] == ["MAL-2025-20690 (left-pad@1.2.3)"] and "1 known malicious package in the lockfile" in scan.osv_verdict(counted)
     medium = scan.osv_summary(osv_report(("express", "1.2.3", "GHSA-y", "5.3", "2.0.0", [])), 1, LOCK)
     assert medium["by_severity"]["MEDIUM"] == 1 and scan.osv_verdict(medium) is None
     word = osv_report(("express", "1.2.3", "GHSA-z", "", "2.0.0", []))

@@ -35,6 +35,42 @@ volumes nobody added. Built and checked locally; the live exercise listed under 
 Tests: 788 pass (10 new); ruff clean; `terraform validate` passes on an app root and the foundation (Terraform 1.13.5).
 
 
+# 1.20.2: GitHub's malware advisories stop a Node.js release
+
+Found on 2026-10-19 while preparing the live exercise of Phase 18, by running the pinned OSV-Scanner 2.7.0 on a lockfile
+with `flatmap-stream@0.1.1` planted in it (the 2018 event-stream attack; npm removed it that year).
+
+1. **A malware advisory without a MAL- record stops the release.** The dependency audit counted a package as malicious
+   only through an OpenSSF `MAL-` record. GitHub files its own malware advisories as embedded malicious code (CWE-506,
+   "Malicious Package in ..."), often with no fixed version; alone, such a finding was listed as "critical, no fix yet"
+   and the release went on. `flatmap-stream` was stopped only because OpenSSF also filed MAL-2025-20690 for it. An
+   advisory with CWE-506 is now a known malicious package, like a `MAL-` record. Checked on the scanner's real output with
+   the `MAL-` record taken out: "1 known malicious package in the lockfile (GHSA-9x64-5r7x-2q53 (flatmap-stream@0.1.1))".
+2. **One package counts once.** A package with several advisories is named once, by its `MAL-` record when it has one.
+
+The image's scan (Artifact Analysis) is unchanged: its notes carry no CWE list, and it already blocks `MAL-` records.
+
+Tests: 778 pass; ruff clean.
+
+
+# 1.20.1: the lock for a Node.js 22 service
+
+Found on 2026-10-19 while preparing the live exercise of Phase 18, by running the platform's own lock container on Docker
+for a Node.js 22 service without a lockfile. The unit tests had replaced Docker with a stand-in, so they never ran it.
+
+1. **The lock for Node.js 22 works.** Node 22's npm 10.9.9 cannot hold back new releases, so its container first installs
+   npm 11.19.1 into a folder of its own. That folder had no `package.json`, so npm walked up to the service's
+   `package.json` one folder above, installed itself there (adding npm to the service's dependencies) and left no
+   lockfile in its own folder; the integrity check then crashed, and no Node.js 22 service without a lockfile could be
+   imported. The folder now gets a `package.json` first. Run on Docker: npm 11.19.1 installed and checked, 65 packages
+   locked, the service's own dependencies untouched. Node.js 24 and 26 use their own npm and were not affected.
+2. **A failed lock says what failed.** The error quoted the last line the container printed, which after a crash is
+   Node's bare version ("npm could not lock the dependencies: Node.js v22.23.3"). It now quotes npm's own error, else the
+   error a crash names, else the last line.
+
+Tests: 778 pass; ruff clean.
+
+
 # 1.20.0: Node.js web services (Phase 18)
 
 Roadmap Phase 18 (docs/ROADMAP.md 18.1 to 18.7, decisions D41 to D46), from the research review of 2026-10-19
