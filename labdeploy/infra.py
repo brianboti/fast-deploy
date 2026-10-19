@@ -19,6 +19,8 @@ NAME = re.compile(r"^[a-z][a-z0-9-]{2,20}$")
 # A root as the drift report names it: the service for staging, production-<service> for its production root (D37).
 ROOT_LABEL = re.compile(r"^(production-)?[a-z][a-z0-9-]{2,20}$")
 RESOURCE_NAME = re.compile(r"^[a-z][a-z0-9-]{1,20}$")
+# The model APIs an app may declare under needs.models (docs/ROADMAP.md D47); the contract's model holds the same list.
+MODELS = ("claude",)
 ENVIRONMENT = re.compile(r"^[a-z][a-z0-9-]{1,15}$")
 DIGITS = re.compile(r"^[0-9]{1,20}$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -164,10 +166,18 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
         if key in SETTING_RANGES and not SETTING_RANGES[key][0] <= value <= SETTING_RANGES[key][1]:
             raise ValueError(f"Setting {key!r} must be between {SETTING_RANGES[key][0]} and {SETTING_RANGES[key][1]}")
         merged[key] = value
-    needs = {"buckets": [], "topics": [], "database": "none", "migrate": [], "database_auth": "iam", "database_tier": "standard", **(needs or {})}
-    if (set(needs) != {"buckets", "topics", "database", "migrate", "database_auth", "database_tier"}
+    needs = {"buckets": [], "topics": [], "database": "none", "migrate": [], "database_auth": "iam", "database_tier": "standard",
+             "mounts": {}, "models": [], **(needs or {})}
+    if (set(needs) != {"buckets", "topics", "database", "migrate", "database_auth", "database_tier", "mounts", "models"}
             or needs["database"] not in ("none", "firestore", "postgres")):
-        raise ValueError("needs must hold buckets, topics, database (none, firestore or postgres), migrate, database_auth and database_tier")
+        raise ValueError("needs must hold buckets, topics, database (none, firestore or postgres), migrate, database_auth, database_tier, "
+                         "mounts and models")
+    # Mounts are the release's (each one a declared bucket, which this root already creates); models are this root's: the
+    # runtime identity's grant of the foundation's model role (docs/ROADMAP.md D47).
+    if not isinstance(needs["mounts"], dict) or not set(needs["mounts"]) <= set(needs["buckets"]):
+        raise ValueError("mounts maps declared buckets to paths")
+    if not isinstance(needs["models"], list) or any(m not in MODELS for m in needs["models"]) or len(set(needs["models"])) != len(needs["models"]):
+        raise ValueError(f"models is a list of {', '.join(MODELS)}, each once")
     if needs["database_tier"] not in ("standard", "ha", "sla") or (needs["database_tier"] != "standard" and needs["database"] != "postgres"):
         raise ValueError("database_tier is standard, ha or sla, and applies to database: postgres only")
     if needs["database_auth"] not in ("iam", "password") or (needs["database_auth"] == "password" and needs["database"] != "postgres"):
@@ -229,6 +239,8 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
     auth = ', database_auth = "password"' if password else ""
     if needs["database_tier"] != "standard":  # roots without a chosen tier stay as they were
         auth += f", database_tier = {_hcl(needs['database_tier'])}"
+    if needs["models"]:  # roots without a model stay as they were
+        auth += f", models = {_hcl(needs['models'])}"
     declared = f"buckets = {_hcl(needs['buckets'])}, topics = {_hcl(needs['topics'])}, database = {_hcl(needs['database'])}, migrate = {_hcl(needs['migrate'])}"
     lines.append(f"  {'needs'.ljust(width)} = {{ {declared}{auth} }}")
     if password:
@@ -247,6 +259,10 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
     # Added in 1.8.6, read the same way: until the foundation has its key ring the app has no signing key, and a private
     # repository's release says so when it tries to sign.
     lines.append(f"  {'kms_key_ring'.ljust(width)} = try(data.terraform_remote_state.project.outputs.kms_key_ring, \"\")")
+    if needs["models"]:
+        # Added in 1.21.0 and read the same way, by the roots that declare a model only: until the foundation has the model
+        # role, the module's precondition stops the plan with the step that fixes it.
+        lines.append(f"  {'model_user_role'.ljust(width)} = try(data.terraform_remote_state.project.outputs.model_user_role, \"\")")
     ephemeral = ('''
 # The database password for database_auth: password; see the module input database_password below.
 ephemeral "random_password" "database" {

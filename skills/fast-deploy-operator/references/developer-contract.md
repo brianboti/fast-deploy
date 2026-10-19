@@ -62,7 +62,7 @@ health_path: /health
 resources: { cpu: 1, memory_mib: 512 }   # the lab allows up to 2 CPUs and 2048 MiB
 scaling: { minimum: 0, maximum: 2 }      # minimum 1 keeps an instance warm all month (about 9 dollars); maximum up to 3
 concurrency: 80           # requests one instance serves at once; higher is cheaper when the app can take it
-timeout_seconds: 60       # per request, up to 300
+timeout_seconds: 60       # per request, up to 3600 (a service that streams long answers)
 exposure: authenticated   # or lab-members: people, after a Google sign-in, listed accounts only
 state: stateless
 env:                      # plain settings
@@ -77,6 +77,8 @@ needs:
   database_tier: standard # postgres only, production only: standard (about $8.57 a month, no SLA), ha (a standby, about
                           # $17.13, no SLA) or sla (a standby and a dedicated CPU, about $100.43, Google's 99.95% SLA)
   migrate: []             # e.g. [alembic, upgrade, head]: runs before visitors move to a new version
+  mounts: {}              # e.g. { corpus: /app/data/index }: a declared bucket mounted read only at that path
+  models: []              # e.g. [claude]: Claude through Google Cloud, no internet or API key; the operator enables it once
 build:
   context: service        # or repository, when a service in a monorepo copies shared code from outside its folder
 domain: api.example.org   # production only: a name of the lab's own through a load balancer with Cloud Armor, about $25 a month
@@ -88,7 +90,9 @@ requirement files and tests, and is onboarded with its own sentence and `path` (
 file is read to draft these, never deployed. Where each part of an app goes:
 
 - Every part that answers web requests: its own service, in its own folder.
-- Databases, files, topics: `needs`.
+- Databases, files, topics: `needs`. Files the code reads at a fixed path (a corpus, a model): a bucket in `needs.mounts`.
+- A small database kept in a file (SQLite): Firestore or Postgres instead. The disk is wiped when the app sleeps, and
+  during a release the old and new versions run side by side, each with its own copy.
 - A cache (Redis): none by default; memory or Firestore instead. A managed cache costs tens of dollars a month even
   idle, so it is the operator's decision.
 - A background worker (Celery, RQ): a topic with push delivery to a service, or a Cloud Run job.

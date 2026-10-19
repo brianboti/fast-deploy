@@ -508,6 +508,27 @@ version and SHA-256 in `templates/deploy-gcp.yml` (2.7.0, from its release's che
 made with (`LOCK_NPM` in `labdeploy/scaffold.py`: 11.19.1 and its registry integrity hash; it goes when 22 does). Regenerate
 `.github/workflows/deploy.yml` with `labdeploy.workflows.central_deploy` after a template change; a test keeps them equal.
 
+## An application that calls Claude
+
+A contract with `needs.models: [claude]` (since 1.21.0) has its service call Claude through Vertex AI. Three things come
+first, in this order, once per project (staging, then production when the app is promoted):
+
+1. **The foundation.** 1.21.0 turns on the Vertex AI API (`aiplatform.googleapis.com`) and adds the custom role
+   `labDeployModelUser`, whose one permission is `aiplatform.endpoints.predict`: calling a model, never creating anything
+   that bills by the hour. Apply it with `scripts/apply-foundation.sh PROJECT ENVIRONMENT`. Until then the app's root
+   refuses to plan, and says so.
+2. **Model Garden.** In the console, open Vertex AI's Model Garden, find each Claude model the app uses (Claude Opus 5.5,
+   Claude Sonnet 5.5) and click **Enable**. Google requires a person to do this once per model and project; a billing
+   account managed by a reseller Anthropic does not allow cannot accept the terms.
+3. **The app's root.** Merge the pull request that renders it with the grant to the app's runtime identity; the pipeline
+   applies it.
+
+The calls bill per token to the project, appear in the billing export as Vertex AI, and count toward the budget, so the
+spending cap stops them with the rest. The weekly cost report shows them at project level, not per app. The prices the
+platform shows are in `labdeploy/cost.py` (`NEEDS_PRICING["claude"]`, read from the Billing Catalog on 2026-10-19); read
+them again when they matter. Only the global endpoint is reachable from an app with private egress: Private Google Access
+does not serve the `rep.googleapis.com` endpoints.
+
 ## Someone cannot open an app's pages
 
 Google refuses before the app sees the request. Check, in this order: the person signed in with the listed account

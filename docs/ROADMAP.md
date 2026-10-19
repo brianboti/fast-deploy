@@ -499,8 +499,8 @@ Planned on 2026-10-19 from the research review `docs/RESEARCH-2026-10-19.md` (it
 by the first non-Python application the lab wants deployed: the BetterCare chatbot ("Sophia"), a Node.js service the
 reader refused that morning with "no Python code or dependency manifest". Phase 18 adds Node.js web services to the
 contract, the reader, the pipeline and the platform's image, with npm's 2026 defaults built in; Phase 19 adds what a
-data-bearing application needs whatever its language: a read-only bucket mount, a replicated SQLite file and a
-Google-hosted path to Claude. What stays human: the review of the contract, the script allow-list, the Model Garden click
+data-bearing application needs whatever its language: a read-only bucket mount and a Google-hosted path to Claude (a
+replicated SQLite file was planned too and dropped before it was built; D47 says why). What stays human: the review of the contract, the script allow-list, the Model Garden click
 per model, the application's own changes, and the decision to open an application beyond the lab's members.
 
 | # | Decision | Needed by | Default if nothing is said |
@@ -511,7 +511,7 @@ per model, the application's own changes, and the decision to open an applicatio
 | D44 | The dependency audit and its gate | Phase 18 | OSV-Scanner on the lockfile before the build, pinned by version and SHA-256, in the wording of the Trivy gate (14.4): a `MAL-` record, a fixable critical or high finding, or a scan that did not finish blocks for every trust level; the rest is listed in the summary; `npm audit signatures` is a note; `npm audit` is not the gate (it needs the registry, and whether it returns malware advisories is undocumented); the contract page recommends Dependabot's default three-day cooldown and names npm's `min-release-age` |
 | D45 | The image | Phase 18 | The platform's Node Dockerfile: `node:<major>-slim` (Debian) by multi-architecture index digest, resolved on a recorded date like the Python pins; `NODE_ENV=production`, `HOME=/tmp`, dependencies before the code, `npm cache clean --force`, the deny-list with `node_modules` added, `USER 65532:65532`, `EXPOSE`, an exec-form `CMD ["node", ...]`, never `npm start`; the memory knob stays `resources.memory_mib` (Node sizes its heap from the cgroup limit; a note on the contract page); Google's buildpacks (`GOOGLE_NODEJS_VERSION`, `GOOGLE_ENTRYPOINT`, the `google-24` builder) for `trust: reviewed` only, because the builder runs install scripts and fetches the runtime at build time; the Dockerfile policy adds two notes (a `CMD` through npm, an Alpine base with native addons) |
 | D46 | What the reader refuses for Node, beyond D34 | Phase 18 | A start script that watches, transpiles or chains (`nodemon`, `ts-node`, `tsx`, `node --watch`, a development server, `concurrently`, a shell); a project that needs a build (`scripts.build`, TypeScript on a Node below 24.12, Next, Nest, Remix, SvelteKit, Astro or Nuxt) until the later item; a listen call on a literal port, on `127.0.0.1` or `localhost`, or a Fastify server without `host: '0.0.0.0'`; a static site; two lockfiles, or `packageManager` and `engines.*` naming different managers; a workspace without a service path; a committed `.npmrc` or `.yarnrc.yml` with a literal token; `engines.iojs`; a committed `node_modules/`, `dist/` or `.next/` is ignored with a note; tests are `scripts.test` unless it is npm's placeholder, else `node --test`'s patterns or a Jest, Vitest, Mocha, AVA or tap configuration, else "none", said plainly |
-| D47 | What a data-bearing application gets, whatever its language | Phase 19 | A `needs.buckets` entry may carry `mount: /path` (a read-only Cloud Storage volume on the service; `roles/storage.objectViewer`); `state: sqlite` with a `path` runs Litestream as a sidecar replicating that file to the application's backup bucket, restores it at startup, puts the writable directory on an in-memory volume with a size limit and forces `scaling.maximum: 1`; `needs.models: [claude]` grants the runtime identity the Vertex AI user role and sets `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION=global`, so an egress-denied service reaches Claude through Private Google Access on the global endpoint, with the Model Garden click named as the operator's step and the per-token price in the review; no NAT, no Secure Web Proxy, no external identities: an application whose users are not Google accounts stays with the lab's members behind IAP |
+| D47 | What a data-bearing application gets, whatever its language | Phase 19 | As built on 2026-10-19: `needs.mounts` maps a declared bucket to a path, mounted read only through Cloud Storage FUSE by every release (the runtime identity already holds `roles/storage.objectUser` on its buckets); `needs.models: [claude]` grants the runtime identity the foundation's one-permission role `labDeployModelUser` (`aiplatform.endpoints.predict`, not Vertex AI User and its 459 permissions) and sets `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION=global`, so an egress-denied service reaches Claude through Private Google Access on the global endpoint, with the Model Garden click named as the operator's step and the per-token price in the review; no NAT, no Secure Web Proxy, no external identities: an application whose users are not Google accounts stays with the lab's members behind IAP. **Dropped before it was built:** `state: sqlite` (a Litestream sidecar replicating a SQLite file). Every release runs the old and the new revision at once (the candidate's probes, the bake, production's split), each with its own copy of the file and its own Litestream writing the same replica, so one side's writes would be lost on every release, not rarely as the review said; `max_instances` is per revision. A small database goes in Firestore or Postgres; Sophia's moves to Firestore (decided with Brian on 2026-10-19) |
 
 ## Phase 18: Node.js web services (about six days) → version 1.20.0
 
@@ -542,30 +542,33 @@ Requires regeneration of app workflows: yes (the templates change; Python applic
 apply: none.
 Cost effect: none at idle; the audit adds under a minute to a release.
 
-## Phase 19: what a data-bearing application needs (about three days, plus the trials) → version 1.21.0
+## Phase 19: what a data-bearing application needs (about two days, plus the trials) → version 1.21.0
 
-Status: planned on 2026-10-19 (research review sections 5.1 to 5.8). Sophia keeps a corpus and a model on disk that can
-neither live in a public repository nor be fetched by a build that has no credentials, keeps its users' state in SQLite,
-and calls Claude. Each need has a cheap answer that is the same for any language, so they are platform features, not
-Node ones.
+Status: planned on 2026-10-19 (research review sections 5.1 to 5.8) and built the same day as 1.21.0, stacked on Phase
+18 (code, tests and documents, checked locally; the live exercise below has not run). Sophia keeps a corpus and a model on
+disk that can neither live in a public repository nor be fetched by a build that has no credentials, keeps its users'
+state in SQLite, and calls Claude. Two of those needs have a platform answer that is the same for any language; the third
+(the state) is the application's to move into Firestore, because `state: sqlite` was dropped before it was built (D47).
+Checking before building also moved the mounts: the service module leaves the revision template to the release runner
+(`ignore_changes = [template, ...]`), so a mount is a `gcloud run deploy` flag, not Terraform.
 
 | Item | Change | Where |
 |---|---|---|
-| 19.1 | Bucket mounts (D47): a `needs.buckets` entry with `mount` becomes a read-only Cloud Storage volume on the service and the viewer role on the runtime identity; the review and the release say the mount is there; the cold-start note on the contract page | labdeploy/models.py, infra/gcp/modules/service/main.tf, labdeploy/release.py, docs/DEVELOPER-CONTRACT.md |
-| 19.2 | `state: sqlite` (D47): the Litestream sidecar (image pinned by digest, its configuration rendered from the contract), the restore at startup, the in-memory volume with a size limit, `scaling.maximum` forced to 1 with the reason in the approval block, the backup bucket's lifecycle for the replica, the recovery drill extended (kill the instance and watch the restore; delete the service and restore from the bucket); the first multi-container service the platform runs | infra/gcp/modules/service/main.tf, labdeploy/models.py, labdeploy/release.py, labdeploy/drill.py, docs/RUNBOOK.md |
-| 19.3 | `needs.models: [claude]` (D47): the Vertex AI user role on the runtime identity, `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION=global` on the service, the Model Garden step named in the review, the per-token prices from the catalog in the approval block and on the contract page, and the cost report's note that Vertex spend lands at project level | labdeploy/models.py, labdeploy/infra.py, infra/gcp/modules/service/main.tf, labdeploy/cost.py, labdeploy/rightsize.py |
+| 19.1 | Bucket mounts (D47): `needs.mounts` maps a declared bucket to an absolute path that hides nothing the container needs; every release clears the mounts and volumes it finds and mounts what the contract names, read only, and a mount puts the service in the second-generation environment | labdeploy/models.py, labdeploy/release.py, docs/DEVELOPER-CONTRACT.md |
+| 19.2 | Dropped: `state: sqlite` (D47 says why) | none |
+| 19.3 | `needs.models: [claude]` (D47): the Vertex AI API and the one-permission role `labDeployModelUser` in the foundation; the grant to the runtime identity in the app's root, behind a precondition that names the foundation apply; `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION=global` on the service; the per-token prices in the cost view; the Model Garden step in the runbook | infra/gcp/modules/project/, infra/gcp/project/outputs.tf, infra/gcp/modules/service/needs.tf, infra/gcp/modules/service/variables.tf, labdeploy/infra.py, labdeploy/models.py, labdeploy/cost.py, docs/RUNBOOK.md |
 | 19.4 | Streaming: `timeout_seconds` up to 3600 for a service that streams, with the bake's rules unchanged; the IAP streaming check in the live exercise | labdeploy/models.py, docs/DEVELOPER-CONTRACT.md |
-| 19.5 | Documents and the skill: the data-bearing page of the contract (files, a small database, a model API), the runbook's single-writer rule and drill | docs/DEVELOPER-CONTRACT.md, docs/RUNBOOK.md, skills/ |
+| 19.5 | Documents and the skill: where files, a small database and a model API go on the contract page; the runbook's steps for an app that calls Claude | docs/DEVELOPER-CONTRACT.md, docs/RUNBOOK.md, skills/ |
 
-Live exercise: the demo application with a bucket mounted and a file read from it; a SQLite demo released with the
-sidecar, written to, its instance killed and its state back after the restart, then deleted and restored from the bucket;
-a Vertex call from an egress-denied service on the global endpoint, and the same call failing on the `us` endpoint; an
-SSE stream read through IAP; Sophia itself, after its own changes, released for the lab's members with the corpus, the
-model and the embeddings in a bucket, its database replicated, its answers from Claude on Vertex and its log in Cloud
-Logging; the weekly cost report showing the Vertex spend.
-Requires regeneration of app workflows: no. Terraform apply: by the pipeline (the service module changes every root).
-Cost effect: none at idle; a mounted bucket and a replica cost storage pennies; model calls are billed per token to the
-project and sit inside its budget and cap.
+Live exercise: the foundation applied in staging and Claude Opus 5.5 enabled in Model Garden; the demo application with a
+bucket mounted and a file read from it, then the mount removed and gone with the next release; a Vertex call from an
+egress-denied service on the global endpoint with the one-permission role, and the same call failing on the `us`
+endpoint; an SSE stream read through IAP; the weekly cost report showing the Vertex spend; later, Sophia itself, after its
+own changes (data in Firestore), released for the lab's members with the corpus, the model and the embeddings in a bucket.
+Requires regeneration of app workflows: no. Terraform apply: the foundation once per project (the API and the role), by
+the operator, before any root declares a model; then by the pipeline.
+Cost effect: none at idle; a mounted bucket costs storage pennies; model calls are billed per token to the project and sit
+inside its budget and cap.
 
 ## Later, unscheduled (research item 13 of 2026-10-14; reviews of 2026-10-16 and 2026-10-19)
 
@@ -596,6 +599,6 @@ Not planned, because the evidence is against it for this lab: a second cloud or 
 | 16 | about six days | yes | the production foundation once, then by the pipeline |
 | 17 | about four days, plus the institution's steps | no | the organization and the production foundation once |
 | 18 | about six days | yes | no |
-| 19 | about three days, plus the trials | no | by the pipeline |
+| 19 | about two days, plus the trials | no | the foundation once per project, then by the pipeline |
 
-About nine and a half days of work for Phases 0 to 5, plus the live exercises, which take an hour or two per phase. Phase 6 adds about eleven days and a trial per resource type. Phases 9 to 12 add about fifteen and a half days, planned on 2026-10-14 from `docs/RESEARCH-2026-10-14.md`. Phases 13 to 17 add about twenty-three days, planned on 2026-10-16 from `docs/RESEARCH-2026-10-16.md`; their idle cost is about $4 a month for the controller's machine and about $0.06 for the production project, everything else being a per-app or per-tier choice shown on the approval block. Phases 18 and 19 add about nine days, planned on 2026-10-19 from `docs/RESEARCH-2026-10-19.md`; they add no idle cost, and model calls through Vertex are billed per token inside the project's budget.
+About nine and a half days of work for Phases 0 to 5, plus the live exercises, which take an hour or two per phase. Phase 6 adds about eleven days and a trial per resource type. Phases 9 to 12 add about fifteen and a half days, planned on 2026-10-14 from `docs/RESEARCH-2026-10-14.md`. Phases 13 to 17 add about twenty-three days, planned on 2026-10-16 from `docs/RESEARCH-2026-10-16.md`; their idle cost is about $4 a month for the controller's machine and about $0.06 for the production project, everything else being a per-app or per-tier choice shown on the approval block. Phases 18 and 19 add about eight days, planned on 2026-10-19 from `docs/RESEARCH-2026-10-19.md`; they add no idle cost, and model calls through Vertex are billed per token inside the project's budget.

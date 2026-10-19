@@ -50,6 +50,14 @@ class Needs(StrictModel):
     # sla: a standby and one dedicated CPU, the shape Google's SLA covers (about 100). Each tier's floor is in the approval
     # block of every promotion.
     database_tier: Literal["standard", "ha", "sla"] = "standard"
+    # Read-only mounts of the app's own buckets (docs/ROADMAP.md D47, 19.1): a declared bucket's name -> the absolute path
+    # where the code reads it. Cloud Run mounts it through Cloud Storage FUSE in the second-generation environment, so files
+    # read at a fixed path (a corpus, a model, an index) live in the bucket, never in the repository or the image.
+    mounts: dict[str, str] = Field(default_factory=dict)
+    # Model APIs the app calls through Google Cloud (D47, 19.3). claude: Anthropic's Claude on Vertex AI, reached on the
+    # global endpoint through Private Google Access, so an app with private egress needs no internet; its runtime identity
+    # may call models and nothing else, and the calls bill per token to the project, inside its budget and cap.
+    models: list[Literal["claude"]] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def valid(self):
@@ -70,7 +78,35 @@ class Needs(StrictModel):
             for name in names:
                 if not RESOURCE_NAME.fullmatch(name):
                     raise ValueError(f"'{name}' is not a valid {kind[:-1]} name (lowercase letters, digits and dashes, 2 to 21 characters)")
+        if len(set(self.models)) != len(self.models):
+            raise ValueError("models must be unique")
+        paths = []
+        for bucket, path in self.mounts.items():
+            if bucket not in self.buckets:
+                raise ValueError(f"mounts names {bucket!r}, which is not under needs.buckets: declare the bucket, then mount it")
+            if not isinstance(path, str) or not MOUNT_PATH.fullmatch(path) or len(path) > 200:
+                raise ValueError(f"The mount path {path!r} is an absolute path of letters, digits, dots, dashes and underscores, each part "
+                                 "starting with a letter, digit or underscore (/app/data/index)")
+            if path in MOUNT_SHADOWED or any(path == root or path.startswith(root + "/") for root in MOUNT_REFUSED_TREES):
+                raise ValueError(f"A mount at {path} would hide what the container itself needs there; mount below the app's own folder "
+                                 "(/app/data/index) or a folder of its own (/models)")
+            paths.append(path)
+        for one in paths:
+            for other in paths:
+                if one != other and (other + "/").startswith(one + "/"):
+                    raise ValueError(f"The mounts at {one} and {other} overlap: give each bucket a folder of its own")
+        if len(set(paths)) != len(paths):
+            raise ValueError("Two buckets cannot be mounted at the same path")
         return self
+
+
+# A bucket mount's path: absolute, one to eight parts, each starting with a letter, digit or underscore, so it carries no
+# '.' or '..', and nothing gcloud's KEY=VALUE lists would misread (no comma, equals sign or semicolon).
+MOUNT_PATH = re.compile(r"(/[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}){1,8}")
+# Mounted over, these would hide what any container needs: the platform's working folder, home and run-time folders. Cloud
+# Run itself refuses /dev, /proc and /sys; the system trees hold the image's own programs and libraries.
+MOUNT_SHADOWED = frozenset({"/app", "/home", "/root", "/run", "/var", "/tmp"})  # noqa: S108 - paths a mount may not hide, never opened
+MOUNT_REFUSED_TREES = ("/dev", "/proc", "/sys", "/usr", "/etc", "/bin", "/sbin", "/lib", "/lib64")
 
 
 def variable_name(need):
@@ -83,7 +119,9 @@ def needs_env(spec, project_id, region="us-central1"):
     BUCKET_<NAME> = <project>-<service>-<name>; TOPIC_<NAME> = projects/<project>/topics/<service>-<name>;
     SUBSCRIPTION_<NAME> = projects/<project>/subscriptions/<service>-<name>; FIRESTORE_DATABASE = <service>;
     for postgres: DATABASE_INSTANCE = <project>:<region>:<service> (connection name), DATABASE_NAME = app,
-    DATABASE_USER = <service>-runtime@<project>.iam (IAM sign-in, no password), DATABASE_IP_TYPE = private.
+    DATABASE_USER = <service>-runtime@<project>.iam (IAM sign-in, no password), DATABASE_IP_TYPE = private;
+    for models: [claude], ANTHROPIC_VERTEX_PROJECT_ID = <project> and CLOUD_ML_REGION = global, which the Anthropic SDK's
+    Vertex client reads (the global endpoint is the one Private Google Access reaches).
     """
     env = {}
     for name in spec.needs.buckets:
@@ -97,6 +135,8 @@ def needs_env(spec, project_id, region="us-central1"):
         user = "app" if spec.needs.database_auth == "password" else f"{spec.name}-runtime@{project_id}.iam"
         env.update({"DATABASE_INSTANCE": f"{project_id}:{region}:{spec.name}", "DATABASE_NAME": "app",
                     "DATABASE_USER": user, "DATABASE_IP_TYPE": "private"})
+    if "claude" in spec.needs.models:
+        env.update({"ANTHROPIC_VERTEX_PROJECT_ID": project_id, "CLOUD_ML_REGION": "global"})
     return env
 
 
@@ -228,7 +268,9 @@ class AppSpec(StrictModel):
     # Required for node-http and refused for python-http, so a contract names exactly one of python and node. A Node.js
     # service keeps python at its default, which every dump leaves out, so its hash and its full dump read back the same.
     node: Literal["22", "24", "26"] | None = None
-    timeout_seconds: int = Field(default=60, ge=1, le=300)
+    # How long one request may run, Cloud Run's own ceiling of 60 minutes included (docs/ROADMAP.md 19.4): a service that
+    # streams long answers (server-sent events) holds its request open for as long as the answer runs.
+    timeout_seconds: int = Field(default=60, ge=1, le=3600)
     # Buckets, topics and a database the platform provisions for the app (docs/SETUP.md 6b); variables are derived.
     needs: Needs = Field(default_factory=Needs)
     build: Build = Field(default_factory=Build)
@@ -335,11 +377,12 @@ CONTAINED_TAG = "lab-deploy-contained"  # the network tag of a service whose egr
 def containment(spec: AppSpec, default_trust: str = "reviewed") -> dict:
     """How the platform treats a service's code (docs/ROADMAP.md D35): its trust level, where it may connect, its execution
     environment and whether the gates block. `default_trust` is what an unset `trust` means where the contract lives:
-    reviewed for a repository's own platform.yaml, unknown for a contract the platform keeps."""
+    reviewed for a repository's own platform.yaml, unknown for a contract the platform keeps. A bucket mount needs the
+    second-generation environment too (Cloud Storage FUSE runs there only; docs/ROADMAP.md 19.1)."""
     trust = spec.trust or (default_trust if default_trust in ("reviewed", "unknown") else "reviewed")
     egress = spec.egress or ("private" if trust == "unknown" else "internet")
     unknown = trust == "unknown"
-    return {"trust": trust, "egress": egress, "execution_environment": "gen2" if unknown else "default",
+    return {"trust": trust, "egress": egress, "execution_environment": "gen2" if unknown or spec.needs.mounts else "default",
             "vulnerability_gate": "blocks fixable critical and high findings" if unknown else "reports",
             "secret_scan": "a working key stops the build" if unknown else "reports", "runs_as_root": "refused" if unknown else "reported"}
 
@@ -363,6 +406,10 @@ def draft_dump(spec: AppSpec) -> dict:
         build.pop("network", None)
     if not build.get("scripts"):
         build.pop("scripts", None)
+    needs = data.get("needs") or {}
+    for key in ("mounts", "models"):  # Phase 19's needs, shown only when declared, so other drafts read as before
+        if not needs.get(key):
+            needs.pop(key, None)
     return data
 
 

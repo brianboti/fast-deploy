@@ -92,6 +92,8 @@ variable "needs" {
     # The postgres database in production: standard (one zone), ha (a standby in a second zone) or sla (a standby and a
     # dedicated CPU, the shape Google's SLA covers). Staging always runs the smallest (docs/ROADMAP.md D39).
     database_tier = optional(string, "standard")
+    # Model APIs the app calls through Vertex AI (docs/ROADMAP.md D47): claude.
+    models = optional(list(string), [])
   })
   default = {}
   validation {
@@ -105,6 +107,19 @@ variable "needs" {
   validation {
     condition     = contains(["standard", "ha", "sla"], var.needs.database_tier) && (var.needs.database_tier == "standard" || var.needs.database == "postgres")
     error_message = "needs: database_tier is standard, ha or sla, and applies to a postgres database only."
+  }
+  validation {
+    condition     = alltrue([for m in var.needs.models : contains(["claude"], m)]) && length(distinct(var.needs.models)) == length(var.needs.models)
+    error_message = "needs: models is a list of claude, each once."
+  }
+}
+variable "model_user_role" {
+  type        = string
+  default     = ""
+  description = "The foundation's custom role that may call a model through Vertex AI and nothing else; empty until the foundation has it."
+  validation {
+    condition     = var.model_user_role == "" || can(regex("^projects/[a-z][a-z0-9-]+/roles/labDeployModelUser$", var.model_user_role))
+    error_message = "model_user_role is the foundation's labDeployModelUser role."
   }
 }
 variable "database_password" {

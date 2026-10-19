@@ -280,12 +280,24 @@ class CloudRun:
             extra.append("--update-labels=" + ",".join(f"{key}={value}" for key, value in sorted(labels.items())))
         extra += self.configuration(spec)
         extra += self.egress_flags(spec)
+        extra += self.volume_flags(spec)
         self.run(self.command("deploy", self.service, "--image", image,
             "--revision-suffix", suffix, "--no-traffic", "--tag=candidate", "--startup-probe", probe,
             "--ingress=all", "--port", str(spec.port),
             "--cpu", str(spec.resources.cpu), "--memory", f"{spec.resources.memory_mib}Mi",
             "--min-instances", str(spec.scaling.minimum), "--max-instances", str(spec.scaling.maximum),
             "--concurrency", str(spec.concurrency), f"--timeout={spec.timeout_seconds}", "--cpu-throttling", *extra))
+
+    def volume_flags(self, spec):
+        """The app's read-only bucket mounts (docs/ROADMAP.md D47, 19.1). The reviewed spec is the whole truth: every release
+        clears the mounts and volumes the last one left (gcloud applies the clearing before the adding) and mounts what the
+        contract names, each its own bucket <project>-<service>-<name>, read only, through Cloud Storage FUSE. The
+        second-generation environment it needs comes with egress_flags (containment)."""
+        flags = ["--clear-volume-mounts", "--clear-volumes"]
+        for bucket, path in sorted(spec.needs.mounts.items()):
+            flags.append(f"--add-volume=name=bucket-{bucket},type=cloud-storage,bucket={self.project}-{spec.name}-{bucket},readonly=true")
+            flags.append(f"--add-volume-mount=volume=bucket-{bucket},mount-path={path}")
+        return flags
 
     def egress_flags(self, spec, job=False):
         """Where the service (or its migration job) may connect, and in which environment it runs (docs/ROADMAP.md 14.5, 14.6).

@@ -116,6 +116,22 @@ resource "google_project_iam_member" "need_firestore_deployer" {
   }
 }
 
+# A model the app calls through Vertex AI (needs.models, docs/ROADMAP.md D47): the runtime identity gets the foundation's
+# one-permission role (aiplatform.endpoints.predict), never Vertex AI User and its several hundred permissions, most of
+# which create resources that bill. A person enables each Claude model once per project in Model Garden.
+resource "google_project_iam_member" "need_models_runtime" {
+  count   = length(var.needs.models) > 0 ? 1 : 0
+  project = var.project_id
+  role    = var.model_user_role
+  member  = local.runtime
+  lifecycle {
+    precondition {
+      condition     = var.model_user_role != ""
+      error_message = "needs.models needs the foundation's model role (labDeployModelUser): apply the foundation first (scripts/apply-foundation.sh), then plan this root again."
+    }
+  }
+}
+
 # The smallest Cloud SQL for PostgreSQL instance: private address only, IAM sign-in only, zonal, HDD, daily backups kept
 # a week, automatic storage growth capped. It bills every hour it exists; the spending cap stops it at the budget line.
 # In production its write-ahead log is kept a week too, for recovery to any moment, and needs.database_tier may ask for a
