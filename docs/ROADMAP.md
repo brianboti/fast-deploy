@@ -437,7 +437,11 @@ Firestore), `needs.database_tier` (standard, ha, sla) with its floor in every pr
 timeout, and `scripts/data-drill.sh`. Not done: squawk, since the platform has no SQL-file convention for migrations to
 lint (an application runs its own command, such as `alembic upgrade head`), and with it a check that a release never
 contracts a schema; the developer contract asks for add-only migrations instead. The live drill waits for an application
-with a database in production.
+with a database in production. Item 16.7 built on 2026-10-19 as 1.18.8: a release tag per promotion in the application's
+repository, production's spend beside staging's in the weekly cost report (the billing account's one export holds both,
+so no access changes), `scripts/cap-drill.sh` along the path a real notification takes, and the incident procedure in the
+runbook. The drift check, which has covered production's roots since 16.1, planned the demo's clean on its first run with
+a production.
 
 | Item | Change | Where |
 |---|---|---|

@@ -10,9 +10,11 @@ platform (`lab-deploy-staging-f29a`, operated from Claude chat by one person); u
 | Owner and only operator | Brian Boti | Claude chat (the connector); `scripts/machine.sh` on the laptop for the controller's machine |
 | Alerts | the `alert_email` and optional `alert_webhook_url` in `infra/gcp/project/terraform.tfvars`; GitHub's failed-workflow emails; the `NOTIFY_WEBHOOK_URL` secret on each app repository | arrive without anyone watching |
 | Escalation | nobody else today | when a second operator joins, follow "Succession" below: their own principal, `observer_impersonators`, `.github/CODEOWNERS`, required review (`docs/SETUP.md` 7l) and a rehearsal |
+| Incidents | the operator | section "An incident" below: detect, mitigate first, communicate, review |
 
-There is no service level objective: this is a staging platform for a lab. The targets below are what the platform is
-built to do, and the watchdog reports when it does not.
+The platform itself has no service level objective; each application in production has one (section Production, "The
+objective and its error budget"). The targets below are what the platform is built to do, and the watchdog reports when
+it does not.
 
 ## The platform repository is the single control point
 
@@ -108,6 +110,16 @@ gcloud run services update-traffic SERVICE --to-revisions PREVIOUS_REVISION=100 
 A promotion that stopped halfway restores production's traffic itself; if its runner was lost, the next promotion
 restores the checkpoint before anything else.
 
+### Release tags
+
+Since 1.18.8 every promotion that succeeds is tagged in the application's repository: `production/SERVICE/DAY-PLAN`
+(for example `production/lab-demo/2026-10-19-1a2b3c4d`), an annotated tag at the promoted commit that names the plan,
+the staging release, the image's digest, who approved it and the run. `git tag -l 'production/*'` lists what reached
+production and when, and `git diff` between two tags shows what a promotion changed. The tag is written once and never
+moved. One that cannot be written (a repository the App is not installed on, a rule there) is named in the promotion's
+status and in `list_events` (`release_tag`); the release itself is not affected. Creating a tag starts any workflow of
+that repository that runs on every push without a branch filter; the platform's own workflows never do.
+
 ### The objective and its error budget
 
 Since 1.18.5 (roadmap item 16.4, decision D39) every production application has one objective: 99.5 percent of its
@@ -169,6 +181,28 @@ application a few dozen of them exceed the 0.5 percent it may miss, so the healt
 leave the window (found on 2026-10-19). Run the drill when a spent budget for a month is acceptable, or send more good
 traffic around it.
 
+### The cap-fire drill
+
+Twice a year, and after a change to the spending cap: a budget notification at the cap's line must close production's
+services, and they must open again afterwards.
+
+1. Pick a quiet moment: the drill closes every managed service in the project for a minute or two.
+2. In a terminal signed in with `gcloud` as the project's owner, run `scripts/cap-drill.sh PROD_PROJECT`. It reads the cap
+   the foundation deployed and refuses a project whose cap could detach billing (a drill must never reach that line) or
+   whose cap is in force already. It lists what it will close and asks you to type **yes**.
+3. It publishes a made-up budget notification to the budget topic, the path a real one takes (Pub/Sub, Eventarc, the
+   workflow): a cost of 100.01 against a budget of 100 at a cap of 1.0. No money moves, and the real budget is not read.
+4. Expected: every managed service turns internal-only within a minute and answers 404 from outside, and the workflow's
+   execution says `cap enforced at 1.0001 of the budget: N services closed`. The script then reopens each service with
+   the call the cap itself makes (no new revision, and no `lab-deploy-cap-lifted` label, so the cap stays armed), starts
+   any database it stopped, and looks again a minute later in case Pub/Sub delivered the message twice. If anything fails
+   on the way, it still reopens what it closed.
+5. Record the result in `docs/VALIDATION.md`.
+
+The uptime alert waits for five minutes of failures, so a drill normally sends none; one that arrives closes itself.
+Closed services answer 404, not a server error, so the drill spends no error budget. The same script drills staging's
+cap (`scripts/cap-drill.sh STAGING_PROJECT`), where it closes every application at once.
+
 ## What "up" means
 
 - `GET /healthz` on the controller answers 200 at its address. A Cloud Monitoring uptime check calls it every minute from
@@ -179,6 +213,42 @@ traffic around it.
 - The daily watchdog finds nothing (`get_controller_status` shows its last findings), the nightly backup is less than
   a day old and the copy in the backup bucket matches.
 - Every alert policy is enabled in Cloud Monitoring and reaches a channel (section "Prove the alerts work").
+
+## An incident
+
+Anything that hurts the people using an application, or puts data, a credential or money at risk: production down or
+wrong, an alert that the error budget burns fast, a credential seen where it should not be, a change nobody made through
+the pipeline. The procedure is NIST SP 800-61 Rev. 3 (April 2025) in the shape that fits one operator: detect, mitigate
+first, communicate, review. Note the time of each step as you go, in a private note: never in the public platform
+repository, where an incident's details help an attacker.
+
+1. **Detect and decide.** What arrives on its own: `SERVICE: error budget burning fast` (act now) and `... burning slow`
+   (today), `SERVICE: health check failing`, `SERVICE: server errors`, the budget emails, **Lab Deploy: spending-cap
+   workflow failed**, the watchdog's notification, the drift issue, GitHub's Dependabot and secret-scanning alerts, and
+   Google's own emails. Ask Claude for the application's health in production and its deployment status for the facts.
+   It is an incident when production is affected or something is exposed; anything else is one of the sections below.
+2. **Mitigate first**, before looking for the cause:
+   - A bad release in production: ask for `rollback_production` and approve it (seconds); in staging, `rollback`.
+   - An application doing harm or running up cost: close it from outside as the cap does,
+     `gcloud run services update SERVICE --region us-central1 --project PROJECT --ingress=internal`, and reopen it with
+     `--ingress=all` once fixed.
+   - A credential exposed: replace it first and look for its use after (section "Rotate credentials"). An application's
+     secret: revoke it where it was issued, add the new value as a version and promote again (production keeps the
+     version it was released with, section "A new secret version"), then disable the old version
+     (`gcloud secrets versions disable VERSION --secret SERVICE-NAME --project PROJECT`). Disabled first, it would stop
+     production's instances from starting.
+   - A change nobody made through the pipeline: section "Drift reported", step 1, then put the code's version back.
+   - The controller doing something wrong: `scripts/machine.sh stop` holds it. Production keeps serving without it, and
+     nothing reaches production without a reviewer's approval anyway.
+   - Data damaged or deleted: close ingress so nothing writes more, then restore into a new instance (section
+     Production, "Production's data"). Never overwrite the one serving.
+3. **Communicate.** Tell the people who use the application what is affected and when you will say more, then keep to
+   it. When a credential or personal data may have been exposed, tell the institution's information security office the
+   same day. With protected health information (Phase 17), the institution's privacy office decides on notifications:
+   HIPAA asks for them without unreasonable delay and within 60 days of discovering a breach.
+4. **Review**, within a week: a short write-up without blame (what happened, the timeline, how it was found, what made it
+   better or worse) and one issue or pull request per fix, starting with whatever would have caught it sooner. Change
+   this runbook where a step was missing or wrong.
 
 ## The controller's machine
 
@@ -417,7 +487,8 @@ Once a month, or after changing channels:
 
 1. `gcloud workflows run lab-deploy-spending-cap --location us-central1 --data='{"data":{"message":{"data":"eyJjb3N0QW1vdW50IjogMCwgImJ1ZGdldEFtb3VudCI6IDF9"}}}'`
    (a notification with cost 0 of budget 1) must answer `below cap: 0 of the budget`: the trigger path and the
-   identity work without closing anything.
+   identity work without closing anything. Production's cap is its own: the same with `--project PROD_PROJECT`. The
+   cap-fire drill (section Production) is the version that closes and reopens.
 2. `gcloud workflows run lab-deploy-spending-cap --location us-central1 --data='{"data":{"message":{"data":"bm90IGpzb24="}}}'`
    (a message that is not JSON) fails on purpose; within about five minutes the alert
    **Lab Deploy: spending-cap workflow failed** must reach the alert email (and the webhook when configured) and
@@ -533,7 +604,10 @@ and the apps' pins carry the name, so the order matters:
 - `get_controller_status` and the last watchdog findings; the backup bucket has copies from the last day.
 - `scripts/machine.sh status`: the three services active, the disk under half full, the commit the one you expect.
 - Every quarter: the restore drill (`scripts/machine.sh drill`; the watchdog reminds).
-- The cost report issue on each app repository: spend against the budget, drift, proposals.
+- Twice a year, for production: the rollback drill, the cap-fire drill and, for each database there, the data restore
+  drill (section Production).
+- The cost report issue on each app repository: spend against the budget, drift, proposals. An application with a
+  production shows production's spend beside staging's once `add_production` has run for it with 1.18.8.
 - Any `lab-deploy-cap-lifted` label left from the previous month (`gcloud run services list --format="table(name,labels)"`).
 - The native spend cap still exists (`scripts/spend-cap.sh check PROJECT`) and the drift issue on the platform repository is closed.
 - Dependabot pull requests on the platform repository; `pip-audit` runs every Monday in CI.

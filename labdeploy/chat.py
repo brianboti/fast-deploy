@@ -469,9 +469,13 @@ def promotion(plan):
         taken = [f"{step.get('percent')}%" for step in receipt.get("rollout") or [] if isinstance(step, dict)]
         stepped = (f"Took {', '.join(taken[:-1])} and {taken[-1]} of the traffic in turn, watched {minutes} min at each step"
                    if len(taken) > 1 else None)
+        tag = plan.get("release_tag") or {}
+        tag_name = f"`{clip(tag.get('name'), 80)}`"
+        tagged = (f"Tagged {link(tag_name, tag.get('url'))} in `{tag.get('repository')}`" if tag.get("created")
+                  else f"No release tag in `{tag.get('repository')}`: {clip(tag.get('note'), 160)}" if tag.get("name") else None)
         facts = [f"Address: {url} ({access((plan.get('spec') or {}).get('exposure'))})" if url else None, image,
                  f"Approved by {approved}" if approved else None, f"In project `{project}`" if project else None, stepped,
-                 bake_line(phases, minutes), f"Took {took}, the wait for approval included" if took and state == "succeeded" else None]
+                 bake_line(phases, minutes), f"Took {took}, the wait for approval included" if took and state == "succeeded" else None, tagged]
         return compose(f"**`{app}` is live in production** with {what}.", facts,
                        f"nothing to do. To undo it, say “roll {app} back in production”.", foot)
     if stuck:
@@ -1088,9 +1092,14 @@ def cost_report(result, application=None):
     facts = []
     actual = report.get("actual_spend") or {}
     if actual.get("total_net_cost_usd") is not None:
-        line = f"Actual spend, last {actual.get('window_days') or window} days: {money(actual['total_net_cost_usd'])} for the whole project, net of credits"
-        if (actual.get("app") or {}).get("net_cost_usd") is not None:
-            line += f"; `{app}`'s share {money(actual['app']['net_cost_usd'])}"
+        projects = actual.get("by_project") or []
+        where = ("staging and production together (" + ", ".join(f"{item.get('environment')} {money(item.get('net_cost_usd'))}" for item in projects) + ")"
+                 if len(projects) > 1 else "the whole project")
+        line = f"Actual spend, last {actual.get('window_days') or window} days: {money(actual['total_net_cost_usd'])} for {where}, net of credits"
+        own = actual.get("app") or {}
+        if own.get("net_cost_usd") is not None:
+            per = own.get("by_environment") or {}
+            line += f"; `{app}`'s share {money(own['net_cost_usd'])}" + (" (" + ", ".join(f"{name} {money(value)}" for name, value in per.items()) + ")" if per else "")
         facts.append(line)
     elif actual.get("warning"):
         facts.append(f"Actual spend unknown: {sentence_clip(actual['warning'], 200)}")
