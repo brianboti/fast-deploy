@@ -661,6 +661,20 @@ def test_the_dependency_audit_stops_malicious_and_fixable_serious_findings_for_e
     assert high["by_severity"]["HIGH"] == 1 and "1 critical or high finding with a fix available: express@1.2.3 (GHSA-aaaa-bbbb-cccc, fixed in 4.21.2)" in scan.osv_verdict(high)
     unfixed = scan.osv_summary(osv_report(("express", "1.2.3", "GHSA-x", "9.8", None, [])), 1, LOCK)
     assert unfixed["by_severity"]["CRITICAL"] == 1 and scan.osv_verdict(unfixed) is None  # listed, not blocking: there is nothing to move to
+    # GitHub's malware advisories carry CWE-506 and may have neither a MAL- record nor a fixed version (live 2026-10-19:
+    # GHSA-9x64-5r7x-2q53, "Malicious Package in flatmap-stream"): they stop the release like a MAL- record.
+    github = osv_report(("left-pad", "1.2.3", "GHSA-9x64-5r7x-2q53", "9.8", None, []))
+    github["results"][0]["packages"][0]["vulnerabilities"][0]["database_specific"] = {"cwe_ids": ["CWE-506"], "severity": "CRITICAL"}
+    flagged = scan.osv_summary(github, 1, LOCK)
+    assert flagged["malicious"] == ["GHSA-9x64-5r7x-2q53 (left-pad@1.2.3)"] and "1 known malicious package" in scan.osv_verdict(flagged)
+    other = osv_report(("express", "1.2.3", "GHSA-w", "9.8", None, []))
+    other["results"][0]["packages"][0]["vulnerabilities"][0]["database_specific"] = {"cwe_ids": ["CWE-79"]}
+    assert scan.osv_summary(other, 1, LOCK)["malicious"] == []
+    # One package with both records counts once, named by its MAL- record, whichever comes first.
+    both = osv_report(("left-pad", "1.2.3", "GHSA-9x64-5r7x-2q53", "9.8", None, []), ("left-pad", "1.2.3", "MAL-2025-20690", "", None, []))
+    both["results"][0]["packages"][0]["vulnerabilities"][0]["database_specific"] = {"cwe_ids": ["CWE-506"]}
+    counted = scan.osv_summary(both, 1, LOCK)
+    assert counted["malicious"] == ["MAL-2025-20690 (left-pad@1.2.3)"] and "1 known malicious package in the lockfile" in scan.osv_verdict(counted)
     medium = scan.osv_summary(osv_report(("express", "1.2.3", "GHSA-y", "5.3", "2.0.0", [])), 1, LOCK)
     assert medium["by_severity"]["MEDIUM"] == 1 and scan.osv_verdict(medium) is None
     word = osv_report(("express", "1.2.3", "GHSA-z", "", "2.0.0", []))
