@@ -12,7 +12,7 @@ from .analyzer import COMPOSE_FILES, FILES, analyze
 from .bake import MAX_BAKE_SECONDS
 from .config import Application, Principal, Production
 from .contract import Contracts, contract_path
-from .cost import estimate, findings
+from .cost import domain_floor, estimate, findings
 from .github import explain
 from .infra import BOOTSTRAP_IMAGE, PRODUCTION_ROOTS, PRODUCTION_WORKFLOWS, app_root
 from .models import AppSpec, containment, enforce, needs_env, parse_contract, parse_spec, spec_hash
@@ -1245,9 +1245,11 @@ class Controller:
             state_bucket = state_bucket or production.state_bucket
         ids = self.github.repository_ids(trusted)
         note, needs, exposure = None, None, "authenticated"
+        domain = None
         try:
             spec = self.spec_at(app, self.github.head(app))
             health_path, needs, exposure = spec.health_path, spec.needs.model_dump(), spec.exposure
+            domain = spec.domain if environment == "production" else None  # staging keeps its run.app address (16.6)
         except ValueError as exc:
             health_path, note = "/health", f"Defaults used until the app has a reviewed platform.yaml: {exc}"
         # A staging root lets the application's production deployer read what staging released, to promote it (16.2).
@@ -1255,7 +1257,7 @@ class Controller:
         files = app_root(target.service, project_id=target.project_id, region=target.region, state_bucket=state_bucket or f"{target.project_id}-tfstate",
                          github_repository=trusted, github_repository_id=ids["repository_id"], github_owner_id=ids["owner_id"],
                          bootstrap_image=bootstrap_image or BOOTSTRAP_IMAGE, health_path=health_path, settings={**app.infra, **(settings or {})}, needs=needs,
-                         exposure=exposure, viewers=self.viewers(app), environment=environment, promotion_readers=readers, **layout)
+                         exposure=exposure, viewers=self.viewers(app), environment=environment, promotion_readers=readers, domain=domain, **layout)
         return {"application": app_id, "service": target.service, "environment": environment, "directory": directory, "files": files, "note": note}
 
     def add_production(self, principal, app_id):
@@ -1450,7 +1452,7 @@ class Controller:
     def cost_summary(self, app, spec, requests_per_month=None, average_request_seconds=None, environment="staging"):
         """Bounds and findings from list prices and the reviewed spec, with the operator's ceiling applied."""
         summary = estimate(spec, requests_per_month, average_request_seconds, environment=environment)
-        summary["findings"] = findings(spec)
+        summary["findings"] = findings(spec, environment=environment)
         summary["spending_guards"] = self.spending_guards(app)
         if summary["spending_guards"]["cloud_run_spend_cap"]["status"] == "not_recorded":
             summary["findings"].insert(0, {"id": "no_native_spend_cap", "severity": "warning", "setting": "cloud_run_spend_caps (controller configuration)",
@@ -1711,6 +1713,16 @@ class Controller:
         if spec.secrets:
             plan["warnings"].append("References secrets " + ", ".join(f"{app.service}-{name}" for name in spec.secrets) + f" that must exist in "
                                     f"{app.production.target.project_id} with an enabled version, or the release stops before deploying.")
+        if spec.domain:
+            # A domain (docs/ROADMAP.md 16.6) is built by production's root, which a person merges; a promotion does not wait for it.
+            root = self.github.contents(platform.repository, platform.branch, f"{PRODUCTION_ROOTS}/{app.production.target.service}/main.tf")
+            if root is None or f"domain = {json.dumps(spec.domain)}" not in " ".join(root["text"].split()):
+                plan["warnings"].append(f"The contract names the domain {spec.domain}, which production's root on main does not build yet: ask for "
+                                        "add_production to open its pull request. Until it is merged and applied, production answers at its run.app address only.")
+            else:
+                plan["warnings"].append(f"Also answers at https://{spec.domain} through a load balancer with Cloud Armor (about "
+                                        f"${domain_floor():.2f} a month), once the domain's A record points at the root's domain_address and "
+                                        "Google has issued the certificate; the run.app address keeps answering behind the same sign-in.")
         if len(plan["rollout"]) > 1:
             minutes = round(len(plan["rollout"]) * plan["bake_seconds"] / 60)
             plan["warnings"].append("Released in steps of " + ", ".join(f"{step}%" for step in plan["rollout"]) + f" of the traffic, each watched "

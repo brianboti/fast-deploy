@@ -152,6 +152,31 @@ then move the application to it through its root.
 clone, checks that it runs and holds the `app` database, then deletes the clone. It costs the clone's minutes, about a
 cent. Record the result in `docs/VALIDATION.md`. A Firestore database is not drilled yet.
 
+### A custom domain
+
+Since 1.18.9 an application's contract may name a domain of the lab's own (`domain:`, production only,
+docs/DEVELOPER-CONTRACT.md section 6b): a global load balancer with a Google-managed certificate and Cloud Armor. Before
+the first one, apply production's foundation once (`scripts/apply-foundation.sh PROD_PROJECT production`): its apply
+identity gains the load balancer role and a Cloud Armor role, and its plan identity two read permissions. Staging's
+foundation does not change.
+
+1. **The budget first.** The domain alone bills about $25.25 a month. Raise `monthly_budget_usd` in
+   `infra/gcp/project/production.tfvars` by at least that and apply the foundation, or the spending cap closes production
+   before the month ends; raise the application's `cost_ceiling_usd` too, if it has one.
+2. **The root.** Once the contract names the domain, ask Claude for `add_production`: it opens the production root's pull
+   request. Its plan comment shows the floor and, as an exposure change, the name the load balancer answers at. Merge it
+   and approve the apply in `infra-production`.
+3. **The name.** Point the domain's A record at the apply's output `domain_address`. Google issues the certificate once the
+   name resolves there, usually within an hour: `gcloud compute ssl-certificates list --project PROD_PROJECT` shows it
+   ACTIVE.
+4. **Check.** `curl -sI https://DOMAIN/` answers 403 without a token (a `lab-members` app shows the sign-in page), and
+   `curl -sI http://DOMAIN/` redirects to HTTPS.
+
+The `run.app` address keeps answering behind the same sign-in, since the release probes it there: the domain adds a name
+and a rate limit, not a new way in. To stop paying, remove `domain:` and ask for `add_production` again: the root's next
+apply removes the load balancer. When the spending cap fires it closes the service, so the domain stops answering too,
+but the load balancer bills on until it is removed.
+
 ### A new secret version
 
 Add the version with `gcloud secrets versions add SERVICE-NAME --project PROD_PROJECT --data-file=-`, then ask Claude to

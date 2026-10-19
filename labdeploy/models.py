@@ -23,6 +23,9 @@ class Resources(StrictModel):
 
 
 RESOURCE_NAME = re.compile(r"^[a-z][a-z0-9-]{1,20}$")
+# A host name of the lab's own for production (docs/ROADMAP.md 16.6): at least two lowercase labels of letters, digits and
+# inner dashes, the last starting with a letter; no wildcard and no address. labdeploy/infra.py keeps the same pattern.
+DOMAIN = re.compile(r"^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$")
 # The foundation's VPC and the subnet Cloud Run uses for private egress; a Cloud SQL instance is reachable only through them.
 PLATFORM_NETWORK = "lab-deploy"
 PLATFORM_SUBNET = "lab-deploy-run"
@@ -199,12 +202,18 @@ class AppSpec(StrictModel):
     # Where the service may connect: internet, anywhere; private, Google's APIs and the lab's private network only (all its
     # traffic goes into the lab's network, which has no way out). Left unset: private for unknown code, internet otherwise.
     egress: Literal["internet", "private"] | None = None
+    # A name of the lab's own for production (docs/ROADMAP.md D39, 16.6): a global load balancer with a Google-managed
+    # certificate and Cloud Armor answers at it, about $25 a month; staging keeps its run.app address. It is reached behind
+    # the same sign-in as the run.app address (a Google identity token, or IAP for lab-members), which keeps answering.
+    domain: str | None = Field(default=None, pattern=DOMAIN.pattern)
     reviewed: bool = False
 
     @model_validator(mode="after")
     def compatible(self):
         if self.scaling.minimum > self.scaling.maximum:
             raise ValueError("minimum cannot exceed maximum")
+        if self.domain is not None and (len(self.domain) > 253 or self.domain.endswith(".run.app")):
+            raise ValueError("domain is a name of the lab's own of at most 253 characters; a run.app address needs no load balancer")
         if self.resources.memory_mib % 256:
             raise ValueError("memory_mib must be a multiple of 256")
         if len(self.env) > 32 or len(self.secrets) > 16:

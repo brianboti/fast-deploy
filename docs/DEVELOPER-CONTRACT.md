@@ -334,6 +334,7 @@ build:
   network: default        # or none: the image builds with no network at all, for dependencies vendored in the repository
 trust: reviewed           # who has read the code: reviewed (the lab) or unknown (nobody); unset, reviewed here (section 5a)
 egress: internet          # where it may connect: internet, or private (Google's APIs and the lab's network only); unset, by trust
+domain: api.example.org   # production only: a name of the lab's own, through a load balancer with Cloud Armor, about $25 a month (section 6b)
 reviewed: true            # set by the person who reviewed the file
 ```
 
@@ -388,11 +389,28 @@ through (the lab's list plus the app's own list; developers ask the operator to 
 - Everything else (port, health path, logs, statelessness) is unchanged. The health path is reachable to the proxy's
   probe identity; a browser reaching it sees the sign-in page first.
 
+## 6b. A name of the lab's own
+
+Production answers at its `run.app` address. `domain: api.example.org` (production only; staging ignores it) adds a name
+of the lab's own: a global load balancer with a Google-managed certificate, behind Cloud Armor, which answers 429 to any
+one address that sends more than 600 requests a minute. Plain HTTP redirects to HTTPS, and TLS before 1.2 is refused.
+Who may call is unchanged: programs send the same Google identity token, minted for `https://api.example.org` or for the
+`run.app` address, and `lab-members` apps keep Identity-Aware Proxy, which Cloud Run enforces on every way in. The
+`run.app` address keeps answering behind the same sign-in, because the release probes it there.
+
+It costs about $25.25 a month whether or not anyone visits ($18.25 for the load balancer, $7 for Cloud Armor), plus $0.75
+per million requests and $0.008 per GiB each way. That is more than a $20 monthly budget by itself, so the operator raises
+production's budget first (docs/RUNBOOK.md, "A custom domain"), and every promotion shows it in its approval block. The
+operator points the domain's A record at the address production's root prints; the certificate follows within about an
+hour. An application with its own workflows needs them at 1.18.9 or later before its `platform.yaml` names a domain: an
+older runner refuses a field it does not know. To stop paying, remove the line; the next apply of production's root
+removes the load balancer.
+
 ## 7. What is not supported
 
 Public endpoints (anyone without a sign-in), GPUs, runtimes other than Python HTTP services, stateful containers, a branch
-other than `main`, production environments, editing the workflow files the platform adds, several containers in one
-service, and deploying a Compose file as such.
+other than `main`, reaching production other than by promotion, editing the workflow files the platform adds, several
+containers in one service, and deploying a Compose file as such.
 
 ## Sources
 

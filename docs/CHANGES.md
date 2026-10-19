@@ -1,3 +1,47 @@
+# 1.18.9: a name of the lab's own (Phase 16, part six)
+
+Roadmap item 16.6 (docs/ROADMAP.md D39). An application in production can answer at a domain of the lab's own, as a
+per-application choice with its cost shown. Staging keeps its `run.app` address.
+
+1. **`domain: api.example.org`** in the contract (production only). Production's root then builds:
+   - a global external Application Load Balancer with a Google-managed certificate;
+   - an SSL policy that refuses TLS before 1.2, and a redirect from HTTP to HTTPS;
+   - a Cloud Armor policy that answers 429 to any one address sending more than 600 requests a minute;
+   - request logs at one in ten.
+
+   The root prints `domain_address` for the domain's A record, and the certificate follows once the name resolves there.
+2. **Who may call is unchanged.** Programs send the same Google identity token: the service now also accepts one minted for
+   `https://DOMAIN` (a custom audience). `lab-members` apps keep Identity-Aware Proxy on the service, which Google documents
+   as enforced on every way in, load balancers included; IAP is never set on the load balancer as well.
+3. **What it costs, everywhere it matters.** About $25.25 a month whether or not anyone visits (Billing Catalog read on
+   2026-10-19): the forwarding rules $18.25 (a project's first five share one charge, so the HTTP redirect and a second
+   domain add nothing), the Cloud Armor policy $5 and its two rules $2. On top come $0.75 per million requests and $0.008 per
+   GiB each way. The floor counts in every promotion's approval block and against the application's `cost_ceiling_usd`. A
+   cost finding warns that it exceeds a $20 budget by itself, and the infrastructure plan's floor prices it the same way.
+4. **The policy** refuses a load balancer's backend without a Cloud Armor policy, and an HTTPS proxy or SSL policy that
+   would allow TLS before 1.2. The plan comment lists the name a load balancer answers at as an exposure change.
+5. **Production's pipeline** may build it. In production only, the apply identity gains `roles/compute.loadBalancerAdmin`
+   (it reads instances and networks but changes neither) and a custom role with only the Cloud Armor policy permissions,
+   not `securityAdmin`'s firewall rules. The plan identity gains a read-only custom role for the two kinds of resource
+   `networkViewer` leaves out. Staging's foundation is unchanged.
+6. **A promotion says where the domain stands.** It notes when the contract names a domain that production's root does
+   not build yet (ask for `add_production`), and otherwise where production also answers.
+
+Not done: ingress restricted to the load balancer. Every release probes the candidate at its `run.app` tag address, which
+restricted ingress would refuse, so the `run.app` address keeps answering behind the same sign-in. No application is
+public, so the domain adds a name and a rate limit, not a new way in. Not tried live: the lab has no name to point at it
+yet.
+
+Upgrade, before the first domain: apply production's foundation (`scripts/apply-foundation.sh PROD_PROJECT production`) and
+raise its `monthly_budget_usd` (docs/RUNBOOK.md, "A custom domain"). An application with its own workflows needs them at
+1.18.9 before its `platform.yaml` names a domain. Roots without a domain plan no change.
+
+Also recorded here: the cap-fire drill's pass on production after 1.18.8's fix (docs/VALIDATION.md).
+
+Tests: 674 pass (9 new in `tests/test_domain.py`); ruff clean; `terraform fmt` and `terraform validate` clean for a
+production root with a domain and for the foundation.
+
+
 # 1.18.8: operations (Phase 16, part seven)
 
 Roadmap item 16.7. Production gets what one operator needs to run it: every promotion leaves a tag, the weekly cost report

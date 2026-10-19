@@ -23,3 +23,5 @@ output "runtime_alerts" {
     policies     = ["health", "errors", "latency", "saturation", "memory", "log_errors"]
   } : null
 }
+# The address the domain's A record points at (domain.tf); null without a domain.
+output "domain_address" { value = local.domain_enabled ? google_compute_global_address.domain[0].address : null }

@@ -73,6 +73,8 @@ def _hcl(value):
 
 
 EXPOSURES = ("authenticated", "lab-members")
+# A host name of the lab's own for a production root (docs/ROADMAP.md 16.6); labdeploy/models.py keeps the same pattern.
+DOMAIN = re.compile(r"^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$")
 VIEWER = re.compile(r"^(user|group|domain):[A-Za-z0-9._%+-]+(@[A-Za-z0-9.-]+\.[A-Za-z]{2,})?$")
 # A service account of a project, with the project's id as group 1: a production deployer reading staging (D37).
 SERVICE_ACCOUNT = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]@([a-z][a-z0-9-]{4,28}[a-z0-9])\.iam\.gserviceaccount\.com$")
@@ -95,13 +97,14 @@ PRODUCTION_ROOTS = "infra/gcp/apps-production"
 
 def app_root(name, *, project_id, region, state_bucket, github_repository, github_repository_id, github_owner_id,
              bootstrap_image, health_path="/health", environment="staging", settings=None, needs=None, exposure="authenticated", viewers=(),
-             github_environment="staging", workflow_files=PLAIN_WORKFLOWS, pipeline="repository", promotion_readers=()):
+             github_environment="staging", workflow_files=PLAIN_WORKFLOWS, pipeline="repository", promotion_readers=(), domain=None):
     """The three files of an application's Terraform root, with every input a literal so a reviewer sees the truth.
     `pipeline`: repository when the application's own workflows release it (github_repository is the application's);
     platform when the platform repository's pipeline does (github_repository and the ids are the platform's, the
     environment is staging-<service> there, and the workflow files are deploy.yml, recover.yml and rightsize.yml).
     `promotion_readers`: in a staging root, the application's production deployer, which may read the images staging
-    released and check their provenance to promote them (docs/ROADMAP.md D37)."""
+    released and check their provenance to promote them (docs/ROADMAP.md D37). `domain`: in a production root, the name a
+    load balancer with Cloud Armor answers at (docs/ROADMAP.md 16.6)."""
     checks = [
         (NAME, name, "application name"), (PROJECT, project_id, "project id"), (BUCKET, state_bucket, "state bucket"),
         (REPOSITORY, github_repository, "GitHub repository"), (DIGITS, github_repository_id, "GitHub repository id"),
@@ -128,6 +131,11 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
             raise ValueError(f"A promotion reader is another project's service account (NAME@PROJECT.iam.gserviceaccount.com), not {reader!r}")
     if promotion_readers and environment == "production":
         raise ValueError("Only a staging root grants promotion readers: production reads nothing from another project")
+    if domain is not None:
+        if environment != "production":
+            raise ValueError("A domain belongs to a production root: staging keeps its run.app address")
+        if not isinstance(domain, str) or len(domain) > 253 or not DOMAIN.fullmatch(domain) or domain.endswith(".run.app"):
+            raise ValueError(f"Invalid domain: {domain!r}")
     # A further application of a repository runs in its own GitHub environment with its own workflow files (D24); the
     # deploy identity's federation trusts exactly those, so the repository's other service cannot release this one.
     if pipeline not in ("repository", "platform"):
@@ -211,6 +219,8 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
         # Production's reliability (docs/ROADMAP.md D39): one objective with its burn-rate alerts, and the uptime check every
         # minute from three US regions; staging keeps the module's defaults.
         inputs.update(slo_goal=PRODUCTION_SLO_GOAL, uptime_period="60s", uptime_regions=list(PRODUCTION_UPTIME_REGIONS))
+    if domain:  # only a root whose contract names a domain carries it; the others stay as they were
+        inputs["domain"] = domain
     if suffix:  # only a further application of a repository carries these; the first keeps the module's defaults
         inputs["github_environment"] = github_environment
         inputs["workflow_files"] = list(workflow_files)
@@ -272,6 +282,8 @@ output "console_url" {{ value = module.service.console_url }}
 output "dashboard_url" {{ value = module.service.dashboard_url }}
 output "runtime_alerts" {{ value = module.service.runtime_alerts }}
 '''
+    if domain:  # the address the domain's A record points at, printed by every apply
+        outputs += 'output "domain_address" { value = module.service.domain_address }\n'
     return {"backend.tf": backend, "main.tf": main, "outputs.tf": outputs}
 
 
@@ -453,6 +465,13 @@ def check_plan(plan, allowed_locations=ALLOWED_LOCATIONS):
                 if field is None or after.get(field) is not None or _unknown(change, field):
                     add("no_secret_in_state", address, "secret material would be stored in Terraform's state and printed in every plan; use the "
                         "write-only argument (secret_data_wo, password_wo) or an ephemeral resource instead")
+            if kind == "google_compute_backend_service" and not after.get("security_policy") and not _unknown(change, "security_policy"):
+                # docs/ROADMAP.md 16.6: a load balancer in front of an application keeps its Cloud Armor policy.
+                add("armored_balancer", address, "a load balancer's backend keeps a Cloud Armor policy (security_policy)")
+            if kind == "google_compute_target_https_proxy" and not after.get("ssl_policy") and not _unknown(change, "ssl_policy"):
+                add("modern_tls", address, "an HTTPS proxy names an SSL policy that refuses TLS before 1.2 (ssl_policy)")
+            if kind == "google_compute_ssl_policy" and (after.get("min_tls_version") not in ("TLS_1_2", "TLS_1_3") or _unknown(change, "min_tls_version")):
+                add("modern_tls", address, "an SSL policy refuses TLS before 1.2: min_tls_version is TLS_1_2 or TLS_1_3")
             if kind in LABELLED_TYPES:
                 labels = (_nested(after, "settings", "user_labels") if kind == "google_sql_database_instance" else after.get("labels")) or {}
                 if not isinstance(labels, dict) or "lab-deploy-app" not in labels:
@@ -572,6 +591,11 @@ IDLE_FLOOR_USD_MONTH = {
     "google_sql_database_instance": {"db-f1-micro": 8.57, "db-f1-micro REGIONAL": 17.13, "db-custom-1-3840 REGIONAL": 100.43},
     # One software key version (the application's provenance key, docs/SETUP.md section 8).
     "google_kms_crypto_key": 0.06,
+    # A custom domain (docs/ROADMAP.md 16.6, cost.DOMAIN_PRICING). A project's first five global forwarding rules bill one
+    # minimum charge of $0.025 an hour, carried here by the HTTPS rule; the HTTP redirect rides on it. Cloud Armor bills $5 a
+    # month per policy and $1 per rule.
+    "google_compute_global_forwarding_rule": {"443": 18.25, "80": 0.0},
+    "google_compute_security_policy": {"policy": 5.0, "rule": 1.0},
 }
 PULL_REQUEST_NUMBER = re.compile(r"^[0-9]{1,10}$")
 COMMIT_SHA = re.compile(r"^[a-f0-9]{40}$")
@@ -605,6 +629,10 @@ def _floor_of(kind, values):
     price = IDLE_FLOOR_USD_MONTH.get(kind, 0.0)
     if not isinstance(price, dict):
         return price
+    if kind == "google_compute_global_forwarding_rule":  # "443" as configured, "443-443" as Google stores it
+        return price.get(str(values.get("port_range") or "").split("-")[0])
+    if kind == "google_compute_security_policy":
+        return round(price["policy"] + price["rule"] * len(values.get("rule") or []), 2)
     tier, zones = _nested(values, "settings", "tier"), _nested(values, "settings", "availability_type")
     return price.get(tier if zones in (None, "ZONAL") else f"{tier} {zones}")
 
@@ -665,6 +693,12 @@ def exposure_changes(plan):
             who = values.get("member") or values.get("members")
             found.append({"address": address, "action": verb,
                           "detail": f"{values.get('role') or kind} for {_shown(who, who is None and _unknown(change, 'member'))}"})
+        elif kind == "google_compute_managed_ssl_certificate":
+            # A domain (docs/ROADMAP.md 16.6): the application answers at a name of its own through a load balancer too.
+            values = before if verb == "delete" else after
+            names = _nested(values, "managed", "domains")
+            found.append({"address": address, "action": verb, "detail": f"a load balancer answers at {_shown(names)}" if verb != "delete"
+                          else f"the load balancer at {_shown(names)} is removed"})
     return found
 
 

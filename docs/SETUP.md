@@ -398,6 +398,9 @@ a reviewer's approval on GitHub. The steps, once:
    the probes, then 10, 50 and 100 percent of the traffic, each step watched by the bake, restoring the previous version on a
    failure at any step. "Roll APP back in production" (`rollback_production`) undoes the live promotion, after an approval
    too.
+9. **A name of the lab's own** (optional, about $25 a month per application): `domain:` in the contract, then the steps in
+   docs/RUNBOOK.md, Production, "A custom domain". The first one needs production's foundation applied once more, and a
+   budget that allows it.
 
 At idle the production project costs a few cents a month (the roadmap's estimate is $0.06); its budget, alerts and
 spending cap work as in staging.
