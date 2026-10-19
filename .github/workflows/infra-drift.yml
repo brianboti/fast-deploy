@@ -92,7 +92,7 @@ jobs:
           PYTHONPATH="$GITHUB_WORKSPACE" python3 -m labdeploy.infra drift plan.json "$APP" > "$RUNNER_TEMP/drift/$APP.json"
           rm -f plan.json tfplan
       # Addresses, resource types and categories only: never an attribute value, so nothing secret can travel in it.
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: drift-${{ matrix.app }}
           path: ${{ runner.temp }}/drift/${{ matrix.app }}.json
@@ -157,7 +157,7 @@ jobs:
           PYTHONPATH="$GITHUB_WORKSPACE" python3 -m labdeploy.infra drift plan.json "production-$APP" > "$RUNNER_TEMP/drift/production-$APP.json"
           rm -f plan.json tfplan
       # Addresses, resource types and categories only: never an attribute value, so nothing secret can travel in it.
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: drift-production-${{ matrix.app }}
           path: ${{ runner.temp }}/drift/production-${{ matrix.app }}.json
@@ -193,7 +193,7 @@ jobs:
           python3 -m labdeploy.infra drift-report records "$ROOTS" "$RUN_URL" > drift-report.json
           python3 -m labdeploy.infra drift-issue drift-report.json > drift-issue.md
           cat drift-issue.md >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: drift-report
           path: drift-report.json
