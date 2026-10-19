@@ -175,7 +175,7 @@ def test_the_machine_waits_for_main_s_checks_the_delay_and_a_quiet_moment_then_a
     assert c.updates.machine_step().startswith("the machine installs dddddddddddd")  # waits for the machine; asked once
     Path(c.config.database).parent.joinpath("update-request").unlink()  # the machine's service took it and is installing
     assert c.updates.machine_step().startswith("the machine installs dddddddddddd") and request_of(c) is None  # never asked twice
-    now[0] += 7300
+    now[0] += 3700  # between one and two hours: said, and still waited for
     assert "nothing reported for over an hour" in c.updates.machine_step() and request_of(c) is None
     assert [outcome for outcome, _ in kinds(c, "platform_update")] == ["checks_failed", "requested"]
 
@@ -365,6 +365,10 @@ def test_a_new_commit_forgets_what_was_worked_out_for_the_old_one_and_waits_for_
     now[0] += 7201  # the machine never reported, and the controller has run it for two hours: it counts as installed
     c.platform_updates_tick()
     assert request_of(c) == newer and "reported nothing" in kinds(c, "platform_update")[-2][1]
+    Path(c.config.database).parent.joinpath("update-request").unlink()  # taken, and then nothing: the service was stopped
+    now[0] += 7201
+    c.platform_updates_tick()  # given up after two hours, and asked for again
+    assert request_of(c) == newer and kinds(c, "platform_update")[-2][0] == "not_installed"
 
 
 def test_what_github_blocks_needs_a_person_after_an_hour_and_a_refused_merge_at_once(tmp_path):

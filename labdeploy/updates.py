@@ -233,9 +233,15 @@ class PlatformUpdates:
             return self.next(f"the machine installs {pending['commit'][:12]}, asked for at {stamp(pending['since'])}{late}")
         state = self.c.store.platform_update("machine") or {}
         requested = state.get("requested")
-        if requested and requested == running and now - state["requested_at"] > TRUSTED_AFTER_SECONDS:
-            self.event("platform_update", "installed", f"{running[:12]}: the machine reported nothing, and the controller has run it for two hours",
-                       name=running[:12])
+        if requested and now - state["requested_at"] > TRUSTED_AFTER_SECONDS:
+            # The machine never reported (its service stopped by its own timeout, say): the controller runs that commit for
+            # two hours now, so it counts as installed, or it does not, and the commit is asked for again when it is due.
+            if requested == running:
+                self.event("platform_update", "installed", f"{running[:12]}: the machine reported nothing, and the controller has run it for two hours",
+                           name=running[:12])
+            else:
+                self.event("platform_update", "not_installed", f"{requested[:12]}: the machine reported nothing for two hours; it is asked for again",
+                           name=requested[:12])
             state, requested = self.save_machine({"requested": None}), None
         if requested:  # one request at a time: nothing else is asked for until the machine reports on this one
             late = "; nothing reported for over an hour (scripts/machine.sh logs update)" if now - state["requested_at"] > 2 * STALE_REQUEST_SECONDS else ""

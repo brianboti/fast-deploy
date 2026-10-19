@@ -398,7 +398,8 @@ When something goes wrong:
 - **"could not install X yet"** (`not_installed`): nothing changed on the machine (GitHub could not be reached, the
   controller was held, or another install held the machine); it is asked for again half an hour later.
 - **"nothing reported for over an hour"**: `scripts/machine.sh status` shows the update service and its last result,
-  `scripts/machine.sh logs update` what it did.
+  `scripts/machine.sh logs update` what it did. After two hours without a report the controller stops waiting: the commit
+  it runs by then counts as installed, or the commit is asked for again.
 - **A re-pin waiting for you**: `get_controller_status` names the pull request and why (its checks failed, it changes more
   than the three files, it has conflicts, or `auto_merge` is off).
 
