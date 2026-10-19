@@ -15,6 +15,7 @@ from test_promotion import COMMIT, DIGEST, RUN, STAGING_IMAGE, STAGING_PLAN, rea
 from labdeploy import chat
 from labdeploy.cost import billing_actuals, issue_body, summary_lines
 from labdeploy.github import GitHub
+from labdeploy.infra import check_plan
 
 STEPS = [{"name": name, "status": "completed", "conclusion": "success"} for name in (
     "Refuse to run without a reviewer's approval", "Verify the staging image's provenance", "Copy the image into production by digest",
@@ -204,13 +205,15 @@ elif "PATCH" in args:
     state["patches"] = state.get("patches", 0) + 1
 elif "/executions" in args[-1]:
     print(json.dumps({"executions": state["executions"]}))
+elif os.environ.get("FAKE_FAIL_LISTING") and "published" in state:
+    sys.exit(56)  # the Cloud Run API answering 503 from the moment the drill has published
 else:
     print(json.dumps({"services": state["services"]}))
 path.write_text(json.dumps(state))
 '''
 
 
-def drill(tmp_path, detach="false", ingress="INGRESS_TRAFFIC_ALL"):
+def drill(tmp_path, detach="false", ingress="INGRESS_TRAFFIC_ALL", **extra):
     folder = tmp_path / "bin"
     folder.mkdir(parents=True)
     (folder / "fake.py").write_text(FAKE)
@@ -224,7 +227,7 @@ def drill(tmp_path, detach="false", ingress="INGRESS_TRAFFIC_ALL"):
                "uri": "https://demo-abc.a.run.app"}
     state = tmp_path / "state.json"
     state.write_text(json.dumps({"source": source, "executions": [], "services": [service]}))
-    environment = {**os.environ, "PATH": f"{folder}:{os.environ['PATH']}", "FAKE_STATE": str(state)}
+    environment = {**os.environ, "PATH": f"{folder}:{os.environ['PATH']}", "FAKE_STATE": str(state), **extra}
     ran = subprocess.run(["zsh", "scripts/cap-drill.sh", "fast-deploy-prod-abcd"], input="yes\n", capture_output=True, text=True, env=environment, timeout=60)
     return ran, json.loads(state.read_text())
 
@@ -237,6 +240,11 @@ def test_the_cap_drill_never_reaches_the_detach_line_and_reopens_what_it_closed(
     assert '${"__DETACH__" == "true" and exceeded >= __DETACH_THRESHOLD__}' in CAP.read_text() and "${exceeded < __THRESHOLD__}" in CAP.read_text()
     assert "?updateMask=ingress" in text and "trap finish EXIT" in text  # the cap's own call (no new revision), also after a failure
     assert "lab-deploy-cap-lifted" in text and "a second delivery" in text
+    # Found in the first drill on production (2026-10-19): zsh skips the EXIT trap when errexit fires inside a function, so
+    # after publishing nothing may end the drill early; an interrupt still goes through the trap.
+    published = text.split("trap finish EXIT", 1)[1]
+    assert "set +e" in published and "trap 'exit 130' INT TERM HUP" in published and "services || continue" in published
+    assert "left=${#OPEN}" in published and "for attempt in 1 2 3 4 5; do" in text  # never "all closed" unseen; five tries to reopen
 
 
 @pytest.mark.skipif(shutil.which("zsh") is None, reason="the operator's scripts run in zsh")
@@ -253,6 +261,30 @@ def test_the_cap_drill_closes_then_reopens_and_refuses_what_it_must(tmp_path):
     assert enforced.returncode == 1 and "the cap may be in force now" in enforced.stdout and "published" not in state
     bad = subprocess.run(["zsh", "scripts/cap-drill.sh", "Not A Project"], capture_output=True, text=True)
     assert bad.returncode == 1 and "project id" in bad.stdout
+    unread, state = drill(tmp_path / "unread", FAKE_FAIL_LISTING="1")  # the API fails once the services are closed
+    assert unread.returncode == 2 and "not seen internal-only" in unread.stdout and "Reopened demo (INGRESS_TRAFFIC_ALL)" in unread.stdout
+    assert state["services"][0]["ingress"] == "INGRESS_TRAFFIC_ALL"  # reopened all the same
+
+
+def test_the_cap_may_act_as_an_application_s_runtime_identity_and_nothing_else():
+    """Found by the first cap-fire drill on production (2026-10-19): Cloud Run refused the cap's ingress change with
+    "Permission 'iam.serviceaccounts.actAs' denied" on the service's runtime identity, so the cap had never closed anything."""
+    module = Path("infra/gcp/modules/service/main.tf").read_text()
+    grant = module.split('resource "google_service_account_iam_member" "cap_runtime"', 1)[1].split("}", 1)[0]
+    assert "service_account_id = google_service_account.runtime.name" in grant and 'role               = "roles/iam.serviceAccountUser"' in grant
+    cap = "serviceAccount:lab-deploy-spending-cap@lab-deploy-prod-abcd.iam.gserviceaccount.com"
+    runtime = "projects/lab-deploy-prod-abcd/serviceAccounts/demo-runtime@lab-deploy-prod-abcd.iam.gserviceaccount.com"
+
+    def plan(after, unknown=None):
+        return {"resource_changes": [{"address": "module.service.google_service_account_iam_member.cap_runtime[0]", "type": "google_service_account_iam_member",
+                                      "change": {"actions": ["create"], "before": None, "after": after, "after_unknown": unknown or {}}}]}
+    assert check_plan(plan({"service_account_id": runtime, "role": "roles/iam.serviceAccountUser", "member": cap})) == []
+    assert check_plan(plan({"role": "roles/iam.serviceAccountUser", "member": cap}, {"service_account_id": True})) == []  # a new application
+    deployer = runtime.replace("demo-runtime@", "demo-deploy@")
+    assert [v["rule"] for v in check_plan(plan({"service_account_id": deployer, "role": "roles/iam.serviceAccountUser", "member": cap}))] == [
+        "platform_identities_untouched"]
+    assert [v["rule"] for v in check_plan(plan({"service_account_id": runtime, "role": "roles/iam.serviceAccountTokenCreator", "member": cap}))] == [
+        "platform_identities_untouched", "role_not_allowed"]
 
 
 # ---- the incident procedure

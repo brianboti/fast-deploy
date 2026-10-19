@@ -25,6 +25,19 @@ shows production's spend, a drill proves the spending cap closes production, and
    has the cap-fire drill and the release tags, and the monthly checklist has the twice-yearly production drills.
 5. **The drift check** has covered production's roots since 1.18.0. Its first run with a production, on 2026-10-19,
    planned `production-lab-demo` with production's own read-only identity and found no drift.
+6. **What the first drill found, fixed here.** The drill's notification reached the cap's workflow in a second, and the
+   workflow could not close the demo. Cloud Run answered "Permission 'iam.serviceaccounts.actAs' denied" on the service's
+   runtime identity: Cloud Run asks whoever changes a service, even only its ingress, to be allowed to act as that
+   identity. So the platform's own cap had never closed anything, in either project. Earlier checks ran only the
+   below-cap and failure paths; Google's native spend cap, which was tripped live, stayed the working backstop in staging.
+   - The fix: each application root lets the cap act as that application's runtime identity, and nothing else. The
+     policy allows exactly that grant to the cap's identity.
+   - The script: zsh skips the EXIT trap when an error ends the script inside a function. After publishing, the drill now
+     checks each step itself, retries a passing API error (a 503 ended the first run), tries five times to reopen, and an
+     interrupt still reopens.
+
+Terraform: every application root, staging and production, gains that one grant when this merges. Production's apply
+waits for approval in `infra-production`.
 
 Upgrade, after the machine runs 1.18.8:
 1. For each application with a production, ask "add production for APP" once more. It names production for the weekly
@@ -32,8 +45,8 @@ Upgrade, after the machine runs 1.18.8:
 2. An application with its own pipeline (not `contract: platform`) needs its workflows updated (`update_app_workflows`)
    for the report to pass the new variable. The platform's own `rightsize.yml` needs nothing.
 
-Tests: 664 pass (10 new in `tests/test_operations.py`, including the drill run end to end against fake `gcloud` and
-`curl`); ruff and zizmor clean.
+Tests: 665 pass (11 new in `tests/test_operations.py`, including the drill run end to end against fake `gcloud` and
+`curl`, with the Cloud Run API failing midway); ruff and zizmor clean; `terraform validate` clean.
 
 
 # 1.18.7: production's data (Phase 16, part five)

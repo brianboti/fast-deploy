@@ -230,6 +230,15 @@ resource "google_cloud_run_v2_service_iam_member" "cap" {
   role     = var.cap_operator_role
   member   = "serviceAccount:${var.cap_service_account}"
 }
+# Cloud Run changes a service only for a caller that may act as its runtime identity, even when the change is the ingress
+# alone. Without this the cap closed nothing: its first drill failed with "Permission 'iam.serviceaccounts.actAs' denied"
+# (docs/VALIDATION.md, 2026-10-19). On this service's own runtime identity only, never the project's.
+resource "google_service_account_iam_member" "cap_runtime" {
+  count              = var.cap_service_account != "" ? 1 : 0
+  service_account_id = google_service_account.runtime.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${var.cap_service_account}"
+}
 
 resource "google_iam_workload_identity_pool" "github" {
   workload_identity_pool_id = "${var.service}-gh"

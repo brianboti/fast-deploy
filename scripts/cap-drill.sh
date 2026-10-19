@@ -55,12 +55,16 @@ read -r "ANSWER?Type yes to run the drill: "
 [[ "$ANSWER" == "yes" ]] || { echo "Nothing done."; rm -rf "$DIR"; exit 0; }
 
 reopen() {
-  # Only what the drill closed: each service back to the ingress it had, then each database it stopped.
-  local line name ingress
+  # Only what the drill closed: each service back to the ingress it had (five tries), then each database it stopped.
+  local line name ingress attempt ok
   for line in "${OPEN[@]}"; do
-    name=${line%% *}; ingress=${${line#* }%% *}
-    curl -sSf -X PATCH -H "Authorization: Bearer $(token)" -H "Content-Type: application/json" -d "{\"ingress\": \"$ingress\"}" \
-      "$RUN/$name?updateMask=ingress" > /dev/null && echo "Reopened $name ($ingress)" || echo "COULD NOT REOPEN $name: run gcloud run services update $name --region $REGION --project $PROJECT --ingress=all"
+    name=${line%% *}; ingress=${${line#* }%% *}; ok=0
+    for attempt in 1 2 3 4 5; do
+      curl -sSf -X PATCH -H "Authorization: Bearer $(token)" -H "Content-Type: application/json" -d "{\"ingress\": \"$ingress\"}" \
+        "$RUN/$name?updateMask=ingress" > /dev/null && { ok=1; break; }
+      sleep 5
+    done
+    (( ok )) && echo "Reopened $name ($ingress)" || echo "COULD NOT REOPEN $name: run gcloud run services update $name --region $REGION --project $PROJECT --ingress=all"
   done
   for name in "${DATABASES[@]}"; do
     gcloud sql instances patch "$name" --project "$PROJECT" --activation-policy=ALWAYS --quiet > /dev/null && echo "Started $name again" \
@@ -71,6 +75,11 @@ state_of() { python3 -c 'import json, sys; print({s["name"].rsplit("/", 1)[1]: s
 answer() { curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$1" || true; }
 finish() { reopen; rm -rf "$DIR"; }
 trap finish EXIT
+trap 'exit 130' INT TERM HUP
+# From here on no failed command ends the drill before it reopens what it closed: zsh skips the EXIT trap when errexit
+# fires inside a function (found on 2026-10-19, when a 503 from the Cloud Run API ended the first run). Each step checks
+# its own result, and the end reopens whatever happened.
+set +e
 
 MESSAGE=$(THRESHOLD=$THRESHOLD python3 -c 'import json, os; t = float(os.environ["THRESHOLD"]); print(json.dumps({"budgetDisplayName": "Fast Deploy cap drill", "alertThresholdExceeded": t, "costAmount": round(t * 100 + 0.01, 2), "budgetAmount": 100, "currencyCode": "USD"}))')
 ENCODED=$(print -rn -- "$MESSAGE" | base64 | tr -d '\n')
@@ -79,15 +88,16 @@ gcloud pubsub topics publish lab-deploy-budget-alerts --project "$PROJECT" --mes
 echo "$(date -u +%H:%M:%S) published a notification of $MESSAGE"
 FAILED=0
 if (( ${#OPEN} )); then
+  left=${#OPEN}
   for attempt in $(seq 60); do
     sleep 5
-    services
+    services || continue  # a passing API error (503) is retried, not fatal
     left=0
     for line in "${OPEN[@]}"; do [[ "$(state_of "${line%% *}")" == "INGRESS_TRAFFIC_INTERNAL_ONLY" ]] || left=$(( left + 1 )); done
     (( left == 0 )) && break
   done
   if (( left )); then
-    echo "FAILED: $left service(s) still open five minutes after the notification"; FAILED=1
+    echo "FAILED: $left service(s) not seen internal-only within five minutes of the notification"; FAILED=1
   else
     echo "$(date -u +%H:%M:%S) every managed service is internal-only, $(( $(date +%s) - STARTED )) seconds after the notification"
     for line in "${OPEN[@]}"; do
@@ -120,10 +130,15 @@ reopen
 # Pub/Sub delivers at least once: a second delivery of the drill's message would close everything again. Look a minute later.
 if (( ${#OPEN} )); then
   sleep 60
-  services
+  listed=0
+  for attempt in $(seq 6); do services && { listed=1; break; }; sleep 10; done
   again=()
-  for line in "${OPEN[@]}"; do [[ "$(state_of "${line%% *}")" == "${${line#* }%% *}" ]] || again+=("${line%% *}"); done
-  if (( ${#again} )); then echo "Closed again by a second delivery of the message: ${(j:, :)again}; reopening"; reopen; fi
+  if (( listed )); then
+    for line in "${OPEN[@]}"; do [[ "$(state_of "${line%% *}")" == "${${line#* }%% *}" ]] || again+=("${line%% *}"); done
+    if (( ${#again} )); then echo "Closed again by a second delivery of the message: ${(j:, :)again}; reopening"; reopen; fi
+  else
+    echo "Could not read the services a minute later; reopening once more to be safe"; reopen
+  fi
 fi
 for line in "${OPEN[@]}"; do
   url=${line##* }

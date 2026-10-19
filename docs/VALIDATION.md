@@ -690,3 +690,16 @@ What the drill showed (1.18.4): a bake that fails at a step of the split said "a
 | The applies | #86's merge had started its own apply (the shared module changed), whose production job waited in `infra-production` and held #87's in the queue; both approved through the API at the operator's request | #86's run applied every root with nothing to change; #87's applied the objective |
 | In production | The Monitoring API | The objective `availability` with goal 0.995 over 2592000 s; the alerts "lab-demo: error budget burning fast" (above 10, `60m`) and "burning slow" (above 2, `1440m`), both enabled and sent to the alert email; the uptime check every 60 seconds from Oregon, Iowa and Virginia |
 | The health view | `get_service_health` with `environment: production` | Healthy (72 requests in the hour, no server errors, uptime checks 100 percent), and **"Error budget: spent, 99.36% of requests fine so far"**: the 30-day window holds the rollback drill's planted errors, more than the 0.5 percent a quiet application may miss. The note read "Only -28% ... is left"; 1.18.6 says "is spent, 28% beyond it" |
+
+## Operations of 1.18.8 and the first cap-fire drill (2026-10-19 UTC)
+
+| Trial | What was done | Observed |
+|---|---|---|
+| The drift check with a production | `infra-drift.yml` dispatched on main (run 39195261059) | `plan-production (lab-demo)` planned with production's own read-only identity: present, no changes. Every staging root clean; the drift issue stayed closed |
+| The cap-fire drill, first run | `scripts/cap-drill.sh fast-deploy-prod-c602` at the operator's request, from #90's branch: production's cap at 1.0 of the budget, billing detach off, `lab-demo` open and managed, no database | The made-up notification (100.01 of 100) reached the workflow through Pub/Sub and Eventarc in about a second. The workflow **could not close `lab-demo`**: Cloud Run answered 403, "Permission 'iam.serviceaccounts.actAs' denied on service account lab-demo-runtime@…". The execution failed, as a cap that cannot act must, and `lab-demo` stayed open (403 without a token). The script then stopped on a 503 from the Cloud Run API without running its exit trap |
+
+What it showed: the platform's own cap had never closed a service. The earlier checks ran only its below-cap and failure
+paths (sections above). Staging's cap identity holds the same grants, so staging's cap could not close anything either;
+Google's native spend cap, tripped live in staging, was the backstop that worked. 1.18.8 lets the cap act as each
+application's runtime identity, and makes the drill reopen whatever happens after it publishes.
+
