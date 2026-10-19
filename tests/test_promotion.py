@@ -10,7 +10,7 @@ import yaml
 from conftest import TARGET
 from test_phase16 import PRODUCTION, ProductionGitHub, apply_run, settings
 
-from labdeploy import chat, promotion, provenance
+from labdeploy import chat, pins, promotion, provenance
 from labdeploy.config import Config, LiveConfig
 from labdeploy.controller import Controller, Store
 from labdeploy.github import GitHub
@@ -330,8 +330,8 @@ def test_the_promote_workflow_waits_for_approval_before_any_cloud_step():
              "Deploy, probe, promote; restore traffic on failure"]
     assert [names.index(step) for step in order] == sorted(names.index(step) for step in order)
     deploy = Path(".github/workflows/deploy.yml").read_text()
-    cosign = "4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
-    assert cosign in text and cosign in deploy and "--prefer-index=false" in text
+    url, checksum = pins.mentions("cosign", ".github/workflows/promote.yml")  # the same Cosign as the deploy workflow's
+    assert url in text and url in deploy and checksum in text and checksum in deploy and "--prefer-index=false" in text
     assert "docker build " not in text and "pack" not in text and "docker push" not in text  # copied, never built
     for job in workflow["jobs"].values():
         for step in job["steps"]:

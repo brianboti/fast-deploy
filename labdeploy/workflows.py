@@ -228,7 +228,7 @@ def central_deploy(template_text):
 """ + READ_CONTRACT)
     # The deploy job: the contract is read again (a reused image comes with no bundle); the application is not checked out.
     t = _swap(t, """      - run: python -m pip install --require-hashes -r platform/requirements.lock
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: inputs.image_digest == ''
         with:
           name: release-bundle
@@ -257,7 +257,7 @@ def central_deploy(template_text):
             [ "$STATUS" = "ahead" ] || [ "$STATUS" = "identical" ]
           fi
 """, """      - run: python -m pip install --require-hashes -r platform/requirements.lock
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: inputs.image_digest == ''
         with:
           name: release-bundle

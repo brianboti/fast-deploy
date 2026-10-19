@@ -6,7 +6,7 @@ Use a disposable, non-production GCP staging project for the first integration r
 
 Push this project to a dedicated GitHub repository using your normal process. Record its full commit SHA. The app deployment workflow checks out this exact platform commit so a later platform change cannot silently change an existing application's release code.
 
-Protect the platform and application `main` branches. Require review of `platform.yaml`, Dockerfiles, dependency files, and `.github/workflows/`. Replace the placeholder team in `.github/CODEOWNERS` with real maintainers before enabling code-owner review; this archive does not invent usernames. Dependabot opens weekly pull requests for pinned actions and Terraform providers; the templates are checked against the platform's own pins by a test, so bump both together. Choose a license before publishing; none is included. Restrict who can modify Actions workflows, repository variables, environment settings, or dispatch workflows.
+Protect the platform and application `main` branches. Require review of `platform.yaml`, Dockerfiles, dependency files, and `.github/workflows/`. Replace the placeholder team in `.github/CODEOWNERS` with real maintainers before enabling code-owner review; this archive does not invent usernames. Dependabot opens weekly pull requests for the Terraform providers and the actions no template uses (`hashicorp/setup-terraform`). The other pins (the tools the pipeline downloads, the base and buildpacks images, uv, npm, Caddy, Litestream, and the actions the templates use, which the refresh writes in the templates and every workflow at once) arrive in the weekly pin refresh's pull request (section 7o). Choose a license before publishing; none is included. Restrict who can modify Actions workflows, repository variables, environment settings, or dispatch workflows.
 
 ## 2. Prepare the application
 
@@ -596,6 +596,57 @@ code's version back, merge any change to the root or dispatch **Infrastructure a
 hand from the Actions tab (Run workflow, on `main`). A grant someone adds next to the platform's own is invisible to it:
 Terraform's member resources check only their own members.
 
+## 7o. The weekly pin refresh
+
+`.github/workflows/pins.yml` (since 1.20.5) proposes, every Monday at 05:23 UTC, the new releases of the pins Dependabot
+does not follow, in one pull request; since 1.20.6 these include the GitHub Actions the templates use, and
+`.github/dependabot.yml` tells Dependabot to leave them alone. `docs/RUNBOOK.md` ("The weekly pin refresh") says what it
+follows and how to review it. Its first job reads the official release metadata with the workflow's read-only token and
+needs nothing set up. The
+pull request needs a small GitHub App of its own: a pull request opened with the workflow's own token starts no CI until
+someone approves the run, that token may not change workflow files, and this repository does not let Actions create pull
+requests. Until the App exists, each run leaves its proposal in the run's summary and says so with a warning.
+
+Create the App once, on the account that owns the platform repository, with GitHub's form filled in through its URL (no
+webhook, only on this account, and exactly the permissions it uses):
+
+```text
+https://github.com/settings/apps/new?name=fast-deploy-pins-YOUR-ACCOUNT&url=https%3A%2F%2Fgithub.com%2FOWNER%2Ffast-deploy&public=false&webhook_active=false&contents=write&metadata=read&pull_requests=write&workflows=write
+```
+
+1. Check the page and click **Create GitHub App**: **Contents**, **Pull requests** and **Workflows** read and write,
+   **Metadata** read-only, nothing else. Its **Client ID** is on its General page (the workflow takes the Client ID, not
+   the App ID).
+2. **Install App**, on the platform repository only.
+3. In the App's settings, **Credentials**, **Key pairs**, **New key**: a `.pem` file downloads.
+4. Give the workflow the key in an environment only `main` can use (no required reviewers: the run is scheduled), and
+   the Client ID as a repository variable (it is not a secret, and a job's condition reads it before the job starts).
+   The third command deletes the key file once the secret holds it:
+
+   ```bash
+   gh api -X PUT repos/OWNER/fast-deploy/environments/pins -F 'deployment_branch_policy[protected_branches]=false' -F 'deployment_branch_policy[custom_branch_policies]=true'
+   ```
+
+   ```bash
+   gh api -X POST repos/OWNER/fast-deploy/environments/pins/deployment-branch-policies -f name=main -f type=branch
+   ```
+
+   ```bash
+   KEY=$(find ~/Downloads -maxdepth 1 -name 'fast-deploy-pins*.pem' -mmin -30 -print | head -1); if [ -n "$KEY" ]; then gh secret set PINS_APP_PRIVATE_KEY --env pins --repo OWNER/fast-deploy < "$KEY" && rm "$KEY"; else echo "No new .pem file in Downloads yet"; fi
+   ```
+
+   ```bash
+   gh variable set PINS_APP_CLIENT_ID --repo OWNER/fast-deploy --body CLIENT_ID
+   ```
+
+5. Run it once by hand to see it work: `gh workflow run pins.yml --repo OWNER/fast-deploy` (or Actions, **Weekly pin
+   refresh**, **Run workflow** on `main`). Its pull request is authored by the App (`fast-deploy-pins-YOUR-ACCOUNT[bot]`),
+   CI runs on it as on yours, and only you merge it.
+
+What it costs: nothing on a public repository, where GitHub-hosted runner minutes are free: about 3 runner minutes a
+week for the job, plus the CI its pull request starts (about 8). On a private repository that would be about 2% of GitHub
+Free's 2,000 included minutes. It creates no cloud resource and never signs in to Google Cloud.
+
 ## 8. Provenance, scanning and dependency updates
 
 - **Build provenance**: the deployment job signs SLSA provenance for the pushed image digest and verifies it before release; the release deploys only that verified digest, and a reused image is verified again. Which signer depends on the repository:
@@ -612,6 +663,7 @@ Terraform's member resources check only their own members.
   holds a SHA-256 of every tool's name, title, description, schemas and safety hints, and a test fails when one differs.
   After a deliberate change, run `python -m labdeploy.cli tools-checksum --write` and commit the reviewed diff with the
   change; an upgrade of the MCP SDK or pydantic that changes a schema shows up the same way.
+- **Pins Dependabot does not follow** (the pipeline's tools, the base and buildpacks images, uv and npm for the lock containers, CI's hadolint and OpenTofu, the machine's Caddy and Litestream, and the actions the templates use): the weekly pin refresh (section 7o) proposes each release once it is seven days old, with its checksum or commit from official release metadata, in one pull request a person merges.
 - **Platform dependencies** are hash-locked. Refresh them deliberately, review the diff, and let CI's pip-audit and tests judge the result:
 
 ```bash

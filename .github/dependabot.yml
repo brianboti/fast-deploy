@@ -1,6 +1,6 @@
-# Keeps the pinned action commits and Terraform providers current with weekly pull requests.
-# Python dependencies are hash-locked with uv; refresh them deliberately (see docs/SETUP.md) and
-# rely on the pip-audit step in CI to flag known vulnerabilities in between.
+# Keeps the Terraform providers and the actions no template uses current with weekly pull requests; the weekly pin
+# refresh (.github/workflows/pins.yml) follows the rest. Python dependencies are hash-locked with uv; refresh them
+# deliberately (see docs/SETUP.md) and rely on the pip-audit step in CI to flag known vulnerabilities in between.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -10,6 +10,21 @@ updates:
     # A release must be a week old before it is proposed: a compromised or broken one is usually caught by then.
     cooldown:
       default-days: 7
+    # The actions the templates use belong to the weekly pin refresh (labdeploy/pins.py), which writes each new commit in
+    # the templates, labdeploy/workflows.py and every workflow at once. Dependabot reads only .github/workflows, so its bump
+    # would leave the templates behind and fail CI; and it raises no alerts for actions pinned by commit, so leaving them
+    # out loses no security update. tests/test_pins.py keeps this list equal to the refresh's.
+    ignore:
+      - dependency-name: actions/checkout
+      - dependency-name: actions/setup-python
+      - dependency-name: actions/setup-node
+      - dependency-name: actions/upload-artifact
+      - dependency-name: actions/download-artifact
+      - dependency-name: actions/attest-build-provenance
+      - dependency-name: actions/attest-sbom
+      - dependency-name: actions/create-github-app-token
+      - dependency-name: google-github-actions/auth
+      - dependency-name: google-github-actions/setup-gcloud
   - package-ecosystem: terraform
     directories:
       - /infra/gcp/project
