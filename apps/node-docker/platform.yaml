@@ -3,7 +3,7 @@
 source:
   repository: brianboti/fast-deploy-node-trial
   path: node-docker
-  commit: e027aa13d964faee0ef2ecf5cff8717ae16dfc2f
+  commit: ebc300226eed7682013b1cef0da8c562b706abee
 name: node-docker
 runtime: node-http
 node: '24'
