@@ -74,14 +74,21 @@ resource "google_pubsub_subscription_iam_member" "need_subscription_viewer" {
   member       = local.deployer
 }
 
-# One named Firestore database per application (Native mode, regional, no point-in-time recovery: that costs storage).
+locals {
+  # Production's data is recoverable to any moment of the last seven days (docs/ROADMAP.md D39); staging keeps only the
+  # daily backups, since the extra storage buys nothing there.
+  recoverable   = local.environment_name == "production"
+  database_tier = local.environment_name == "production" ? var.needs.database_tier : "standard"
+}
+# One named Firestore database per application (Native mode, regional). Point-in-time recovery in production only: it
+# keeps a week of versions, billed as storage.
 resource "google_firestore_database" "need" {
   count                             = var.needs.database == "firestore" ? 1 : 0
   name                              = var.service
   location_id                       = var.region
   type                              = "FIRESTORE_NATIVE"
   delete_protection_state           = "DELETE_PROTECTION_ENABLED"
-  point_in_time_recovery_enablement = "POINT_IN_TIME_RECOVERY_DISABLED"
+  point_in_time_recovery_enablement = local.recoverable ? "POINT_IN_TIME_RECOVERY_ENABLED" : "POINT_IN_TIME_RECOVERY_DISABLED"
   lifecycle {
     prevent_destroy = true
   }
@@ -111,6 +118,8 @@ resource "google_project_iam_member" "need_firestore_deployer" {
 
 # The smallest Cloud SQL for PostgreSQL instance: private address only, IAM sign-in only, zonal, HDD, daily backups kept
 # a week, automatic storage growth capped. It bills every hour it exists; the spending cap stops it at the budget line.
+# In production its write-ahead log is kept a week too, for recovery to any moment, and needs.database_tier may ask for a
+# standby in a second zone (ha) or that and a dedicated CPU (sla, the shape Google's SLA covers).
 resource "google_sql_database_instance" "need" {
   count               = var.needs.database == "postgres" ? 1 : 0
   name                = var.service
@@ -118,9 +127,9 @@ resource "google_sql_database_instance" "need" {
   database_version    = "POSTGRES_17"
   deletion_protection = true
   settings {
-    tier                        = "db-f1-micro"
+    tier                        = local.database_tier == "sla" ? "db-custom-1-3840" : "db-f1-micro"
     edition                     = "ENTERPRISE"
-    availability_type           = "ZONAL"
+    availability_type           = local.database_tier == "standard" ? "ZONAL" : "REGIONAL"
     disk_type                   = "PD_HDD"
     disk_size                   = 10
     disk_autoresize             = true
@@ -138,7 +147,8 @@ resource "google_sql_database_instance" "need" {
     }
     backup_configuration {
       enabled                        = true
-      point_in_time_recovery_enabled = false
+      point_in_time_recovery_enabled = local.recoverable
+      transaction_log_retention_days = local.recoverable ? 7 : null
       backup_retention_settings {
         retained_backups = 7
       }

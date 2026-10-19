@@ -1444,9 +1444,9 @@ class Controller:
                 "platform_cap": "Once the foundation's budget and cap workflow are applied, the budget's notifications close ingress on every managed "
                                 "service and stop every managed Cloud SQL instance at the budget line (docs/RUNBOOK.md, spending cap)"}
 
-    def cost_summary(self, app, spec, requests_per_month=None, average_request_seconds=None):
+    def cost_summary(self, app, spec, requests_per_month=None, average_request_seconds=None, environment="staging"):
         """Bounds and findings from list prices and the reviewed spec, with the operator's ceiling applied."""
-        summary = estimate(spec, requests_per_month, average_request_seconds)
+        summary = estimate(spec, requests_per_month, average_request_seconds, environment=environment)
         summary["findings"] = findings(spec)
         summary["spending_guards"] = self.spending_guards(app)
         if summary["spending_guards"]["cloud_run_spend_cap"]["status"] == "not_recorded":
@@ -1462,8 +1462,8 @@ class Controller:
                            "Measured right-sizing comes from the rightsizing workflow report (get_cost_report).")
         return summary
 
-    def cost_policy(self, app, spec):
-        summary = self.cost_summary(app, spec)
+    def cost_policy(self, app, spec, environment="staging"):
+        summary = self.cost_summary(app, spec, environment=environment)
         if summary["ceiling_policy"]["status"] == "exceeds_limit":
             raise ValueError(f"Cost policy: worst-case compute plus the needs' floor, ${summary['ceiling_policy']['compared_usd_month']:.2f}/month, exceeds the "
                              f"operator ceiling of ${app.cost_ceiling_usd:.2f}/month; lower scaling.maximum or resources, drop a need, or raise cost_ceiling_usd")
@@ -1677,7 +1677,7 @@ class Controller:
         missing = self.production_missing(app)
         if missing:
             raise ValueError(f"Production for {app_id} is not ready: {'; '.join(missing)}. Ask for add_production, which continues from where it stands.")
-        cost = self.cost_policy(app.model_copy(update={"target": app.production.target}), spec)
+        cost = self.cost_policy(app.model_copy(update={"target": app.production.target}), spec, environment="production")
         staging_workflow = "deploy.yml" if source.get("contract") else (source.get("layout") or {}).get("workflow") or app.workflows["deploy"]
         # GitHub's attestation names the commit its build run started on (main's tip then), not an older commit it built;
         # a reused image was attested by the run that built it. The run's own commit is what the check compares.
@@ -1788,8 +1788,9 @@ class Controller:
              else "the production root on main predates the objective: ask for add_production to propose it again, then merge"},
             {"item": "runbook", "ok": True, "detail": "docs/RUNBOOK.md, Production: approving, undoing, a new secret version, the rollback drill"},
             {"item": "backup", "ok": True,
-             "detail": {"postgres": "Cloud SQL keeps automated backups, and the infrastructure policy refuses a database without them",
-                        "firestore": "Firestore keeps its delete protection; the restore drill does not cover it yet (roadmap item 16.5)"}.get(
+             "detail": {"postgres": f"Cloud SQL keeps a week of daily backups and, in production, a week of write-ahead log for recovery to any "
+                                    f"moment ({spec.needs.database_tier} tier); scripts/data-drill.sh proves a restore",
+                        "firestore": "Firestore keeps delete protection and, in production, a week of versions for recovery to any moment"}.get(
                  database, "nothing to back up: the application declares no database")},
             {"item": "capacity", "ok": spec.scaling.maximum >= 1,
              "detail": f"up to {spec.scaling.maximum} instance(s) of {spec.resources.cpu} CPU and {spec.resources.memory_mib} MiB, {spec.concurrency} "

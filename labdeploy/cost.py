@@ -80,10 +80,22 @@ NEEDS_PRICING = {
     "postgres": {"instance_usd_month": 7.67, "storage_usd_per_gb_month": 0.09, "storage_gb": 10, "backup_usd_per_gb_month": 0.08,
                  "note": "db-f1-micro (shared core, Enterprise, zonal) in us-central1 with 10 GB of HDD: billed every hour it exists; stopped, only the storage"},
 }
+# Production's postgres by needs.database_tier (docs/ROADMAP.md D39), from the Cloud Billing Catalog read on 2026-10-16
+# (docs/RESEARCH-2026-10-16.md, section 9): a standby doubles the instance and its storage; the SLA needs a dedicated CPU.
+# Point-in-time recovery keeps a week of write-ahead log, billed by use at the backup rate.
+PRODUCTION_POSTGRES = {
+    "standard": {"instance_usd_month": 7.67, "storage_usd_per_gb_month": 0.09,
+                 "note": "db-f1-micro, one zone, 10 GB of HDD, point-in-time recovery for 7 days: no SLA (shared core)"},
+    "ha": {"instance_usd_month": 15.33, "storage_usd_per_gb_month": 0.18,
+           "note": "db-f1-micro with a standby in a second zone, 10 GB of HDD each: still no SLA (shared core)"},
+    "sla": {"instance_usd_month": 98.63, "storage_usd_per_gb_month": 0.18,
+            "note": "1 dedicated vCPU and 3.75 GB with a standby in a second zone: the smallest shape Google's 99.95 percent SLA covers"},
+}
 
 
-def needs_costs(spec, pricing=NEEDS_PRICING):
-    """Every declared need with its list price and a monthly floor of zero: these cost by use, nothing while idle."""
+def needs_costs(spec, pricing=NEEDS_PRICING, environment="staging"):
+    """Every declared need with its list price and its monthly floor: most cost by use, nothing while idle; a postgres
+    instance bills every hour it exists, in production at the shape its needs.database_tier asks for."""
     items = []
     for name in spec.needs.buckets:
         items.append({"need": "bucket", "name": name, "floor_usd_month": 0.0, "pricing": pricing["bucket"]})
@@ -93,6 +105,8 @@ def needs_costs(spec, pricing=NEEDS_PRICING):
         items.append({"need": "firestore", "name": spec.name, "floor_usd_month": 0.0, "pricing": pricing["firestore"]})
     if spec.needs.database == "postgres":
         p = pricing["postgres"]
+        if environment == "production":
+            p = {**p, **PRODUCTION_POSTGRES[spec.needs.database_tier], "tier": spec.needs.database_tier}
         floor = p["instance_usd_month"] + p["storage_gb"] * p["storage_usd_per_gb_month"]
         items.append({"need": "postgres", "name": spec.name, "floor_usd_month": _usd(floor), "pricing": p})
     return items
@@ -108,8 +122,9 @@ def instance_second_usd(spec, pricing=PRICING, idle=False):
     return spec.resources.cpu * rates["vcpu_second"] + spec.resources.memory_mib / 1024 * rates["gib_second"]
 
 
-def estimate(spec, requests_per_month=None, average_request_seconds=None, pricing=PRICING, today=None):
-    """Bounds from list prices. A scenario (requests and average duration) adds a best/worst range."""
+def estimate(spec, requests_per_month=None, average_request_seconds=None, pricing=PRICING, today=None, environment="staging"):
+    """Bounds from list prices. A scenario (requests and average duration) adds a best/worst range. environment: production
+    prices a postgres database at the shape its needs.database_tier asks for."""
     active = instance_second_usd(spec, pricing)
     idle_floor = spec.scaling.minimum * instance_second_usd(spec, pricing, idle=True) * SECONDS_PER_MONTH
     ceiling = spec.scaling.maximum * active * SECONDS_PER_MONTH
@@ -130,8 +145,8 @@ def estimate(spec, requests_per_month=None, average_request_seconds=None, pricin
         ],
         "excludes": list(EXCLUDED),
         "release_overheads": dict(OVERHEADS),
-        "needs": needs_costs(spec),
-        "needs_floor_usd_month": _usd(sum(item["floor_usd_month"] for item in needs_costs(spec))),
+        "needs": needs_costs(spec, environment=environment),
+        "needs_floor_usd_month": _usd(sum(item["floor_usd_month"] for item in needs_costs(spec, environment=environment))),
         "warnings": [],
     }
     verified = datetime.date.fromisoformat(pricing["verified"])

@@ -73,6 +73,8 @@ needs:
   topics: [events]        # arrives as TOPIC_EVENTS and SUBSCRIPTION_EVENTS
   database: none          # none | firestore | postgres (postgres: about 9 dollars a month from the moment it exists)
   database_auth: iam      # postgres only: iam (no password anywhere) or password (the app gets DATABASE_URL as a secret)
+  database_tier: standard # postgres only, production only: standard (about $8.57 a month, no SLA), ha (a standby, about
+                          # $17.13, no SLA) or sla (a standby and a dedicated CPU, about $100.43, Google's 99.95% SLA)
   migrate: []             # e.g. [alembic, upgrade, head]: runs before visitors move to a new version
 build:
   context: service        # or repository, when a service in a monorepo copies shared code from outside its folder

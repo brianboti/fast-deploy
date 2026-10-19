@@ -127,6 +127,19 @@ in its approval block, covering probes, alerts, runbook, backup, capacity and th
 one falls short. A production root made before 1.18.5 has no objective yet: ask for `add_production` again, which
 proposes the root again, and merge it.
 
+### Production's data
+
+A production database is recoverable to any moment of the last seven days: Postgres keeps a week of write-ahead log beside
+its daily backups, Firestore a week of versions. Deletion protection stays on, and nothing in the pipeline destroys a
+resource that holds data. To recover after a bad migration or a mistake, restore into a new instance or database. Never
+overwrite the one serving: Postgres with `gcloud sql instances clone SERVICE NEW --point-in-time TIME --project PROD_PROJECT`,
+then move the application to it through its root.
+
+**The data restore drill**, twice a year, for each application with a database in production:
+`scripts/data-drill.sh PROD_PROJECT SERVICE` restores the Postgres database as it was fifteen minutes ago into a throwaway
+clone, checks that it runs and holds the `app` database, then deletes the clone. It costs the clone's minutes, about a
+cent. Record the result in `docs/VALIDATION.md`. A Firestore database is not drilled yet.
+
 ### A new secret version
 
 Add the version with `gcloud secrets versions add SERVICE-NAME --project PROD_PROJECT --data-file=-`, then ask Claude to

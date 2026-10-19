@@ -1,3 +1,40 @@
+# 1.18.7: production's data (Phase 16, part five)
+
+Roadmap item 16.5 (docs/ROADMAP.md D39). Production's databases can be recovered to any moment of the last week. Postgres
+gets a per-application shape with its floor shown, migrations stop instead of waiting on locks, and a drill proves a
+restore. Staging keeps the smallest and cheapest shape.
+
+1. **Recoverable to any moment of the week, in production.** Postgres keeps seven days of write-ahead log beside its week
+   of daily backups, and Firestore seven days of versions. Both are billed as storage, cents at a lab's size. Staging keeps
+   daily backups only. Deletion protection stays on everywhere.
+2. **`needs.database_tier`** in the contract (Postgres only, production only) chooses the shape:
+   - `standard` (default): `db-f1-micro` in one zone, about $8.57 a month, no SLA.
+   - `ha`: the same with a standby in a second zone, about $17.13, still no SLA (shared core).
+   - `sla`: one dedicated vCPU and 3.75 GB with a standby, about $100.43, the smallest shape Google's 99.95 percent SLA
+     covers.
+
+   Prices come from the Billing Catalog reading of 2026-10-16. Every promotion's approval block and the infrastructure
+   plan's floor price the chosen shape, standby included. The developer contract says plainly that production has no
+   SLA unless `sla` is chosen.
+3. **A migration never waits long for a lock.** The migration job runs with `PGOPTIONS=-c lock_timeout=10s`, so a
+   statement waiting more than ten seconds fails and the release stops before anything new serves, instead of freezing
+   the table behind it. libpq drivers (psycopg) honor it. A `PGOPTIONS` of the contract's own wins, and the revision
+   itself never gets it.
+4. **`scripts/data-drill.sh PROD_PROJECT SERVICE`** restores a production Postgres database as it was fifteen minutes ago
+   into a throwaway clone, checks that it runs and holds the `app` database, then deletes the clone (about a cent). It
+   refuses a database without point-in-time recovery, and only ever deletes its own clone.
+5. **The readiness checklist** names the recovery window and the drill.
+
+Not done: squawk, and with it a check that a release never contracts a schema. The platform has no SQL-file convention to
+lint, since applications run their own migration command; the contract asks for add-only migrations instead. The live
+drill waits for an application with a database in production.
+
+Terraform: the production roots of applications with a database change when they are next proposed (`add_production`);
+staging's roots plan no change.
+
+Tests: 654 pass (6 new in `tests/test_data.py`); ruff clean; `terraform validate` and `fmt` clean.
+
+
 # 1.18.6: what the objective showed
 
 Found on 2026-10-19 in the live exercise of 1.18.5 (`docs/VALIDATION.md`). Demo's production objective, its two alerts and
