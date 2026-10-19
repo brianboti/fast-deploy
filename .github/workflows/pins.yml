@@ -1,9 +1,10 @@
 # The weekly pin refresh (labdeploy/pins.py; docs/RUNBOOK.md "The weekly pin refresh"). Dependabot follows the platform's
-# GitHub Actions and Terraform providers; this follows the other pins: the tools the pipeline downloads by version and
-# checksum, the buildpacks and base images by digest, uv and the npm the lock containers install, CI's hadolint and
-# OpenTofu, and the machine's Caddy and Litestream. It proposes only releases at least seven days old, with checksums read
-# from official release metadata, checks each new download against them without running it, and opens or replaces one
-# pull request. It never merges: the platform's full CI runs on that pull request, and a person reviews and merges it.
+# Terraform providers and the actions no template uses; this follows the other pins: the tools the pipeline downloads by
+# version and checksum, the buildpacks and base images by digest, uv and the npm the lock containers install, CI's hadolint
+# and OpenTofu, the machine's Caddy and Litestream, and the actions the templates use, by commit, in the templates and
+# every workflow at once. It proposes only releases at least seven days old, with checksums and commits read from official
+# release metadata, checks each new download against them without running it, and opens or replaces one pull request.
+# It never merges: the platform's full CI runs on that pull request, and a person reviews and merges it.
 # The first job reads the metadata with the read-only token and holds no secret. Only the second, which reads nothing from
 # the internet and runs nothing downloaded, holds the pins App's key (environment `pins`, docs/SETUP.md 7o): a pull request
 # opened with the workflow's own token would start no CI, and that token cannot change workflow files.
@@ -54,7 +55,7 @@ jobs:
           if [ -z "$APP" ]; then
             echo "::warning title=Weekly pin refresh::The pins App is not set up (docs/SETUP.md 7o), so no pull request opens: this run's summary holds the proposal"
           fi
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pins-proposal
           path: ${{ runner.temp }}/proposal
@@ -72,7 +73,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: pins-proposal
           path: ${{ runner.temp }}/proposal

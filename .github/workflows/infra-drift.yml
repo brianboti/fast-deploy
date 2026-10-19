@@ -56,7 +56,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.INFRA_PLAN_WIF_PROVIDER }}
           service_account: ${{ vars.INFRA_PLAN_SERVICE_ACCOUNT }}
@@ -92,7 +92,7 @@ jobs:
           PYTHONPATH="$GITHUB_WORKSPACE" python3 -m labdeploy.infra drift plan.json "$APP" > "$RUNNER_TEMP/drift/$APP.json"
           rm -f plan.json tfplan
       # Addresses, resource types and categories only: never an attribute value, so nothing secret can travel in it.
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: drift-${{ matrix.app }}
           path: ${{ runner.temp }}/drift/${{ matrix.app }}.json
@@ -121,7 +121,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.INFRA_PRODUCTION_PLAN_WIF_PROVIDER }}
           service_account: ${{ vars.INFRA_PRODUCTION_PLAN_SERVICE_ACCOUNT }}
@@ -157,7 +157,7 @@ jobs:
           PYTHONPATH="$GITHUB_WORKSPACE" python3 -m labdeploy.infra drift plan.json "production-$APP" > "$RUNNER_TEMP/drift/production-$APP.json"
           rm -f plan.json tfplan
       # Addresses, resource types and categories only: never an attribute value, so nothing secret can travel in it.
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: drift-production-${{ matrix.app }}
           path: ${{ runner.temp }}/drift/production-${{ matrix.app }}.json
@@ -175,7 +175,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         continue-on-error: true
         with:
           pattern: drift-*
@@ -193,7 +193,7 @@ jobs:
           python3 -m labdeploy.infra drift-report records "$ROOTS" "$RUN_URL" > drift-report.json
           python3 -m labdeploy.infra drift-issue drift-report.json > drift-issue.md
           cat drift-issue.md >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: drift-report
           path: drift-report.json
