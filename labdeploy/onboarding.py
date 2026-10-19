@@ -27,6 +27,9 @@ STEPS = ("validating", "contract", "merging_contract", "registering", "infrastru
 WAITING = {"merging_contract", "planning", "applying", "merging_workflows"}
 ACTIVE = set(STEPS) - {"complete"}
 REQUIRED_FILES = (("Dockerfile", "the build recipe"), ("platform.yaml", "the application's contract"), ("requirements.txt", "pinned runtime dependencies"))
+# A Node.js service (docs/ROADMAP.md D41, D42): package.json and its npm lockfile instead of requirements.txt.
+NODE_REQUIRED_FILES = (("Dockerfile", "the build recipe"), ("platform.yaml", "the application's contract"), ("package.json", "the dependencies"),
+                       ("package-lock.json", "every dependency locked with its integrity hash, installed with npm ci"))
 # What the contract recommends and why; found() below says where each may live, with the scaffold's own rules (any CI
 # workflow counts, Renovate counts for Dependabot), so the checker never asks for a file the scaffold would not draft.
 RECOMMENDED_FILES = (
@@ -59,7 +62,7 @@ def recommended_found(name, everything, tree):
         return any(candidate in everything for candidate in (*DEPENDABOT, *RENOVATE))
     return name in tree
 # The files the platform's checker may draft for a developer, in a draft pull request it never merges (docs/ROADMAP.md D26).
-PLATFORM_WRITES = frozenset({"Dockerfile", ".dockerignore", "requirements-dev.txt", "requirements.lock", "tests", "platform.yaml",
+PLATFORM_WRITES = frozenset({"Dockerfile", ".dockerignore", "requirements-dev.txt", "requirements.lock", "package-lock.json", "tests", "platform.yaml",
                              ".github/workflows/ci.yml", "SECURITY.md", ".github/dependabot.yml"})
 WHAT_NEXT = {
     "validating": "checking the repository against the contract",
@@ -107,8 +110,16 @@ def contract_check(github, repository, folder=""):
             entry["detail"] = detail
         into.append(entry)
 
-    for name, why in REQUIRED_FILES:
+    python_manifests = ("requirements.txt", "requirements.lock", "pyproject.toml", "Pipfile", "uv.lock", "poetry.lock", "environment.yml")
+    node = "package.json" in tree and not any(name in tree for name in python_manifests)
+    for name, why in NODE_REQUIRED_FILES if node else REQUIRED_FILES:
         where = f"{folder}/{name}" if folder else name
+        if name == "package-lock.json":
+            # Its presence is what counts here (the reader checks every entry); a lockfile can be far larger than 64 KiB.
+            shrinkwrap = "npm-shrinkwrap.json" in tree
+            item(name, (f"{folder}/npm-shrinkwrap.json" if folder else "npm-shrinkwrap.json") if shrinkwrap else where,
+                 shrinkwrap or name in tree, why)
+            continue
         files[name] = github.contents(repository, branch, where)
         if name == "Dockerfile" and files[name] is None and "Procfile" in tree:
             # Built with Google's buildpacks instead (docs/ROADMAP.md D28); the images are several times larger.
@@ -124,7 +135,11 @@ def contract_check(github, repository, folder=""):
             item("valid", "platform.yaml is valid", False, detail=str(exc)[:300])
     if spec is not None:
         item("reviewed", "platform.yaml says reviewed: true", spec.reviewed, "a person has read it")
-        if spec.tests == "required":
+        if spec.tests == "required" and spec.runtime == "node-http":
+            from .node import package_data, tests_of
+            how, _, _ = tests_of(package_data((files.get("package.json") or {}).get("text")) or {}, tree, spec.node)
+            item("tests", "tests (a test script, or files node --test finds)", how is not None, "run before every build")
+        elif spec.tests == "required":
             item("tests", "tests (pytest files or a tests/ directory)", any(TEST_PATH.search(entry) for entry in tree), "run before every build")
             item("requirements-dev.txt", "requirements-dev.txt", "requirements-dev.txt" in tree, "installs pytest for the test step")
         dockerfile = (files["Dockerfile"] or {}).get("text", "")
@@ -132,6 +147,8 @@ def contract_check(github, repository, folder=""):
             item("port", f"Dockerfile exposes port {spec.port}", re.search(rf"^\s*EXPOSE\s+{spec.port}(/tcp)?\s*$", dockerfile, re.M) is not None,
                  "the port in platform.yaml is the one Cloud Run sends requests to")
     for name, why in RECOMMENDED_FILES:
+        if node and name == "requirements.lock":
+            continue  # a Node.js service's lockfile is required above
         in_service = name in ("requirements.lock", ".dockerignore")
         item(name, f"{folder}/{name}" if folder and in_service else name, recommended_found(name, everything, tree), why, into=recommended)
     return {"repository": repository, "path": folder, "branch": branch, "repository_id": repo["repository_id"], "owner_id": repo["owner_id"],

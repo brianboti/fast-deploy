@@ -1,0 +1,15 @@
+# Drafted by Fast Deploy: an allow-list. Nothing enters the image unless a "!" line below lets it in, so a new file (a .env,
+# a key, a dataset, a node_modules folder built on a laptop) is never copied into the image by accident. When the service
+# needs another file or directory at runtime, add a "!name" line for it.
+*
+__ALLOW__
+# Never in the image, even inside the directories above: the image installs its own node_modules with npm ci.
+**/node_modules
+**/.env
+**/.env.*
+**/.npmrc
+**/*.pem
+**/test
+**/tests
+**/*.test.*
+**/.DS_Store

@@ -5,7 +5,13 @@ for code nobody has reviewed (D35: trust `unknown`) a fixable critical or high f
 the release; for the lab's own code, blocking on critical findings is the operator's switch, the
 BLOCK_ON_CRITICAL_VULNERABILITIES repository variable. A known malicious package (OSV's MAL- advisories, which Artifact
 Analysis reports as critical) stops every release.
+
+`python -m labdeploy.scan osv REPORT --exit-code N --lockfile LOCK --json OUT` is a Node.js service's dependency audit
+(D44), run in the build job before any of its packages is installed: OSV-Scanner's JSON for its npm lockfile, held to the
+same words for every trust level. A known malicious package, a critical or high finding with a fix, an audit that did not
+finish, or a lockfile entry npm ci would install without a registry check (D42) stops the release; the rest is listed.
 """
+import argparse
 import json
 import os
 import sys
@@ -118,7 +124,133 @@ def trust_of(env):
     return containment(spec, env.get("TRUST_DEFAULT", "reviewed"))["trust"]
 
 
-def main():
+# ---- a Node.js service's dependency audit (docs/ROADMAP.md D44)
+OSV_SCANNER = "OSV-Scanner 2.7.0"
+
+
+def osv_severity(group, advisories):
+    """CRITICAL, HIGH, MEDIUM, LOW or UNKNOWN for one finding: OSV-Scanner's max_severity (a CVSS score, as its own table
+    counts it), else the GitHub advisory's own word."""
+    try:
+        score = float(group.get("max_severity") or "")
+    except (TypeError, ValueError):
+        score = None
+    if score is not None:
+        return "CRITICAL" if score >= 9 else "HIGH" if score >= 7 else "MEDIUM" if score >= 4 else "LOW" if score > 0 else "UNKNOWN"
+    words = {str((item.get("database_specific") or {}).get("severity") or "").upper() for item in advisories}
+    return next((level for word, level in (("CRITICAL", "CRITICAL"), ("HIGH", "HIGH"), ("MODERATE", "MEDIUM"), ("MEDIUM", "MEDIUM"), ("LOW", "LOW"))
+                 if word in words), "UNKNOWN")
+
+
+def osv_fixed(advisories, package):
+    """The versions that fix a finding for this package, read from the advisories' affected ranges."""
+    fixed = set()
+    for advisory in advisories:
+        for affected in advisory.get("affected") or []:
+            named = affected.get("package") or {}
+            if named.get("name") != package.get("name") or str(named.get("ecosystem") or "").lower() != "npm":
+                continue
+            for span in affected.get("ranges") or []:
+                fixed |= {str(event["fixed"]) for event in span.get("events") or [] if isinstance(event, dict) and event.get("fixed")}
+    return sorted(fixed)
+
+
+def osv_findings(report):
+    """One entry per finding (OSV-Scanner groups advisories that alias each other): {id, aliases, package, version,
+    severity, fixed, malicious}. A MAL- record is a known malicious package."""
+    findings = []
+    for result in (report or {}).get("results") or []:
+        for item in result.get("packages") or []:
+            package = item.get("package") or {}
+            advisories = {str(entry.get("id")): entry for entry in item.get("vulnerabilities") or [] if isinstance(entry, dict)}
+            groups = item.get("groups") or [{"ids": [identifier]} for identifier in advisories]
+            for group in groups:
+                ids = [str(identifier) for identifier in group.get("ids") or []]
+                members = [advisories[identifier] for identifier in ids if identifier in advisories]
+                aliases = sorted(set(ids) | set(group.get("aliases") or []) | {str(alias) for entry in members for alias in entry.get("aliases") or []})
+                malicious = any(alias.startswith("MAL-") for alias in aliases)
+                findings.append({"id": next((alias for alias in aliases if alias.startswith("MAL-")), ids[0] if ids else "?"), "aliases": aliases[:6],
+                                 "package": package.get("name"), "version": package.get("version"), "malicious": malicious,
+                                 "severity": "CRITICAL" if malicious else osv_severity(group, members), "fixed": osv_fixed(members, package)})
+    return findings
+
+
+def osv_summary(report, exit_code, lock_text):
+    """What the audit found and whether it finished. OSV-Scanner exits 0 with no findings, 1 with findings, and 128 when it
+    found no packages, which counts as finished only for a lockfile that lists none; anything else did not finish."""
+    from .node import lock_problems, read_lockfile
+    data, _ = read_lockfile(lock_text or "")
+    packages = sum(1 for path in (data or {}).get("packages", {}) if path)
+    finished = exit_code in (0, 1) and isinstance(report, dict) or (exit_code == 128 and data is not None and packages == 0)
+    findings = osv_findings(report) if finished and isinstance(report, dict) else []
+    counts = {severity: sum(1 for item in findings if item["severity"] == severity) for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")}
+    fixable = {severity: sum(1 for item in findings if item["severity"] == severity and item["fixed"]) for severity in ("CRITICAL", "HIGH")}
+    return {"tool": OSV_SCANNER, "status": "finished" if finished else "did not finish", "exit_code": exit_code, "packages": packages,
+            "by_severity": counts, "fixable_by_severity": fixable,
+            "malicious": [f"{item['id']} ({item['package']}@{item['version']})" for item in findings if item["malicious"]],
+            "lock_problems": [f"{name} {why}" for name, why in (lock_problems(data) if data else [])][:20],
+            "lockfile": "read" if data is not None else "unreadable", "findings": findings[:50]}
+
+
+def osv_verdict(summary):
+    """Why the release stops, or None: the gate of 14.4's words, for every trust level (D44)."""
+    if summary["malicious"]:
+        count = len(summary["malicious"])
+        return f"{count} known malicious package{'s' if count != 1 else ''} in the lockfile ({', '.join(summary['malicious'][:3])})"
+    if summary["lockfile"] != "read":
+        return "the lockfile could not be read as npm lockfile version 2 or 3, so its packages could not be checked"
+    if summary["status"] != "finished":
+        return f"the dependency audit did not finish ({summary['tool']} exited {summary['exit_code']}), and a release needs a finished audit"
+    if summary["lock_problems"]:
+        return "the lockfile holds packages npm ci would install without checking them against the npm registry: " + "; ".join(summary["lock_problems"][:3])
+    fixable = summary["fixable_by_severity"]["CRITICAL"] + summary["fixable_by_severity"]["HIGH"]
+    if fixable:
+        named = [f"{item['package']}@{item['version']} ({item['id']}, fixed in {item['fixed'][0]})" for item in summary["findings"]
+                 if item["severity"] in ("CRITICAL", "HIGH") and item["fixed"]]
+        return (f"{fixable} critical or high finding{'s' if fixable != 1 else ''} with a fix available: " + ", ".join(named[:3])
+                + "; update those packages (npm install <package>@<fixed version>) and commit the lockfile")
+    return None
+
+
+def osv_main(argv):
+    parser = argparse.ArgumentParser(prog="python -m labdeploy.scan osv")
+    parser.add_argument("report", help="OSV-Scanner's --format json output")
+    parser.add_argument("--exit-code", type=int, required=True, help="OSV-Scanner's exit code")
+    parser.add_argument("--lockfile", required=True, help="the npm lockfile that was scanned")
+    parser.add_argument("--json", help="write the summary here (the release bundle)")
+    args = parser.parse_args(argv)
+    try:
+        report = json.loads(Path(args.report).read_text())
+    except (OSError, ValueError):
+        report = None
+    lock = Path(args.lockfile).read_text() if Path(args.lockfile).is_file() else ""
+    summary = osv_summary(report, args.exit_code, lock)
+    reason = osv_verdict(summary)
+    summary["blocked"] = reason is not None
+    counts, fixable = summary["by_severity"], summary["fixable_by_severity"]
+    lines = [f"Dependency audit ({summary['tool']}) of {Path(args.lockfile).name}: {summary['status']}, {summary['packages']} packages",
+             f"critical {counts['CRITICAL']}, high {counts['HIGH']}, medium {counts['MEDIUM']}, low {counts['LOW']}; "
+             f"with a fix available: critical {fixable['CRITICAL']}, high {fixable['HIGH']}",
+             "Stops every release: a known malicious package, a critical or high finding with a fix, an audit that did not finish, "
+             "a package from outside the npm registry"]
+    lines += [f"{item['severity'].lower()}: {item['package']}@{item['version']} {item['id']}" + (f", fixed in {item['fixed'][0]}" if item["fixed"] else ", no fix yet")
+              for item in summary["findings"][:10]]
+    print("\n".join(lines))
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as handle:
+            handle.write("## " + lines[0] + "\n\n" + "\n".join(f"- {line}" for line in lines[1:]) + "\n")
+    if args.json:
+        Path(args.json).write_text(json.dumps(summary, indent=2) + "\n")
+    if reason:
+        print(f"::error title=Dependency audit::{reason}")
+        return 1
+    return 0
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["osv"]:
+        return osv_main(argv[1:])
     from .release import run
     image = os.environ["IMAGE_DIGEST"]
     blocking = os.environ.get("BLOCK_ON_CRITICAL_VULNERABILITIES", "false").lower() == "true"
@@ -142,4 +274,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -55,9 +55,11 @@ env:
   SPEC_SOURCE: __LAB_APP_DIR__/platform.yaml
   # Locks the platform made for a repository taken as it is (docs/ROADMAP.md 13.3): empty here; in the platform repository's
   # pipeline apps/<service>/requirements.lock (copied beside the service's files for the tests, the audit and the build when
-  # the service has none) and apps/<service>/requirements-test.lock (the service and its test tools, resolved together).
+  # the service has none) and apps/<service>/requirements-test.lock (the service and its test tools, resolved together), or
+  # for a Node.js service apps/<service>/package-lock.json (D42), which its tests and its image both install.
   PLATFORM_LOCK: ''
   PLATFORM_TEST_LOCK: ''
+  PLATFORM_NODE_LOCK: ''
   # What an unset `trust` in the contract means (docs/ROADMAP.md D35): reviewed in a repository's own platform.yaml. The
   # platform repository's pipeline, which builds repositories taken as they are, says unknown.
   TRUST_DEFAULT: reviewed
@@ -122,13 +124,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          read_spec() { python -c 'import os, sys; from pathlib import Path; from labdeploy.models import containment, parse_spec; spec = parse_spec(Path(os.environ["SPEC_SOURCE"]).read_text()); print({"tests": spec.tests, "python": spec.python, "context": spec.build.context, "recipe": spec.build.recipe, "entrypoint": spec.build.entrypoint or "", "command": "true" if spec.command is not None or spec.args is not None else "false", "trust": containment(spec, os.environ["TRUST_DEFAULT"])["trust"], "network": spec.build.network}[sys.argv[1]])' "$1"; }
+          read_spec() { python -c 'import os, sys; from pathlib import Path; from labdeploy.models import containment, parse_spec; spec = parse_spec(Path(os.environ["SPEC_SOURCE"]).read_text()); print({"tests": spec.tests, "runtime": spec.runtime, "python": spec.python, "node": spec.node or "", "scripts": " ".join(spec.build.scripts), "context": spec.build.context, "recipe": spec.build.recipe, "entrypoint": spec.build.entrypoint or "", "command": "true" if spec.command is not None or spec.args is not None else "false", "trust": containment(spec, os.environ["TRUST_DEFAULT"])["trust"], "network": spec.build.network}[sys.argv[1]])' "$1"; }
           TESTS=$(read_spec tests)
           [[ "$TESTS" =~ ^(required|none)$ ]]
           echo "tests=$TESTS" >> "$GITHUB_OUTPUT"
+          # python-http runs the Python steps on `python`; node-http the Node.js steps on `node` (docs/ROADMAP.md D41).
+          RUNTIME=$(read_spec runtime)
+          [[ "$RUNTIME" =~ ^(python-http|node-http)$ ]]
+          echo "runtime=$RUNTIME" >> "$GITHUB_OUTPUT"
           PYTHON=$(read_spec python)
           [[ "$PYTHON" =~ ^3\.(11|12|13|14|15)$ ]]
           echo "python=$PYTHON" >> "$GITHUB_OUTPUT"
+          NODE=$(read_spec node)
+          if [ "$RUNTIME" = "node-http" ]; then [[ "$NODE" =~ ^(22|24|26)$ ]]; else [ -z "$NODE" ]; fi
+          echo "node=$NODE" >> "$GITHUB_OUTPUT"
+          # The packages whose install scripts run (build.scripts, D43): each a name and an exact version, as the model allows.
+          SCRIPTS=$(read_spec scripts)
+          PACKAGE='^(@[a-z0-9~-][a-z0-9._~-]*/)?[a-z0-9~-][a-z0-9._~-]*@[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+          for ENTRY in $SCRIPTS; do [[ "$ENTRY" =~ $PACKAGE ]] || { echo "::error::build.scripts holds an entry the build cannot pass on"; exit 1; }; done
+          echo "scripts=$SCRIPTS" >> "$GITHUB_OUTPUT"
           CONTEXT=$(read_spec context)
           [[ "$CONTEXT" =~ ^(service|repository)$ ]]
           echo "context=$CONTEXT" >> "$GITHUB_OUTPUT"
@@ -181,7 +195,10 @@ jobs:
           fi
           SHOWN=$(python3 -c 'import os; print(os.path.normpath(os.path.join(os.environ["APP_PATH"], "Dockerfile")))')
           "$RUNNER_TEMP/trivy" config "$APP_DIR/Dockerfile" --format json --quiet --skip-check-update --skip-version-check > "$RUNNER_TEMP/trivy-config.json"
-          python -m labdeploy.dockerpolicy "$APP_DIR/Dockerfile" --trust "$TRUST" --shown "$SHOWN" --trivy "$RUNNER_TEMP/trivy-config.json" --json bundle/dockerfile-policy.json
+          # A Node.js service's lockfile says whether its dependencies hold native code (the Alpine note, D45).
+          LOCKFILE=()
+          for LOCK in "$APP_DIR/npm-shrinkwrap.json" "$APP_DIR/package-lock.json"; do if [ -f "$LOCK" ]; then LOCKFILE=(--lockfile "$LOCK"); break; fi; done
+          python -m labdeploy.dockerpolicy "$APP_DIR/Dockerfile" --trust "$TRUST" --shown "$SHOWN" --trivy "$RUNNER_TEMP/trivy-config.json" "${LOCKFILE[@]}" --json bundle/dockerfile-policy.json
       # 14.2: keys committed to the repository are found before its code runs; a working one stops code nobody has reviewed.
       - name: Scan the checkout for secrets
         env:
@@ -198,16 +215,17 @@ jobs:
           "$RUNNER_TEMP/trufflehog" filesystem "$SCANNED" --exclude-paths "$RUNNER_TEMP/trufflehog-exclude.txt" --results=verified,unknown,unverified --json --no-update > "$RUNNER_TEMP/secrets-checkout.jsonl"
           python -m labdeploy.leaks "$RUNNER_TEMP/secrets-checkout.jsonl" --trust "$TRUST" --where checkout --strip app/ --json bundle/secrets-checkout.json
       # The application's own Python (platform.yaml `python`) for its tests and its dependency audit; the platform's steps
-      # keep theirs on PATH.
+      # keep theirs on PATH. The Python steps run for python-http only; a Node.js service has its own below.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         id: app-python
+        if: steps.policy.outputs.runtime == 'python-http'
         with:
           python-version: ${{ steps.policy.outputs.python }}
           update-environment: false
       # The test environment lives outside the checkout, so it can never reach the image. A service whose build reads the
       # whole repository (build.context: repository) imports shared code from the repository's root in its tests as well.
       - name: Run unit tests
-        if: steps.policy.outputs.tests == 'required'
+        if: steps.policy.outputs.tests == 'required' && steps.policy.outputs.runtime == 'python-http'
         working-directory: __LAB_APP_DIR__
         env:
           APP_PYTHON: ${{ steps.app-python.outputs.python-path }}
@@ -238,6 +256,7 @@ jobs:
       # On the application's own Python: version markers select what that Python installs, and a pin that exists only for
       # an older Python (numpy 1.24 on 3.11) is not refused for failing to install on the platform's 3.12.
       - name: Audit Python dependencies
+        if: steps.policy.outputs.runtime == 'python-http'
         working-directory: __LAB_APP_DIR__
         env:
           APP_PYTHON: ${{ steps.app-python.outputs.python-path }}
@@ -251,6 +270,81 @@ jobs:
             "$RUNNER_TEMP/audit-venv/bin/python" -m pip_audit --disable-pip -r requirements.lock
           else
             "$RUNNER_TEMP/audit-venv/bin/python" -m pip_audit -r requirements.txt
+          fi
+      # The application's own Node.js line (platform.yaml `node`, docs/ROADMAP.md D41) for its audit and its tests. setup-node 5
+      # and later cache npm's downloads on their own; package-manager-cache: false keeps every run from scratch.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        id: app-node
+        if: steps.policy.outputs.runtime == 'node-http'
+        with:
+          node-version: ${{ steps.policy.outputs.node }}
+          package-manager-cache: false
+      # D44: OSV-Scanner reads the lockfile before any package in it is installed or run, downloaded by version and checked
+      # against its SHA-256. Whoever wrote the code, a known malicious package (an OSV MAL- record), a critical or high finding
+      # with a fix, or a scan that did not finish stops the release, and so does an entry npm ci would install without a
+      # registry check (D42); the rest is listed. The scan reads a copy with an empty configuration, so nothing in the
+      # repository (an osv-scanner.toml) can set a finding aside.
+      - name: Audit Node.js dependencies
+        if: steps.policy.outputs.runtime == 'node-http'
+        env:
+          TRUST: ${{ steps.policy.outputs.trust }}
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bundle "$RUNNER_TEMP/osv"
+          if [ -n "$PLATFORM_NODE_LOCK" ] && [ -f "$PLATFORM_NODE_LOCK" ] && [ ! -f "$APP_DIR/package-lock.json" ] && [ ! -f "$APP_DIR/npm-shrinkwrap.json" ]; then
+            cp "$PLATFORM_NODE_LOCK" "$APP_DIR/package-lock.json"
+          fi
+          LOCK="$APP_DIR/npm-shrinkwrap.json"
+          [ -f "$LOCK" ] || LOCK="$APP_DIR/package-lock.json"
+          [ -f "$LOCK" ] || { echo "::error title=Dependency audit::the service has no package-lock.json and the contract names no lock the platform made"; exit 1; }
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/osv-scanner" https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64
+          echo "160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b  $RUNNER_TEMP/osv-scanner" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/osv-scanner"
+          cp "$LOCK" "$RUNNER_TEMP/osv/package-lock.json"
+          : > "$RUNNER_TEMP/osv-scanner.toml"
+          STATUS=0
+          "$RUNNER_TEMP/osv-scanner" scan source --lockfile "$RUNNER_TEMP/osv/package-lock.json" --config "$RUNNER_TEMP/osv-scanner.toml" --format json > "$RUNNER_TEMP/osv.json" || STATUS=$?
+          python -m labdeploy.scan osv "$RUNNER_TEMP/osv.json" --exit-code "$STATUS" --lockfile "$LOCK" --json bundle/dependency-audit.json
+      # D43: the install for the tests puts the lockfile's packages into the checkout with every install script off, the
+      # development dependencies included, from the public registry whatever an .npmrc says; npm audit signatures then checks
+      # the registry's signatures of what came in, a note and never a gate. The build cleans the checkout before it builds.
+      - name: Install Node.js dependencies with their scripts off
+        if: steps.policy.outputs.runtime == 'node-http'
+        working-directory: __LAB_APP_DIR__
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$PLATFORM_NODE_LOCK" ] && [ -f "$GITHUB_WORKSPACE/$PLATFORM_NODE_LOCK" ] && [ ! -f package-lock.json ] && [ ! -f npm-shrinkwrap.json ]; then
+            cp "$GITHUB_WORKSPACE/$PLATFORM_NODE_LOCK" package-lock.json
+          fi
+          NPM_FLAGS=(--registry=https://registry.npmjs.org/ --strict-ssl=true --no-audit --no-fund)
+          npm ci --ignore-scripts "${NPM_FLAGS[@]}"
+          if npm audit signatures --registry=https://registry.npmjs.org/ > "$RUNNER_TEMP/signatures.txt" 2>&1; then
+            echo "Registry signatures (npm audit signatures): $(grep -E 'verified|missing|invalid' "$RUNNER_TEMP/signatures.txt" | tr '\n' ' ')" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=Registry signatures::not every package's registry signature verified (a note, not a gate): $(tail -n 3 "$RUNNER_TEMP/signatures.txt" | tr '\n' ' ')"
+          fi
+      - name: Run unit tests (Node.js)
+        if: steps.policy.outputs.tests == 'required' && steps.policy.outputs.runtime == 'node-http'
+        working-directory: __LAB_APP_DIR__
+        env:
+          SCRIPTS: ${{ steps.policy.outputs.scripts }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Only the packages the contract lists run their install scripts, each by name and exact version (D43).
+          if [ -n "$SCRIPTS" ]; then
+            read -r -a PACKAGES <<< "$SCRIPTS"
+            npm rebuild --ignore-scripts=false "${PACKAGES[@]}"
+          fi
+          if node -e 'const t = (require("./package.json").scripts || {}).test || ""; process.exit(t && !/no test specified/.test(t) ? 0 : 1)'; then
+            npm test
+          else
+            # No test script of its own: node --test with its default file patterns, its JUnit report kept for the count.
+            node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination="$RUNNER_TEMP/node-test.xml"
+            grep -q "<testcase" "$RUNNER_TEMP/node-test.xml" || { echo "::error::platform.yaml says tests: required, but node --test found no test files"; exit 1; }
           fi
       # hadolint checks the Dockerfile against Docker's best practices. Its findings become annotations on this run and travel
       # with the release receipt; error-level findings stop the release (since 1.10.0) unless the repository variable
@@ -306,7 +400,10 @@ jobs:
       - name: Build without cloud credentials
         env:
           CONTEXT: ${{ steps.policy.outputs.context }}
+          RUNTIME: ${{ steps.policy.outputs.runtime }}
           PYTHON_VERSION: ${{ steps.policy.outputs.python }}
+          NODE_VERSION: ${{ steps.policy.outputs.node }}
+          TRUST: ${{ steps.policy.outputs.trust }}
           RECIPE: ${{ steps.policy.outputs.recipe }}
           ENTRYPOINT: ${{ steps.policy.outputs.entrypoint }}
           HAS_COMMAND: ${{ steps.policy.outputs.command }}
@@ -332,7 +429,16 @@ jobs:
             fi
           }
           LOCK_SOURCE=repository
-          if [ -n "$PLATFORM_LOCK" ] && [ -f "$PLATFORM_LOCK" ] && [ ! -f "$APP_DIR/requirements.lock" ]; then
+          LOCK_FILE="$APP_DIR/requirements.lock"
+          if [ "$RUNTIME" = "node-http" ]; then
+            # npm reads npm-shrinkwrap.json before package-lock.json; the platform's lock (D42) when the service has neither.
+            LOCK_FILE="$APP_DIR/npm-shrinkwrap.json"
+            [ -f "$LOCK_FILE" ] || LOCK_FILE="$APP_DIR/package-lock.json"
+            if [ ! -f "$LOCK_FILE" ] && [ -n "$PLATFORM_NODE_LOCK" ] && [ -f "$PLATFORM_NODE_LOCK" ]; then
+              cp "$PLATFORM_NODE_LOCK" "$LOCK_FILE"
+              LOCK_SOURCE=platform
+            fi
+          elif [ -n "$PLATFORM_LOCK" ] && [ -f "$PLATFORM_LOCK" ] && [ ! -f "$APP_DIR/requirements.lock" ]; then
             cp "$PLATFORM_LOCK" "$APP_DIR/requirements.lock"
             LOCK_SOURCE=platform
           fi
@@ -366,8 +472,8 @@ jobs:
           else
             # Google's buildpacks (docs/ROADMAP.md D28, 13.3): build.recipe: buildpacks, or no Dockerfile. The start command
             # is build.entrypoint (GOOGLE_ENTRYPOINT) or the Procfile; the builder and run image are pinned by digest. The
-            # Ubuntu 24.04 builder offers Python 3.13 and later only, so 3.11 and 3.12 use the Ubuntu 22.04 one. A lock,
-            # when present, is what pip installs, with its hashes.
+            # Ubuntu 24.04 builder offers Python 3.13 and later only, so 3.11 and 3.12 use the Ubuntu 22.04 one; it offers
+            # Node.js 22, 24 and 26. A lock, when present, is what pip or npm installs, with its hashes.
             if [ ! -f "$APP_DIR/Procfile" ] && [ -z "$ENTRYPOINT" ]; then
               echo "::error::No Dockerfile, no Procfile and no build.entrypoint for $APP_PATH: the platform cannot build this service"; exit 1
             fi
@@ -375,10 +481,17 @@ jobs:
               echo "::error::command and args replace the image's start command, which on a buildpacks image bypasses its launcher; use build.entrypoint"; exit 1
             fi
             [ "$CONTEXT" = "service" ] || { echo "::error::build.context: repository needs a Dockerfile"; exit 1; }
+            # D45: Google's Node.js buildpack runs every install script and fetches Node.js at build time, so it builds code
+            # the lab has reviewed only; code nobody has reviewed is built on the platform's Node.js image (build.recipe: platform).
+            if [ "$RUNTIME" = "node-http" ] && [ "$TRUST" != "reviewed" ]; then
+              echo "::error title=Buildpacks::Google's buildpacks run install scripts and fetch Node.js at build time, so they build reviewed code only: use build.recipe: platform with build.entrypoint, or have the lab review it (trust: reviewed)"; exit 1
+            fi
             curl -fsSL --retry 3 -o "$RUNNER_TEMP/pack.tgz" https://github.com/buildpacks/pack/releases/download/v0.40.9/pack-v0.40.9-linux.tgz
             echo "dc0ee1e931cf8a106d7555a01a214864f9acb60b77adf15d69b74df4404758e9  $RUNNER_TEMP/pack.tgz" | sha256sum --check --strict
             tar -xzf "$RUNNER_TEMP/pack.tgz" -C "$RUNNER_TEMP" pack
-            case "$PYTHON_VERSION" in
+            BUILDS_ON="$PYTHON_VERSION"
+            if [ "$RUNTIME" = "node-http" ]; then BUILDS_ON="node-$NODE_VERSION"; fi
+            case "$BUILDS_ON" in
               3.11|3.12)
                 BUILDER=gcr.io/buildpacks/builder@sha256:933e46d1797a479320a2dfa9533f3643cb6af427651ba8f81d1a58429d558a99
                 RUN_IMAGE=gcr.io/buildpacks/google-22/run@sha256:c89d55fe323cb1281f449be0d7bd56dab55612b0b329d5b16793f97c93767eb6 ;;
@@ -389,12 +502,13 @@ jobs:
             SOURCE="$RUNNER_TEMP/buildpack-source"
             mkdir -p "$SOURCE"
             tar -C "$APP_DIR" --exclude=./.git -cf - . | tar -C "$SOURCE" -xf -
-            if [ -f "$SOURCE/requirements.lock" ]; then cp "$SOURCE/requirements.lock" "$SOURCE/requirements.txt"; fi
-            # The platform's project descriptor keeps secrets, tests, notebooks and caches out of the image (the buildpacks'
-            # answer to .dockerignore); a project.toml of the repository's own is not read.
+            if [ "$RUNTIME" = "python-http" ] && [ -f "$SOURCE/requirements.lock" ]; then cp "$SOURCE/requirements.lock" "$SOURCE/requirements.txt"; fi
+            # The platform's project descriptor keeps secrets, tests, notebooks, node_modules and caches out of the image (the
+            # buildpacks' answer to .dockerignore); a project.toml of the repository's own is not read.
             python -m labdeploy.scaffold descriptor > "$RUNNER_TEMP/project.toml"
             cap_context "$SOURCE"
             PACK_ENV=(--env "GOOGLE_PYTHON_VERSION=$PYTHON_VERSION.x")
+            if [ "$RUNTIME" = "node-http" ]; then PACK_ENV=(--env "GOOGLE_NODEJS_VERSION=$NODE_VERSION.x.x"); fi
             if [ -n "$ENTRYPOINT" ]; then PACK_ENV+=(--env "GOOGLE_ENTRYPOINT=$ENTRYPOINT"); fi
             "$RUNNER_TEMP/pack" build "lab-app:$COMMIT_SHA" --path "$SOURCE" --builder "$BUILDER" --run-image "$RUN_IMAGE" \
               --descriptor "$RUNNER_TEMP/project.toml" --platform linux/amd64 --trust-builder --pull-policy if-not-present "${PACK_NETWORK[@]}" "${PACK_ENV[@]}"
@@ -404,7 +518,7 @@ jobs:
           cp "$SPEC_SOURCE" bundle/platform.yaml
           # What the image was made from, for the signed provenance (docs/ROADMAP.md D33): the recipe, the Dockerfile's and
           # the lock's SHA-256 and where the lock came from, and the buildpacks builder when it was used.
-          python3 - "$DOCKERFILE_USED" "$APP_DIR/requirements.lock" "$LOCK_SOURCE" "$RECIPE" "$BUILDER" > bundle/inputs.json <<'PY'
+          python3 - "$DOCKERFILE_USED" "$LOCK_FILE" "$LOCK_SOURCE" "$RECIPE" "$BUILDER" > bundle/inputs.json <<'PY'
           import hashlib, json, os, sys
           dockerfile, lock, lock_source, recipe, builder = sys.argv[1:6]
           def digest(path):

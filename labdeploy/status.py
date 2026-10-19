@@ -3,9 +3,10 @@ import datetime
 
 from .bake import summary as bake_summary
 
+# A check that a Python and a Node.js service prove in different steps names both; the one that ran is the evidence.
 CHECKS = {
-    "tests": ("build", "Run unit tests"),
-    "dependency_scan": ("build", "Audit Python dependencies"),
+    "tests": ("build", ("Run unit tests", "Run unit tests (Node.js)")),
+    "dependency_scan": ("build", ("Audit Python dependencies", "Audit Node.js dependencies")),
     "health": ("deploy", "Deploy, probe, promote; restore traffic on failure"),
     "target": ("deploy", "Validate artifact and deployment configuration"),
 }
@@ -25,6 +26,11 @@ STEP_ADVICE = [
     ("Validate reviewed specification", "platform.yaml on main no longer matches the plan; create a new plan."),
     ("Run unit tests", "Unit tests failed on main; fix them and deploy again. The job log names the failing tests."),
     ("Audit Python dependencies", "The dependency audit found known vulnerabilities; upgrade the packages named in the job log, then deploy again."),
+    ("Audit Node.js dependencies", "The dependency audit stopped the release: a known malicious package, a critical or high finding with a fix, a "
+     "package from outside the npm registry, or an audit that did not finish (dependency-audit.json in the bundle says which); update the "
+     "packages it names, commit the lockfile, then deploy again."),
+    ("Install Node.js dependencies", "npm ci failed: package.json and the lockfile disagree, or a package could not be fetched; run npm install, "
+     "commit both files, then deploy again."),
     ("Lint the Dockerfile", "The Dockerfile lint found error-level problems, which stop a release; fix the lines the run annotates "
      "(or download hadolint's findings from the run), then deploy again. The operator can turn blocking off for one repository "
      "with its variable HADOLINT_BLOCKING=false."),
@@ -83,9 +89,11 @@ def summarize(workflow, prior, kind=None):
         return {"state": result, "checks": {}, "timeline": items, "failed_step": failed_step(items), "recovery": "not_requested"}
     table = PROMOTION_CHECKS if kind == "promotion" else CHECKS
     checks = dict(prior)
-    for name, (job_name, step_name) in table.items():
+    for name, (job_name, step_names) in table.items():
         job = next((j for j in workflow.get("jobs", []) if j.get("name") == job_name), None)
-        step = next((s for s in (job or {}).get("steps", []) if s.get("name") == step_name), None)
+        names = (step_names,) if isinstance(step_names, str) else step_names
+        found = [s for s in (job or {}).get("steps", []) if s.get("name") in names]
+        step = next((s for s in found if s.get("conclusion") != "skipped"), found[0] if found else None)
         if step is None:
             if prior.get(name) == "passed_in_earlier_release":
                 continue

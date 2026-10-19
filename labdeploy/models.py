@@ -1,3 +1,4 @@
+import datetime
 import hashlib
 import json
 import re
@@ -111,6 +112,28 @@ def needs_secrets(spec):
 # than the parentheses of a WSGI factory (gunicorn's "module:create_app()"), which the buildpacks' shell would misread.
 ENTRYPOINT = r"^[A-Za-z0-9_./:=,+@%${}() -]+$"
 
+# The Node.js lines a node-http service may run on (docs/ROADMAP.md D41): the Active LTS lines, each refused from its end of
+# life (Node's release schedule, read 2026-10-19; the dates are in docs/RUNBOOK.md). A drafted contract names the newest
+# line in Active LTS on the day it is drafted.
+NODE_END_OF_LIFE = {"22": datetime.date(2027, 4, 30), "24": datetime.date(2028, 4, 30), "26": datetime.date(2029, 4, 30)}
+NODE_ACTIVE_LTS_FROM = {"22": datetime.date(2024, 10, 29), "24": datetime.date(2025, 10, 28), "26": datetime.date(2026, 10, 28)}
+# What starts a Node.js service is node itself: npm and the other managers add latency and do not pass SIGTERM on (D45).
+PACKAGE_MANAGERS = ("npm", "npx", "yarn", "pnpm", "bun", "corepack")
+# A package and its exact version, as package.json's allowScripts pins it (npm install-scripts approve): an optional scope,
+# a name, an exact version. A name alone, a range or --all is never enough (D43).
+SCRIPT_PACKAGE = re.compile(r"((?:@[a-z0-9~-][a-z0-9._~-]*/)?[a-z0-9~-][a-z0-9._~-]*)@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)")
+
+
+def today_utc():
+    return datetime.datetime.now(datetime.UTC).date()
+
+
+def default_node(today=None):
+    """The newest Node.js line in Active LTS on `today` (UTC): 24 until 2026-10-28, 26 from then (D41)."""
+    today = today or today_utc()
+    lines = [line for line, start in NODE_ACTIVE_LTS_FROM.items() if start <= today < NODE_END_OF_LIFE[line]]
+    return max(lines, key=int) if lines else "24"
+
 
 class Build(StrictModel):
     """How the image is built.
@@ -128,9 +151,19 @@ class Build(StrictModel):
     entrypoint: str | None = Field(default=None, max_length=400, pattern=ENTRYPOINT)
     # none: the image builds with no network at all, for a repository that vendors its dependencies (docs/ROADMAP.md 14.3).
     network: Literal["default", "none"] = "default"
+    # Node.js only (docs/ROADMAP.md D43): every package installs with its scripts off; afterwards only these run theirs
+    # (npm rebuild), each named with its exact version (onnxruntime-node@1.30.0). Nothing else ever runs at install.
+    scripts: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def coherent(self):
+        if len(self.scripts) > 32 or len(set(self.scripts)) != len(self.scripts):
+            raise ValueError("build.scripts lists at most 32 packages, each once")
+        for entry in self.scripts:
+            match = SCRIPT_PACKAGE.fullmatch(entry)
+            if not match or len(match.group(1)) > 214:
+                raise ValueError(f"'{entry}' in build.scripts is not a package with its exact version (onnxruntime-node@1.30.0): "
+                                 "a name alone, a range or --all is never enough")
         if self.context == "repository" and self.recipe != "repository":
             raise ValueError("build.context: repository needs the service's own Dockerfile (build.recipe: repository)")
         if self.recipe == "platform" and not self.entrypoint:
@@ -164,7 +197,8 @@ class Scaling(StrictModel):
 class AppSpec(StrictModel):
     api_version: Literal["lab/v1"] = "lab/v1"
     name: str = Field(pattern=r"^[a-z][a-z0-9-]{1,19}[a-z0-9]$")  # 3 to 21 characters: what Cloud Run, the registry and the root accept
-    runtime: Literal["python-http"] = "python-http"
+    # python-http: tested and audited on `python`; node-http (docs/ROADMAP.md D41): tested and audited on `node`.
+    runtime: Literal["python-http", "node-http"] = "python-http"
     port: int = Field(default=8080, ge=1024, le=65535)
     # null: the service has no health route; Cloud Run's TCP startup probe gates it and the platform's own probes only check
     # that it answers HTTP at all (docs/ROADMAP.md 13.4). A path is probed for 200.
@@ -190,6 +224,10 @@ class AppSpec(StrictModel):
     # The Python the tests and the dependency audit run on; match the Dockerfile's base image. A lock compiled for one
     # version can omit packages another needs (live: SQLAlchemy needs greenlet below 3.13, so a 3.13 lock failed on 3.12).
     python: Literal["3.11", "3.12", "3.13", "3.14", "3.15"] = "3.12"
+    # The Node.js line of a node-http service (D41): its tests, its audit and the platform's image (node:<line>-slim) use it.
+    # Required for node-http and refused for python-http, so a contract names exactly one of python and node. A Node.js
+    # service keeps python at its default, which every dump leaves out, so its hash and its full dump read back the same.
+    node: Literal["22", "24", "26"] | None = None
     timeout_seconds: int = Field(default=60, ge=1, le=300)
     # Buckets, topics and a database the platform provisions for the app (docs/SETUP.md 6b); variables are derived.
     needs: Needs = Field(default_factory=Needs)
@@ -237,6 +275,7 @@ class AppSpec(StrictModel):
                 raise ValueError(f"{field} is a list of at most 32 printable words of at most 200 characters, without commas")
         if (self.command is not None or self.args is not None) and self.build.recipe == "buildpacks":
             raise ValueError("command and args replace the image's start command, which on a buildpacks image bypasses its launcher; use build.entrypoint")
+        self.runtime_fits()
         derived = {**needs_env(self, "project"), **needs_secrets(self)}
         taken = set(self.env) | set(self.secrets)
         for name in derived:
@@ -245,6 +284,26 @@ class AppSpec(StrictModel):
         if len(derived) + len(self.env) > 48:
             raise ValueError("Too many variables: needs, env and secrets together must stay under 48")
         return self
+
+    def runtime_fits(self):
+        """Exactly one of python and node, as the runtime says, and the Node.js rules of docs/ROADMAP.md D43 and D45."""
+        if self.runtime == "python-http":
+            if self.node is not None:
+                raise ValueError("node applies to runtime: node-http; a Python service names its version in python")
+            if self.build.scripts:
+                raise ValueError("build.scripts applies to runtime: node-http")
+            return
+        if self.node is None:
+            raise ValueError('runtime: node-http needs node, the Node.js line it runs on: "22", "24" or "26"')
+        if self.python != type(self).model_fields["python"].default:
+            raise ValueError("python applies to runtime: python-http; a Node.js service names its line in node")
+        starts = [words[0] for words in (self.build.entrypoint.split() if self.build.entrypoint else None, self.command) if words]
+        if any(word.rsplit("/", 1)[-1] in PACKAGE_MANAGERS for word in starts):
+            raise ValueError("A Node.js service is started by node itself (node server.js), never through npm or another package manager: "
+                             "they add latency and do not pass SIGTERM on, so Cloud Run's shutdown would cut requests off")
+        if self.build.network == "none" and self.build.recipe != "repository":
+            raise ValueError("build.network: none cannot install Node.js packages: the platform's image installs them from the registry "
+                             "with npm ci; vendor them with a Dockerfile of the repository's own instead")
 
 
 class UniqueLoader(yaml.SafeLoader):
@@ -290,9 +349,11 @@ def draft_dump(spec: AppSpec) -> dict:
     command or args, the repository's own recipe, no entrypoint), so drafts for repositories that follow the contract read
     as they always did."""
     data = spec.model_dump()
-    for key in ("command", "args", "trust", "egress"):
+    for key in ("command", "args", "trust", "egress", "node"):
         if data.get(key) is None:
             data.pop(key, None)
+    if spec.runtime == "node-http":
+        data.pop("python", None)  # a Node.js service names its line in node; python keeps its unused default
     build = data.get("build") or {}
     if build.get("entrypoint") is None:
         build.pop("entrypoint", None)
@@ -300,6 +361,8 @@ def draft_dump(spec: AppSpec) -> dict:
         build.pop("recipe", None)
     if build.get("network") == "default":
         build.pop("network", None)
+    if not build.get("scripts"):
+        build.pop("scripts", None)
     return data
 
 
@@ -338,12 +401,17 @@ def spec_hash(spec: AppSpec) -> str:
     return hashlib.sha256(json.dumps(spec.model_dump(exclude_defaults=True), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def enforce(spec: AppSpec, cloud="gcp", environment="staging") -> None:
+def enforce(spec: AppSpec, cloud="gcp", environment="staging", today=None) -> None:
     # Production takes exactly what staging released, under the same limits (docs/ROADMAP.md D37): only a promotion reaches it.
     if cloud != "gcp" or environment not in ("staging", "production"):
         raise ValueError("The platform supports GCP staging, and production through promotion, only")
     if not spec.reviewed:
         raise ValueError("Review assumptions and merge reviewed: true in platform.yaml first")
+    if spec.runtime == "node-http" and (today or today_utc()) >= NODE_END_OF_LIFE[spec.node]:
+        # D41: a line past its end of life gets no security fixes; the runbook lists the dates ahead of time.
+        newer = [line for line, ends in NODE_END_OF_LIFE.items() if ends > (today or today_utc())]
+        raise ValueError(f"Node.js {spec.node} reached its end of life on {NODE_END_OF_LIFE[spec.node].isoformat()} and is no longer released: "
+                         f"move node to {' or '.join(newer) or 'a supported line'} in the contract (and the Dockerfile), then release again")
     if spec.dependencies:
         raise ValueError(f"The platform does not provide {', '.join(spec.dependencies)}; declare databases, buckets and topics "
                          "under needs (database: postgres or firestore) and remove `dependencies`")

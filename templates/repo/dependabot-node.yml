@@ -1,0 +1,27 @@
+# Drafted by Fast Deploy: weekly pull requests that keep the pins current (docs/DEVELOPER-CONTRACT.md, section 4). Each
+# update waits seven days after its release (cooldown; Dependabot's own default is three), so a broken or malicious
+# release is usually withdrawn before it arrives here. npm updates change package.json and package-lock.json together.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: __DIRECTORY__
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+  - package-ecosystem: docker
+    directory: __DIRECTORY__
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    # A new Node.js line is a decision (node in platform.yaml moves with it), not a weekly bump: only the digest is refreshed.
+    ignore:
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

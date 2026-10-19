@@ -41,6 +41,21 @@ BASE_IMAGES = {
     "3.14": "sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170",
     "3.15": "sha256:f48fda6d59b2b3437781d1c3ccf4aa0e26ae871de3cdd758b49ab45ee7291619",
 }
+# node:<line>-slim multi-architecture index digests (Debian: bookworm for 22 and 24, trixie for 26; Node.js 22.23.3, 24.22.0
+# and 26.12.0), resolved on the date below with `docker buildx imagetools inspect node:<line>-slim`: the top "Digest:" line,
+# the index every architecture shares. Refreshed like BASE_IMAGES; a drafted repository's own pin is Dependabot's to refresh.
+NODE_IMAGES_RESOLVED = "2026-10-19"
+NODE_IMAGES = {
+    "22": "sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392",
+    "24": "sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5",
+    "26": "sha256:0d1e33586362bb9e608c4e751e7a9e7edb55c9ac11461ed5666af696cc461dd4",
+}
+# The line whose image makes a Node.js service's lock (docs/ROADMAP.md D42): npm's min-release-age arrived in npm 11.10.0
+# (2026-02-11), and Node 22 bundles npm 10.9.9, which only warns about a flag it does not know and would lock without the
+# hold. A Node 22 service is therefore locked by Node 24's npm (11.19.1); lockfile version 3 is the same from npm 9 on. The
+# container refuses an npm older than 11.10 rather than lock without the hold.
+LOCK_IMAGE_LINE = {"22": "24", "24": "24", "26": "26"}
+NODE_LOCK_OPTIONS = "--package-lock-only --ignore-scripts --min-release-age=3"
 # Exact versions checked on PyPI on 2026-10-14 (the demo app and the platform pin the same test tools).
 DEV_PINS = {"pytest": "9.1.1", "httpx": "0.28.1"}
 SERVER_PINS = {"uvicorn": "0.54.0", "gunicorn": "26.2.0"}
@@ -102,6 +117,10 @@ LEFT_OUT_FILES = re.compile(r"(?i)^(dockerfile|containerfile|platform\.ya?ml|req
                             r"requirements-test\.txt|test_.*\.py|.*_test\.py|conftest\.py|noxfile\.py|tox\.ini|pytest\.ini|setup\.cfg|setup\.py|"
                             r"pyproject\.toml|poetry\.lock|uv\.lock|pipfile(\.lock)?|environment\.ya?ml|makefile|procfile|(docker-)?compose.*\.ya?ml|"
                             r".*\.md|.*\.rst|license.*|licence.*|.*\.ipynb|.*\.pem|.*\.key|.*\.env|.*\.tf|.*\.tfvars)$")
+# Left out of a Node.js service's image as well: its linters' and test runners' settings, version files and lockfiles of
+# other managers (package.json and the npm lockfile are let in first, by name).
+NODE_LEFT_OUT = re.compile(r"(?i)^(\.?eslint.*|eslint\.config\..*|\.prettier.*|prettier\.config\..*|jest\.config\..*|vitest\.config\..*|"
+                           r"tsconfig.*\.json|nodemon\.json|.*\.(test|spec)\.(c|m)?[jt]s|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$")
 CI_FILES = (".github/workflows/ci.yml", ".github/workflows/ci.yaml")
 DEPENDABOT = (".github/dependabot.yml", ".github/dependabot.yaml")
 RENOVATE = ("renovate.json", "renovate.json5", ".renovaterc", ".renovaterc.json", ".renovaterc.json5", ".github/renovate.json",
@@ -132,6 +151,13 @@ def base_image(python_version):
     if python_version not in BASE_IMAGES:
         raise ValueError(f"Python {python_version} is not supported; choose one of {', '.join(PYTHONS)}")
     return f"python:{python_version}-slim@{BASE_IMAGES[python_version]}"
+
+
+def node_base_image(line):
+    """The pinned base image for a supported Node.js line: node:<line>-slim@<multi-architecture index digest>."""
+    if line not in NODE_IMAGES:
+        raise ValueError(f"Node.js {line} is not supported; choose one of {', '.join(NODE_IMAGES)}")
+    return f"node:{line}-slim@{NODE_IMAGES[line]}"
 
 
 def template(name):
@@ -591,6 +617,58 @@ def compile_lock(requirements_text, python_version=DEFAULT_PYTHON, runner=docker
     return {"text": output, "command": command, "error": None}
 
 
+def node_lock_command(path=""):
+    """The command a person runs by hand, with npm 11.10 or later, from the repository root for a service in a folder."""
+    folder = clean_path(path)
+    command = f"npm install {NODE_LOCK_OPTIONS}"
+    return f"cd {folder} && {command}" if folder else command
+
+
+def node_lock_container(line):
+    """The docker command node_lock runs: node:<line>-slim by digest (Node 24's for a Node 22 service, LOCK_IMAGE_LINE), a
+    non-root user, package.json on stdin and package-lock.json on stdout. npm resolves with every script off and nothing
+    published in the last three days; nothing from the repository reaches a command line."""
+    script = "; ".join((
+        "set -eu",
+        "cat > package.json",
+        "version=$(npm --version)",
+        'major=${version%%.*}; rest=${version#*.}; minor=${rest%%.*}',
+        'if [ "$major" -lt 11 ] || { [ "$major" -eq 11 ] && [ "$minor" -lt 10 ]; }; then '
+        'echo "npm $version cannot hold back new releases: min-release-age needs npm 11.10 or later" >&2; exit 3; fi',
+        f"npm install {NODE_LOCK_OPTIONS} --no-audit --no-fund --loglevel=error >&2",
+        "cat package-lock.json",
+    ))
+    return ["docker", "run", "--rm", "-i", *CONTAINER_LIMITS, "--user", "65532:65532", "-e", f"HOME={CONTAINER_HOME}",
+            "-e", "npm_config_update_notifier=false", "-w", CONTAINER_HOME, node_base_image(LOCK_IMAGE_LINE[line]), "sh", "-c", script]
+
+
+def node_lock(package_text, line, runner=docker_runner, path=""):
+    """D42 in the pattern of D27: package-lock.json made in a container on the controller's machine, by npm 11.10 or later,
+    with every install script off and no version younger than three days. Every entry must carry its integrity hash and a
+    registry address before the lock is proposed. Returns {"text", "command", "error"} like compile_lock."""
+    from .node import lock_problems, package_data, read_lockfile
+    command = node_lock_command(path)
+    if not package_data(package_text):
+        return {"text": None, "command": command, "error": "package.json is missing or is not valid JSON"}
+    try:
+        output = runner(node_lock_container(line), package_text)
+    except FileNotFoundError:
+        return {"text": None, "command": command, "error": "Docker is not installed on this machine"}
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip().splitlines()
+        return {"text": None, "command": command, "error": f"npm could not lock the dependencies: {detail[-1][:300] if detail else exc}"}
+    except Exception as exc:  # noqa: BLE001 - a timeout or a daemon that is not running is reported the same way
+        return {"text": None, "command": command, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    data, problem = read_lockfile(output or "")
+    if data is None:
+        return {"text": None, "command": command, "error": f"the container did not return a usable package-lock.json (it {problem})"}
+    problems = lock_problems(data)
+    if problems:
+        return {"text": None, "command": command, "error": "the lock holds packages npm ci would not check against the registry: "
+                + "; ".join(f"{name} {why}" for name, why in problems[:4])}
+    return {"text": output if output.endswith("\n") else output + "\n", "command": command, "error": None}
+
+
 # ---- the drafts
 def dockerignore(repo, existing_dockerfile=""):
     """An allow-list built from the service's own top level: (text, left-out entries a service sometimes needs)."""
@@ -640,6 +718,16 @@ def dockerfile(found, locked):
                 CMD=json.dumps(found["command"]))
 
 
+def node_dockerfile(found):
+    """The Node.js Dockerfile (docs/ROADMAP.md D45): node:<line>-slim by digest, NODE_ENV=production, the lockfile installed
+    with npm ci and every script off, then npm rebuild for the contract's build.scripts only, the code, a numeric non-root
+    user and an exec-form CMD that starts node itself. `found`: node, port, command (words), lockfile, scripts."""
+    scripts = found.get("scripts") or []
+    return fill(template("Dockerfile.node"), NODE=found["node"], RESOLVED=NODE_IMAGES_RESOLVED, DIGEST=NODE_IMAGES[found["node"]],
+                LOCKFILE=found.get("lockfile") or "package-lock.json", REBUILD=(" && npm rebuild " + " ".join(scripts)) if scripts else "",
+                PORT=found["port"], CMD=json.dumps(found["command"]))
+
+
 def platform_draft(repo, name, found, dockerfile_text, planned):
     """The analyzer's draft, so it stays what analyze_repository proposes, with the detected Python and health path; reviewed: false."""
     files = {key: text for key, text in (("requirements.txt", repo.text("requirements.txt")), ("pyproject.toml", repo.text("pyproject.toml")),
@@ -685,11 +773,13 @@ def service_name(name, repo, fallback=None):
     return "my-service", "No service name was given or found, so platform.yaml says my-service: choose the real name (3 to 21 characters)."
 
 
-def ci_file(repo, name):
+def ci_file(repo, name, runners=("pytest",)):
     """(file to draft or None, note, workflows that already run these tests). A service at the root gets ci.yml; one in a
-    folder gets ci.yml while the repository has none, else ci-<name>.yml, unless a workflow already runs pytest there."""
+    folder gets ci.yml while the repository has none, else ci-<name>.yml, unless a workflow already runs its tests there
+    (`runners`: pytest, or npm test and node --test for a Node.js service)."""
     workflows = sorted(item for item in repo.paths if WORKFLOW.fullmatch(item) and not PLATFORM_WORKFLOW.fullmatch(item))
-    covering = [item for item in workflows if "pytest" in repo.texts.get(item, "") and (not repo.path or repo.path in repo.texts[item])]
+    covering = [item for item in workflows if any(runner in repo.texts.get(item, "") for runner in runners)
+                and (not repo.path or repo.path in repo.texts[item])]
     if covering:
         return None, None, covering
     if not any(item in repo.paths for item in CI_FILES):
@@ -717,10 +807,13 @@ def draft_files(paths, texts, path="", name=None, lock_text=None, fallback_name=
     compiles the lock, "analysis": the analyzer's result when platform.yaml was drafted}. The service's files go under
     `path`; .github/ files and SECURITY.md go at the repository root. A file that exists is never in "files"."""
     repo = Repository(paths, texts, path)
+    from .reader import runtime_of  # the reader imports this module
+    if runtime_of(repo, {item for item in repo.local_paths if item}) == "node-http":
+        return draft_node_files(repo, name, lock_text, fallback_name)
     if not any(item.endswith(".py") for item in repo.local_paths) and not repo.has("requirements.txt") and not repo.has("pyproject.toml"):
         where = f"{repo.path}/" if repo.path else "the repository root"
-        return {"files": {}, "existing": [], "review": [f"No Python code or requirements were found at {where}: the platform deploys Python HTTP "
-                                                       "services only, so nothing was drafted."], "detected": None, "lock_command": None, "analysis": None}
+        return {"files": {}, "existing": [], "review": [f"No Python or Node.js code was found at {where}: the platform deploys Python and Node.js "
+                                                       "web services, so nothing was drafted."], "detected": None, "lock_command": None, "analysis": None}
     found = _detect(repo)
     name, name_note = service_name(name, repo, fallback_name)
     command = lock_command(found["python"], repo.path)
@@ -834,10 +927,151 @@ def draft_files(paths, texts, path="", name=None, lock_text=None, fallback_name=
     return {"files": files, "existing": existing, "review": review, "detected": found, "lock_command": command, "analysis": analysis}
 
 
+def node_dockerignore(repo, lockfile, start=None):
+    """The allow-list .dockerignore for a Node.js service: package.json and its lockfile first, then the service's own top
+    level as for Python, with the start file's folder let in even when it is build output (dist/): (text, named entries)."""
+    entries = sorted({item.split("/", 1)[0] for item in repo.local_paths if item})
+    allowed, named = [], []
+    for entry in entries:
+        directory = any(item.startswith(entry + "/") for item in repo.local_paths)
+        if directory and entry in NAMED_DIRECTORIES:
+            named.append(entry + "/")
+        elif not (entry.startswith(".") or (directory and entry in QUIET_DIRECTORIES)
+                  or (not directory and (LEFT_OUT_FILES.match(entry) or NODE_LEFT_OUT.match(entry)))):
+            allowed.append(entry)
+    first = (start or "").split("/")[0]
+    if first and first not in allowed and first not in ("node_modules", "test", "tests") and not first.startswith("."):
+        allowed.append(first)
+        named = [entry for entry in named if entry.rstrip("/") != first]
+    allowed = ["package.json", lockfile] + [entry for entry in allowed if entry not in ("package.json", "package-lock.json", "npm-shrinkwrap.json")]
+    return fill(template("dockerignore.node"), ALLOW="\n".join("!" + entry for entry in allowed)), named
+
+
+def node_health_test(found):
+    """test/health.test.mjs on node --test: it starts the service as its image does on a free port and asks for the health path."""
+    words = found["command"][1:] if found["command"][:1] == ["node"] else found["command"]
+    return fill(template("health.test.mjs.tmpl"), HEALTH_PATH=found["health_path"], START=" ".join(words), ROOT="../", ARGS=json.dumps(words))
+
+
+def draft_node_files(repo, name=None, lock_text=None, fallback_name=None):
+    """D26 for a Node.js service (docs/ROADMAP.md 18.6): the files docs/DEVELOPER-CONTRACT.md asks for that the service lacks,
+    drafted from what the reader reads in it: the Dockerfile on node:<line>-slim, .dockerignore, test/health.test.mjs on
+    node --test, platform.yaml, ci.yml with setup-node, Dependabot for npm with its cooldown written in, SECURITY.md, and
+    package-lock.json when the caller made one (node_lock). Nothing is drafted while the reader refuses the service."""
+    from . import node as nodejs
+    from .reader import read
+    found_read = read(sorted(repo.paths), repo.texts, repo.path, name=name, fallback_name=fallback_name)
+    command = node_lock_command(repo.path)
+    if found_read["spec"] is None:
+        refusals = [f"{item['file']} {item['problem']}; fix: {item['fix']}" for item in found_read["refusals"]]
+        return {"files": {}, "existing": [], "review": ["Nothing was drafted: the service must change first."] + refusals, "detected": None,
+                "lock_command": command, "analysis": None}
+    spec = found_read["spec"]
+    name = spec.name
+    choices = {item["what"]: item for item in found_read["choices"]}
+    lockfile = next((item for item in nodejs.LOCKFILES if repo.has(item)), "package-lock.json")
+    words = start_command(spec.build.entrypoint) if spec.build.entrypoint else None
+    if words is None and str(choices.get("Start command", {}).get("value", "")).startswith("node "):
+        words = shlex.split(choices["Start command"]["value"])  # the service's own Dockerfile starts node itself
+    found = {"runtime": "node-http", "node": spec.node, "node_source": choices.get("Node.js", {}).get("from"), "port": spec.port,
+             "health_path": spec.health_path or DEFAULT_HEALTH, "health_route_found": spec.health_path is not None,
+             "health_route_file": choices.get("Health", {}).get("from") if spec.health_path else None, "command": words, "lockfile": lockfile,
+             "scripts": spec.build.scripts, "application": " ".join(words or []) or "the image's own start command", "framework": None,
+             "server": "node", "notes": list(found_read["notes"])}
+    files, existing, review = {}, [], list(found_read["notes"])
+
+    def offer(target, content, purpose):
+        files[target] = {"content": content, "purpose": purpose}
+
+    def present(*candidates, root=False):
+        for candidate in candidates:
+            target = candidate if root else repo.at(candidate)
+            if target in repo.paths:
+                existing.append(target)
+                return target
+        return None
+
+    if present(*nodejs.LOCKFILES) is None:
+        if lock_text is not None:
+            offer(repo.at("package-lock.json"), lock_text if lock_text.endswith("\n") else lock_text + "\n",
+                  "Every dependency pinned with its integrity hash, made by npm 11.10 or later with every install script off and no version "
+                  "younger than three days; the image and the tests install it with npm ci.")
+        else:
+            review.append(f"There is no package-lock.json yet: run `{command}` with npm 11.10 or later and commit it; npm ci installs only from a lockfile.")
+    if not present("Dockerfile", "dockerfile"):
+        offer(repo.at("Dockerfile"), node_dockerfile(found),
+              f"How the image is built: node:{spec.node}-slim pinned by digest, npm ci with every install script off"
+              + (f", then npm rebuild for {', '.join(spec.build.scripts)}" if spec.build.scripts else "")
+              + f", a non-root user, `{' '.join(words)}` on port {spec.port}.")
+    if not present(".dockerignore", "Dockerfile.dockerignore"):
+        text, named = node_dockerignore(repo, lockfile, words[1] if words and len(words) > 1 else None)
+        offer(repo.at(".dockerignore"), text, "An allow-list that keeps node_modules, tests, secrets and caches out of the image: only the "
+              "entries it names are copied.")
+        if named:
+            review.append(f"The drafted .dockerignore leaves {', '.join(named)} out of the image; add a !name line for any the service reads at runtime.")
+    package = nodejs.package_data(repo.text("package.json")) or {}
+    test_script = ((package.get("scripts") or {}) if isinstance(package.get("scripts"), dict) else {}).get("test")
+    tests = sorted(item for item in repo.local_paths if nodejs.NODE_TEST.search(item) and not nodejs.NOT_CODE.search(item))
+    if any(f"{quote}{found['health_path']}" in repo.text(item) for item in tests for quote in "\"'`"):
+        existing.extend(repo.at(item) for item in tests if any(f"{q}{found['health_path']}" in repo.text(item) for q in "\"'`"))
+    elif words and words[0] == "node":
+        offer(repo.at("test/health.test.mjs"), node_health_test(found),
+              f"Checks that GET {found['health_path']} answers 200: the path the platform probes before and after every release.")
+        if not found["health_route_found"]:
+            review.append(f"No {found['health_path']} route was found in the code read: the service must add one that answers 200 quickly, "
+                          "without calling other services; the drafted test and platform.yaml use it.")
+        if isinstance(test_script, str) and test_script.strip() and not nodejs.PLACEHOLDER_TEST.fullmatch(test_script) and "node --test" not in test_script:
+            review.append(f"package.json's test script (`{test_script[:60]}`) does not run node --test files: add test/health.test.mjs to it, "
+                          "or the platform's npm test will not run the drafted check.")
+    if not present("platform.yaml"):
+        data = draft_dump(spec)
+        data["reviewed"] = False
+        if repo.at("Dockerfile") in files:
+            for key in ("recipe", "entrypoint"):
+                data["build"].pop(key, None)
+        data["tests"] = "required" if (tests or repo.at("test/health.test.mjs") in files or found_read["tests"]) else "none"
+        offer(repo.at("platform.yaml"), fill(template("platform.yaml.tmpl"), SPEC=yaml.safe_dump(data, sort_keys=False).rstrip("\n")),
+              "The deployment contract, drafted with reviewed: false: check every value, then set reviewed: true.")
+    ci, ci_note, covering = ci_file(repo, name, ("npm test", "node --test", "npm run test"))
+    existing.extend(covering)
+    if ci:
+        job = f"tests-{name}" if repo.path else "tests"
+        rebuild = f"npm rebuild --ignore-scripts=false {' '.join(spec.build.scripts)}" if spec.build.scripts else "# build.scripts is empty: no package runs an install script"
+        offer(ci, fill(template("ci-node.yml"), WORKFLOW_NAME="CI" if ci == CI_FILES[0] else f"CI {name}", JOB=job, WORKING_DIRECTORY=repo.path or ".",
+                       NODE=spec.node, REBUILD=rebuild),
+              f"Runs the tests on every pull request, on Node.js {spec.node} with every install script off and a read-only token; make \"{job}\" "
+              "a required check on main.")
+        review += [ci_note] if ci_note else []
+    policy = sorted(item for item in repo.paths if item.lower() in SECURITY_POLICY)
+    if policy:
+        existing.extend(policy)
+    else:
+        offer("SECURITY.md", template("SECURITY.md"), "How to report a vulnerability privately; it works once private vulnerability reporting "
+              "is turned on in the repository's Settings, under Code security.")
+    dependabot = present(*DEPENDABOT, root=True)
+    if dependabot:
+        text = repo.texts.get(dependabot)
+        if text is not None and "package-ecosystem: npm" not in text:
+            review.append(f"{dependabot} has no npm entry: add one for /{repo.path} with a cooldown, so the lockfile's pins are kept current.")
+    elif not present(*RENOVATE, root=True):
+        offer(".github/dependabot.yml", fill(template("dependabot-node.yml"), DIRECTORY="/" + repo.path),
+              "Weekly pull requests for the npm, Docker and GitHub Actions pins, each update at least seven days old.")
+    return {"files": files, "existing": existing, "review": review, "detected": found, "lock_command": command, "analysis": None}
+
+
 def files_to_read(paths, path="", limit=40):
     """The repository paths whose text draft_files uses, so a caller fetches only those: the configuration first, then the
-    Python files most likely to hold the application object and its health route."""
+    Python files most likely to hold the application object and its health route. For a Node.js service: the reader's
+    files, the repository's workflows and Dependabot file, and a few test files (an existing health test is not drafted again)."""
     repo = Repository(paths, {}, path)
+    from .reader import PYTHON_MANIFESTS
+    from .reader import files_to_read as reader_files
+    if repo.has("package.json") and not any(repo.has(name) for name in PYTHON_MANIFESTS):
+        from .node import NODE_TEST, NOT_CODE
+        wanted = reader_files(paths, path, limit) + [item for item in DEPENDABOT if item in repo.paths]
+        wanted += sorted(item for item in repo.paths if WORKFLOW.fullmatch(item) and not PLATFORM_WORKFLOW.fullmatch(item))[:5]
+        wanted += sorted(repo.at(item) for item in repo.local_paths if NODE_TEST.search(item) and not NOT_CODE.search(item))[:5]
+        return list(dict.fromkeys(wanted))
     names = ("requirements.txt", "requirements.lock", "pyproject.toml", "Dockerfile", "dockerfile", ".python-version", "runtime.txt",
              "platform.yaml", "manage.py")
     wanted = [repo.at(name) for name in names if repo.has(name)]
@@ -858,7 +1092,11 @@ def pull_request_body(result):
              "No existing file was changed, and nothing deploys until `platform.yaml` is reviewed and says `reviewed: true`.", "",
              "| File | Why |", "|---|---|"]
     lines += [f"| `{target}` | {item['purpose']} |" for target, item in sorted(result["files"].items())]
-    if found:
+    if found and found.get("node"):
+        route = f"found in `{found['health_route_file']}`" if found.get("health_route_file") else "not found in the code"
+        lines += ["", f"Detected: a Node.js service started by `{found['application']}` on port {found['port']}; Node.js {found['node']} "
+                      f"(from {found['node_source']}); health path `{found['health_path']}` ({route})."]
+    elif found:
         framework = found.get("framework") or "unrecognized"
         route = f"found in `{found['health_route_file']}`" if found.get("health_route_file") else "not found in the code"
         lines += ["", f"Detected: a {framework} application `{found['application']}` served by {found['server']} on port {found['port']}; "
@@ -874,19 +1112,23 @@ def pull_request_body(result):
 # ---- builds from outside (docs/ROADMAP.md 13.3): the image of a repository taken as it is, made without touching it
 # What the platform never copies into an image it makes: what the drafted allow-list keeps out, written as a deny-list,
 # because the platform cannot know in advance which of a repository's files the service reads at run time.
+# node_modules is the platform's to install (npm ci in the image, docs/ROADMAP.md D45), and .npmrc and .yarnrc.yml can hold
+# registry tokens, so none of them ever enters an image the platform makes.
 BUILD_EXCLUDE = (".git", ".github", ".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "id_rsa*", "id_dsa*", "id_ecdsa*",
                  "id_ed25519*", "credentials.json", "*.tfstate", "*.tfstate.*", "*.tf", "*.tfvars", ".venv", "venv", "node_modules",
-                 "__pycache__", "*.py[cod]", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox", "htmlcov", ".coverage",
-                 "tests", "test", "test_*.py", "*_test.py", "conftest.py", "*.ipynb", ".ipynb_checkpoints", ".DS_Store", "Dockerfile",
-                 "Dockerfile.*", ".dockerignore", "platform.yaml", "compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml")
+                 ".npmrc", ".yarnrc.yml", "__pycache__", "*.py[cod]", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox",
+                 "htmlcov", ".coverage", "tests", "test", "test_*.py", "*_test.py", "conftest.py", "*.ipynb", ".ipynb_checkpoints",
+                 ".DS_Store", "Dockerfile", "Dockerfile.*", ".dockerignore", "platform.yaml", "compose.yaml", "compose.yml",
+                 "docker-compose.yml", "docker-compose.yaml")
 
 
 # For a repository's own Dockerfile without a .dockerignore (docs/ROADMAP.md 14.2): what never belongs in an image, and
-# nothing a Dockerfile might copy on purpose (tests, its own Dockerfile, requirement files).
+# nothing a Dockerfile might copy on purpose (tests, its own Dockerfile, requirement files). A node_modules folder built on
+# someone's machine holds binaries for that machine; the image installs its own.
 DENY_DOCKERIGNORE = (".git", "**/.git", "**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/*.p12", "**/*.pfx", "**/*.jks", "**/id_rsa*",
                      "**/id_dsa*", "**/id_ecdsa*", "**/id_ed25519*", "**/credentials.json", "**/*.tfstate", "**/*.tfstate.*", "**/.venv",
-                     "**/__pycache__", "**/*.py[cod]", "**/.pytest_cache", "**/.mypy_cache", "**/.ruff_cache", "**/*.ipynb",
-                     "**/.ipynb_checkpoints", "**/.DS_Store")
+                     "**/node_modules", "**/.npmrc", "**/.yarnrc.yml", "**/__pycache__", "**/*.py[cod]", "**/.pytest_cache", "**/.mypy_cache",
+                     "**/.ruff_cache", "**/*.ipynb", "**/.ipynb_checkpoints", "**/.DS_Store")
 
 
 def deny_dockerignore():
@@ -906,16 +1148,28 @@ def start_command(entrypoint):
     return ["sh", "-c", f"exec {entrypoint}"] if "$" in entrypoint else shlex.split(entrypoint)
 
 
-def platform_dockerfile(spec, locked):
+def platform_dockerfile(spec, locked, lockfile="package-lock.json"):
     """The platform's own Dockerfile for a contract with build.recipe: platform: the drafted Dockerfile's steps (python:X.Y-slim
-    by digest, dependencies before the code, a numeric non-root user) with the contract's entrypoint as its command."""
+    or node:<line>-slim by digest, dependencies before the code, a numeric non-root user) with the contract's entrypoint as
+    its command. `locked` says whether a Python service has requirements.lock; `lockfile` names a Node.js service's lock."""
     if spec.build.recipe != "platform" or not spec.build.entrypoint:
         raise ValueError("The platform makes a Dockerfile only for build.recipe: platform with build.entrypoint")
-    text = dockerfile({"python": spec.python, "port": spec.port, "command": start_command(spec.build.entrypoint)}, locked)
+    if spec.runtime == "node-http":
+        text = node_dockerfile({"node": spec.node, "port": spec.port, "command": start_command(spec.build.entrypoint), "lockfile": lockfile,
+                                "scripts": spec.build.scripts})
+        image = f"node:{spec.node}-slim by its multi-architecture index digest, resolved {NODE_IMAGES_RESOLVED}"
+    else:
+        text = dockerfile({"python": spec.python, "port": spec.port, "command": start_command(spec.build.entrypoint)}, locked)
+        image = f"python:{spec.python}-slim by its multi-architecture index digest, resolved {BASE_IMAGES_RESOLVED}"
     body = text[re.search(r"(?m)^FROM ", text).start():].replace("# Only what .dockerignore lets in is copied.",
                                                                   "# Only what passed the platform's deny-list was copied into this build context.")
     return ("# Made by Fast Deploy at build time from the contract (build.recipe: platform, docs/ROADMAP.md 13.3); never committed.\n"
-            f"# python:{spec.python}-slim by its multi-architecture index digest, resolved {BASE_IMAGES_RESOLVED}.\n" + body)
+            f"# {image}.\n" + body)
+
+
+def node_lockfile(folder):
+    """The lockfile npm ci reads in a folder: npm-shrinkwrap.json before package-lock.json; None when there is neither."""
+    return next((name for name in ("npm-shrinkwrap.json", "package-lock.json") if (Path(folder) / name).is_file()), None)
 
 
 def render_build(app_dir, out_dir, spec):
@@ -932,6 +1186,13 @@ def render_build(app_dir, out_dir, spec):
         (target / relative).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target / relative)
         copied.append(relative)
+    if spec.runtime == "node-http":
+        lockfile = node_lockfile(target)
+        if not (target / "package.json").is_file() or lockfile is None:
+            raise ValueError("The service needs package.json and a lockfile (package-lock.json or npm-shrinkwrap.json), and the contract names "
+                             "no lock the platform made")
+        (target / "Dockerfile").write_text(platform_dockerfile(spec, True, lockfile))
+        return copied
     locked = (target / "requirements.lock").is_file()
     if not locked and not (target / "requirements.txt").is_file():
         raise ValueError("The service has neither requirements.lock nor requirements.txt, and the contract names no lock the platform made")
@@ -1026,7 +1287,7 @@ def main(argv=None):
         else:
             lock = os.environ.get("PLATFORM_LOCK")
             locked = (Path(args.app_dir) / "requirements.lock").is_file() or bool(lock and Path(lock).is_file())
-            print(platform_dockerfile(spec, locked), end="")
+            print(platform_dockerfile(spec, locked, node_lockfile(args.app_dir) or "package-lock.json"), end="")
     except ValueError as exc:
         print(f"::error::{exc}", file=sys.stderr)
         return 1

@@ -33,6 +33,10 @@ def test_lock_path(service):
     return f"apps/{service}/requirements-test.lock"
 
 
+def node_lock_path(service):
+    return f"apps/{service}/package-lock.json"
+
+
 def release_branch(service):
     return f"lab-deploy/release-{service}-"
 
@@ -131,14 +135,19 @@ class Contracts:
         if path and path not in paths:
             raise ValueError(f"{repository} has no folder {path} on main")
         texts, skipped = {}, []
-        for item in reader.files_to_read(paths, path):
-            try:
-                found = github.contents(repository, head, item, limit=1_000_000 if reader.large_files(item) else 65_536)
-            except ValueError:
-                skipped.append(item)
-                continue
-            if found is not None:
-                texts[item] = found["text"]
+        wanted = reader.files_to_read(paths, path)
+        for _ in range(4):  # a Node.js service's entry file and its imports are read in up to three more passes
+            for item in wanted:
+                try:
+                    found = github.contents(repository, head, item, limit=1_000_000 if reader.large_files(item) else 65_536)
+                except ValueError:
+                    skipped.append(item)
+                    continue
+                if found is not None:
+                    texts[item] = found["text"]
+            wanted = [item for item in reader.more_files_to_read(paths, texts, path) if item not in skipped]
+            if not wanted:
+                break
         result = reader.read(paths, texts, path, name=name, fallback_name=repository.split("/")[1], sizes=sizes)
         if skipped:
             result["notes"].append("Not read, over the size limit: " + ", ".join(skipped[:8]))
@@ -158,6 +167,15 @@ class Contracts:
         its own) and, when it has tests, the service with its test tools. Raises ValueError naming what failed."""
         spec, lock, tests = result["spec"], result["lock"], result["tests"]
         files, app_lock, runner = {}, None, runner or self.runner
+        if spec.runtime == "node-http":
+            # D42: a repository without an npm lockfile is locked once here; its tests install from the same lock (npm ci
+            # includes the development dependencies), so there is no second lock.
+            if lock["action"] != "lock":
+                return files
+            made = scaffold.node_lock(lock["package"], spec.node, runner)
+            if made["error"]:
+                raise ValueError(f"The dependencies could not be locked: {made['error']}. Run `{made['command']}` with npm 11.10 or later by hand to see why.")
+            return {node_lock_path(spec.name): made["text"]}
         if lock["action"] == "export":
             exported = scaffold.export_uv_lock(lock["pyproject"], lock["lock"], spec.python, runner)
             if exported["error"]:
@@ -195,8 +213,14 @@ class Contracts:
             lines += ["", "Set aside:"] + [f"- `{item['file']}`: {item['why']}" for item in result["ignored"]]
         if result["notes"]:
             lines += ["", "Please check:"] + [f"- {note}" for note in result["notes"]]
-        lines += ["", "Files: " + ", ".join(f"`{name}`" for name in sorted(files)), "",
-                  "Locks are made by the platform in a container of the service's own Python with uv, every package pinned with its hashes."]
+        lines += ["", "Files: " + ", ".join(f"`{name}`" for name in sorted(files)), ""]
+        if result.get("runtime") == "node-http":
+            lines.append("A lock, when the repository has none, is made by the platform with npm 11.10 or later in a container (`npm install "
+                         f"{scaffold.NODE_LOCK_OPTIONS}`): every install script off, no version younger than three days, and every entry "
+                         "checked for its integrity hash and a registry address. Installs run with every script off; only `build.scripts` "
+                         "runs its own afterwards.")
+        else:
+            lines.append("Locks are made by the platform in a container of the service's own Python with uv, every package pinned with its hashes.")
         return "\n".join(lines) + "\n"
 
     def propose(self, principal, repository, path="", name=None, runner=None):
