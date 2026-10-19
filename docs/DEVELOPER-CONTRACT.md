@@ -218,7 +218,8 @@ needs no script (onnxruntime-node's script only downloads GPU libraries; protobu
 `package.json`'s `preinstall`, `postinstall` and `prepare` never run either; `npm test` runs your `pretest` and `test`.
 
 **The dependency audit.** Before anything is installed, OSV-Scanner 2.7.0 (pinned by version and checksum) reads the
-lockfile against the OSV database, which carries the malicious-package records (`MAL-`) of the OpenSSF. For every service,
+lockfile against the OSV database, which carries the malicious-package records (`MAL-`) of the OpenSSF and GitHub's
+malware advisories (embedded malicious code, CWE-506): either is a known malicious package. For every service,
 reviewed or not, a known malicious package, a critical or high finding with a fixed version, an audit that did not finish,
 or a lockfile entry from outside the registry stops the release; everything else is listed in the run's summary and in
 `dependency-audit.json` in the release bundle. `npm audit signatures` then checks the registry's signatures of what was

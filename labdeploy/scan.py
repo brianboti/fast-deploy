@@ -157,7 +157,8 @@ def osv_fixed(advisories, package):
 
 def osv_findings(report):
     """One entry per finding (OSV-Scanner groups advisories that alias each other): {id, aliases, package, version,
-    severity, fixed, malicious}. A MAL- record is a known malicious package."""
+    severity, fixed, malicious}. A MAL- record is a known malicious package, and so is an advisory GitHub files as
+    embedded malicious code (CWE-506, "Malicious Package in ..."), which may have no MAL- record and no fixed version."""
     findings = []
     for result in (report or {}).get("results") or []:
         for item in result.get("packages") or []:
@@ -168,7 +169,8 @@ def osv_findings(report):
                 ids = [str(identifier) for identifier in group.get("ids") or []]
                 members = [advisories[identifier] for identifier in ids if identifier in advisories]
                 aliases = sorted(set(ids) | set(group.get("aliases") or []) | {str(alias) for entry in members for alias in entry.get("aliases") or []})
-                malicious = any(alias.startswith("MAL-") for alias in aliases)
+                malicious = any(alias.startswith("MAL-") for alias in aliases) or any(
+                    "CWE-506" in ((entry.get("database_specific") or {}).get("cwe_ids") or []) for entry in members)
                 findings.append({"id": next((alias for alias in aliases if alias.startswith("MAL-")), ids[0] if ids else "?"), "aliases": aliases[:6],
                                  "package": package.get("name"), "version": package.get("version"), "malicious": malicious,
                                  "severity": "CRITICAL" if malicious else osv_severity(group, members), "fixed": osv_fixed(members, package)})
@@ -185,9 +187,14 @@ def osv_summary(report, exit_code, lock_text):
     findings = osv_findings(report) if finished and isinstance(report, dict) else []
     counts = {severity: sum(1 for item in findings if item["severity"] == severity) for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")}
     fixable = {severity: sum(1 for item in findings if item["severity"] == severity and item["fixed"]) for severity in ("CRITICAL", "HIGH")}
+    malicious = {}  # one entry per package, named by its MAL- record when it has one: a package can carry several advisories
+    for item in findings:
+        key = f"{item['package']}@{item['version']}"
+        if item["malicious"] and (key not in malicious or (item["id"].startswith("MAL-") and not malicious[key].startswith("MAL-"))):
+            malicious[key] = item["id"]
     return {"tool": OSV_SCANNER, "status": "finished" if finished else "did not finish", "exit_code": exit_code, "packages": packages,
             "by_severity": counts, "fixable_by_severity": fixable,
-            "malicious": [f"{item['id']} ({item['package']}@{item['version']})" for item in findings if item["malicious"]],
+            "malicious": [f"{ident} ({key})" for key, ident in malicious.items()],
             "lock_problems": [f"{name} {why}" for name, why in (lock_problems(data) if data else [])][:20],
             "lockfile": "read" if data is not None else "unreadable", "findings": findings[:50]}
 
