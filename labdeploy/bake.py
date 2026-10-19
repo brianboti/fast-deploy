@@ -112,10 +112,12 @@ def judge(stats, baseline, crash_lines, final):
     return {"result": "passed", "notes": notes}
 
 
-def bake(adapter, revision, previous, health_path, seconds, switched_at, sleep=time.sleep, clock=time.time, interval=POLL_SECONDS):
+def bake(adapter, revision, previous, health_path, seconds, switched_at, sleep=time.sleep, clock=time.time, interval=POLL_SECONDS, share=None):
     """Watch `revision` for `seconds` after `switched_at`; raise BakeFailed on a broken rule, else return the report.
 
     `adapter` reads logs: `revision_requests(revisions, since, until)` and `revision_system_logs(revision, since)`.
+    `share`: the percent of the traffic the revision holds at a step of a split release (docs/ROADMAP.md D38), which the
+    failure names; None when it serves everyone.
     """
     if not 0 <= int(seconds) <= MAX_BAKE_SECONDS:
         raise ValueError(f"bake_seconds must be between 0 and {MAX_BAKE_SECONDS}")
@@ -152,7 +154,8 @@ def bake(adapter, revision, previous, health_path, seconds, switched_at, sleep=t
         report.update(window=stats, crashes=crash_lines[:5], until=iso(clock()))
         if verdict["result"] == "failed":
             report.update(result="failed", rule=verdict["rule"], reason=verdict["reason"])
-            raise BakeFailed(f"Bake failed {int(clock() - switched_at)} seconds after promotion: {verdict['reason']}", report)
+            moment = f"the switch to {share} percent of the traffic" if share and share < 100 else "promotion"
+            raise BakeFailed(f"Bake failed {int(clock() - switched_at)} seconds after {moment}: {verdict['reason']}", report)
         if final:
             report.update(result=verdict["result"], notes=verdict.get("notes", []))
             if failures:

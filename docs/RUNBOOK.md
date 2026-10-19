@@ -121,14 +121,16 @@ Twice a year, and after a change to the release: a planted fault the probes cann
 
 1. In the demo application's `platform.yaml`, set `env: FAULT_EVERY: "2"` through a pull request: every second request
    to `/` then answers 500, while `/health` stays fine. Release it to staging (the bake there sees no traffic and passes).
-2. Promote it. During its 10 percent step, send real requests with a sign-in token, enough for the new revision's share
-   to pass the bake's minimum of 20 (a few hundred in all), for example
-   `TOKEN=$(gcloud auth print-identity-token); for i in $(seq 300); do curl -s -o /dev/null -H "Authorization: Bearer $TOKEN" https://PRODUCTION-URL/; done`.
-3. Expected: the bake fails on errors at 10 percent, and the earlier split serves everyone again. `get_deployment_status`
-   says so.
-4. Remove `FAULT_EVERY` the same way, release, promote through 10, 50 and 100 percent, then ask for
-   `rollback_production` and approve it: traffic returns to the earlier revision. Promote again to end on the fixed version.
-5. Record the results in `docs/VALIDATION.md`.
+2. Promote it, and before approving start the traffic in a terminal signed in with `gcloud`:
+   `scripts/promotion-traffic.sh PROD_PROJECT SERVICE SERVICE-rPLANID16 400`, where the revision is the service's name,
+   `-r` and the first 16 characters of the promotion's plan id. It waits for the 10 percent step and sends 400 requests
+   with your sign-in token, about 40 of which reach the new revision: enough for the bake's minimum of 20.
+3. Expected: the bake fails on errors at 10 percent, the earlier split serves everyone again, and the script says the
+   earlier split came back. `get_deployment_status` names the share it failed at.
+4. Remove `FAULT_EVERY` the same way, release, and promote with the script sending 300 requests at each step: every
+   step's bake passes on real traffic. Then ask for `rollback_production` and approve it: traffic returns to the earlier
+   revision in seconds. Promote again to end on the fixed version.
+5. Record the results in `docs/VALIDATION.md`. Done first on 2026-10-18.
 
 ## What "up" means
 

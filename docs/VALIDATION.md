@@ -663,3 +663,21 @@ the run that built it.
 
 Not yet (16.3 to 16.7): the split release and a production rollback by tool, the SLO and its burn-rate alerts, a
 domain, the cap-fire drill for production.
+
+## The rollback drill of 1.18.3 (2026-10-18 UTC)
+
+Roadmap item 16.3's live exercise, on the operator's "run the rollback drill", with the procedure of `docs/RUNBOOK.md`.
+The demo's own switch made the fault: `FAULT_EVERY: "2"` answers 500 to every second request to `/` while `/health` stays
+fine. Every production run was approved through the API with the operator's `gh` login, at the operator's request
+(recorded as `brianboti`).
+
+| Trial | What was done | Observed |
+|---|---|---|
+| The fault in staging | lab-demo-app#22 adds `FAULT_EVERY: "2"`; the auto-deploy released it (plan `0d88b073`) | Succeeded: the probes ask `/health`, and the bake saw no traffic, so nothing in staging could notice |
+| Caught at 10 percent | `promote_to_production` (plan `6a842817`, run 39108482628); 400 requests with a sign-in token once the split appeared | The split was 90 to 10; 382 answers 200 and 18 answered 500. The bake failed **69 seconds after the switch: 16 of 31 requests answered 5xx (52%, above 5%)**, and the earlier split came back for everyone. The release step took 1 minute 46 seconds in all, never reached 50 percent, and Claude's answer said "the new version failed its watch with 10% of the traffic" |
+| The fix through every step | lab-demo-app#23 removes the fault (the file as it was before #22); staging plan `a3714498`; promotion `947514a7` (run 39168841573) with 300 requests at each step | 10 percent at 21:54:56, 50 at 22:00:01, 100 at 22:05:12; every bake **passed on real traffic** (29, 145 and 300 requests, no server errors); all 900 requests answered 200; 16 minutes for the steps |
+| The rollback by tool | `rollback_production` (record `2ef9b87e`, run 39171116225) | Its approval block named both versions by commit (back to `0612505`, away from `dcdbf68`). Approved, the traffic moved back in **16 seconds**: 100 percent on `lab-demo-r2294ddde545f40e0`, the receipt `rolled_back`, and the controller again shows the earlier promotion as production's live release |
+| Ending on the fix | Promotion `58bf13c4` (run 39171246733) of the same staging release | Succeeded through 10, 50 and 100 percent (no traffic this time: each step inconclusive, which passes); production serves the fix, and `/` answers 200 |
+
+What the drill showed (1.18.4): a bake that fails at a step of the split said "after promotion"; it now names the switch
+("after the switch to 10 percent of the traffic"). The traffic for the drill became `scripts/promotion-traffic.sh`.
