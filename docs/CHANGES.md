@@ -1,3 +1,27 @@
+# 1.20.11: an unchanged contract's image is reused again
+
+Found on 2026-10-19 in the live exercise of Phase 18, while making a second live revision of `node-docker` for the
+rollback drill. A plan for the same commit reused the image of the release before it, as designed, and the pipeline
+stopped: "No signed provenance shows ... was built from brianboti/fast-deploy-node-trial at e027aa13d964 by
+brianboti/fast-deploy/.github/workflows/deploy.yml on main (made from a different contract)". The contract had not
+changed. But a contract the platform keeps (docs/ROADMAP.md 13.1) is read at the platform repository's main, which moves
+with every merge, and the reused image's signed provenance names the commit main was at when it was built. So a release
+of an unchanged commit, which costs nothing when it reuses, failed for every kept contract, Python's too, as soon as
+anything else had merged.
+
+1. **The plan keeps the commit the image was built with**, when nothing under `apps/<service>/` changed since (neither
+   the contract nor the locks the platform made); that commit is an ancestor of main, which the pipeline already
+   accepts, and its contract reads the same. When something there changed, or GitHub's comparison is incomplete, the
+   image is built again rather than reused.
+
+Promotions verify a staging image against the contract commit of the staging plan that released it, so they read the
+same. Not exercised live yet: it needs this on the machine.
+
+1.20.9 and 1.20.10 are open at the time of writing (#117, #120).
+
+Tests: 838 pass; ruff clean.
+
+
 # 1.20.8: a repository whose services live in folders
 
 Found on 2026-10-19 in the live exercise of Phase 18, by `check_repository` on the root of
