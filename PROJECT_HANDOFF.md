@@ -197,7 +197,8 @@ Paths below are relative to the extracted `lab-deploy/` project root.
 | `labdeploy/workflows.py` | Renders the three app workflow files pinned to a platform commit, with suffixed names for a further service of the same repository |
 | `labdeploy/rightsize.py` | Applies accepted right-sizing values to `platform.yaml` in place |
 | `labdeploy/cloud.py` | Read-only observer: token (metadata server or gcloud impersonation), Cloud Run service view, needs, metrics with the uptime checks' pass rate, logs |
-| `labdeploy/scheduler.py` | In-process background jobs: auto-deploy tick, onboarding tick every minute, daily watchdog, nightly backup |
+| `labdeploy/scheduler.py` | In-process background jobs: auto-deploy tick, onboarding tick every minute, daily watchdog, nightly backup, the updates after a release every five minutes; each pass reads a changed configuration file |
+| `labdeploy/updates.py` | After a release (1.20.4, `platform_updates`): asks the machine to install `main` once its checks passed and the delay is over (the root service `fast-deploy-update` installs it, watches it and goes back on failure), then re-pins each application whose runner is older, merging only where `auto_merge` allows; the runner's module list |
 | `labdeploy/infra.py` | Renders an application's Terraform root (including its `needs`), checks a plan against the platform's policies, writes the pull-request comment with its approval block, classifies drift, publishes outputs |
 | `infra/gcp/modules/service/needs.tf` | Buckets, topics with subscriptions, a Firestore database, a Cloud SQL instance (an IAM user, or a password user with its `DATABASE_URL` secret) and the migration job, with least-privilege grants |
 | `.github/workflows/infra-plan.yml`, `infra-apply.yml`, `infra-drift.yml` | The infrastructure pipeline: plan on pull request with a read-only identity, apply on merge from the `infra` environment, and the weekly drift check with its living issue |
@@ -564,6 +565,7 @@ The detailed setup, workflow-render commands and migration instructions are in `
 6. For pages for people, do the one-time Identity-Aware Proxy console step (`docs/SETUP.md` 7h) and run its live trial (roadmap items 8.1 and 8.5).
 7. When a second operator exists, follow `docs/SETUP.md` 7l and the runbook's "Succession" (decision D29), including its rehearsal.
 8. Move the controller onto its machine (Phase 15, 1.17.0): `docs/SETUP.md` 7m, then `scripts/install-machine.sh`.
+9. Let the machine follow `main` by itself (1.20.4): apply the foundation, `scripts/machine.sh startup`, install 1.20.4 by hand once, add `platform_updates` to the machine's configuration, then watch one release go through (`docs/RUNBOOK.md`, "After a release"); the operator's go comes first.
 
 ## 15. Features still planned
 
@@ -588,7 +590,7 @@ These require design and implementation; they are not hidden existing capabiliti
 - Add meaningful regression tests for changed behavior. Do not weaken existing checks just to make tests or deployment pass.
 - When changing cloud-target fields, update controller models, dispatch inputs, workflow validation, Terraform outputs, configuration examples and tests together.
 - When changing workflow step names, update status interpretation and its tests.
-- When changing a workflow template or runner code, re-pin every application's workflows (`update_app_workflows`, or `python -m labdeploy.cli update-workflows --all`) and raise `platform.minimum_commit` when older pins must stop working.
+- When changing a workflow template or runner code, re-pin every application's workflows (`update_app_workflows`, or `python -m labdeploy.cli update-workflows --all`; with `platform_updates` on the machine, the controller opens them itself after the release, `docs/RUNBOOK.md` "After a release") and raise `platform.minimum_commit` when older pins must stop working; that stays a person's decision. A runner module that starts importing another one must be added to `RUNNER_MODULES` in `labdeploy/updates.py` (a test says so).
 - When changing a tool's name, description, schemas or annotations, run `python -m labdeploy.cli tools-checksum --write` and commit the reviewed diff of `schema/tools.sha256.json` with the change; a test fails otherwise.
 - When changing recovery, consider process loss before and after each external side effect. Local `finally` blocks cannot run after a hard process kill.
 - Do not automatically retry an ambiguous deployment dispatch or claim exactly-once delivery.

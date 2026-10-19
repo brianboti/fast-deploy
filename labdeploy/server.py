@@ -490,7 +490,7 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
                 "paused_applications": sorted(k for k, a in config.applications.items() if a.paused),
                 "configuration": {"path": getattr(config, "path", None), "reloaded_at": getattr(config, "reloaded_at", None), "error": getattr(config, "error", None)},
                 "applications": sorted(config.applications), "github_credential": credential,
-                "spending_guards": spending_guards(), "infrastructure_drift": controller.drift_status(),
+                "spending_guards": spending_guards(), "infrastructure_drift": controller.drift_status(), "platform_updates": controller.updates.status(),
                 "pricing_verified": PRICING["verified"], "started_at": datetime.datetime.fromtimestamp(started, datetime.UTC).isoformat(timespec="seconds"),
                 "uptime_seconds": int(time.time() - started)})
 

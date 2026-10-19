@@ -1,12 +1,15 @@
 #!/bin/zsh
 # The controller's machine, day to day (docs/RUNBOOK.md, "The controller's machine"), from the laptop through
 # Identity-Aware Proxy: there is no open SSH port, and gcloud signs you in with OS Login.
-#   scripts/machine.sh status            the three services, the commit that runs, disk, memory and /healthz
-#   scripts/machine.sh logs [UNIT]       the last 200 lines of fast-deploy (default), litestream, caddy or startup
+#   scripts/machine.sh status            the services, the commit that runs, disk, memory, /healthz and the last
+#                                        automatic update
+#   scripts/machine.sh logs [UNIT]       the last 200 lines of fast-deploy (default), litestream, caddy, startup or update
 #   scripts/machine.sh restart           restart the controller
 #   scripts/machine.sh drill             the quarterly restore drill, on the machine: the nightly copy and the live copy
 #   scripts/machine.sh backup            the nightly backup, now
 #   scripts/machine.sh update COMMIT     install a commit from main; the previous one comes back if it does not answer
+#                                        (with platform_updates on, the machine does this by itself after a release)
+#   scripts/machine.sh startup           run the machine's startup script again, after a foundation apply changed it
 #   scripts/machine.sh config-get FILE   copy the machine's configuration into FILE (mode 600) to edit
 #   scripts/machine.sh config-put FILE   check FILE loads, then make it the machine's; principals, applications and
 #                                        settings apply at once, oauth and github_app changes need `restart`
@@ -31,11 +34,14 @@ case "$COMMAND" in
          echo "commit: $(basename "$(readlink /opt/fast-deploy/current)")";
          df -h / | awk "NR==2 {print \"disk: \" \$3 \" used of \" \$2}";
          free -m | awk "NR==2 {print \"memory: \" \$3 \" MiB used of \" \$2}";
+         echo "automatic updates (fast-deploy-update.path): $(systemctl is-active fast-deploy-update.path)";
+         [ -f /var/lib/fast-deploy-update/result.json ] && echo "last automatic update: $(cat /var/lib/fast-deploy-update/result.json)";
          curl -fsS --max-time 5 http://127.0.0.1:8000/healthz && echo' ;;
   logs)
     UNIT=${2:-fast-deploy}
     [[ "$UNIT" == "startup" ]] && UNIT=google-startup-scripts
-    [[ "$UNIT" =~ ^(fast-deploy|litestream|caddy|google-startup-scripts)$ ]] || { echo "UNIT is fast-deploy, litestream, caddy or startup"; exit 1; }
+    [[ "$UNIT" == "update" ]] && UNIT=fast-deploy-update
+    [[ "$UNIT" =~ ^(fast-deploy|litestream|caddy|google-startup-scripts|fast-deploy-update)$ ]] || { echo "UNIT is fast-deploy, litestream, caddy, startup or update"; exit 1; }
     iap "sudo journalctl -u $UNIT -n 200 --no-pager" ;;
   restart)
     iap 'sudo systemctl restart fast-deploy && sleep 3 && systemctl is-active fast-deploy' ;;
@@ -47,6 +53,8 @@ case "$COMMAND" in
     COMMIT=${2:?usage: scripts/machine.sh update COMMIT (a full commit on main)}
     [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "Give the full 40-character commit, for example: git rev-parse origin/main"; exit 1; }
     iap "sudo /usr/local/sbin/fast-deploy-install $COMMIT" ;;
+  startup)
+    iap 'sudo google_metadata_script_runner startup' ;;
   config-get)
     FILE=${2:?usage: scripts/machine.sh config-get FILE}
     (umask 077 && iap 'sudo cat /var/lib/fast-deploy/config.yaml' > "$FILE")
@@ -69,6 +77,6 @@ case "$COMMAND" in
   ssh)
     gcloud compute ssh "$NAME" --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap ;;
   *)
-    sed -n '2,19p' "$0"
+    awk 'NR > 1 && /^#/ {print; next} NR > 1 {exit}' "$0"
     exit 1 ;;
 esac

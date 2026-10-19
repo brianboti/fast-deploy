@@ -986,6 +986,48 @@ def estimate(result, application=None):
                    f"Bounds from Google's list prices (checked {result.get('pricing_verified') or 'unknown'}), not a bill.")
 
 
+UPDATE_WORDS = {"installed": "installed", "rolled_back": "went back from", "failed": "could not install", "refused": "refused", "current": "already ran"}
+
+
+def after_release(view):
+    """get_controller_status's lines on what follows a platform release (labdeploy/updates.py), and whether one needs a person."""
+    if not view.get("enabled"):
+        return [], False
+    if not view.get("runs"):
+        return [f"After a release: nothing happens by itself here; {clip(view.get('note'), 200)}"], False
+    facts, attention = [], False
+    runs = f"`{view['runs'][:12]}`"
+    if view.get("machine"):
+        facts.append(f"After a release: the controller runs {runs}; next, {clip(view.get('next') or 'it looks at main within five minutes', 240)}")
+    else:
+        facts.append(f"After a release: the controller runs {runs}; the machine is updated by hand (platform_updates.machine is off)")
+    last = view.get("last_result") or {}
+    if last.get("outcome"):
+        words = UPDATE_WORDS.get(last["outcome"], last["outcome"])
+        facts.append(f"Last automatic update ({when(last.get('finished_at'))}): {words} `{str(last.get('commit'))[:12]}`"
+                     + (f": {clip(last['detail'], 160)}" if last.get("detail") else ""))
+        attention = last["outcome"] in ("rolled_back", "failed")
+    for part, message in sorted((view.get("errors") or {}).items()):
+        facts.append(f"After a release, the {'machine' if part == 'machine' else 're-pin'} step fails and is tried every five minutes: {clip(message, 160)}")
+        attention = True
+    applications = view.get("applications") or {}
+    if not view.get("workflows"):
+        facts.append("Re-pinning the applications' workflows is off (platform_updates.workflows)")
+    else:
+        person = [f"`{name}` ({clip(record.get('waiting'), 120)})" for name, record in sorted(applications.items())
+                  if record.get("state") == "open" and str(record.get("waiting") or "").startswith("a person")]
+        moving = [f"`{name}`" for name, record in sorted(applications.items()) if record.get("state") == "open" and not str(record.get("waiting") or "").startswith("a person")]
+        failing = [f"`{name}` ({clip(record.get('error'), 120)})" for name, record in sorted(applications.items()) if record.get("error")]
+        if person:
+            facts.append("Re-pins waiting for a person: " + ", ".join(person))
+        if moving:
+            facts.append("Re-pins on their way: " + ", ".join(moving))
+        if failing:
+            facts.append("Re-pins that failed and are tried again every five minutes: " + ", ".join(failing))
+        attention = attention or bool(person or failing)
+    return facts, attention
+
+
 def controller(status):
     """get_controller_status."""
     number = status.get("version")
@@ -1023,7 +1065,9 @@ def controller(status):
     if reports:
         facts.append("Weekly cost report not run yet for: " + ", ".join(f"`{name}`" for name in reports) + "; it runs on its own every week")
     facts += [f"Watchdog: {clip(problem, 220)}" for problem in others[:5]]
-    attention = bool(others or credential.get("warning") or drift.get("drifted") or (status.get("configuration") or {}).get("error"))
+    update_facts, update_attention = after_release(status.get("platform_updates") or {})
+    facts += update_facts
+    attention = bool(others or credential.get("warning") or drift.get("drifted") or (status.get("configuration") or {}).get("error") or update_attention)
     next_line = ("ask me about any item above." if attention
                  else "nothing to do; the weekly cost report runs on its own. Tell the operator only if it is still missing after a week." if reports
                  else "nothing to do.")
