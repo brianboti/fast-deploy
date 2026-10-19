@@ -643,7 +643,12 @@ After the merge, a change arrives:
 - in Caddy and Litestream: on the controller's machine only after you apply the foundation (`scripts/apply-foundation.sh`)
   and its startup script runs again (`scripts/machine.sh startup`, or a restart), since that script installs them;
 - in an action: in each of this repository's workflows at its next run (CI on the merge itself), in an application's own
-  workflows once Claude re-pins them, and in the CI the controller drafts once it runs the merged commit.
+  workflows once Claude re-pins them, and in the CI the controller drafts once it runs the merged commit. When it is an
+  action `.github/workflows/infra-apply.yml` uses (checkout, Google's auth), merging also starts **Infrastructure apply**
+  for every application root, as Dependabot's bumps of them did before: that workflow runs when a push to main changes it,
+  and counts a change to an infrastructure workflow as one to every root. The pull request says so. Each apply goes
+  through its environment's protection and finds nothing to change while the drift check is clean; look at the drift
+  issue before you merge.
 
 With `platform_updates` on (section "After a release"), the machine update and the re-pins happen by themselves.
 

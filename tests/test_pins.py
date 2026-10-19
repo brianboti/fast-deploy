@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from labdeploy import node, pins, scaffold
+from labdeploy import infra, node, pins, scaffold
 from labdeploy.workflows import central_deploy
 
 NOW = datetime(2026, 10, 26, 5, 23, tzinfo=UTC)
@@ -469,6 +469,24 @@ def test_the_pull_request_shows_an_action_by_release_and_commit():
     assert planned["changes"] == [{"key": "actions/setup-node", "title": "actions/setup-node", "from": {"commit": "a" * 40, "version": "7.900.0"},
                                    "to": {"commit": "c" * 40, "version": "7.901.0"}, "released": (NOW - timedelta(days=8)).isoformat(), "downloads": []}]
     assert pins.verify(planned, FakeWeb()) == []  # nothing to download: the runner fetches the action by its commit
+    assert "Infrastructure apply" not in text  # setup-node is not in the infrastructure pipeline
+
+
+def test_the_pull_request_says_when_merging_it_applies_the_infrastructure(tmp_path):
+    """An action .github/workflows/infra-apply.yml uses moves there too; that workflow runs when a push to main changes it,
+    and a change to an infrastructure workflow counts for every root: the pull request must say so before anyone merges."""
+    workflow = yaml.safe_load(Path(pins.INFRA_APPLY).read_text())
+    assert workflow[True]["push"]["branches"] == ["main"] and pins.INFRA_APPLY in workflow[True]["push"]["paths"]
+    for name in ("one", "two"):
+        (tmp_path / name).mkdir()
+    assert infra.roots([pins.INFRA_APPLY], tmp_path) == ["one", "two"]
+    current = pins.read()
+    checkout = update("actions/checkout", current, commit="1" * 40, version=later(current["actions/checkout"]["version"]))
+    node = update("actions/setup-node", current, commit="2" * 40, version=later(current["actions/setup-node"]["version"]))
+    text = pins.report([node, checkout], NOW)
+    assert ("2. **Merging this starts Infrastructure apply for every application root**, staging and production: actions/checkout moves in "
+            "`.github/workflows/infra-apply.yml`") in text and "look at its issue before you merge" in text
+    assert "Infrastructure apply" not in pins.report([node], NOW)
 
 
 # ---- writing, the pull request, and the check before it opens

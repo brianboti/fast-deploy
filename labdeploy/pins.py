@@ -46,6 +46,9 @@ CENTRAL = ".github/workflows/deploy.yml"  # generated from the template, never e
 SCAFFOLD = "labdeploy/scaffold.py"
 CI = ".github/workflows/ci.yml"
 PROMOTE = ".github/workflows/promote.yml"
+# Runs on a push to main that changes it, and labdeploy.infra.roots counts a change to an infrastructure workflow as one to
+# every root: merging a new commit for an action it uses applies every application root (tests/test_pins.py keeps this true).
+INFRA_APPLY = ".github/workflows/infra-apply.yml"
 STARTUP = "infra/gcp/modules/project/controller-startup.sh"
 CONTRACT = "docs/DEVELOPER-CONTRACT.md"
 RUNBOOK = "docs/RUNBOOK.md"
@@ -837,6 +840,12 @@ def report(findings, now, run_url=""):
             steps.append(f"The release notes of {', '.join(actions)} and the changes since each pinned commit, linked above: look for an "
                          "input or output renamed or removed, and for a different runtime (`runs.using`). A step that passes an input the "
                          "action no longer reads fails only when that step runs.")
+        applying = [found.pin.title for found in updates if found.pin.kind == "action" and f"{found.pin.source}@" in (ROOT / INFRA_APPLY).read_text()]
+        if applying:
+            steps.append(f"**Merging this starts Infrastructure apply for every application root**, staging and production: {', '.join(applying)} "
+                         f"moves in `{INFRA_APPLY}`, which runs when a push to main changes it, and a change to an infrastructure workflow "
+                         "counts as a change to every root. Each apply goes through its environment's protection and should find nothing "
+                         "to change while the weekly drift check is clean: look at its issue before you merge.")
         steps += ["CI runs the whole test suite on this pull request: every place a pin is written must agree with the others, and "
                   "`.github/workflows/deploy.yml` must equal its template. CI does not run the new tools, images or actions on a real "
                   "release; the first release after the merge does, so look at its run.",

@@ -32,7 +32,12 @@ hand. So the weekly job follows them itself. This builds on the weekly pin refre
    alerts for actions pinned by commit (About Dependabot alerts), so this loses no security update. It still follows
    `hashicorp/setup-terraform`, which no template uses, and the Terraform providers. A test keeps the ignore list equal
    to the actions in `PINS`, and those equal to the actions the templates use.
-5. The tests that spelled out the checkout and setup-node commits read them through `labdeploy.pins` now.
+5. **What merging starts.** When an action `.github/workflows/infra-apply.yml` uses moves (checkout, Google's auth), the
+   pull request says that merging it starts Infrastructure apply for every application root: that workflow runs when a
+   push to main changes it, and `labdeploy.infra.roots` counts a change to an infrastructure workflow as one to every
+   root. Dependabot's bumps of those actions did the same, without a word. This change is one itself: it writes the
+   release of Google's auth in `infra-apply.yml`.
+6. The tests that spelled out the checkout and setup-node commits read them through `labdeploy.pins` now.
 
 Checked live, reading only, on 2026-10-19: every pinned action commit is the one its release's tag names, and zizmor's
 online audits (`ref-version-mismatch`, `impostor-commit`) find nothing. No action has a newer release on its line, so the
@@ -44,7 +49,7 @@ breaking changes (download-artifact 8 fails on a digest mismatch by default and 
 zip). Cost: about twenty more reads of GitHub's API a week, well within the workflow token's allowance, seconds of runner
 time, and no cloud resource.
 
-Tests: 835 pass (5 new); ruff and zizmor clean.
+Tests: 836 pass (6 new); ruff and zizmor clean.
 
 
 # 1.20.5: the weekly pin refresh
