@@ -993,8 +993,10 @@ def after_release(view):
     """get_controller_status's lines on what follows a platform release (labdeploy/updates.py), and whether one needs a person."""
     if not view.get("enabled"):
         return [], False
+    if not view.get("runs"):
+        return [f"After a release: nothing happens by itself here; {clip(view.get('note'), 200)}"], False
     facts, attention = [], False
-    runs = f"`{view['runs'][:12]}`" if view.get("runs") else "a commit it cannot name"
+    runs = f"`{view['runs'][:12]}`"
     if view.get("machine"):
         facts.append(f"After a release: the controller runs {runs}; next, {clip(view.get('next') or 'it looks at main within five minutes', 240)}")
     else:

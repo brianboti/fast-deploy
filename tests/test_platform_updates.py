@@ -1,4 +1,4 @@
-"""1.20.2: what follows a platform release on main by itself (labdeploy/updates.py, docs/RUNBOOK.md "After a release"):
+"""1.20.4: what follows a platform release on main by itself (labdeploy/updates.py, docs/RUNBOOK.md "After a release"):
 the machine installs main once its checks passed and the delay is over, then the applications' workflows are re-pinned to
 the commit the controller runs, merged only where an application's auto_merge allows it."""
 import ast
@@ -427,7 +427,7 @@ def test_get_controller_status_and_its_chat_answer_say_what_happens_next(tmp_pat
     c.platform_updates_tick()
     view = c.updates.status()
     assert view["enabled"] and view["runs"] == RUNNING and view["main"] == MAIN and view["main_checks"] == "passed" and "installs dddddddddddd after" in view["next"]
-    status = {"version": "1.20.2", "live_dispatch": True, "platform_updates": view}
+    status = {"version": "1.20.4", "live_dispatch": True, "platform_updates": view}
     text = chat.controller(status)
     assert "After a release: the controller runs `cccccccccccc`; next, installs dddddddddddd after" in text
     view["last_result"] = {"outcome": "rolled_back", "commit": MAIN, "detail": "cccccccccccc still runs", "finished_at": "2026-10-19T10:03:00Z"}
@@ -435,6 +435,8 @@ def test_get_controller_status_and_its_chat_answer_say_what_happens_next(tmp_pat
     text = chat.controller({**status, "platform_updates": view})
     assert "went back from `dddddddddddd`" in text and "Re-pins waiting for a person: `demo`" in text and "ask me about any item above" in text
     assert chat.after_release({"enabled": False}) == ([], False)
+    laptop = PlatformUpdates(c, running=None).status()
+    assert laptop["note"] and chat.after_release(laptop)[0][0].startswith("After a release: nothing happens by itself here")
     with TestClient(build_app(c.config, github)) as client:
         headers = {"Authorization": "Bearer test-token", "Accept": "application/json, text/event-stream"}
         result = client.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",

@@ -307,10 +307,10 @@ anyone who has one. The steps, once:
    laptop off while the machine answers) and points `CONTROLLER_HEALTH_URL` at the machine.
 5. **Claude**: remove the old connector and add the `url` from the `controller` output (`https://ADDRESS/mcp`), then sign
    in with your operator token.
-6. **After a release, by itself** (optional, 1.20.2): add `platform_updates: {}` to the machine's configuration
+6. **After a release, by itself** (optional, 1.20.4): add `platform_updates: {}` to the machine's configuration
    (`scripts/machine.sh config-get`, edit, `config-put`). After each merge into `main`, the machine then installs the new
    code once its checks have passed and an hour has gone by, and re-pins the applications' workflows an hour after that;
-   `docs/RUNBOOK.md`, "After a release", says how to stop either. A machine created before 1.20.2 needs the foundation
+   `docs/RUNBOOK.md`, "After a release", says how to stop either. A machine created before 1.20.4 needs the foundation
    applied and `scripts/machine.sh startup` once first.
 
 ## 7n. Production (Phase 16)

@@ -198,7 +198,7 @@ Paths below are relative to the extracted `lab-deploy/` project root.
 | `labdeploy/rightsize.py` | Applies accepted right-sizing values to `platform.yaml` in place |
 | `labdeploy/cloud.py` | Read-only observer: token (metadata server or gcloud impersonation), Cloud Run service view, needs, metrics with the uptime checks' pass rate, logs |
 | `labdeploy/scheduler.py` | In-process background jobs: auto-deploy tick, onboarding tick every minute, daily watchdog, nightly backup, the updates after a release every five minutes; each pass reads a changed configuration file |
-| `labdeploy/updates.py` | After a release (1.20.2, `platform_updates`): asks the machine to install `main` once its checks passed and the delay is over (the root service `fast-deploy-update` installs it, watches it and goes back on failure), then re-pins each application whose runner is older, merging only where `auto_merge` allows; the runner's module list |
+| `labdeploy/updates.py` | After a release (1.20.4, `platform_updates`): asks the machine to install `main` once its checks passed and the delay is over (the root service `fast-deploy-update` installs it, watches it and goes back on failure), then re-pins each application whose runner is older, merging only where `auto_merge` allows; the runner's module list |
 | `labdeploy/infra.py` | Renders an application's Terraform root (including its `needs`), checks a plan against the platform's policies, writes the pull-request comment with its approval block, classifies drift, publishes outputs |
 | `infra/gcp/modules/service/needs.tf` | Buckets, topics with subscriptions, a Firestore database, a Cloud SQL instance (an IAM user, or a password user with its `DATABASE_URL` secret) and the migration job, with least-privilege grants |
 | `.github/workflows/infra-plan.yml`, `infra-apply.yml`, `infra-drift.yml` | The infrastructure pipeline: plan on pull request with a read-only identity, apply on merge from the `infra` environment, and the weekly drift check with its living issue |
@@ -555,7 +555,7 @@ The detailed setup, workflow-render commands and migration instructions are in `
 6. For pages for people, do the one-time Identity-Aware Proxy console step (`docs/SETUP.md` 7h) and run its live trial (roadmap items 8.1 and 8.5).
 7. When a second operator exists, follow `docs/SETUP.md` 7l and the runbook's "Succession" (decision D29), including its rehearsal.
 8. Move the controller onto its machine (Phase 15, 1.17.0): `docs/SETUP.md` 7m, then `scripts/install-machine.sh`.
-9. Let the machine follow `main` by itself (1.20.2): apply the foundation, `scripts/machine.sh startup`, install 1.20.2 by hand once, add `platform_updates` to the machine's configuration, then watch one release go through (`docs/RUNBOOK.md`, "After a release"); the operator's go comes first.
+9. Let the machine follow `main` by itself (1.20.4): apply the foundation, `scripts/machine.sh startup`, install 1.20.4 by hand once, add `platform_updates` to the machine's configuration, then watch one release go through (`docs/RUNBOOK.md`, "After a release"); the operator's go comes first.
 
 ## 15. Features still planned
 

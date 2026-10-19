@@ -335,7 +335,7 @@ design, Cloud Run with a scheduler job (`docs/RESEARCH-2026-10-16.md`, section 5
 
 ## After a release
 
-Since 1.20.2 the two chores that follow every merge into the platform repository's `main` can run by themselves: the
+Since 1.20.4 the two chores that follow every merge into the platform repository's `main` can run by themselves: the
 machine installs the new code, and each application's three workflow files are re-pinned to it. They run only once
 `platform_updates` is in the machine's configuration; without it both stay manual (`scripts/machine.sh update`,
 `update_app_workflows`).
@@ -359,8 +359,9 @@ What happens after each merge, in this order:
    request file next to its database. The controller cannot restart itself, so the machine's own update service
    (`fast-deploy-update`, run as root) takes the request: it installs the commit with `fast-deploy-install` (only a
    commit on `main`, and never one older than the commit that runs), waits for `/healthz`, watches the controller two more
-   minutes, and puts the previous commit back if it stops answering or restarts. Claude's tools are away for about ten
-   seconds; releases already running carry on on GitHub.
+   minutes, and puts the previous commit back if it stops answering or restarts. Claude's tools are away while the
+   controller restarts (seconds, up to a minute when a background job is finishing); releases already running carry on
+   on GitHub.
 3. **The workflows.** An hour after the controller started on the new commit, each application whose workflows pin an
    older runner gets the usual pull request, "Update Fast Deploy workflows to platform X", and the one it opened for an
    earlier commit is closed. An older runner means a change to the templates, the lock files or the modules the workflows
@@ -397,13 +398,13 @@ When something goes wrong:
 - **A re-pin waiting for you**: `get_controller_status` names the pull request and why (its checks failed, it changes more
   than the three files, it has conflicts, or `auto_merge` is off).
 
-Setting it up, once, after the merge that brings 1.20.2:
+Setting it up, once, after the merge that brings 1.20.4:
 
-1. Apply the foundation: `scripts/apply-foundation.sh PROJECT`. One change in place: the machine's startup script in its
-   metadata; nothing restarts.
+1. Apply the foundation: `scripts/apply-foundation.sh PROJECT`. The machine's startup script changes in its metadata, in
+   place (one change, if nothing else is pending); nothing restarts.
 2. `scripts/machine.sh startup` runs that script again on the machine: it adds `fast-deploy-update` and the path unit that
    starts it, and the folder its results go to. Caddy restarts for a second.
-3. `scripts/machine.sh update $(git rev-parse origin/main)` installs 1.20.2 by hand, the last time.
+3. `scripts/machine.sh update $(git rev-parse origin/main)` installs 1.20.4 by hand, the last time.
 4. Add `platform_updates: {}` (or the block above) to the machine's configuration with `config-get` and `config-put`.
 
 Cost: nothing at idle, a few GitHub API calls every five minutes. A re-pin costs what one by hand costs: the

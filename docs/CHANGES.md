@@ -1,11 +1,12 @@
-# 1.20.2: after a release, the machine and the re-pins by themselves
+# 1.20.4: after a release, the machine and the re-pins by themselves
 
 Two chores followed every merge into the platform repository's `main`, by hand: updating the controller's machine
 (`scripts/machine.sh update`) and re-pinning each application's three workflow files (`update_app_workflows`, one pull
 request per application). With `platform_updates` in the machine's configuration both now happen by themselves, in that
 order, with an hour in which a release can still be stopped; without the block nothing changes. Built and checked
 locally; the live trial waits for the operator's go (docs/RUNBOOK.md, "After a release", has the one-time steps). 1.20.1
-is the Node.js 22 lock in its own pull request.
+to 1.20.3 are other pull requests of the same day (the Node.js 22 lock, GitHub's malware advisories, the weekly pin
+refresh), so the number may move with the order they merge in.
 
 1. **The machine updates itself.** The controller follows `main`: once the **Platform tests** run that the merge started
    has passed, and only when the merge changed something the controller runs (`labdeploy/`, `templates/`, `schema/`,

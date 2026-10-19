@@ -11,7 +11,7 @@ Each phase ships as one platform version with tests, lint, `docs/CHANGES.md`, an
 Any phase that changes runner code (`labdeploy/release.py`, `labdeploy/models.py`, `labdeploy/cost.py`,
 `labdeploy/scan.py`, the templates) requires regenerating the three workflow files in every application
 repository with the new platform commit. Phase 1 therefore starts with a command that does that for all apps. Since
-1.20.2 the controller does it by itself after each release, once `platform_updates` is set, and updates its own machine
+1.20.4 the controller does it by itself after each release, once `platform_updates` is set, and updates its own machine
 first (docs/RUNBOOK.md, "After a release").
 
 Effort is one person's focused work, including tests and the staging exercise. Cost figures are monthly, USD.

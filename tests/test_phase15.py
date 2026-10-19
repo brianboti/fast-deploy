@@ -366,7 +366,7 @@ def test_the_startup_script_pins_its_tools_and_never_starts_the_controller_witho
     assert re.search(r"^CADDY_SHA512=[0-9a-f]{128}$", text, re.M) and re.search(r"^LITESTREAM_SHA256=[0-9a-f]{64}$", text, re.M)
     assert '| "${algorithm}sum" --check --strict --quiet' in text
     units = re.findall(r"cat > /etc/systemd/system/([a-z-]+)\.service <<'EOF'\n(.*?)\nEOF", text, re.S)
-    # The three that run all the time restart themselves; the machine's own update (1.20.2) runs once per request.
+    # The three that run all the time restart themselves; the machine's own update (1.20.4) runs once per request.
     assert sorted(name for name, _ in units) == ["caddy", "fast-deploy", "fast-deploy-update", "litestream"]
     assert all("Restart=always" in body for name, body in units if name != "fast-deploy-update")
     assert "Type=oneshot" in dict(units)["fast-deploy-update"] and "Restart=" not in dict(units)["fast-deploy-update"]

@@ -403,4 +403,6 @@ class PlatformUpdates:
         return {"enabled": True, "machine": settings.machine, "workflows": settings.workflows, "delay_minutes": settings.delay_minutes,
                 "quiet_minutes": settings.quiet_minutes, "runs": self.running, "main": machine.get("head"), "main_checks": machine.get("checks"),
                 "next": machine.get("next"), "last_result": machine.get("last_result"),
-                "workflows_due": None if self.running is None else stamp(self.started + settings.delay_minutes * 60), "applications": applications}
+                "workflows_due": None if self.running is None else stamp(self.started + settings.delay_minutes * 60), "applications": applications,
+                "note": None if self.running else "this controller does not run from a release folder of the machine, so it neither installs main "
+                                                  "nor re-pins applications to its own commit"}
