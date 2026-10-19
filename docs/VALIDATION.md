@@ -714,3 +714,13 @@ After the fix:
 Not yet: a release tag (written at the next promotion), and the failure alert's email from the first drill's failed
 execution (13:25 UTC), which is the operator's to confirm.
 
+## Follow-ups of 1.18.8 and 1.18.9 (2026-10-19 UTC)
+
+| Trial | What was done | Observed |
+|---|---|---|
+| The demo's workflows re-pinned | lab-demo-app#24 (`update_app_workflows` to `cd6ad5c`), merged at the operator's request (`075790f`). It also brought the 1.15 and 1.16 template changes the demo had not taken | The auto-deploy released it in 9 minutes (plan `c7ac7e88`, run 39265763224). Tests, the library audit, the Dockerfile rules, no working keys found, and a parts list of 121 all passed. The image scan reported 5 high findings, none fixable yet, which do not block reviewed code. The probes passed; the bake was inconclusive, with no traffic. Revision `lab-demo-rc7ac7e88d8a249cd` |
+| Production in the weekly cost report | `rightsize-gcp.yml` dispatched on the new pin (run 39267254992) | The issue and `get_cost_report` show staging and production together. The total was -$0.0003 (credits just above the cost): staging -$0.0015, production $0.0012 (its provenance key). The demo's share was $0.0054: staging $0.0042, production $0.0012. The total printed as "$-0.00", and the parts as "$0.00" beside a total of "$0.01"; 1.18.10 fixes both |
+| The machine | `scripts/machine.sh update f76419b` | 1.18.9, all three services active |
+| #91's apply | Infrastructure apply run 39265340407 | Every staging root applied with nothing to change. Production's job waits in `infra-production`; its plan has no changes |
+
+Not yet: a release tag, which is written at the next promotion.

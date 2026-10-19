@@ -378,6 +378,16 @@ def build_report(service, project_id, window_days, description, metrics, recomme
     return report
 
 
+def usd(value):
+    """Actual spend in the report and its issue: cents, "under $0.01" for a fraction of one, and a credit as -$1.23. Net of
+    credits, a total can sit a fraction of a cent below zero, which is $0.00, never "$-0.00"."""
+    value = float(value)
+    if 0 < value < 0.005:
+        return "under $0.01"
+    cents = round(value, 2) + 0.0  # -0.0 becomes 0.0
+    return f"-${-cents:.2f}" if cents < 0 else f"${cents:.2f}"
+
+
 def summary_lines(report):
     observed = report["rightsizing"]["observed"]
     lines = [f"Cost report for {report['service']} ({report['window_days']}-day window)",
@@ -387,18 +397,18 @@ def summary_lines(report):
         lines.append("Drift from platform.yaml: " + "; ".join(f"{d['setting']} is {d['live']} live but {d['platform_yaml']} reviewed" for d in report["drift"]))
     actual = report.get("actual_spend") or {}
     if actual.get("by_service") is not None:
-        top = ", ".join(f"{r['service']} ${r['net_cost_usd']:.2f}" for r in actual["by_service"][:4])
+        top = ", ".join(f"{r['service']} {usd(r['net_cost_usd'])}" for r in actual["by_service"][:4])
         projects = actual.get("by_project") or []
         if len(projects) > 1:
-            split = ", ".join(f"{r['environment']} ${r['net_cost_usd']:.2f}" for r in projects)
-            lines.append(f"Actual spend, last {actual['window_days']} days, net of credits: ${actual['total_net_cost_usd']:.2f} for staging and production "
+            split = ", ".join(f"{r['environment']} {usd(r['net_cost_usd'])}" for r in projects)
+            lines.append(f"Actual spend, last {actual['window_days']} days, net of credits: {usd(actual['total_net_cost_usd'])} for staging and production "
                          f"together ({split}; {top or 'nothing billed'})")
         else:
-            lines.append(f"Actual project spend, last {actual['window_days']} days, net of credits: ${actual['total_net_cost_usd']:.2f} ({top or 'nothing billed'})")
+            lines.append(f"Actual project spend, last {actual['window_days']} days, net of credits: {usd(actual['total_net_cost_usd'])} ({top or 'nothing billed'})")
         if actual.get("app"):
             per = actual["app"].get("by_environment") or {}
-            split = " (" + ", ".join(f"{environment} ${value:.2f}" for environment, value in per.items()) + ")" if per else ""
-            lines.append(f"Of which labelled {actual['app']['name']}: ${actual['app']['net_cost_usd']:.2f}{split}")
+            split = " (" + ", ".join(f"{environment} {usd(value)}" for environment, value in per.items()) + ")" if per else ""
+            lines.append(f"Of which labelled {actual['app']['name']}: {usd(actual['app']['net_cost_usd'])}{split}")
     elif actual.get("warning"):
         lines.append(f"Actual spend unavailable: {actual['warning']}")
     if observed:
@@ -630,13 +640,13 @@ def issue_body(report, run_url):
         lines += ["", "Drift from the reviewed configuration:"] + [f"- `{d['setting']}` is {d['live']} live but {d['platform_yaml']} in platform.yaml" for d in drift]
     actual = report.get("actual_spend") or {}
     if actual.get("by_service") is not None:
-        lines += ["", f"Actual spend, last {actual['window_days']} days, net of credits: **${actual['total_net_cost_usd']:.2f}**"]
+        lines += ["", f"Actual spend, last {actual['window_days']} days, net of credits: **{usd(actual['total_net_cost_usd'])}**"]
         projects = actual.get("by_project") or []
         if len(projects) > 1:
-            lines += [f"- {r['environment']} (`{r['project']}`): ${r['net_cost_usd']:.2f}" for r in projects] + ["", "By Google service, both projects:"]
-        lines += [f"- {r['service']}: ${r['net_cost_usd']:.2f}" for r in actual["by_service"][:8]]
+            lines += [f"- {r['environment']} (`{r['project']}`): {usd(r['net_cost_usd'])}" for r in projects] + ["", "By Google service, both projects:"]
+        lines += [f"- {r['service']}: {usd(r['net_cost_usd'])}" for r in actual["by_service"][:8]]
         if actual.get("by_app"):
-            lines += ["", "By application label:"] + [f"- {r['app']}: ${r['net_cost_usd']:.2f}" for r in actual["by_app"][:8]]
+            lines += ["", "By application label:"] + [f"- {r['app']}: {usd(r['net_cost_usd'])}" for r in actual["by_app"][:8]]
     elif actual.get("warning"):
         lines += ["", f"Actual spend unavailable: {actual['warning']}"]
     if report.get("onboarding"):

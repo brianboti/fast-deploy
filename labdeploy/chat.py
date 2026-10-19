@@ -117,13 +117,16 @@ CANCELLED_ERRORS = ("the run was cancelled", "KeyboardInterrupt", "SystemExit") 
 
 # ---- small pieces
 def money(value):
-    """Dollars as people write them: $0, $0.06, $8.57, $1,234.00."""
+    """Dollars as people write them: $0, $0.06, $8.57, $1,234.00, and a credit as -$1.23. Net spend a fraction of a cent
+    below zero (credits just above the cost) is $0, never "$-0.00"."""
     if value is None:
         return "unknown"
     value = float(value)
     if 0 < value < 0.005:
         return "under $0.01"
-    return "$0" if value == 0 else f"${value:,.2f}"
+    if round(value, 2) == 0:
+        return "$0"
+    return f"-${-value:,.2f}" if value < 0 else f"${value:,.2f}"
 
 
 def clip(text, limit=200):
