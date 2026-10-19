@@ -1063,7 +1063,13 @@ def node_read(repo, ladder, result, base, compose, name, paths):
     where = repo.path or "the repository root"
     package = nodejs.package_data(repo.text("package.json"))
     if not repo.has("package.json"):
-        ladder.refuse(where, "has Node.js code but no package.json", "add a package.json that lists the dependencies (npm init -y, then npm install each one)")
+        # Nothing at the root, but folders hold services (live 2026-10-19: eight in one repository): say which to take, as
+        # for Python, rather than ask for a package.json at the root.
+        nested = [entry["path"] for entry in services(paths, repo.texts) if entry["path"]] if not repo.path else []
+        more = f" and {len(nested) - 3} more" if len(nested) > 3 else ""
+        ladder.refuse(where, "has Node.js code but no package.json",
+                      f"the service lives in {', '.join(nested[:3])}{more}: take that folder (path {nested[0]}), or add a package.json at the root"
+                      if nested else "add a package.json that lists the dependencies (npm init -y, then npm install each one)")
         return result
     if package is None:
         ladder.refuse(repo.at("package.json"), "is not valid JSON", "fix package.json so npm can read it")

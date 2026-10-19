@@ -906,6 +906,27 @@ def test_check_repository_asks_a_node_service_for_its_lockfile(tmp_path):
     assert not lock["ok"] and lock["platform_writes"] and not missing["ready"]
 
 
+def test_a_repository_whose_node_services_live_in_folders_is_told_which_folder_to_take(tmp_path):
+    # Live 2026-10-19 (brianboti/fast-deploy-node-trial, eight services in folders): the root was told to add a package.json
+    # and, by the checklist, a requirements.txt; the folders were found but never named.
+    folders = {f"{name}/{path}": text for name in ("api", "web", "jobs", "admin") for path, text in repo().items()}
+    root = read(folders)
+    assert refused(root, "has Node.js code but no package.json")
+    assert root["refusals"][0]["fix"] == "the service lives in admin, api, jobs and 1 more: take that folder (path admin), or add a package.json at the root"
+    assert read({"server.js": SERVER})["refusals"][0]["fix"].startswith("add a package.json that lists the dependencies")  # nothing in folders
+    c, brian, gh, _ = controller_with(tmp_path)
+    gh.repos["lab/mono"] = {"files": folders, "default_branch": "main"}
+    view = c.check_repository(brian, "lab/mono")
+    assert view["as_it_is"]["folders"] == ["admin", "api", "jobs", "web"]
+    assert view["next_action"] == "The services live in folders (admin, api, jobs, web): check one with check_repository and its path, such as path admin."
+    text = chat.check(view)
+    assert text.startswith("**`lab/mono` keeps its services in folders: `admin`, `api`, `jobs`, `web`.**") and "requirements.txt" not in text
+    # A root that is refused for something of its own keeps its refusals: a committed secret is never hidden behind the folders.
+    gh.repos["lab/mono"]["files"][".env"] = "TOKEN=x\n"
+    view = c.check_repository(brian, "lab/mono")
+    assert "folders" not in view["as_it_is"] and "committed secret" in chat.check(view)
+
+
 def test_propose_configuration_locks_a_node_service_on_the_controllers_machine(tmp_path, monkeypatch):
     from test_onboarding import make
     c, brian, _ = make(tmp_path)
