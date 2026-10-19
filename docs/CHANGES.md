@@ -1,3 +1,17 @@
+# 1.18.10: what the first report with production showed
+
+Found on 2026-10-19 in the follow-ups of 1.18.8 (`docs/VALIDATION.md`). The demo's workflows were re-pinned to 1.18.8,
+and its weekly cost report now shows staging and production together.
+
+1. **No more "$-0.00".** Net of credits, a total can sit a fraction of a cent below zero (credits just above the cost),
+   which printed as "$-0.00" in the issue, the report and chat. It now reads $0.00 ($0 in chat), and a real credit reads
+   -$1.23.
+2. **Parts below a cent say so.** The issue printed the demo's share as "$0.01 (staging $0.00, production $0.00)": each
+   part rounded down on its own. Like chat, the issue now says "under $0.01" for a fraction of a cent.
+
+Tests: 675 pass; ruff clean.
+
+
 # 1.18.9: a name of the lab's own (Phase 16, part six)
 
 Roadmap item 16.6 (docs/ROADMAP.md D39). An application in production can answer at a domain of the lab's own, as a

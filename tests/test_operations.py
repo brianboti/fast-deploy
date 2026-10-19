@@ -13,7 +13,7 @@ import yaml
 from test_promotion import COMMIT, DIGEST, RUN, STAGING_IMAGE, STAGING_PLAN, ready_controller, staging_release
 
 from labdeploy import chat
-from labdeploy.cost import billing_actuals, issue_body, summary_lines
+from labdeploy.cost import billing_actuals, issue_body, summary_lines, usd
 from labdeploy.github import GitHub
 from labdeploy.infra import check_plan
 
@@ -155,6 +155,27 @@ def test_a_production_without_spend_shows_zero_and_staging_alone_reads_as_before
     for wrong in ("test-project", "Not A Project"):
         with pytest.raises(ValueError, match="another project's id"):
             billing_actuals(TABLE, "test-project", "t", production=wrong)
+
+
+def test_a_net_spend_a_fraction_of_a_cent_below_zero_reads_as_nothing():
+    """Found in the first weekly report that covered production (2026-10-19): credits a fraction of a cent above the cost
+    printed "$-0.00", and parts below a cent read "$0.00" beside a total of "$0.01". The figures are that report's."""
+    assert (usd(-0.0003), usd(-0.0049), usd(0), usd(0.0012), usd(2.0), usd(-1.234)) == ("$0.00", "$0.00", "$0.00", "under $0.01", "$2.00", "-$1.23")
+    assert (chat.money(-0.0003), chat.money(-1.5), chat.money(0.004)) == ("$0", "-$1.50", "under $0.01")
+    actual = {"window_days": 30, "total_net_cost_usd": -0.0003, "by_service": [{"service": "Container Registry Vulnerability Scanning", "net_cost_usd": 0.0208}],
+              "by_app": [{"app": "lab-demo", "net_cost_usd": 0.0054}],
+              "by_project": [{"project": "lab-deploy-staging-f29a", "environment": "staging", "net_cost_usd": -0.0015},
+                             {"project": "fast-deploy-prod-c602", "environment": "production", "net_cost_usd": 0.0012}],
+              "app": {"name": "lab-demo", "net_cost_usd": 0.0054, "by_environment": {"staging": 0.0042, "production": 0.0012}}}
+    report = {"service": "lab-demo", "window_days": 14, "actual_spend": actual, "estimate": {"compute_ceiling_usd_month": 1, "idle_floor_usd_month": 0},
+              "rightsizing": {"observed": {}, "recommendations": []}}
+    lines = summary_lines(report)
+    assert any("net of credits: $0.00 for staging and production together (staging $0.00, production under $0.01;" in line for line in lines)
+    assert "Of which labelled lab-demo: $0.01 (staging under $0.01, production under $0.01)" in lines
+    body = issue_body(report, "https://github.com/lab/demo/actions/runs/1")
+    assert "**$0.00**" in body and "- production (`fast-deploy-prod-c602`): under $0.01" in body and "$-" not in body
+    text = chat.cost_report({"report": report}, "demo")
+    assert "$0 for staging and production together (staging $0, production under $0.01)" in text and "$-" not in text
 
 
 def test_add_production_names_production_to_the_weekly_report_in_staging(tmp_path):
