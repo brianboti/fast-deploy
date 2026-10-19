@@ -21,6 +21,9 @@ from .status import TERMINAL, advice, release_phases, summarize
 from .workflows import TEMPLATES, pinned_commit, render
 
 DISPATCHED = {"dispatched", "dispatch_unknown", "dispatching"}
+# How long a run that succeeded with a check not reported yet is read again (found on 2026-10-19: GitHub marked a
+# promotion's run completed while its job and steps still read in progress, and the promotion stayed unverified).
+RECHECK_SECONDS = 6 * 3600
 WAIT_LIMIT = 45  # seconds; keeps a waiting status call inside the client's tool timeout
 
 
@@ -163,12 +166,16 @@ class Store:
                               "revision": receipt.get("revision") if state == "succeeded" else None})
         return summaries
 
-    def in_flight(self, limit=10):
+    def in_flight(self, limit=10, now=None):
         """Plans whose run has not been seen to end, newest first, with their application: the background follow-up asks
-        GitHub about them, so an outcome is recorded even when nobody asks."""
+        GitHub about them, so an outcome is recorded even when nobody asks. A run that succeeded while some check had not
+        reported yet (completed_unverified) is asked about again for RECHECK_SECONDS: GitHub can mark a run completed before
+        its steps are."""
+        since = (now or time.time()) - RECHECK_SECONDS
         with self.connect() as db:
             rows = db.execute("SELECT id, json_extract(payload, '$.application') FROM plans WHERE state IN ('dispatching', 'dispatched', 'dispatch_unknown') "
-                              "ORDER BY rowid DESC LIMIT ?", (limit,)).fetchall()
+                              "OR (state = 'completed_unverified' AND json_extract(payload, '$.outcome.conclusion') = 'success' "
+                              "AND json_extract(payload, '$.outcome.recorded_at') > ?) ORDER BY rowid DESC LIMIT ?", (since, limit)).fetchall()
         return [(row[0], row[1]) for row in rows]
 
     def latest_plan(self, application, sha=None):
@@ -1937,6 +1944,17 @@ class Controller:
                 self.store.finish(owner, plan, "dispatch_lost")
             elif plan["state"] in TERMINAL:
                 self.record_outcome(owner, app, plan, workflow)
+        elif self.unverified_recently(plan):
+            # The run succeeded while a check had not reported: read it again, and record the plan once more when every check
+            # has come in (the receipt, the outcome, a promotion's release tag). Until then nothing is fetched or written.
+            workflow = self.github.status(app, plan)
+            again = summarize(workflow, plan["checks"], plan.get("kind"))
+            if again["state"] == "succeeded":
+                plan["workflow"] = workflow
+                plan.update(again)
+                self.store.record_event("recheck", name=plan_id, identity=owner, application=plan["application"], outcome="succeeded",
+                                        detail="every check reported after the run had ended")
+                self.record_outcome(owner, app, plan, workflow)
         elif plan["state"] in {"failed", "cancelled", "timed_out"} and not (plan.get("recovery_run") or {}).get("conclusion"):
             self.record_recovery(owner, app, plan)
         plan["owner"] = owner
@@ -1944,6 +1962,13 @@ class Controller:
         plan["events"] = self.store.events(owner, plan_id)
         plan["next_action"] = advice(plan)
         return plan
+
+    @staticmethod
+    def unverified_recently(plan, now=None):
+        """A run that succeeded while some check had not reported yet, recorded less than RECHECK_SECONDS ago."""
+        outcome = plan.get("outcome") or {}
+        return (plan.get("state") == "completed_unverified" and outcome.get("conclusion") == "success"
+                and (now or time.time()) - float(outcome.get("recorded_at") or 0) < RECHECK_SECONDS)
 
     @staticmethod
     def dispatch_lost(plan, now=None):

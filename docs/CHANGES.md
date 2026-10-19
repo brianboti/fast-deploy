@@ -1,3 +1,21 @@
+# 1.18.11: what the first tagged promotion showed
+
+Found on 2026-10-19 when the demo's re-pinned staging release was promoted to check the release tag (`docs/VALIDATION.md`).
+Production took the new version through 10, 50 and 100 percent, and every step of the job succeeded by 15:34 UTC. GitHub
+marked the run completed only at 15:52, while its job still read in progress. The controller read it at that moment,
+found the release step unfinished, and recorded the promotion as completed_unverified. So no release tag was written, and
+the controller still took the earlier promotion for production's live release.
+
+1. **A run that succeeded with a check not reported yet is read again.** For six hours, the background follow-up and
+   `get_deployment_status` ask GitHub again about such a plan. Once every check has come in, it is recorded once more:
+   the receipt, the outcome, and a promotion's release tag. Until then nothing is fetched or written. A run that did not
+   succeed is never read again, and the audit trail gets a `recheck` event.
+2. **What chat says** for an unverified release: GitHub can be late, so it may become a release by itself within six
+   hours; until then, open the run.
+
+Tests: 677 pass (2 new); ruff clean.
+
+
 # 1.18.10: what the first report with production showed
 
 Found on 2026-10-19 in the follow-ups of 1.18.8 (`docs/VALIDATION.md`). The demo's workflows were re-pinned to 1.18.8,

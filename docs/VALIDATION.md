@@ -724,3 +724,13 @@ execution (13:25 UTC), which is the operator's to confirm.
 | #91's apply | Infrastructure apply run 39265340407 | Every staging root applied with nothing to change. Production's job waits in `infra-production`; its plan has no changes |
 
 Not yet: a release tag, which is written at the next promotion.
+
+## The first tagged promotion (2026-10-19 UTC)
+
+| Trial | What was done | Observed |
+|---|---|---|
+| The promotion | `promote_to_production` for `demo` (plan `eba4dc6a`, run 39276691674) of staging release `c7ac7e88` (`075790f`, the re-pinned pipeline), approved through the API at the operator's request (recorded as `brianboti`) | Provenance verified, the image copied by digest (`sha256:e9679129…`) and signed with production's key. 10 percent at 15:19:38, 50 at 15:24:43, 100 at 15:29:49, each bake inconclusive (no traffic). Every step of the job had succeeded by 15:34:59 |
+| How it was recorded | The controller's read of the run at 15:53 | GitHub marked the run completed only at 15:52:33, and its job still read in progress. The controller found the release step unfinished and recorded the promotion **completed_unverified**. So no release tag was written, and the controller still showed the earlier promotion as production's live release, though production served `lab-demo-reba4dc6a31ed4759` |
+
+What it showed: a terminal state was never read again, however late GitHub's own records came in. 1.18.11 reads such a run
+again for six hours and records it once every check has reported.

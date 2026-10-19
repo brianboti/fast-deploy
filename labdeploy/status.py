@@ -259,7 +259,8 @@ def advice(plan):
             return f"Revision {receipt['revision']} serves all traffic at {receipt.get('url', 'the service URL')}. Nothing to do.{bake_note(receipt)}"
         return "The workflow succeeded; the release receipt was not available, so confirm the serving revision in Cloud Run."
     if state == "completed_unverified":
-        return "The workflow finished but not every check reported a result; inspect the run before trusting this release."
+        return ("The workflow finished but not every check reported a result. GitHub can be late: the controller reads the run again "
+                "for six hours and records it once every check is in. Until then, inspect the run before trusting this release.")
     failed = plan.get("failed_step") or {}
     step = failed.get("step") or ""
     if step == RELEASE_STEP or (state in {"cancelled", "timed_out"} and receipt):

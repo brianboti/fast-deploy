@@ -73,6 +73,41 @@ def test_only_a_promotion_that_succeeded_is_tagged(tmp_path):
     assert stopped["state"] == "failed" and "release_tag" not in stopped and tags == []
 
 
+def test_a_promotion_github_reported_finished_too_early_is_read_again_and_tagged(tmp_path):
+    """Found on the first tagged promotion (2026-10-19): GitHub marked the run completed while its release step still read
+    in progress, so the promotion stayed completed_unverified: no tag, and not production's live release, which it was."""
+    c, brian, gh = ready_controller(tmp_path)
+    staging_release(c)
+    tags = []
+    gh.create_tag = lambda repository, name, sha, message: tags.append(name) or {"name": name, "url": None, "existed": False}
+    plan_id = c.promote(brian, "demo")["id"]
+    early = [dict(step) for step in STEPS[:-1]] + [{**STEPS[-1], "status": "in_progress", "conclusion": None}]
+    gh.run = {"id": 77, "status": "completed", "conclusion": "success", "html_url": RUN, "created_at": "2026-10-17T11:00:00Z",
+              "updated_at": "2026-10-17T11:30:00Z", "jobs": [{"name": "describe", "steps": []}, {"name": "promote", "steps": early}]}
+    gh.receipt = {"release": {"state": "succeeded", "revision": "demo-r1234", "promotion": {"approved_by": ["brianboti"]}}}
+    first = c.status(brian, plan_id)
+    assert first["state"] == "completed_unverified" and first["checks"]["health"] == "interrupted" and tags == []
+    assert c.store.latest_success("demo", kind="promotion") is None and (plan_id, "demo") in c.store.in_flight()
+    c.follow_tick()  # still in progress: nothing recorded, nothing tagged
+    assert tags == [] and c.store.fetch(plan_id)[1]["state"] == "completed_unverified"
+    gh.run = {**gh.run, "jobs": [{"name": "describe", "steps": []}, {"name": "promote", "steps": STEPS}]}  # the steps came in
+    assert c.follow_tick()[plan_id[:8]] == "succeeded"
+    assert tags == [f"production/demo/2026-10-17-{plan_id[:8]}"] and c.store.latest_success("demo", kind="promotion")["id"] == plan_id
+    assert [e["outcome"] for e in c.store.recent_events(80) if e["kind"] == "recheck"] == ["succeeded"]
+    assert (plan_id, "demo") not in c.store.in_flight()
+
+
+def test_only_a_recent_unverified_run_that_succeeded_is_read_again(tmp_path):
+    c, brian, gh = ready_controller(tmp_path)
+    now = time.time()
+    for plan_id, conclusion, recorded in (("1" * 32, "success", now - 60), ("2" * 32, "success", now - 7 * 3600), ("3" * 32, "failure", now - 60)):
+        c.store.add("brian", {"id": plan_id, "application": "demo", "expires_at": now, "checks": {},
+                              "outcome": {"state": "completed_unverified", "conclusion": conclusion, "recorded_at": recorded}}, "completed_unverified")
+    assert [plan_id for plan_id, _ in c.store.in_flight()] == ["1" * 32]  # six hours, and a run that succeeded
+    assert c.unverified_recently({"state": "completed_unverified", "outcome": {"conclusion": "success", "recorded_at": now - 60}})
+    assert not c.unverified_recently({"state": "succeeded", "outcome": {"conclusion": "success", "recorded_at": now - 60}})
+
+
 def test_the_github_adapter_writes_an_annotated_tag_and_never_moves_one(monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "test-credential")
     seen, refs = [], set()

@@ -389,7 +389,7 @@ def release(plan):
         return compose(f"**`{app}` is live** with {what}.", facts, f"nothing to do. To undo it, say “roll {app} back”.", foot)
     if state == "completed_unverified":
         return compose(f"**`{app}`: the release finished, but not every check reported a result.**", [checks_line(checks)],
-                       "open the GitHub run before trusting this release.", foot)
+                       "open the GitHub run before trusting this release. If GitHub was only late, it becomes a release by itself within six hours.", foot)
     if stuck:
         error = phases.get("restore_error") or receipt.get("restore_error")
         return compose(f"**Needs you now: `{app}` could not be put back on its previous version.**",
