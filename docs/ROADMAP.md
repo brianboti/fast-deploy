@@ -432,6 +432,12 @@ the earlier split came back; the fix passed every step on real traffic; the roll
 seconds; 1.18.4 fixed what that showed. Item 16.4 built on 2026-10-18 as 1.18.5: production's objective counts Cloud Run's
 own requests (a request-based objective on a custom service, so nothing depends on Service Monitoring finding the
 service), with Google's starting points for its two alerts (ten times over an hour, twice over a day); staging gets none.
+Item 16.5 built on 2026-10-19 as 1.18.7: production's databases recoverable to any moment of the week (Postgres and
+Firestore), `needs.database_tier` (standard, ha, sla) with its floor in every promotion, the migration's ten-second lock
+timeout, and `scripts/data-drill.sh`. Not done: squawk, since the platform has no SQL-file convention for migrations to
+lint (an application runs its own command, such as `alembic upgrade head`), and with it a check that a release never
+contracts a schema; the developer contract asks for add-only migrations instead. The live drill waits for an application
+with a database in production.
 
 | Item | Change | Where |
 |---|---|---|

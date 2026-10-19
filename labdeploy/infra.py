@@ -156,9 +156,12 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
         if key in SETTING_RANGES and not SETTING_RANGES[key][0] <= value <= SETTING_RANGES[key][1]:
             raise ValueError(f"Setting {key!r} must be between {SETTING_RANGES[key][0]} and {SETTING_RANGES[key][1]}")
         merged[key] = value
-    needs = {"buckets": [], "topics": [], "database": "none", "migrate": [], "database_auth": "iam", **(needs or {})}
-    if set(needs) != {"buckets", "topics", "database", "migrate", "database_auth"} or needs["database"] not in ("none", "firestore", "postgres"):
-        raise ValueError("needs must hold buckets, topics, database (none, firestore or postgres), migrate and database_auth")
+    needs = {"buckets": [], "topics": [], "database": "none", "migrate": [], "database_auth": "iam", "database_tier": "standard", **(needs or {})}
+    if (set(needs) != {"buckets", "topics", "database", "migrate", "database_auth", "database_tier"}
+            or needs["database"] not in ("none", "firestore", "postgres")):
+        raise ValueError("needs must hold buckets, topics, database (none, firestore or postgres), migrate, database_auth and database_tier")
+    if needs["database_tier"] not in ("standard", "ha", "sla") or (needs["database_tier"] != "standard" and needs["database"] != "postgres"):
+        raise ValueError("database_tier is standard, ha or sla, and applies to database: postgres only")
     if needs["database_auth"] not in ("iam", "password") or (needs["database_auth"] == "password" and needs["database"] != "postgres"):
         raise ValueError("database_auth is iam or password, and password applies to database: postgres only")
     password = needs["database_auth"] == "password"
@@ -214,6 +217,8 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
     width = max(len(key) for key in list(inputs) + ["image_vulnerability_scanning"])
     lines = [f"  {key.ljust(width)} = {_hcl(value)}" for key, value in inputs.items()]
     auth = ', database_auth = "password"' if password else ""
+    if needs["database_tier"] != "standard":  # roots without a chosen tier stay as they were
+        auth += f", database_tier = {_hcl(needs['database_tier'])}"
     declared = f"buckets = {_hcl(needs['buckets'])}, topics = {_hcl(needs['topics'])}, database = {_hcl(needs['database'])}, migrate = {_hcl(needs['migrate'])}"
     lines.append(f"  {'needs'.ljust(width)} = {{ {declared}{auth} }}")
     if password:
@@ -556,8 +561,9 @@ TIER_MEANING = {
 # labdeploy/cost.py, which this standard-library file cannot import; a test keeps them equal. Every other type costs nothing
 # at rest or bills only by use (storage, messages, requests, scans), which the floor does not count.
 IDLE_FLOOR_USD_MONTH = {
-    # db-f1-micro with 10 GB of HDD, the only size the service module creates: cost.NEEDS_PRICING["postgres"], instance plus storage.
-    "google_sql_database_instance": {"db-f1-micro": 8.57},
+    # The shapes the service module creates, instance plus 10 GB of HDD: db-f1-micro in one zone (cost.NEEDS_PRICING["postgres"]),
+    # and in production with a standby in a second zone (REGIONAL), shared core or one dedicated CPU (cost.PRODUCTION_POSTGRES).
+    "google_sql_database_instance": {"db-f1-micro": 8.57, "db-f1-micro REGIONAL": 17.13, "db-custom-1-3840 REGIONAL": 100.43},
     # One software key version (the application's provenance key, docs/SETUP.md section 8).
     "google_kms_crypto_key": 0.06,
 }
@@ -591,7 +597,10 @@ def tier(change):
 def _floor_of(kind, values):
     """The idle floor of one resource in one state (before or after), or None when the table has no price for its size."""
     price = IDLE_FLOOR_USD_MONTH.get(kind, 0.0)
-    return price.get(_nested(values, "settings", "tier")) if isinstance(price, dict) else price
+    if not isinstance(price, dict):
+        return price
+    tier, zones = _nested(values, "settings", "tier"), _nested(values, "settings", "availability_type")
+    return price.get(tier if zones in (None, "ZONAL") else f"{tier} {zones}")
 
 
 def idle_floor(plan):

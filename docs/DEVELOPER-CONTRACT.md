@@ -287,6 +287,22 @@ connection URL (SQLAlchemy's `create_engine(os.environ["DATABASE_URL"])`, Django
 password in each run and writes it once through write-only arguments, so it is never in Terraform's state, a plan, the
 repository or the chat.
 
+**Postgres in production: no SLA unless you ask for it.** Staging always runs the smallest instance. In production the
+database is recoverable to any moment of the last seven days (point-in-time recovery, beside a week of daily backups), and
+`database_tier` chooses its shape:
+
+| `database_tier` | In production | Floor a month | Covered by Google's SLA |
+|---|---|---|---|
+| `standard` (default) | `db-f1-micro`, one zone | about $8.57 | no (shared core) |
+| `ha` | `db-f1-micro` with a standby in a second zone | about $17.13 | no (shared core) |
+| `sla` | 1 dedicated vCPU and 3.75 GB, with a standby | about $100.43 | yes, 99.95 percent |
+
+Every promotion shows the chosen tier's floor in its approval block. **Migrations** run with
+`PGOPTIONS=-c lock_timeout=10s`: a statement that waits more than ten seconds for a lock fails, and the release stops
+before anything new serves, instead of freezing the table behind it. Drivers built on libpq (psycopg) honor it; set your
+own `PGOPTIONS` under `env` to change it. Write migrations that only add (columns, tables, indexes) and remove things in
+a later release, so the previous version keeps working while traffic moves.
+
 ## 5. platform.yaml reference
 
 ```yaml
@@ -311,6 +327,7 @@ needs:
   topics: [events]        # env TOPIC_EVENTS and SUBSCRIPTION_EVENTS
   database: none          # none | firestore | postgres (about 9 dollars a month from the moment it exists)
   database_auth: iam      # postgres only: iam (no password anywhere) or password (DATABASE_URL arrives as a secret; section 4b)
+  database_tier: standard # postgres only, production only: standard, ha (a standby) or sla (a standby and a dedicated CPU)
   migrate: []             # e.g. [alembic, upgrade, head]: a job from the same image, before traffic moves
 build:
   context: service        # service (the folder holding platform.yaml) or repository (shared code in a monorepo; section 4a)

@@ -19,6 +19,7 @@ from .provenance import MODES as PROVENANCE_MODES
 
 COMMAND_TIMEOUT = 600  # seconds for any one gcloud call; the migration job is given less, so its wait always ends first
 MIGRATION_TIMEOUT = COMMAND_TIMEOUT - 60
+MIGRATION_LOCK_OPTIONS = "-c lock_timeout=10s"
 
 
 def run(args):
@@ -147,10 +148,11 @@ class CloudRun:
             raise ValueError(f"Secret {secret} has no enabled version to pin")
         return version
 
-    def configuration(self, spec):
-        """The variable and secret flags a revision or job gets: the reviewed spec is the whole truth, needs add their derived variables."""
+    def configuration(self, spec, extra=None):
+        """The variable and secret flags a revision or job gets: the reviewed spec is the whole truth, needs add their derived
+        variables, and `extra` (the migration's lock timeout) gives way to anything the spec sets itself."""
         flags = []
-        values = {**needs_env(spec, self.project, self.region), **spec.env}
+        values = {**needs_env(spec, self.project, self.region), **(extra or {}), **spec.env}
         if values:
             env_file = Path("revision-env.yaml")
             env_file.write_text(json.dumps(values))  # JSON is valid YAML, and the values stay single-line strings
@@ -173,7 +175,11 @@ class CloudRun:
     def migrate(self, image, spec):
         """Run the app's migration command as the `<service>-migrate` job from this release's image, and wait for it."""
         job = f"{self.service}-migrate"
-        flags = ["--image", image, f"--command={spec.needs.migrate[0]}", "--max-retries=0", f"--task-timeout={MIGRATION_TIMEOUT}", *self.configuration(spec)]
+        # A migration that waits for a lock blocks every query behind it: with libpq's lock_timeout (psycopg honors
+        # PGOPTIONS) it stops after ten seconds instead, and the release stops before anything new serves (D39).
+        extra = {"PGOPTIONS": MIGRATION_LOCK_OPTIONS} if spec.needs.database == "postgres" else None
+        flags = ["--image", image, f"--command={spec.needs.migrate[0]}", "--max-retries=0", f"--task-timeout={MIGRATION_TIMEOUT}",
+                 *self.configuration(spec, extra)]
         # gcloud has no --clear-args; the documented reset is an empty value.
         flags.append("--args=" + ",".join(spec.needs.migrate[1:]) if len(spec.needs.migrate) > 1 else "--args=")
         flags += self.egress_flags(spec, job=True)

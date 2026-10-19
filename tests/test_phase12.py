@@ -117,7 +117,12 @@ def test_the_floor_table_matches_the_cost_model():
     floor = next(item["floor_usd_month"] for item in needs_costs(AppSpec(name="svc", needs={"database": "postgres"})) if item["need"] == "postgres")
     assert IDLE_FLOOR_USD_MONTH["google_sql_database_instance"]["db-f1-micro"] == round(floor, 2)
     module = Path("infra/gcp/modules/service/needs.tf").read_text()
-    assert 'tier                        = "db-f1-micro"' in module and "disk_size                   = 10" in module  # the size the price assumes
+    assert 'tier                        = local.database_tier == "sla" ? "db-custom-1-3840" : "db-f1-micro"' in module
+    assert "disk_size                   = 10" in module  # the size the prices assume
+    from labdeploy.cost import PRODUCTION_POSTGRES
+    for tier, key in (("ha", "db-f1-micro REGIONAL"), ("sla", "db-custom-1-3840 REGIONAL")):
+        p = PRODUCTION_POSTGRES[tier]
+        assert IDLE_FLOOR_USD_MONTH["google_sql_database_instance"][key] == round(p["instance_usd_month"] + 10 * p["storage_usd_per_gb_month"], 2)
 
 
 def test_exposure_changes_are_listed_from_the_resources():

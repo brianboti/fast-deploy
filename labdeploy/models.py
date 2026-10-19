@@ -41,11 +41,18 @@ class Needs(StrictModel):
     # anywhere. password: a built-in user whose generated password reaches the app only as the secret DATABASE_URL, for
     # code that takes a connection URL; Terraform writes it through write-only arguments, so it is never in its state.
     database_auth: Literal["iam", "password"] = "iam"
+    # The postgres database in production (docs/ROADMAP.md D39); staging always runs the smallest. standard: one zone,
+    # shared core, no SLA (about 9 dollars a month). ha: a standby in a second zone, still shared core and no SLA (about 17).
+    # sla: a standby and one dedicated CPU, the shape Google's SLA covers (about 100). Each tier's floor is in the approval
+    # block of every promotion.
+    database_tier: Literal["standard", "ha", "sla"] = "standard"
 
     @model_validator(mode="after")
     def valid(self):
         if self.database_auth == "password" and self.database != "postgres":
             raise ValueError("database_auth: password applies to database: postgres only")
+        if self.database_tier != "standard" and self.database != "postgres":
+            raise ValueError("database_tier applies to database: postgres only")
         if len(self.migrate) > 16:
             raise ValueError("migrate takes at most 16 arguments")
         for part in self.migrate:

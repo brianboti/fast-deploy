@@ -89,6 +89,9 @@ variable "needs" {
     migrate  = optional(list(string), [])
     # iam: the runtime identity signs in, no password exists. password: a built-in user and the secret DATABASE_URL.
     database_auth = optional(string, "iam")
+    # The postgres database in production: standard (one zone), ha (a standby in a second zone) or sla (a standby and a
+    # dedicated CPU, the shape Google's SLA covers). Staging always runs the smallest (docs/ROADMAP.md D39).
+    database_tier = optional(string, "standard")
   })
   default = {}
   validation {
@@ -98,6 +101,10 @@ variable "needs" {
   validation {
     condition     = contains(["iam", "password"], var.needs.database_auth) && (var.needs.database_auth == "iam" || var.needs.database == "postgres")
     error_message = "needs: database_auth is iam or password, and password applies to a postgres database only."
+  }
+  validation {
+    condition     = contains(["standard", "ha", "sla"], var.needs.database_tier) && (var.needs.database_tier == "standard" || var.needs.database == "postgres")
+    error_message = "needs: database_tier is standard, ha or sla, and applies to a postgres database only."
   }
 }
 variable "database_password" {
