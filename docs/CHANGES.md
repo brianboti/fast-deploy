@@ -1,3 +1,57 @@
+# 1.20.6: the actions the templates use, in the weekly pin refresh
+
+Asked for on 2026-10-19: Dependabot's pull requests #47 (`actions/download-artifact` 4.3.0 to 8.0.2) and #48
+(`actions/upload-artifact` 4.6.2 to 7.0.2) fail CI. Dependabot reads only `.github/workflows` and a root `action.yml` (its
+options reference), so it changes `.github/workflows/deploy.yml`, which is made from `templates/deploy-gcp.yml`, and never
+the template; the test that keeps them equal fails, and the templates fall behind the platform's own workflows. Two ways
+were weighed: the weekly job copying Dependabot's bumps into the templates, or following these actions itself. Copying
+cannot work well: a Dependabot pull request cannot pass CI until the templates move, so main never holds a bump to copy
+and the job would have to push to Dependabot's branches; it would copy whatever Dependabot proposes, a new major included,
+one pull request per action; and `labdeploy/workflows.py`, whose anchors name the template's actions, would still need a
+hand. So the weekly job follows them itself. This builds on the weekly pin refresh (1.20.5, #103).
+
+1. **Ten actions join `labdeploy/pins.py`** (`PINS`, kind `action`): checkout, setup-python, setup-node, upload-artifact,
+   download-artifact, attest-build-provenance, attest-sbom and create-github-app-token, and Google's auth and
+   setup-gcloud: every action a template or `labdeploy/workflows.py` uses. Each is written `owner/name@<commit> # vX.Y.Z`
+   wherever it appears (`templates/*.yml`, `templates/repo/*.yml`, `labdeploy/workflows.py` and every workflow), with one
+   commit everywhere. Four carried `# v4`, `# v3` or no comment; they now name their release (upload-artifact 4.6.2,
+   download-artifact 4.3.0, auth 3.0.0, setup-gcloud 3.0.1), with the same commits as before.
+2. **The rules**, as for the other pins: the newest release of the action's major version at least seven days after its
+   publication, never a draft or a pre-release; a newer major is listed under "Newer lines" and never proposed
+   (upload-artifact 7 and download-artifact 8 today). The commit is the one the release's tag names in the action's own
+   repository, read from GitHub's git refs API (an annotated tag is followed to its commit): a commit from the action's
+   repository, never a fork's, as GitHub's secure-use reference asks. Each week the pinned release's tag must still name
+   the pinned commit; a release's tag never needs to move, so a moved or deleted one holds that action and says so under
+   "Needs a look".
+3. **Written everywhere at once.** `deploy.yml` is regenerated first, then the new commit is written in the template,
+   `labdeploy/workflows.py` and every workflow alike, so `deploy.yml` stays what the new generator makes of the new
+   template (a test loads the rewritten generator to check it). The pull request names each action with its release
+   notes, its tag and the changes since the pinned commit, and says what to look for: an input or output renamed or
+   removed.
+4. **Dependabot leaves them alone**: `.github/dependabot.yml` ignores those ten, at every version. Dependabot raises no
+   alerts for actions pinned by commit (About Dependabot alerts), so this loses no security update. It still follows
+   `hashicorp/setup-terraform`, which no template uses, and the Terraform providers. A test keeps the ignore list equal
+   to the actions in `PINS`, and those equal to the actions the templates use.
+5. **What merging starts.** When an action `.github/workflows/infra-apply.yml` uses moves (checkout, Google's auth), the
+   pull request says that merging it starts Infrastructure apply for every application root: that workflow runs when a
+   push to main changes it, and `labdeploy.infra.roots` counts a change to an infrastructure workflow as one to every
+   root. Dependabot's bumps of those actions did the same, without a word. This change is one itself: it writes the
+   release of Google's auth in `infra-apply.yml`.
+6. The tests that spelled out the checkout and setup-node commits read them through `labdeploy.pins` now.
+
+Checked live, reading only, on 2026-10-19: every pinned action commit is the one its release's tag names, and zizmor's
+online audits (`ref-version-mismatch`, `impostor-commit`) find nothing. No action has a newer release on its line, so the
+first refresh proposes none of them; it lists upload-artifact 7.0.2 and download-artifact 8.0.2 as newer lines. Moving
+to them is a decision for a person, and worth making soon: the pinned 4.6.2 and 4.3.0 declare Node.js 20, which GitHub
+removed from its runners on 2026-09-23, so every run that uses them warns that they are "being forced to run on Node.js
+24" (the promotion of 2026-10-19, for one) and GitHub asks for versions that support it; their release notes list
+breaking changes (download-artifact 8 fails on a digest mismatch by default and no longer unzips a file that is not a
+zip). Cost: about twenty more reads of GitHub's API a week, well within the workflow token's allowance, seconds of runner
+time, and no cloud resource.
+
+Tests: 836 pass (6 new); ruff and zizmor clean.
+
+
 # 1.20.5: the weekly pin refresh
 
 Asked for on 2026-10-19: the pins Dependabot does not follow were refreshed by hand, and some were behind (TruffleHog

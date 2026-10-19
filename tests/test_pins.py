@@ -1,10 +1,11 @@
 """The weekly pin refresh (labdeploy/pins.py, .github/workflows/pins.yml). No test touches the network: the official
-metadata comes from FakeWeb, shaped like GitHub's release API, Docker Hub's tag API, gcr.io's image list, PyPI's index and
-the npm registry as they answered on 2026-10-19. Its releases carry versions no real one will reach for years (minor 900
-and above), so that a refresh never turns a fake release here into the spelling of a real pin."""
+metadata comes from FakeWeb, shaped like GitHub's release and git refs APIs, Docker Hub's tag API, gcr.io's image list,
+PyPI's index and the npm registry as they answered on 2026-10-19. Its releases carry versions no real one will reach for
+years (minor 900 and above), so that a refresh never turns a fake release here into the spelling of a real pin."""
 import base64
 import copy
 import hashlib
+import importlib.util
 import json
 import re
 import shutil
@@ -15,7 +16,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from labdeploy import node, pins, scaffold
+from labdeploy import infra, node, pins, scaffold
 from labdeploy.workflows import central_deploy
 
 NOW = datetime(2026, 10, 26, 5, 23, tzinfo=UTC)
@@ -32,7 +33,7 @@ def iso(days):
 
 
 class FakeWeb:
-    """Official metadata by URL: JSON documents, bytes for downloads, headers for HEAD requests."""
+    """Official metadata by URL: JSON documents, bytes for downloads, headers for HEAD requests, or the error a URL answers."""
 
     def __init__(self):
         self.routes, self.seen = {}, []
@@ -41,6 +42,8 @@ class FakeWeb:
         self.seen.append(url)
         if url not in self.routes:
             raise urllib.error.URLError(f"no route for {url}")
+        if isinstance(self.routes[url], Exception):
+            raise self.routes[url]
         return copy.deepcopy(self.routes[url])
 
     def get(self, url, accept=None):
@@ -78,14 +81,40 @@ def route_releases(web, pin, releases):
     web.routes[f"https://api.github.com/repos/{pin.source}/releases?per_page=100"] = releases
 
 
+def action_release(web, pin, version, days, commit, *, annotated=False, draft=False, prerelease=False, immutable=False):
+    """A release of an action as GitHub's API lists it, its tag routed to `commit` in the git refs API (through a tag object
+    when the tag is annotated)."""
+    ref = f"https://api.github.com/repos/{pin.source}/git/ref/tags/v{version}"
+    if annotated:
+        tag = hashlib.sha256(f"{pin.source} v{version}".encode()).hexdigest()[:40]
+        web.routes[ref] = {"ref": f"refs/tags/v{version}", "object": {"type": "tag", "sha": tag}}
+        web.routes[f"https://api.github.com/repos/{pin.source}/git/tags/{tag}"] = {"tag": f"v{version}", "object": {"type": "commit", "sha": commit}}
+    else:
+        web.routes[ref] = {"ref": f"refs/tags/v{version}", "object": {"type": "commit", "sha": commit}}
+    return {"tag_name": f"v{version}", "draft": draft, "prerelease": prerelease, "published_at": iso(days), "immutable": immutable,
+            "html_url": f"https://github.com/{pin.source}/releases/tag/v{version}"}
+
+
+def not_found(url):
+    return urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+
 # ---- the catalogue and the files
 def test_every_pin_is_found_once_in_every_place_and_its_places_agree():
     current = pins.read()
-    assert set(current) == set(pins.BY_KEY) and len(pins.PINS) == 23
+    actions = [pin for pin in pins.PINS if pin.kind == "action"]
+    assert set(current) == set(pins.BY_KEY) and len(pins.PINS) == 33 and len(actions) == 10
     for pin in pins.PINS:
-        assert set(current[pin.key]) == {name for _, pattern in pin.places for name in pins.fields_of(pattern)}, pin.key
+        fields = {"commit", "version"} if pin.kind == "action" else {name for _, pattern in pin.places for name in pins.fields_of(pattern)}
+        assert set(current[pin.key]) == fields, pin.key
         for name, value in current[pin.key].items():
             assert re.fullmatch(pins.field_pattern(name), value), (pin.key, name, value)
+    # An action is written one way wherever it appears: the commit, then the release it is.
+    for pin in actions:
+        assert re.fullmatch(r"\d+\.\d+\.\d+", current[pin.key]["version"]) and pins.in_line(current[pin.key]["version"], pin.line), pin.key
+        for path in pins.action_files():
+            text = Path(path).read_text()
+            assert text.count(f"{pin.source}@") == text.count(pins.mentions(pin.key)[0]), (pin.key, path)
     # The same tool in two workflows is one pin with one value; the platform's and the demo app's Dockerfiles share 3.12.
     assert [path for path, _ in pins.BY_KEY["hadolint"].places].count(".github/workflows/ci.yml") == 2
     assert {path for path, _ in pins.BY_KEY["cosign"].places} == {"templates/deploy-gcp.yml", ".github/workflows/promote.yml"}
@@ -118,6 +147,26 @@ def test_a_reworded_or_disagreeing_place_stops_the_refresh_with_what_to_change(t
     setup.write_text(setup.read_text().replace("checks each application's Dockerfile", "lints each Dockerfile"))
     with pytest.raises(pins.PinError, match="docs/SETUP.md should hold .* exactly once and holds it 0 times; .*change this place in PINS"):
         pins.read(tmp_path)
+    shutil.copy("docs/SETUP.md", setup)
+    # An action anywhere without its release comment, at another commit, or by tag stops the refresh too.
+    download, checkout = pins.mentions("actions/download-artifact")[0], pins.mentions("actions/checkout")[0]
+    promote = tmp_path / ".github/workflows/promote.yml"
+    promote.write_text(promote.read_text().replace(download, download.split(" # ")[0], 1))
+    with pytest.raises(pins.PinError, match=r"actions/download-artifact: \.github/workflows/promote\.yml pins it 1 time\(s\) otherwise than "
+                                            r"`actions/download-artifact@<commit> # vX\.Y\.Z`"):
+        pins.read(tmp_path)
+    shutil.copy(".github/workflows/promote.yml", promote)
+    recover = tmp_path / "templates/recover-gcp.yml"
+    recover.write_text(recover.read_text().replace(download, download.replace(pins.read()["actions/download-artifact"]["commit"], "e" * 40)))
+    with pytest.raises(pins.PinError, match=r"actions/download-artifact: templates/recover-gcp\.yml pins commit e{40} where another place pins [0-9a-f]{40}"):
+        pins.read(tmp_path)
+    shutil.copy("templates/recover-gcp.yml", recover)
+    drafted = tmp_path / "templates/repo/ci.yml"
+    drafted.write_text(drafted.read_text().replace(checkout, "actions/checkout@v7"))
+    with pytest.raises(pins.PinError, match=r"actions/checkout: templates/repo/ci\.yml pins it 1 time\(s\) otherwise"):
+        pins.read(tmp_path)
+    shutil.copy("templates/repo/ci.yml", drafted)
+    assert pins.read(tmp_path) == pins.read()
 
 
 def pinned_files():
@@ -145,6 +194,26 @@ def test_the_catalogue_holds_every_download_by_checksum_and_every_digest_the_pla
     startup = Path(pins.STARTUP).read_text()
     for variable in re.findall(r"^([A-Z]+_(?:VERSION|SHA256|SHA512))=", startup, re.M):
         assert any(pattern.startswith(variable + "=") for path, pattern in pins.BY_KEY[variable.split("_")[0].lower()].places)
+
+
+def test_dependabot_leaves_the_actions_the_templates_use_to_the_weekly_refresh():
+    """Dependabot reads only .github/workflows: its bump of an action a template uses would leave the template behind. So
+    those actions are in PINS, moved here in every file at once, and Dependabot ignores each of them at every version;
+    every other action stays Dependabot's."""
+    uses = re.compile(r"(?<![\w./-])([\w.-]+/[\w./-]+)@[0-9a-f]{40}")
+
+    def used(*patterns):
+        return {name for pattern in patterns for path in Path().glob(pattern) for name in uses.findall(path.read_text())}
+
+    followed = {pin.source for pin in pins.PINS if pin.kind == "action"}
+    assert followed == used("templates/*.yml", "templates/repo/*.yml", pins.WORKFLOWS)
+    config = yaml.safe_load(Path(".github/dependabot.yml").read_text())
+    actions = next(entry for entry in config["updates"] if entry["package-ecosystem"] == "github-actions")
+    assert actions["directory"] == "/" and actions["cooldown"] == {"default-days": 7}
+    assert sorted(rule["dependency-name"] for rule in actions["ignore"]) == sorted(followed)
+    assert all(set(rule) == {"dependency-name"} for rule in actions["ignore"])  # every version: no bump of them reaches .github/workflows alone
+    others = used(".github/workflows/*.yml") - followed
+    assert others and not others & {rule["dependency-name"] for rule in actions["ignore"]}  # Dependabot's, like hashicorp/setup-terraform
 
 
 def test_no_test_spells_out_a_value_the_weekly_refresh_moves():
@@ -337,6 +406,89 @@ def test_npm_takes_the_newest_11_a_week_old_with_the_same_engines_and_no_install
     assert "has an install script" in pins.from_npm(pin, {"version": "11.919.1"}, web, NOW).problems[0]
 
 
+def setup_node_releases():
+    pin, web = pins.BY_KEY["actions/setup-node"], FakeWeb()
+    route_releases(web, pin, [action_release(web, pin, "7.903.0", 1, "f" * 40, draft=True), action_release(web, pin, "9.0.0", 30, "9" * 40),
+                              action_release(web, pin, "7.902.0", 3, "e" * 40, prerelease=True), action_release(web, pin, "7.901.1", 6.9, "d" * 40),
+                              action_release(web, pin, "7.901.0", 8, "c" * 40, annotated=True, immutable=True), action_release(web, pin, "7.900.1", 20, "b" * 40),
+                              action_release(web, pin, "7.900.0", 40, "a" * 40), {"tag_name": "v7", "draft": False, "prerelease": False, "published_at": iso(1)}])
+    return pin, web
+
+
+def test_an_action_takes_the_commit_its_release_tag_names_once_the_release_is_seven_days_old():
+    pin, web = setup_node_releases()
+    found = pins.from_action(pin, {"commit": "a" * 40, "version": "7.900.0"}, web, NOW)
+    assert found.status == "update" and found.new == {"commit": "c" * 40, "version": "7.901.0"} and not found.problems
+    assert found.was == "7.900.0 (aaaaaaaaaaaa)" and found.label == "7.901.0 (cccccccccccc)" and found.released == NOW - timedelta(days=8)
+    # 6.9 days is not yet; a draft, a pre-release and a moving major tag (v7) never; the newer major is reported, never proposed.
+    assert [what for what, _, _ in found.waiting] == ["actions/setup-node 7.901.1"] and [version for version, _, _ in found.newer] == ["9.0.0"]
+    assert [words for words, _ in found.sources] == ["release notes", "its tag, locked by an immutable release", "the changes since the pinned commit"]
+    assert found.sources[1][1] == "https://api.github.com/repos/actions/setup-node/git/ref/tags/v7.901.0"
+    assert found.sources[2][1] == f"https://github.com/actions/setup-node/compare/{'a' * 40}...{'c' * 40}" and found.downloads == []
+    # The annotated tag was followed to its commit through its tag object, and everything came from the action's own repository.
+    assert any("/git/tags/" in str(url) for url in web.seen) and all(str(url).startswith("https://api.github.com/repos/actions/setup-node/") for url in web.seen)
+    assert pins.from_action(pin, {"commit": "c" * 40, "version": "7.901.0"}, web, NOW).status == "current"
+
+
+def test_a_moved_or_missing_tag_holds_the_action():
+    pin, web = setup_node_releases()
+    ref = "https://api.github.com/repos/actions/setup-node/git/ref/tags/v{}".format
+    moved = pins.from_action(pin, {"commit": "0" * 40, "version": "7.900.0"}, web, NOW)
+    assert moved.status == "held" and moved.new == {} and moved.waiting == [] and moved.problems == [
+        "its tag v7.900.0 now names commit aaaaaaaaaaaa, not the pinned 000000000000: the tag was moved after it was pinned; nothing of this "
+        "action is proposed until a person looks, and the pinned commit keeps working"]
+    web.routes[ref("7.900.0")] = not_found(ref("7.900.0"))
+    assert "its repository has no tag v7.900.0 any more" in pins.from_action(pin, {"commit": "a" * 40, "version": "7.900.0"}, web, NOW).problems[0]
+    web.routes[ref("7.900.0")], web.routes[ref("7.901.0")] = {"object": {"type": "commit", "sha": "a" * 40}}, not_found(ref("7.901.0"))
+    gone = pins.from_action(pin, {"commit": "a" * 40, "version": "7.900.0"}, web, NOW)
+    assert gone.status == "held" and gone.problems == ["its release 7.901.0 names the tag v7.901.0, which its repository does not have"]
+    web.routes[ref("7.901.0")] = {"object": {"type": "blob", "sha": "c" * 40}}
+    with pytest.raises(pins.PinError, match="the tag v7.901.0 of actions/setup-node does not name a commit"):
+        pins.from_action(pin, {"commit": "a" * 40, "version": "7.900.0"}, web, NOW)
+    # Any other failure (a rate limit, say) leaves the pin as it is and says so.
+    web.routes[ref("7.900.0")] = urllib.error.HTTPError(ref("7.900.0"), 403, "rate limit exceeded", {}, None)
+    found = pins.survey({key: {"commit": "a" * 40, "version": "7.900.0"} if key == pin.key else {} for key in pins.BY_KEY}, web, NOW)
+    node = next(item for item in found if item.pin.key == pin.key)
+    assert node.status == "unchecked" and "rate limit exceeded" in node.problems[0]
+    text = pins.report([moved, node], NOW)
+    assert "- **actions/setup-node**: its tag v7.900.0 now names commit aaaaaaaaaaaa" in text and "(its pin stays as it is)" in text
+
+
+def test_the_pull_request_shows_an_action_by_release_and_commit():
+    pin, web = setup_node_releases()
+    found = pins.from_action(pin, {"commit": "a" * 40, "version": "7.900.0"}, web, NOW)
+    text = pins.report([found], NOW)
+    assert ("| actions/setup-node | installs Node.js for a Node.js service's audit and tests, in the pipeline and in its drafted CI | 7.900.0 (aaaaaaaaaaaa) "
+            "| 7.901.0 (cccccccccccc) | 2026-10-18 (8 days ago) | [release notes](https://github.com/actions/setup-node/releases/tag/v7.901.0) · ") in text
+    assert "- [actions/setup-node 9.0.0](https://github.com/actions/setup-node/releases/tag/v9.0.0) (2026-09-26); the platform follows 7." in text
+    assert "1. The release notes of actions/setup-node and the changes since each pinned commit, linked above" in text
+    assert "2. CI runs the whole test suite" in text and "3. After you merge" in text and "4. To undo" in text
+    assert "   - actions/setup-node: each of this repository's workflows at its next run (CI on the merge itself); an application's own workflows" in text
+    assert pins.title([found], "2026-10-26") == "Weekly pin refresh, 2026-10-26: actions/setup-node 7.901.0"
+    planned = pins.plan([found], "2026-10-26")
+    assert planned["changes"] == [{"key": "actions/setup-node", "title": "actions/setup-node", "from": {"commit": "a" * 40, "version": "7.900.0"},
+                                   "to": {"commit": "c" * 40, "version": "7.901.0"}, "released": (NOW - timedelta(days=8)).isoformat(), "downloads": []}]
+    assert pins.verify(planned, FakeWeb()) == []  # nothing to download: the runner fetches the action by its commit
+    assert "Infrastructure apply" not in text  # setup-node is not in the infrastructure pipeline
+
+
+def test_the_pull_request_says_when_merging_it_applies_the_infrastructure(tmp_path):
+    """An action .github/workflows/infra-apply.yml uses moves there too; that workflow runs when a push to main changes it,
+    and a change to an infrastructure workflow counts for every root: the pull request must say so before anyone merges."""
+    workflow = yaml.safe_load(Path(pins.INFRA_APPLY).read_text())
+    assert workflow[True]["push"]["branches"] == ["main"] and pins.INFRA_APPLY in workflow[True]["push"]["paths"]
+    for name in ("one", "two"):
+        (tmp_path / name).mkdir()
+    assert infra.roots([pins.INFRA_APPLY], tmp_path) == ["one", "two"]
+    current = pins.read()
+    checkout = update("actions/checkout", current, commit="1" * 40, version=later(current["actions/checkout"]["version"]))
+    node = update("actions/setup-node", current, commit="2" * 40, version=later(current["actions/setup-node"]["version"]))
+    text = pins.report([node, checkout], NOW)
+    assert ("2. **Merging this starts Infrastructure apply for every application root**, staging and production: actions/checkout moves in "
+            "`.github/workflows/infra-apply.yml`") in text and "look at its issue before you merge" in text
+    assert "Infrastructure apply" not in pins.report([node], NOW)
+
+
 # ---- writing, the pull request, and the check before it opens
 def copy_pinned(tmp_path):
     for path in pins.paths() + ["Dockerfile", "examples/demo-app/Dockerfile"]:
@@ -386,6 +538,44 @@ def test_a_refresh_writes_every_place_dates_the_group_and_regenerates_the_deploy
     assert pins.apply([pins.Finding(pin, current[pin.key]) for pin in pins.PINS], tmp_path, "2026-11-02") == []
 
 
+def refreshed_generator(root):
+    """labdeploy/workflows.py as a refresh left it under `root`: the generator CI runs on the pull request."""
+    spec = importlib.util.spec_from_file_location("refreshed_workflows", root / pins.WORKFLOWS)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_an_action_moves_in_every_template_and_workflow_at_once_and_deploy_yml_stays_generated(tmp_path):
+    copy_pinned(tmp_path)
+    current = pins.read()
+    moving = {key: {"commit": digit * 40, "version": later(current[key]["version"])} for key, digit in (
+        ("actions/checkout", "1"), ("actions/download-artifact", "2"), ("actions/create-github-app-token", "3"), ("google-github-actions/auth", "4"))}
+    trufflehog = later(current["trufflehog"]["version"])
+    findings = [update(key, current, **new) for key, new in moving.items()] + [update("trufflehog", current, version=trufflehog, sha256="5" * 64)]
+    changed = pins.apply(findings, tmp_path, "2026-10-26")
+    after = pins.read(tmp_path)
+    assert {key: after[key] for key in moving} == moving and after["trufflehog"]["version"] == trufflehog
+    assert {key: value for key, value in after.items() if key not in moving and key != "trufflehog"} == {
+        key: value for key, value in current.items() if key not in moving and key != "trufflehog"}
+    # Every file that used one of them changed, and only on the lines that use them (and TruffleHog's).
+    old = {path: Path(path).read_text() for path in pins.action_files()}
+    users = sorted(path for path, text in old.items() if any(pins.mentions(key)[0] in text for key in moving))
+    assert changed == sorted(set(users) | {"templates/deploy-gcp.yml", ".github/workflows/deploy.yml"})
+    for path in users:
+        expected = old[path]
+        for key, new in moving.items():
+            expected = expected.replace(pins.mentions(key)[0], pins.action_text(pins.BY_KEY[key], new))
+        for place in pins.mentions("trufflehog"):
+            expected = expected.replace(place, place.replace(current["trufflehog"]["version"], trufflehog).replace(current["trufflehog"]["sha256"], "5" * 64))
+        assert (tmp_path / path).read_text() == expected, path
+    # deploy.yml is exactly what the refreshed labdeploy/workflows.py makes of the refreshed template, the App token step included.
+    generator = refreshed_generator(tmp_path)
+    assert generator.INSTALLATION_ACTION == pins.action_text(pins.BY_KEY["actions/create-github-app-token"], moving["actions/create-github-app-token"])
+    assert generator.central_deploy((tmp_path / pins.TEMPLATE).read_text()) == (tmp_path / pins.CENTRAL).read_text()
+    assert pins.apply([pins.Finding(pin, after[pin.key]) for pin in pins.PINS], tmp_path, "2026-11-02") == []
+
+
 def finding_set():
     current = pins.read()
     trufflehog = update("trufflehog", current, version=later(current["trufflehog"]["version"]), sha256="1" * 64)
@@ -407,7 +597,8 @@ def test_the_pull_request_names_each_change_its_source_what_waits_and_what_to_re
     assert "- [Trivy 0.976.0](https://github.com/aquasecurity/trivy/releases/tag/v0.976.0) on 2026-10-14: can be proposed from 2026-10-21." in text
     assert "- [uv 0.99.1](https://github.com/astral-sh/uv/releases/tag/0.99.1) (2026-10-14); the platform follows 0.12. uv's minor versions" in text
     assert "- **buildpacks builder (Ubuntu 22.04)**: its metadata could not be read: timed out (its pin stays as it is)" in text
-    assert "The release notes of TruffleHog, linked above" in text and "CI does not run the new tools or images on a real release" in text
+    assert "1. The release notes of TruffleHog, linked above" in text and "2. CI runs the whole test suite" in text and "4. To undo" in text
+    assert "CI does not run the new tools, images or actions on a real release" in text and "and the changes since each pinned commit" not in text
     assert f"   - Caddy: {pins.MACHINE}." in text and "`scripts/machine.sh startup`" in pins.MACHINE
     assert "never hashed a download to make a pin" in text and "Nothing merges by itself" in text and "([this run](https://github.com/o/r/actions/runs/7))" in text
     assert "## What changes (2)" in text and text.index("## What changes") < text.index("## Waiting") < text.index("## Newer lines") < text.index("## Needs a look") < text.index("## What to review")

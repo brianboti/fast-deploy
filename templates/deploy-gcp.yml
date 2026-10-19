@@ -546,7 +546,7 @@ jobs:
           set -euo pipefail
           "$RUNNER_TEMP/trivy" image --input bundle/image.tar --format cyclonedx --output bundle/sbom.cdx.json --quiet --skip-version-check
           python -m labdeploy.sbom bundle/sbom.cdx.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-bundle
           path: bundle/
@@ -590,7 +590,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install --require-hashes -r platform/requirements.lock
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: inputs.image_digest == ''
         with:
           name: release-bundle
@@ -671,11 +671,11 @@ jobs:
           echo "Provenance path: $MODE"
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "PROVENANCE_MODE=$MODE" >> "$GITHUB_ENV"
-      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
           service_account: ${{ vars.DEPLOY_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
       - name: Configure registry access
         shell: bash
         run: gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
@@ -788,7 +788,7 @@ jobs:
         id: url
         shell: bash
         run: echo "url=$(python -c 'import json; print(json.load(open("release-receipt.json")).get("url", ""))')" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: release-receipt
@@ -812,7 +812,7 @@ jobs:
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       REPOSITORY: ${{ github.repository }}
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         continue-on-error: true
         with:
           name: release-receipt

@@ -1,18 +1,21 @@
 """The platform's own pins that Dependabot does not follow, kept current by one reviewed pull request a week.
 
-Dependabot follows the platform's GitHub Actions and Terraform providers. Everything else the platform pins by version and
-checksum, or by digest, is listed in PINS with its official source, the line of releases the platform follows and every
-place it is written: the tools the pipeline downloads (templates/deploy-gcp.yml, .github/workflows/promote.yml), the
-buildpacks builders and run images, the python:X.Y-slim and node:<line>-slim indexes, uv and the npm the lock containers
-install (labdeploy/scaffold.py), CI's hadolint and OpenTofu, and the machine's Caddy and Litestream.
+Dependabot follows the platform's Terraform providers and the actions no template uses. Everything else the platform pins
+by version and checksum, by digest or by commit is listed in PINS with its official source, the line of releases the
+platform follows and every place it is written: the tools the pipeline downloads (templates/deploy-gcp.yml,
+.github/workflows/promote.yml), the buildpacks builders and run images, the python:X.Y-slim and node:<line>-slim indexes,
+uv and the npm the lock containers install (labdeploy/scaffold.py), CI's hadolint and OpenTofu, the machine's Caddy and
+Litestream, and the GitHub Actions the templates use. Dependabot reads only .github/workflows, so it would move such an
+action in the workflows and never in the templates they are made from, nor in labdeploy/workflows.py, which writes
+.github/workflows/deploy.yml from its template: here an action moves everywhere at once.
 
 Once a week .github/workflows/pins.yml runs `refresh`: for each pin it reads the official release metadata, takes the
 newest release of its line that is at least seven days old, and writes it in every place, with the checksum that metadata
 states. A download from GitHub takes the SHA-256 GitHub recorded when the asset was uploaded, and the project's own
 checksum list must say the same; an image takes its registry's index digest; uv and npm take the hashes PyPI and the npm
-registry publish. Nothing here hashes a download to make a pin: `verify` downloads what changed only to check it against
-the new pin before the pull request opens, and never runs it. The pull request names each change and its source, and a
-person merges it.
+registry publish; an action takes the commit its release's tag names in the action's own repository. Nothing here hashes a
+download to make a pin: `verify` downloads what changed only to check it against the new pin before the pull request
+opens, and never runs it. The pull request names each change and its source, and a person merges it.
 
     python -m labdeploy.pins list        the pins as the files hold them (no network)
     python -m labdeploy.pins check       what a refresh would propose today (reads the metadata, writes nothing)
@@ -43,11 +46,18 @@ CENTRAL = ".github/workflows/deploy.yml"  # generated from the template, never e
 SCAFFOLD = "labdeploy/scaffold.py"
 CI = ".github/workflows/ci.yml"
 PROMOTE = ".github/workflows/promote.yml"
+# Runs on a push to main that changes it, and labdeploy.infra.roots counts a change to an infrastructure workflow as one to
+# every root: merging a new commit for an action it uses applies every application root (tests/test_pins.py keeps this true).
+INFRA_APPLY = ".github/workflows/infra-apply.yml"
 STARTUP = "infra/gcp/modules/project/controller-startup.sh"
 CONTRACT = "docs/DEVELOPER-CONTRACT.md"
 RUNBOOK = "docs/RUNBOOK.md"
 SETUP = "docs/SETUP.md"
 HANDOFF = "PROJECT_HANDOFF.md"
+WORKFLOWS = "labdeploy/workflows.py"  # the steps it adds to the platform pipeline pin actions too
+# Where actions are pinned by commit: every workflow of this repository, the templates an application's workflows and its
+# drafted CI are made from, and labdeploy/workflows.py. Each mention is `owner/name@<commit> # vX.Y.Z`.
+ACTION_FILES = (".github/workflows/*.yml", "templates/*.yml", "templates/repo/*.yml", WORKFLOWS)
 # A release must be a week old before it is proposed, as Dependabot's cooldown here: a compromised or broken release is
 # usually found and pulled by then (Trivy's malicious 0.69.4 of 2026-03-19 was up for about three hours, GHSA-69fq-xp46-6x23).
 COOLDOWN = timedelta(days=7)
@@ -59,7 +69,7 @@ SHA256 = r"[0-9a-f]{64}"
 # What each {field} of a place may hold. A field named after a wheel's platform tag (manylinux_...) holds that wheel's SHA-256.
 FIELDS = {"version": r"\d+(?:\.\d+){1,3}", "sha256": SHA256, "sha512": r"[0-9a-f]{128}", "digest": rf"sha256:{SHA256}",
           "integrity": r"sha512-[A-Za-z0-9+/]{86}==", "released": r"\d{4}-\d{2}-\d{2}", "date": r"\d{4}-\d{2}-\d{2}",
-          "release": r"\d+\.\d+\.\d+", "debian": r"[a-z]+"}
+          "release": r"\d+\.\d+\.\d+", "debian": r"[a-z]+", "commit": r"[0-9a-f]{40}"}
 
 # When a merged change reaches where it runs, in the pull request's words.
 PIPELINE = ("the platform pipeline's next release of each service under apps/; an application with its own workflows once "
@@ -68,6 +78,9 @@ CONTROLLER = "the controller once it runs the merged commit (`scripts/machine.sh
 MACHINE = ("the controller's machine only after the foundation is applied (`scripts/apply-foundation.sh`) and its startup "
            "script runs again (`scripts/machine.sh startup`, or a restart)")
 AT_ONCE = "this repository's CI as soon as it merges"
+WORKFLOW_RUNS = ("each of this repository's workflows at its next run (CI on the merge itself); an application's own workflows "
+                 "once they are re-pinned (`update_app_workflows`, or by themselves with `platform_updates`), and the CI the "
+                 "controller drafts once it runs the merged commit")
 
 
 class PinError(Exception):
@@ -78,9 +91,10 @@ class PinError(Exception):
 class Pin:
     key: str
     title: str
-    kind: str          # github, dockerhub, gcr, pypi or npm: where its official metadata lives
-    source: str        # owner/repository; image:tag; the package's name
-    places: tuple      # (path, the text as written with its pinned values as {fields}), each found exactly once
+    kind: str          # github, dockerhub, gcr, pypi, npm or action: where its official metadata lives
+    source: str        # owner/repository; image:tag; the package's name; an action's owner/repository
+    places: tuple      # (path, the text as written with its pinned values as {fields}), each found exactly once; an action
+                       # has none: it is written the same way wherever it appears in ACTION_FILES
     used: str          # what it does, in the pull request's words
     reaches: str       # when a merged change reaches where it runs
     line: str = ""     # the releases followed: "3" takes 3.x.y, "0.12" takes 0.12.y; an image follows its tag
@@ -130,6 +144,16 @@ def buildpacks(key, title, source, stack, pattern):
     return Pin(key, title, "gcr", source, ((TEMPLATE, pattern),),
                "builds and runs a service that has no Dockerfile (Google's buildpacks; the Ubuntu 22.04 pair for Python "
                "3.11 and 3.12, the 24.04 pair for the rest)", PIPELINE, stack=stack)
+
+
+def action(name, line, used, line_note=""):
+    """An action a template uses, pinned by commit with its release in a comment wherever it appears (ACTION_FILES). Its line
+    is a major version: a new major can rename or drop inputs, so it waits for a person."""
+    return Pin(name, name, "action", name, (), used, WORKFLOW_RUNS, line=line, line_note=line_note,
+               notes=f"https://github.com/{name}/releases/tag/v{{version}}")
+
+
+ARTIFACTS = "The pipeline uploads with upload-artifact and downloads with download-artifact: read both release notes and move both lines together."
 
 
 PINS = (
@@ -186,13 +210,24 @@ PINS = (
         "makes a Node.js 22 service's lock on the controller's machine (Node 22's own npm cannot hold back new releases)", CONTROLLER,
         line="11", line_note="npm 12 blocks dependency scripts by default and no Node.js line bundles it yet.",
         notes="https://github.com/npm/cli/releases/tag/v{version}"),
+    # The actions the templates use (tests/test_pins.py keeps this list equal to theirs and to .github/dependabot.yml's ignore list).
+    action("actions/checkout", "7", "checks out the code in every workflow, an application's own and its drafted CI included"),
+    action("actions/setup-python", "7", "installs Python in the pipeline, CI, promotion and an application's drafted CI"),
+    action("actions/setup-node", "7", "installs Node.js for a Node.js service's audit and tests, in the pipeline and in its drafted CI"),
+    action("actions/upload-artifact", "4", "hands files to the next job: the release bundle, the release receipt, plans and reports", line_note=ARTIFACTS),
+    action("actions/download-artifact", "4", "reads those files in the next job", line_note=ARTIFACTS),
+    action("actions/attest-build-provenance", "4", "signs an image's build provenance on GitHub's path (an application in a public repository)"),
+    action("actions/attest-sbom", "4", "attests an image's parts list (SBOM) on GitHub's path"),
+    action("actions/create-github-app-token", "3", "makes the short-lived App tokens: the platform pipeline and promotion reading an application, this job's pull request"),
+    action("google-github-actions/auth", "3", "signs a workflow in to Google Cloud through Workload Identity Federation, with no key"),
+    action("google-github-actions/setup-gcloud", "3", "installs the gcloud command-line tool"),
 )
 BY_KEY = {pin.key: pin for pin in PINS}
 # A date that says when a group of pins was resolved: written as the day of the refresh when any pin of the group changes.
 STAMPS = ((SCAFFOLD, 'BASE_IMAGES_RESOLVED = "{date}"', "python-"), (SCAFFOLD, 'NODE_IMAGES_RESOLVED = "{date}"', "node-"))
 # What else is pinned and stays out of the weekly refresh, and why (tests/test_pins.py keeps this list complete).
 NOT_FOLLOWED = {
-    "uses: ": "GitHub Actions, pinned by commit: Dependabot's",
+    "uses: ": "an action no template uses, pinned by commit: Dependabot's (.github/dependabot.yml); those the templates use are in PINS",
     "us-docker.pkg.dev/cloudrun/container/hello@": "the placeholder a new service starts with; changing it plans every application root",
 }
 
@@ -232,11 +267,51 @@ def locate(text, pattern, pin, path):
     return matches[0]
 
 
+def action_files(root=ROOT):
+    """The files that pin actions by commit (ACTION_FILES), as paths from the repository's root."""
+    return sorted({path.relative_to(root).as_posix() for pattern in ACTION_FILES for path in Path(root).glob(pattern)})
+
+
+def action_text(pin, values):
+    """How an action is written wherever it appears: its commit, then the release that commit is."""
+    return f"{pin.source}@{values['commit']} # v{values['version']}"
+
+
+def action_pattern(pin):
+    return re.compile(r"(?<![\w./-])" + compiled(action_text(pin, {"commit": "{commit}", "version": "{version}"})).pattern + r"(?![\w.+-])")
+
+
+def read_action(pin, root, texts):
+    """An action's commit and release: every mention of it in ACTION_FILES reads `owner/name@<commit> # vX.Y.Z`, all with the
+    same commit and release, so that the templates, labdeploy/workflows.py and every workflow move together."""
+    values, mentioned = {}, 0
+    for path in action_files(root):
+        if path not in texts:
+            texts[path] = (Path(root) / path).read_text()
+        mentions = len(re.findall(rf"(?<![\w./-]){re.escape(pin.source)}@", texts[path]))
+        matches = list(action_pattern(pin).finditer(texts[path]))
+        if len(matches) != mentions:
+            raise PinError(f"{pin.title}: {path} pins it {mentions - len(matches)} time(s) otherwise than `{pin.source}@<commit> # vX.Y.Z`; "
+                           "write the commit and the release it is that way, as everywhere else")
+        for match in matches:
+            for name, value in match.groupdict().items():
+                if values.setdefault(name, value) != value:
+                    raise PinError(f"{pin.title}: {path} pins {name} {value} where another place pins {values[name]}; make them the same")
+        mentioned += mentions
+    if not mentioned:
+        raise PinError(f"{pin.title}: no template, workflow or {WORKFLOWS} uses it any more; take it out of PINS (labdeploy/pins.py) "
+                       "and out of the ignore list in .github/dependabot.yml")
+    return values
+
+
 def read(root=ROOT):
     """The pins as the files hold them, {key: {field: value}}. Every place is found exactly once, and the places of one pin
     agree; otherwise PinError says which file and what to change."""
     texts, found = {}, {}
     for pin in PINS:
+        if pin.kind == "action":
+            found[pin.key] = read_action(pin, root, texts)
+            continue
         values = {}
         for path, pattern in pin.places:
             if path not in texts:
@@ -249,14 +324,17 @@ def read(root=ROOT):
 
 
 def paths():
-    """Every file a refresh may change: the places, the stamps and the generated deploy workflow."""
-    return sorted({path for pin in PINS for path, _ in pin.places} | {path for path, _, _ in STAMPS} | {CENTRAL})
+    """Every file a refresh may change: the places, the stamps, the generated deploy workflow and the files that pin actions."""
+    return sorted({path for pin in PINS for path, _ in pin.places} | {path for path, _, _ in STAMPS} | {CENTRAL} | set(action_files()))
 
 
 def mentions(key, path=None, values=None):
     """Each place of a pin, in one file or all, as the files hold it today (or with `values`): what a test looks for
-    instead of spelling the pinned value out, so the weekly refresh never has to edit a test."""
+    instead of spelling the pinned value out, so the weekly refresh never has to edit a test. An action is written the same
+    way everywhere: `owner/name@<commit> # vX.Y.Z`."""
     pin, values = BY_KEY[key], values or read()[key]
+    if pin.kind == "action":
+        return [action_text(pin, values)]
     return [render(pattern, values) for where, pattern in pin.places if path in (None, where)]
 
 
@@ -570,13 +648,74 @@ def from_npm(pin, current, web, now):
     return found
 
 
+def tag_commit(web, repository, tag):
+    """The commit a tag names in a repository, read from GitHub's git refs API (an annotated tag is followed to its commit),
+    or None when the repository has no such tag. A repository's own tag never names a fork's commit."""
+    api = f"https://api.github.com/repos/{repository}/git"
+    try:
+        target = web.json(f"{api}/ref/tags/{tag}", "application/vnd.github+json")["object"]
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    for _ in range(3):
+        if target.get("type") != "tag":
+            break
+        target = web.json(f"{api}/tags/{target['sha']}", "application/vnd.github+json")["object"]
+    if target.get("type") != "commit" or not re.fullmatch(FIELDS["commit"], target.get("sha") or ""):
+        raise PinError(f"the tag {tag} of {repository} does not name a commit")
+    return target["sha"]
+
+
+def from_action(pin, current, web, now):
+    """The newest release of the action's line at least seven days old, as the commit its tag names in the action's own
+    repository. First, the pinned release's tag must still name the pinned commit: a release's tag never needs to move, so a
+    moved tag holds the action until a person looks (the pinned commit itself keeps working)."""
+    found = Finding(pin, current, was=f"{current['version']} ({current['commit'][:12]})")
+    tagged = tag_commit(web, pin.source, f"v{current['version']}")
+    if tagged != current["commit"]:
+        return held(found, (f"its tag v{current['version']} now names commit {tagged[:12]}, not the pinned {current['commit'][:12]}: the tag "
+                            "was moved after it was pinned" if tagged else f"its repository has no tag v{current['version']} any more")
+                    + "; nothing of this action is proposed until a person looks, and the pinned commit keeps working")
+    eligible, pending = [], []
+    for release in web.json(f"https://api.github.com/repos/{pin.source}/releases?per_page=100", "application/vnd.github+json"):
+        match = re.fullmatch(r"v(\d+\.\d+\.\d+)", release.get("tag_name") or "")
+        if release.get("draft") or release.get("prerelease") or not match:
+            continue
+        version, published = match.group(1), moment(release.get("published_at"))
+        if not in_line(version, pin.line):
+            if beyond(version, pin.line) and (not found.newer or numbers(version) > numbers(found.newer[0][0])):
+                found.newer = [(version, published, release.get("html_url"))]
+            continue
+        if numbers(version) <= numbers(current["version"]) or published is None:
+            continue
+        if now - published < COOLDOWN:
+            pending.append((numbers(version), (f"{pin.title} {version}", published, release.get("html_url"))))
+            continue
+        eligible.append((numbers(version), version, release, published))
+    newest = max(eligible, key=lambda item: item[0]) if eligible else None
+    found.waiting = [item for number, item in sorted(pending) if not newest or number > newest[0]]
+    if not newest:
+        return found
+    _, version, release, published = newest
+    commit = tag_commit(web, pin.source, f"v{version}")
+    if not commit:
+        return held(found, f"its release {version} names the tag v{version}, which its repository does not have")
+    found.status, found.new, found.released, found.label = "update", {"commit": commit, "version": version}, published, f"{version} ({commit[:12]})"
+    found.sources = [("release notes", release.get("html_url")),
+                     ("its tag, locked by an immutable release" if release.get("immutable") else "its tag in the action's repository",
+                      f"https://api.github.com/repos/{pin.source}/git/ref/tags/v{version}"),
+                     ("the changes since the pinned commit", f"https://github.com/{pin.source}/compare/{current['commit']}...{commit}")]
+    return found
+
+
 def held(found, why):
     found.status = "held"
     found.problems.append(why)
     return found
 
 
-SOURCES = {"github": from_github, "dockerhub": from_dockerhub, "gcr": from_gcr, "pypi": from_pypi, "npm": from_npm}
+SOURCES = {"github": from_github, "dockerhub": from_dockerhub, "gcr": from_gcr, "pypi": from_pypi, "npm": from_npm, "action": from_action}
 
 
 def survey(current, web, now):
@@ -596,9 +735,19 @@ def rewrite(text, pattern, values, pin, path):
     return text[:match.start()] + render(pattern, {**match.groupdict(), **values}) + text[match.end():]
 
 
+def rewrite_action(text, pin, current, new):
+    """Every mention of an action pinned at `current`, written at `new`."""
+    return action_pattern(pin).sub(lambda match: action_text(pin, new) if match.groupdict() == current else match.group(0), text)
+
+
 def apply(findings, root=ROOT, today=None):
-    """Write each proposed pin in every place it appears, date the groups that changed, and regenerate the central deploy
-    workflow from the template. Returns the paths it changed."""
+    """Write each proposed pin in every place it appears, date the groups that changed, regenerate the central deploy
+    workflow from the template, then write each new action commit wherever the action appears. Returns the paths it changed.
+
+    The actions come last. deploy.yml takes its actions from the template and from the steps labdeploy/workflows.py adds,
+    whose anchors name the template's actions as they are pinned now: so deploy.yml is made first, and then the new commit
+    is written in all three alike, which leaves deploy.yml equal to what the new labdeploy/workflows.py makes of the new
+    template (CI checks it, in a process that runs the new one)."""
     texts, original = {}, {}
 
     def text(path):
@@ -616,6 +765,10 @@ def apply(findings, root=ROOT, today=None):
     if TEMPLATE in texts and texts[TEMPLATE] != original[TEMPLATE]:
         text(CENTRAL)
         texts[CENTRAL] = central_deploy(texts[TEMPLATE])
+    for found in updates:
+        if found.pin.kind == "action":
+            for path in action_files(root):
+                texts[path] = rewrite_action(text(path), found.pin, found.current, found.new)
     changed = sorted(path for path in texts if texts[path] != original[path])
     for path in changed:
         (Path(root) / path).write_text(texts[path])
@@ -629,7 +782,7 @@ def link(words, url):
 
 def title(findings, today):
     updates = [found for found in findings if found.status == "update"]
-    named = [f"{found.pin.title} {found.label.split(' (')[0]}" if found.pin.kind in ("github", "pypi", "npm") else found.pin.title for found in updates]
+    named = [f"{found.pin.title} {found.label.split(' (')[0]}" if found.pin.kind in ("github", "pypi", "npm", "action") else found.pin.title for found in updates]
     shown = ", ".join(named[:4]) + (f" and {len(named) - 4} more" if len(named) > 4 else "")
     return f"Weekly pin refresh, {today}: {shown}" if updates else f"Weekly pin refresh, {today}: nothing to change"
 
@@ -642,9 +795,10 @@ def report(findings, now, run_url=""):
              "",
              "Every checksum here comes from official release metadata: for a download from GitHub, the SHA-256 GitHub recorded when "
              "the file was uploaded, which the project's own checksum list had to repeat; for an image, its registry's index digest; "
-             "for uv and npm, the hashes PyPI and the npm registry publish. The job never hashed a download to make a pin. Before this "
-             "pull request opened it downloaded each new file and checked it against its new pin, without running it. Nothing merges "
-             "by itself: let CI finish, review, and merge it yourself.",
+             "for uv and npm, the hashes PyPI and the npm registry publish; for a GitHub Action, the commit its release's tag names in "
+             "the action's own repository, written in the templates and in every workflow at once. The job never hashed a download "
+             "to make a pin. Before this pull request opened it downloaded each new file and checked it against its new pin, without "
+             "running it. Nothing merges by itself: let CI finish, review, and merge it yourself.",
              ""]
     if updates:
         lines += [f"## What changes ({len(updates)})", "", "| Pin | What it does | From | To | Released | Sources |", "|---|---|---|---|---|---|"]
@@ -662,9 +816,9 @@ def report(findings, now, run_url=""):
     newer = [(found, version, when, url) for found in findings for version, when, url in found.newer]
     if newer:
         lines += ["## Newer lines, not proposed", "",
-                  "Each of these starts a line newer than the one the platform follows. A new line can change how the tool behaves, so "
-                  "moving to it is a deliberate change: set its `line` in `PINS` (`labdeploy/pins.py`) in a reviewed pull request, and "
-                  "the next run proposes its newest release.", ""]
+                  "Each of these starts a line newer than the one the platform follows. A new line can change how the tool or action "
+                  "behaves, so moving to it is a deliberate change: set its `line` in `PINS` (`labdeploy/pins.py`) in a reviewed pull "
+                  "request, and the next run proposes its newest release.", ""]
         lines += [f"- {link(f'{found.pin.title} {version}', url)} ({day(when)}); the platform follows {found.pin.line}."
                   + (f" {found.pin.line_note}" if found.pin.line_note else "") for found, version, when, url in newer]
         lines.append("")
@@ -675,21 +829,33 @@ def report(findings, now, run_url=""):
         lines.append("")
     if updates:
         tools = [found.pin.title for found in updates if found.pin.key in ("trufflehog", "trivy", "osv-scanner", "hadolint", "pack", "cosign")]
+        actions = [found.pin.title for found in updates if found.pin.kind == "action"]
         reaches = sorted({(found.pin.title, found.pin.reaches) for found in updates}, key=lambda item: item[1])
-        lines += ["## What to review", ""]
+        steps = []
         if tools:
-            lines.append(f"1. The release notes of {', '.join(tools)}, linked above: look for changed command-line options and changed "
+            steps.append(f"The release notes of {', '.join(tools)}, linked above: look for changed command-line options and changed "
                          "output. The pipeline reads TruffleHog's, Trivy's, OSV-Scanner's and hadolint's JSON output; a changed field "
                          "stops a release or hides a finding.")
-        lines += [f"{2 if tools else 1}. CI runs the whole test suite on this pull request: every place a pin is written must agree with "
-                  "the others, and `.github/workflows/deploy.yml` must equal its template. CI does not run the new tools or images on a "
-                  "real release; the first release after the merge does, so look at its run.",
-                  f"{3 if tools else 2}. After you merge, each change arrives at:"]
+        if actions:
+            steps.append(f"The release notes of {', '.join(actions)} and the changes since each pinned commit, linked above: look for an "
+                         "input or output renamed or removed, and for a different runtime (`runs.using`). A step that passes an input the "
+                         "action no longer reads fails only when that step runs.")
+        applying = [found.pin.title for found in updates if found.pin.kind == "action" and f"{found.pin.source}@" in (ROOT / INFRA_APPLY).read_text()]
+        if applying:
+            steps.append(f"**Merging this starts Infrastructure apply for every application root**, staging and production: {', '.join(applying)} "
+                         f"moves in `{INFRA_APPLY}`, which runs when a push to main changes it, and a change to an infrastructure workflow "
+                         "counts as a change to every root. Each apply goes through its environment's protection and should find nothing "
+                         "to change while the weekly drift check is clean: look at its issue before you merge.")
+        steps += ["CI runs the whole test suite on this pull request: every place a pin is written must agree with the others, and "
+                  "`.github/workflows/deploy.yml` must equal its template. CI does not run the new tools, images or actions on a real "
+                  "release; the first release after the merge does, so look at its run.",
+                  "After you merge, each change arrives at:"]
         grouped = {}
         for name, where in reaches:
             grouped.setdefault(where, []).append(name)
+        lines += ["## What to review", ""] + [f"{number}. {step}" for number, step in enumerate(steps, 1)]
         lines += [f"   - {', '.join(names)}: {where}." for where, names in grouped.items()]
-        lines += [f"{4 if tools else 3}. To undo, revert this pull request: the previous pins come back.", ""]
+        lines += [f"{len(steps) + 1}. To undo, revert this pull request: the previous pins come back.", ""]
     lines.append("Made by `.github/workflows/pins.yml`" + (f" ([this run]({run_url}))" if run_url else "")
                  + ". If this pull request is still open next week, the next run replaces it; push nothing to its branch.")
     return "\n".join(lines) + "\n"

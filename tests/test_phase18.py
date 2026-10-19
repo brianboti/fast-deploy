@@ -582,7 +582,7 @@ def test_the_node_steps_are_pinned_and_run_for_node_services_only():
         workflow, steps = build_steps(text) if "__LAB_" in text else (yaml.safe_load(text), yaml.safe_load(text)["jobs"]["build"]["steps"])
         names = [step.get("name") or step.get("id") for step in steps]
         setup = next(step for step in steps if step.get("id") == "app-node")
-        assert setup["uses"] == "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0".split(" # ")[0]
+        assert setup["uses"] == pins.mentions("actions/setup-node")[0].split(" # ")[0]  # by commit, as labdeploy/pins.py reads it
         assert setup["with"] == {"node-version": "${{ steps.policy.outputs.node }}", "package-manager-cache": False}
         assert setup["if"] == "steps.policy.outputs.runtime == 'node-http'"
         for name in ("Run unit tests", "Audit Python dependencies"):
@@ -823,7 +823,7 @@ def test_a_bare_node_service_gets_every_file_the_standard_asks_for():
     assert (spec.runtime, spec.node, spec.reviewed, spec.tests, spec.build.recipe) == ("node-http", default_node(), False, "required", "repository")
     ci = yaml.safe_load(files[".github/workflows/ci.yml"])
     setup = ci["jobs"]["tests"]["steps"][1]
-    assert setup["uses"].startswith("actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1") and setup["with"]["package-manager-cache"] is False
+    assert setup["uses"] == pins.mentions("actions/setup-node")[0].split(" # ")[0] and setup["with"]["package-manager-cache"] is False
     assert "npm ci --ignore-scripts" in files[".github/workflows/ci.yml"] and "node --test" in files[".github/workflows/ci.yml"]
     dependabot = yaml.safe_load(files[".github/dependabot.yml"])
     npm = next(entry for entry in dependabot["updates"] if entry["package-ecosystem"] == "npm")
@@ -845,8 +845,8 @@ def test_the_drafter_keeps_what_exists_and_says_what_it_cannot_draft():
 
 def test_the_drafted_ci_and_dependabot_pin_what_the_platform_pins():
     template = (scaffold.TEMPLATES / "ci-node.yml").read_text()
-    assert "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0" in template
-    assert "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0" in Path("templates/deploy-gcp.yml").read_text()
+    setup_node = pins.mentions("actions/setup-node")[0]  # by commit with its release, as labdeploy/pins.py reads it
+    assert setup_node in template and setup_node in Path("templates/deploy-gcp.yml").read_text()
     checkout = Path(".github/workflows/ci.yml").read_text().split("actions/checkout@")[1].split(" ")[0]
     assert f"actions/checkout@{checkout}" in template
 

@@ -44,7 +44,7 @@ A working first implementation of the lab deployment platform: Claude calls auth
 - Every tool declares a safety hint (read-only, creates a record, or changes cloud resources) and a structured output schema, so Claude's client can ask before risky calls.
 - Cloud Run gates traffic on an HTTP startup probe at the reviewed health path before the platform's own probes run.
 - Signed SLSA build provenance for every pushed image digest, verified before release, plus an Artifact Analysis vulnerability summary with optional release blocking.
-- CI lints Python (ruff) and workflows (zizmor), audits the platform's own dependencies, and validates the Terraform; Dependabot keeps action and provider pins current.
+- CI lints Python (ruff) and workflows (zizmor), audits the platform's own dependencies, and validates the Terraform; Dependabot keeps the provider pins current, and a weekly job proposes, in one reviewed pull request, the other pins (tools, images and the actions the templates use) once each release is a week old.
 - Deployments and recovery share an explicit pending-work queue. A versioned GCS checkpoint lets a separate workflow recover a release after runner loss.
 - GitHub Actions template: tests, dependency vulnerability audit, container build, artifact transfer, federated GCP authentication, image push, digest deployment, authenticated probes, and traffic restoration on failure.
 - Terraform foundation: service-specific IAM, Artifact Registry, Cloud Run, workload identities and GitHub OIDC trust restricted by numeric repository/owner IDs, main branch, staging environment, and workflow path.
