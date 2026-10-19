@@ -365,7 +365,6 @@ jobs:
       - name: Audit Node.js dependencies
         if: steps.policy.outputs.runtime == 'node-http'
         env:
-          TRUST: ${{ steps.policy.outputs.trust }}
           PYTHONPATH: ${{ github.workspace }}/platform
         shell: bash
         run: |
