@@ -3,7 +3,7 @@
 Dependabot follows the platform's Terraform providers and the actions no template uses. Everything else the platform pins
 by version and checksum, by digest or by commit is listed in PINS with its official source, the line of releases the
 platform follows and every place it is written: the tools the pipeline downloads (templates/deploy-gcp.yml,
-.github/workflows/promote.yml), the buildpacks builders and run images, the python:X.Y-slim and node:<line>-slim indexes,
+.github/workflows/promote.yml), the buildpacks builders and run images, the python:X.Y-slim and node:<line>-trixie-slim indexes,
 uv and the npm the lock containers install (labdeploy/scaffold.py), CI's hadolint and OpenTofu, the machine's Caddy and
 Litestream, and the GitHub Actions the templates use. Dependabot reads only .github/workflows, so it would move such an
 action in the workflows and never in the templates they are made from, nor in labdeploy/workflows.py, which writes
@@ -133,7 +133,7 @@ def python_image(version):
 
 
 def node_image(line):
-    return Pin(f"node-{line}", f"node:{line}-slim", "dockerhub", f"node:{line}-slim",
+    return Pin(f"node-{line}", f"node:{line}-trixie-slim", "dockerhub", f"node:{line}-trixie-slim",
                ((SCAFFOLD, f'    "{line}": "{{digest}}",  # {{release}}, Debian {{debian}}'),),
                "drafted Node.js Dockerfiles, the platform's Node.js image and the lock containers",
                f"drafts and lock containers on {CONTROLLER}; the platform's own image at {PIPELINE}",

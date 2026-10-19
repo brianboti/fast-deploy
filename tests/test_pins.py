@@ -317,8 +317,9 @@ def test_an_image_is_proposed_once_its_tag_has_pointed_to_it_for_seven_days():
     hub(web, "python", "3.12-slim", current["digest"], 1)
     assert pins.from_dockerhub(pin, current, web, NOW).status == "current"
     node24, web = pins.BY_KEY["node-24"], FakeWeb()
-    hub(web, "node", "24-slim", new, 9, names=("24.23.0-slim", "24.23.0-bookworm-slim"))
-    assert pins.from_dockerhub(node24, {"digest": "sha256:" + "3" * 64, "release": "24.22.0", "debian": "bookworm"}, web, NOW).new["release"] == "24.23.0"
+    hub(web, "node", "24-trixie-slim", new, 9, names=("24.23.0-trixie-slim",))
+    found = pins.from_dockerhub(node24, {"digest": "sha256:" + "3" * 64, "release": "24.22.0", "debian": "trixie"}, web, NOW)
+    assert node24.source == "node:24-trixie-slim" and found.new == {"digest": new, "release": "24.23.0", "debian": "trixie"}
 
 
 def gcr(web, repository, images):

@@ -1,3 +1,34 @@
+# 1.20.9: the platform's Node.js image passes its own gate
+
+Found on 2026-10-19 in the live exercise of Phase 18: the first releases of `node-bare`, `node-docker`, `node-onnx` and
+`node-nolock` (code nobody has reviewed, from `brianboti/fast-deploy-node-trial`) passed their tests and the dependency
+audit, then stopped at the image's scan: "13 critical or high findings with a fix available, in code nobody has
+reviewed". None of them was in the services' code. Artifact Analysis and Trivy agree on the image the platform pins:
+
+- `node:24-slim` and `node:22-slim` are Debian 12, whose `perl` (5.36.0-7+deb12u3) had five critical and five high
+  findings fixed in deb12u4, which the official image had not taken; the pinned digest was that day's newest.
+- npm's own bundled libraries (`brace-expansion` 5.0.9, `undici` 6.28.0) carried three high findings with fixes.
+
+So no Node.js service nobody had reviewed could be released on the platform's image. The Python images are Debian 13 and
+had no such finding.
+
+1. **Debian 13 for every Node.js line.** The platform's image, its lock containers and the drafted Dockerfile build on
+   `node:<line>-trixie-slim` by index digest (22.23.3 and 24.22.0, the same releases as before; `node:26-slim` was already
+   Debian 13, its digest unchanged). The weekly pin refresh follows the same tags.
+2. **No package manager in the image.** After `npm ci` (and `npm rebuild` for `build.scripts`), npm, npx, Corepack and
+   Yarn are removed: node itself starts the service. A service that runs `npm` while it serves fails there; the contract
+   page says so and how to start a child process with `process.execPath` instead.
+
+Checked on Docker: `node-bare` built this way has no critical or high finding with a fix (Trivy 0.74.0), answers
+`/health`, stops cleanly on SIGTERM and is 84 MB; both Node.js Dockerfiles pass hadolint 2.15.1. The live releases are in
+`docs/VALIDATION.md` once this is on the machine. A Dockerfile of a repository's own on `node:<line>-slim` is still stopped
+the same way: the contract page names the fix.
+
+1.20.7 and 1.20.8 are open at the time of writing (#109, #110).
+
+Tests: 836 pass; ruff clean.
+
+
 # 1.20.6: the actions the templates use, in the weekly pin refresh
 
 Asked for on 2026-10-19: Dependabot's pull requests #47 (`actions/download-artifact` 4.3.0 to 8.0.2) and #48

@@ -488,7 +488,7 @@ def fake_npm(calls, output=None):
 def test_the_lock_is_made_by_npm_11_10_or_later_with_every_script_off():
     calls = []
     package = json.dumps({"name": "svc", "version": "1.0.0", "dependencies": {"express": "^4.21.2"}})
-    for line, image in (("22", "node:22-slim@"), ("24", "node:24-slim@"), ("26", "node:26-slim@")):
+    for line, image in (("22", "node:22-trixie-slim@"), ("24", "node:24-trixie-slim@"), ("26", "node:26-trixie-slim@")):
         made = scaffold.node_lock(package, line, fake_npm(calls))
         assert made["error"] is None and json.loads(made["text"])["lockfileVersion"] == 3
         args, stdin = calls[-1]
@@ -759,7 +759,15 @@ def test_the_platforms_node_dockerfile():
     text = scaffold.platform_dockerfile(node_spec(scripts=["sharp@0.34.4"]), True, "package-lock.json")
     assert text.startswith("# Made by Fast Deploy at build time") and f"FROM {scaffold.node_base_image('24')}\n" in text
     assert "ENV NODE_ENV=production HOME=/tmp\n" in text and "COPY package.json package-lock.json ./\n" in text
-    assert "RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm rebuild sharp@0.34.4 && npm cache clean --force\n" in text
+    assert "RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm rebuild sharp@0.34.4 && npm cache clean --force \\\n" in text
+    # Live 2026-10-19: node:24-slim (Debian 12) carried perl's fixable critical findings and npm's bundled libraries three
+    # fixable high ones, so the gate stopped every Node.js service nobody had reviewed. Debian 13, and no package manager left.
+    assert "-trixie-slim@" in scaffold.node_base_image("24") and all("trixie" in comment for comment in Path("labdeploy/scaffold.py").read_text().split(
+        "NODE_IMAGES = {", 1)[1].split("}", 1)[0].splitlines()[1:])
+    removed = text.split("npm cache clean --force", 1)[1].split("COPY . .", 1)[0]
+    for path in ("/usr/local/lib/node_modules/npm", "/usr/local/lib/node_modules/corepack", "/usr/local/bin/npm", "/usr/local/bin/npx",
+                 "/usr/local/bin/corepack", "/usr/local/bin/yarn", "/usr/local/bin/yarnpkg", "/opt/yarn-v*"):
+        assert f" {path}" in removed
     assert text.index("RUN npm ci") < text.index("COPY . .") < text.index("USER 65532:65532") and "EXPOSE 8787\n" in text
     assert text.rstrip().endswith('CMD ["node", "server/index.mjs"]') and "npm start" not in text.split("never npm start")[0]
     plain = scaffold.platform_dockerfile(node_spec(), True, "npm-shrinkwrap.json")
