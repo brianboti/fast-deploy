@@ -204,3 +204,12 @@ variable "uptime_regions" {
   default     = []
   description = "Where the uptime check calls from: every region when empty (staging); production uses three US regions (D39)."
 }
+variable "domain" {
+  type        = string
+  default     = ""
+  description = "A name of the lab's own that a global load balancer with Cloud Armor answers at (domain.tf, docs/ROADMAP.md 16.6): production only, about $25 a month; empty for none."
+  validation {
+    condition     = var.domain == "" || (length(var.domain) <= 253 && can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$", var.domain)) && !endswith(var.domain, ".run.app"))
+    error_message = "domain is empty or a lowercase host name of the lab's own, not a run.app address."
+  }
+}

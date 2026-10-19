@@ -151,6 +151,46 @@ resource "google_project_iam_member" "infra_apply_log_alerts" {
   role    = google_project_iam_custom_role.log_alert_writer[0].name
   member  = "serviceAccount:${google_service_account.infra_apply[0].email}"
 }
+# A custom domain in production (docs/ROADMAP.md 16.6, the service module's domain.tf): the apply identity builds the load
+# balancer (loadBalancerAdmin reads instances and networks but changes neither) and its Cloud Armor policy (only the
+# policy permissions, not securityAdmin's firewall rules); the plan identity reads the two kinds of resource that
+# networkViewer leaves out. Staging has no domains, so its foundation is unchanged.
+locals {
+  domains_enabled = local.pipeline_enabled && var.environment == "production"
+}
+resource "google_project_iam_custom_role" "armor_manager" {
+  count       = local.domains_enabled ? 1 : 0
+  role_id     = "labDeployArmorManager"
+  title       = "Lab Deploy Cloud Armor manager"
+  description = "Creates and changes the Cloud Armor policies in front of application domains"
+  permissions = ["compute.securityPolicies.create", "compute.securityPolicies.delete", "compute.securityPolicies.get", "compute.securityPolicies.list",
+  "compute.securityPolicies.setLabels", "compute.securityPolicies.update", "compute.securityPolicies.use"]
+}
+resource "google_project_iam_member" "infra_apply_balancers" {
+  count   = local.domains_enabled ? 1 : 0
+  project = var.project_id
+  role    = "roles/compute.loadBalancerAdmin"
+  member  = "serviceAccount:${google_service_account.infra_apply[0].email}"
+}
+resource "google_project_iam_member" "infra_apply_armor" {
+  count   = local.domains_enabled ? 1 : 0
+  project = var.project_id
+  role    = google_project_iam_custom_role.armor_manager[0].name
+  member  = "serviceAccount:${google_service_account.infra_apply[0].email}"
+}
+resource "google_project_iam_custom_role" "balancer_viewer" {
+  count       = local.domains_enabled ? 1 : 0
+  role_id     = "labDeployBalancerViewer"
+  title       = "Lab Deploy load balancer viewer"
+  description = "Reads the serverless endpoint groups and Cloud Armor policies of application domains"
+  permissions = ["compute.regionNetworkEndpointGroups.get", "compute.regionNetworkEndpointGroups.list", "compute.securityPolicies.get", "compute.securityPolicies.list"]
+}
+resource "google_project_iam_member" "infra_plan_balancers" {
+  count   = local.domains_enabled ? 1 : 0
+  project = var.project_id
+  role    = google_project_iam_custom_role.balancer_viewer[0].name
+  member  = "serviceAccount:${google_service_account.infra_plan[0].email}"
+}
 # An application root with database_auth = "password" creates its DATABASE_URL secret and adds the first version through a
 # write-only argument. Creating and describing secrets and versions only: secretmanager.versions.access is not here, so the
 # pipeline can never read a value back (the provider does not read a write-only version's payload either).

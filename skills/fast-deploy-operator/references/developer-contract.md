@@ -78,6 +78,7 @@ needs:
   migrate: []             # e.g. [alembic, upgrade, head]: runs before visitors move to a new version
 build:
   context: service        # or repository, when a service in a monorepo copies shared code from outside its folder
+domain: api.example.org   # production only: a name of the lab's own through a load balancer with Cloud Armor, about $25 a month
 reviewed: true            # set by the person who reviewed the file
 ```
 

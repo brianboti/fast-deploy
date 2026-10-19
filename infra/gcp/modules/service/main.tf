@@ -164,7 +164,9 @@ resource "google_cloud_run_v2_service" "app" {
   # Pages for people: Identity-Aware Proxy in front of the service, the listed viewers only; Terraform owns this switch
   # and the runner refuses a release whose platform.yaml disagrees with it.
   iap_enabled = local.pages_for_people
-  labels      = local.labels # releases merge their own labels in (--update-labels), so these survive
+  # Callers may mint their identity token for the domain as well as for the run.app address (domain.tf).
+  custom_audiences = local.domain_enabled ? ["https://${var.domain}"] : null
+  labels           = local.labels # releases merge their own labels in (--update-labels), so these survive
   template {
     service_account = google_service_account.runtime.email
     scaling {

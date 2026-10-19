@@ -91,6 +91,14 @@ PRODUCTION_POSTGRES = {
     "sla": {"instance_usd_month": 98.63, "storage_usd_per_gb_month": 0.18,
             "note": "1 dedicated vCPU and 3.75 GB with a standby in a second zone: the smallest shape Google's 99.95 percent SLA covers"},
 }
+# A custom domain in production (docs/ROADMAP.md 16.6), from the Cloud Billing Catalog read on 2026-10-19: a project's first
+# five global forwarding rules bill one minimum charge of $0.025 an hour (the HTTPS rule and its HTTP redirect; a sixth rule
+# adds $0.01 an hour), Cloud Armor Standard $5 a month per policy, $1 per rule and $0.75 per million requests, and the load
+# balancer's data processing $0.008 per GiB each way. The Google-managed certificate and the address in use cost nothing.
+DOMAIN_PRICING = {"forwarding_rules_usd_month": 18.25, "armor_policy_usd_month": 5.0, "armor_rule_usd_month": 1.0, "armor_rules": 2,
+                  "armor_usd_per_million_requests": 0.75, "processing_usd_per_gib": 0.008, "verified": "2026-10-19",
+                  "note": "a global load balancer with a Google-managed certificate and a Cloud Armor policy of two rules (a per-address rate "
+                          "limit and the default); a second domain in the same project shares the forwarding-rule charge"}
 
 
 def needs_costs(spec, pricing=NEEDS_PRICING, environment="staging"):
@@ -109,7 +117,14 @@ def needs_costs(spec, pricing=NEEDS_PRICING, environment="staging"):
             p = {**p, **PRODUCTION_POSTGRES[spec.needs.database_tier], "tier": spec.needs.database_tier}
         floor = p["instance_usd_month"] + p["storage_gb"] * p["storage_usd_per_gb_month"]
         items.append({"need": "postgres", "name": spec.name, "floor_usd_month": _usd(floor), "pricing": p})
+    if environment == "production" and spec.domain:  # staging keeps its run.app address
+        items.append({"need": "domain", "name": spec.domain, "floor_usd_month": domain_floor(), "pricing": DOMAIN_PRICING})
     return items
+
+
+def domain_floor(pricing=DOMAIN_PRICING):
+    """What a custom domain bills every month whether or not anyone visits (docs/ROADMAP.md 16.6)."""
+    return _usd(pricing["forwarding_rules_usd_month"] + pricing["armor_policy_usd_month"] + pricing["armor_rule_usd_month"] * pricing["armor_rules"])
 
 
 def _usd(value):
@@ -185,9 +200,16 @@ def estimate(spec, requests_per_month=None, average_request_seconds=None, pricin
     return result
 
 
-def findings(spec, pricing=PRICING):
-    """Static cost-hygiene checks from Google's Cloud Run cost-optimization guidance."""
+def findings(spec, pricing=PRICING, environment="staging"):
+    """Static cost-hygiene checks from Google's Cloud Run cost-optimization guidance; in production, a domain's floor too."""
     items = []
+    if environment == "production" and spec.domain:
+        floor = domain_floor()
+        items.append({"id": "domain_floor", "severity": "warning", "setting": "domain", "current": spec.domain, "estimated_monthly_usd": floor,
+                      "message": f"The domain bills about ${floor:.2f} a month whether or not anyone visits: the load balancer's forwarding rules "
+                                 f"(${DOMAIN_PRICING['forwarding_rules_usd_month']:.2f}) and Cloud Armor (${floor - DOMAIN_PRICING['forwarding_rules_usd_month']:.2f}). "
+                                 "That is more than a $20 monthly budget by itself: raise production's monthly_budget_usd first, or the spending cap "
+                                 "closes production before the month ends. Remove the domain from the contract when it is no longer needed."})
     if spec.scaling.minimum > 0:
         idle = spec.scaling.minimum * instance_second_usd(spec, pricing, idle=True) * SECONDS_PER_MONTH
         items.append({"id": "warm_instances", "severity": "warning", "setting": "scaling.minimum", "current": spec.scaling.minimum,

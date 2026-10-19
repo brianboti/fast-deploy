@@ -441,7 +441,13 @@ with a database in production. Item 16.7 built on 2026-10-19 as 1.18.8: a releas
 repository, production's spend beside staging's in the weekly cost report (the billing account's one export holds both,
 so no access changes), `scripts/cap-drill.sh` along the path a real notification takes, and the incident procedure in the
 runbook. The drift check, which has covered production's roots since 16.1, planned the demo's clean on its first run with
-a production.
+a production. Item 16.6 built on 2026-10-19 as 1.18.9: `domain:` in the contract (production only) puts a global load
+balancer with a Google-managed certificate and a Cloud Armor rate limit in front of the service, with its floor ($25.25 a
+month, Billing Catalog 2026-10-19) in every promotion and a warning that it exceeds a $20 budget by itself; IAP stays on
+the service, which Google documents as enforced on every way in. Not done: ingress restricted to the balancer. Every
+release probes the candidate at its `run.app` tag address, which restricted ingress would refuse, so the `run.app`
+address keeps answering behind the same sign-in (no application is public); the domain adds a name and a rate limit, not a
+new way in. The live trial waits for a name the lab controls.
 
 | Item | Change | Where |
 |---|---|---|
