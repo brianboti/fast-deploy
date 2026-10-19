@@ -6,7 +6,7 @@ platform's GitHub Actions and Terraform providers: it cannot follow a download h
 code or a machine's startup script. Renovate could, with regular expressions, but its source for release files finds a
 new checksum by downloading small files as checksum lists or by hashing the file itself, never by reading the digest
 GitHub records, and its hosted app does not run the command that regenerates `.github/workflows/deploy.yml`. So the
-platform has a small job of its own. 1.20.1 is #100, merged before it; 1.20.2 is the pull request open beside it.
+platform has a small job of its own. 1.20.1 (#100) and 1.20.2 (#101) merged before it.
 
 1. **`labdeploy/pins.py`** lists the 23 pins with their official source, the line the platform follows and every place
    each one is written: TruffleHog, Trivy, OSV-Scanner, hadolint, pack and Cosign in the pipeline, the four buildpacks
@@ -45,6 +45,24 @@ read the pins now. Cost: nothing on this public repository (about 11 runner minu
 cloud resource.
 
 Tests: 797 pass (19 new); ruff and zizmor clean.
+
+
+# 1.20.2: GitHub's malware advisories stop a Node.js release
+
+Found on 2026-10-19 while preparing the live exercise of Phase 18, by running the pinned OSV-Scanner 2.7.0 on a lockfile
+with `flatmap-stream@0.1.1` planted in it (the 2018 event-stream attack; npm removed it that year).
+
+1. **A malware advisory without a MAL- record stops the release.** The dependency audit counted a package as malicious
+   only through an OpenSSF `MAL-` record. GitHub files its own malware advisories as embedded malicious code (CWE-506,
+   "Malicious Package in ..."), often with no fixed version; alone, such a finding was listed as "critical, no fix yet"
+   and the release went on. `flatmap-stream` was stopped only because OpenSSF also filed MAL-2025-20690 for it. An
+   advisory with CWE-506 is now a known malicious package, like a `MAL-` record. Checked on the scanner's real output with
+   the `MAL-` record taken out: "1 known malicious package in the lockfile (GHSA-9x64-5r7x-2q53 (flatmap-stream@0.1.1))".
+2. **One package counts once.** A package with several advisories is named once, by its `MAL-` record when it has one.
+
+The image's scan (Artifact Analysis) is unchanged: its notes carry no CWE list, and it already blocks `MAL-` records.
+
+Tests: 778 pass; ruff clean.
 
 
 # 1.20.1: the lock for a Node.js 22 service
