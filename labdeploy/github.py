@@ -678,6 +678,20 @@ class GitHub:
         commits = self.request("GET", f"/repos/{repository}/commits", params={"sha": branch, "path": path, "per_page": 1}).json()
         return commits[0]["sha"] if commits else None
 
+    def create_tag(self, repository, name, sha, message):
+        """An annotated tag at a commit, the release tag of a promotion (docs/ROADMAP.md 16.7): the tag object, then its
+        reference. A tag of that name that exists already is left where it is and reported, so asking twice never moves one."""
+        url = f"https://github.com/{repository}/releases/tag/{quote(name, safe='/')}"
+        tag = self.request("POST", f"/repos/{repository}/git/tags", json={"tag": name, "message": message, "object": sha, "type": "commit"}).json()
+        try:
+            self.request("POST", f"/repos/{repository}/git/refs", json={"ref": f"refs/tags/{name}", "sha": tag["sha"]})
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 422:
+                raise
+            self.request("GET", f"/repos/{repository}/git/ref/tags/{quote(name, safe='/')}")  # 422 without the tag is a refusal, raised here
+            return {"name": name, "url": url, "existed": True}
+        return {"name": name, "url": url, "existed": False}
+
     def status(self, app, plan):
         result = plan.get("dispatch_result", {})
         run_id = result.get("workflow_run_id")

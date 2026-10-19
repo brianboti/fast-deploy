@@ -625,7 +625,7 @@ def test_billing_query_bytes_are_recorded():
             Client.calls += 1
             if Client.calls == 1:
                 return Response({"jobComplete": True, "totalBytesProcessed": "1000000", "rows": [{"f": [{"v": str(clock.time())}]}]})
-            return Response({"jobComplete": True, "totalBytesProcessed": "2500000", "rows": [{"f": [{"v": "Cloud Run"}, {"v": "demo"}, {"v": "1.5"}]}]})
+            return Response({"jobComplete": True, "totalBytesProcessed": "2500000", "rows": [{"f": [{"v": "test-project"}, {"v": "Cloud Run"}, {"v": "demo"}, {"v": "1.5"}]}]})
 
     result = billing_actuals("test-project.billing_export.gcp_billing_export_v1_X", "test-project", "token", client=Client())
     assert result["bigquery_bytes_processed"] == 3_500_000 and result["total_net_cost_usd"] == 1.5

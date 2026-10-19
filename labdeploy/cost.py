@@ -366,9 +366,17 @@ def summary_lines(report):
     actual = report.get("actual_spend") or {}
     if actual.get("by_service") is not None:
         top = ", ".join(f"{r['service']} ${r['net_cost_usd']:.2f}" for r in actual["by_service"][:4])
-        lines.append(f"Actual project spend, last {actual['window_days']} days, net of credits: ${actual['total_net_cost_usd']:.2f} ({top or 'nothing billed'})")
+        projects = actual.get("by_project") or []
+        if len(projects) > 1:
+            split = ", ".join(f"{r['environment']} ${r['net_cost_usd']:.2f}" for r in projects)
+            lines.append(f"Actual spend, last {actual['window_days']} days, net of credits: ${actual['total_net_cost_usd']:.2f} for staging and production "
+                         f"together ({split}; {top or 'nothing billed'})")
+        else:
+            lines.append(f"Actual project spend, last {actual['window_days']} days, net of credits: ${actual['total_net_cost_usd']:.2f} ({top or 'nothing billed'})")
         if actual.get("app"):
-            lines.append(f"Of which labelled {actual['app']['name']}: ${actual['app']['net_cost_usd']:.2f}")
+            per = actual["app"].get("by_environment") or {}
+            split = " (" + ", ".join(f"{environment} ${value:.2f}" for environment, value in per.items()) + ")" if per else ""
+            lines.append(f"Of which labelled {actual['app']['name']}: ${actual['app']['net_cost_usd']:.2f}{split}")
     elif actual.get("warning"):
         lines.append(f"Actual spend unavailable: {actual['warning']}")
     if observed:
@@ -499,13 +507,16 @@ def reviewed_spec_from_github(repository, ref="main", token=None, path="."):
     return parse_spec(base64.b64decode(data["content"]).decode())
 
 
+# The billing account's one export holds every project linked to it; the report reads only the platform's: staging's, and
+# production's when the application has one (docs/ROADMAP.md 16.7).
 BILLING_QUERY = """
-SELECT service.description AS service,
+SELECT project.id AS project_id,
+       service.description AS service,
        IFNULL((SELECT l.value FROM UNNEST(labels) l WHERE l.key = 'lab-deploy-app' LIMIT 1), '') AS app,
        ROUND(SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)), 4) AS net_cost_usd
 FROM `{table}`
-WHERE project.id = @project AND usage_start_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)
-GROUP BY service, app
+WHERE project.id IN UNNEST(@projects) AND usage_start_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)
+GROUP BY project_id, service, app
 HAVING net_cost_usd <> 0
 ORDER BY net_cost_usd DESC
 """
@@ -515,12 +526,16 @@ FRESHNESS_QUERY = "SELECT UNIX_SECONDS(MAX(usage_end_time)) AS latest FROM `{tab
 STALE_AFTER_SECONDS = 2 * 86400  # the export is up to a day behind; two days without data means it is not arriving
 
 
-def billing_actuals(table, project_id, token, days=30, client=None, app=None, now=None):
+def billing_actuals(table, project_id, token, days=30, client=None, app=None, now=None, production=None):
     """Actual net spend from the Cloud Billing export in BigQuery, by Google service and by the lab-deploy-app label: the bill, not an estimate.
-    An export without recent data makes the spend unknown, never zero."""
+    `production` is the application's production project, whose spend is read from the same export and shown beside
+    staging's. An export without recent data makes the spend unknown, never zero."""
     import httpx
     if not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+", table):
         raise ValueError("BILLING_EXPORT_TABLE must be project.dataset.table")
+    if production is not None and (not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", production) or production == project_id):
+        raise ValueError("PRODUCTION_PROJECT_ID must be another project's id")
+    environments = {project_id: "staging", **({production: "production"} if production else {})}
 
     read = []
 
@@ -546,24 +561,35 @@ def billing_actuals(table, project_id, token, days=30, client=None, app=None, no
                 "warning": (f"The billing export has no data after {data_through[:10]}" if data_through else "The billing export is empty")
                 + "; actual spend is unknown, not zero. An export starts within a day of being enabled; if this lasts, check Billing → "
                   "Billing export in the console (the dataset and the standard usage cost export)."}
-    cells = [{"service": row["f"][0]["v"], "app": row["f"][1]["v"] or "", "net_cost_usd": float(row["f"][2]["v"])} for row in query(
-        BILLING_QUERY.format(table=table), [{"name": "project", "parameterType": {"type": "STRING"}, "parameterValue": {"value": project_id}},
-                                            {"name": "days", "parameterType": {"type": "INT64"}, "parameterValue": {"value": str(days)}}])]
-    by_service, by_app = {}, {}
+    projects = {"name": "projects", "parameterType": {"type": "ARRAY", "arrayType": {"type": "STRING"}},
+                "parameterValue": {"arrayValues": [{"value": project} for project in environments]}}
+    cells = [{"project": row["f"][0]["v"], "service": row["f"][1]["v"], "app": row["f"][2]["v"] or "", "net_cost_usd": float(row["f"][3]["v"])}
+             for row in query(BILLING_QUERY.format(table=table), [projects, {"name": "days", "parameterType": {"type": "INT64"},
+                                                                           "parameterValue": {"value": str(days)}}])]
+    by_service, by_app, by_project = {}, {}, dict.fromkeys(environments, 0.0)
     for cell in cells:
         by_service[cell["service"]] = round(by_service.get(cell["service"], 0.0) + cell["net_cost_usd"], 4)
         label = cell["app"] or "(unlabelled)"
         by_app[label] = round(by_app.get(label, 0.0) + cell["net_cost_usd"], 4)
+        by_project[cell["project"]] = round(by_project.get(cell["project"], 0.0) + cell["net_cost_usd"], 4)
     result = {"window_days": days, "table": table, "data_through": data_through, "total_net_cost_usd": round(sum(c["net_cost_usd"] for c in cells), 4),
               "by_service": [{"service": s, "net_cost_usd": v} for s, v in sorted(by_service.items(), key=lambda kv: -kv[1])],
               "by_app": [{"app": a, "net_cost_usd": v} for a, v in sorted(by_app.items(), key=lambda kv: -kv[1])],
+              "by_project": [{"project": p, "environment": environments.get(p), "net_cost_usd": by_project[p]} for p in environments],
               "bigquery_bytes_processed": sum(read) if read else None,
               "note": "Net of credits, from Google's billing export; up to a day behind. Resources carry the lab-deploy-app label; "
-                      "Firestore and Cloud Run request fees are not labelled and show as unlabelled. Compare with usd_month_at_list_price above."}
+                      "Firestore and Cloud Run request fees are not labelled and show as unlabelled. Compare with usd_month_at_list_price above."
+                      + (" Staging and production together: each project's own total is under by_project." if production else "")}
     if app:
         own = [c for c in cells if c["app"] == app]
         result["app"] = {"name": app, "net_cost_usd": round(sum(c["net_cost_usd"] for c in own), 4),
-                         "by_service": sorted(({"service": c["service"], "net_cost_usd": c["net_cost_usd"]} for c in own), key=lambda r: -r["net_cost_usd"])}
+                         "by_service": sorted(({"service": c["service"], "net_cost_usd": c["net_cost_usd"]} for c in own if c["project"] == project_id),
+                                              key=lambda r: -r["net_cost_usd"])}
+        if production:
+            result["app"]["by_environment"] = {environment: round(sum(c["net_cost_usd"] for c in own if c["project"] == project), 4)
+                                               for project, environment in environments.items()}
+            result["app"]["production_by_service"] = sorted(({"service": c["service"], "net_cost_usd": c["net_cost_usd"]} for c in own
+                                                             if c["project"] == production), key=lambda r: -r["net_cost_usd"])
     return result
 
 
@@ -583,6 +609,9 @@ def issue_body(report, run_url):
     actual = report.get("actual_spend") or {}
     if actual.get("by_service") is not None:
         lines += ["", f"Actual spend, last {actual['window_days']} days, net of credits: **${actual['total_net_cost_usd']:.2f}**"]
+        projects = actual.get("by_project") or []
+        if len(projects) > 1:
+            lines += [f"- {r['environment']} (`{r['project']}`): ${r['net_cost_usd']:.2f}" for r in projects] + ["", "By Google service, both projects:"]
         lines += [f"- {r['service']}: ${r['net_cost_usd']:.2f}" for r in actual["by_service"][:8]]
         if actual.get("by_app"):
             lines += ["", "By application label:"] + [f"- {r['app']}: ${r['net_cost_usd']:.2f}" for r in actual["by_app"][:8]]
@@ -614,7 +643,8 @@ def report():
     table = os.environ.get("BILLING_EXPORT_TABLE", "")
     if table:
         try:
-            result["actual_spend"] = billing_actuals(table, target.project_id, run(["gcloud", "auth", "print-access-token"]), app=target.service)
+            result["actual_spend"] = billing_actuals(table, target.project_id, run(["gcloud", "auth", "print-access-token"]), app=target.service,
+                                                     production=os.environ.get("PRODUCTION_PROJECT_ID") or None)
         except Exception as exc:  # noqa: BLE001 - the export is optional; the report says why it is missing
             result["actual_spend"] = {"warning": f"Could not read the billing export: {str(exc)[:200]}"}
     repository = os.environ.get("GITHUB_REPOSITORY")

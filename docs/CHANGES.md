@@ -1,3 +1,54 @@
+# 1.18.8: operations (Phase 16, part seven)
+
+Roadmap item 16.7. Production gets what one operator needs to run it: every promotion leaves a tag, the weekly cost report
+shows production's spend, a drill proves the spending cap closes production, and the runbook has an incident procedure.
+
+1. **A release tag per promotion.** Once a promotion succeeds, the controller tags the promoted commit in the
+   application's repository: `production/SERVICE/DAY-PLAN`, an annotated tag that names the plan, the staging release, the
+   image's digest, who approved it and the run. It is written once and never moved; `git tag -l 'production/*'` lists
+   what reached production and when. A tag that cannot be written (a repository the App is not installed on, a rule
+   there) is named in the promotion's status and in `list_events` (`release_tag`); the release is not affected.
+2. **Production's spend in the weekly cost report.** The billing account's one export holds both projects, and the
+   application's staging identity already reads it, so no access changes. `add_production` now names the production
+   project in the application's staging environment (`PRODUCTION_PROJECT_ID`), and the report reads both projects: the
+   total, each project's share, and the application's own share in each. The issue and `get_cost_report` show them side
+   by side. Without a production the report reads as before.
+3. **`scripts/cap-drill.sh PROJECT`**, the cap-fire drill. It publishes a made-up budget notification at the cap's line
+   to the budget topic, the path a real one takes (Pub/Sub, Eventarc, the workflow), checks that every managed service
+   turned internal-only and answers 404 from outside, then reopens each one exactly as it was with the call the cap
+   itself makes (no new revision, no `lab-deploy-cap-lifted` label, so the cap stays armed). It starts any database it
+   stopped, and it looks again a minute later in case Pub/Sub delivered the message twice. It refuses a project whose cap
+   could detach billing or whose cap is in force already, asks for **yes** first, and reopens what it closed even after a
+   failure. No money moves.
+4. **The incident procedure** (docs/RUNBOOK.md, "An incident") for one operator, in the shape of NIST SP 800-61 Rev. 3:
+   detect and decide, mitigate first (with the command for each kind of harm), communicate, review. The runbook also
+   has the cap-fire drill and the release tags, and the monthly checklist has the twice-yearly production drills.
+5. **The drift check** has covered production's roots since 1.18.0. Its first run with a production, on 2026-10-19,
+   planned `production-lab-demo` with production's own read-only identity and found no drift.
+6. **What the first drill found, fixed here.** The drill's notification reached the cap's workflow in a second, and the
+   workflow could not close the demo. Cloud Run answered "Permission 'iam.serviceaccounts.actAs' denied" on the service's
+   runtime identity: Cloud Run asks whoever changes a service, even only its ingress, to be allowed to act as that
+   identity. So the platform's own cap had never closed anything, in either project. Earlier checks ran only the
+   below-cap and failure paths; Google's native spend cap, which was tripped live, stayed the working backstop in staging.
+   - The fix: each application root lets the cap act as that application's runtime identity, and nothing else. The
+     policy allows exactly that grant to the cap's identity.
+   - The script: zsh skips the EXIT trap when an error ends the script inside a function. After publishing, the drill now
+     checks each step itself, retries a passing API error (a 503 ended the first run), tries five times to reopen, and an
+     interrupt still reopens.
+
+Terraform: every application root, staging and production, gains that one grant when this merges. Production's apply
+waits for approval in `infra-production`.
+
+Upgrade, after the machine runs 1.18.8:
+1. For each application with a production, ask "add production for APP" once more. It names production for the weekly
+   report and changes nothing else.
+2. An application with its own pipeline (not `contract: platform`) needs its workflows updated (`update_app_workflows`)
+   for the report to pass the new variable. The platform's own `rightsize.yml` needs nothing.
+
+Tests: 665 pass (11 new in `tests/test_operations.py`, including the drill run end to end against fake `gcloud` and
+`curl`, with the Cloud Run API failing midway); ruff and zizmor clean; `terraform validate` clean.
+
+
 # 1.18.7: production's data (Phase 16, part five)
 
 Roadmap item 16.5 (docs/ROADMAP.md D39). Production's databases can be recovered to any moment of the last week. Postgres

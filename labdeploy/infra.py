@@ -343,6 +343,7 @@ CUSTOM_ROLE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/roles/labDeplo
 # application's own Cloud Run service through the foundation's cap-operator role, nothing more and nowhere else.
 CAP_OPERATOR_ROLE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/roles/labDeployCapOperator$")
 CAP_IDENTITY = "serviceAccount:lab-deploy-spending-cap@"
+RUNTIME_IDENTITY = re.compile(r"/serviceAccounts/[a-z][a-z0-9-]{1,19}[a-z0-9]-runtime@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$")
 STATE_BUCKET = re.compile(r"-tfstate$")
 # Buckets whose old object versions are what makes them useful: a release's recovery checkpoint and the controller's backups.
 VERSIONED_BUCKET = re.compile(r"-(recovery|lab-deploy-backups)$")
@@ -387,6 +388,11 @@ def check_plan(plan, allowed_locations=ALLOWED_LOCATIONS):
         texts = list(_strings(after))
         cap_grant = (kind == "google_cloud_run_v2_service_iam_member" and CAP_OPERATOR_ROLE.fullmatch(after.get("role") or "") is not None
                      and (after.get("member") or "").startswith(CAP_IDENTITY))
+        # The cap may act as an application's own runtime identity, which Cloud Run asks of whoever changes the service's
+        # ingress (found by the cap-fire drill, 2026-10-19). A new application's identity is not known until apply.
+        cap_grant = cap_grant or (kind == "google_service_account_iam_member" and after.get("role") == "roles/iam.serviceAccountUser"
+                                  and (after.get("member") or "").startswith(CAP_IDENTITY)
+                                  and (_unknown(change, "service_account_id") or RUNTIME_IDENTITY.search(after.get("service_account_id") or "") is not None))
         if touching and not cap_grant and any(marker in text for marker in PLATFORM_IDENTITIES for text in texts):
             add("platform_identities_untouched", address, "application roots may not create, grant or reference the platform's own identities")
         if touching and iam:

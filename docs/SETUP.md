@@ -384,9 +384,10 @@ a reviewer's approval on GitHub. The steps, once:
       the controller never merges production infrastructure.
    2. Approve its apply in `infra-production` on GitHub; the controller waits until that apply has succeeded.
    3. The controller creates the environment `production-APP` on the platform repository, with your reviewers as
-      required reviewers, self-review prevented, deployments from `main` only, and the eight target variables. It also opens
-      a second pull request on the app's staging root: read access for the production deployer to the images staging
-      released and to the public half of their signing key, nothing else. Merge it too.
+      required reviewers, self-review prevented, deployments from `main` only, and the eight target variables. It names the
+      production project in the app's staging environment too (`PRODUCTION_PROJECT_ID`), so the weekly cost report shows
+      production's spend. It also opens a second pull request on the app's staging root: read access for the production
+      deployer to the images staging released and to the public half of their signing key, nothing else. Merge it too.
    4. Asked once more, it answers that production is ready.
 8. **A promotion**: after a staging release you are happy with, ask Claude "promote APP to production"
    (`promote_to_production`; name a plan to promote an older staging release). The platform repository's **Promote to

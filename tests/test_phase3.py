@@ -36,14 +36,17 @@ def test_billing_actuals_queries_the_export_and_sums_net_cost():
         if "MAX(usage_end_time)" in body["query"]:  # the export is fresh
             return httpx.Response(200, json={"jobComplete": True, "rows": [{"f": [{"v": str(int(time.time()) - 3600)}]}]})
         captured["body"] = body
-        return httpx.Response(200, json={"jobComplete": True, "rows": [{"f": [{"v": "Cloud Run"}, {"v": "demo"}, {"v": "1.5"}]}, {"f": [{"v": "Artifact Registry"}, {"v": "demo"}, {"v": "0.25"}]},
-                                                                      {"f": [{"v": "Cloud Run"}, {"v": None}, {"v": "0.5"}]}]})
+        here = {"v": "test-project"}
+        return httpx.Response(200, json={"jobComplete": True, "rows": [{"f": [here, {"v": "Cloud Run"}, {"v": "demo"}, {"v": "1.5"}]},
+                                                                      {"f": [here, {"v": "Artifact Registry"}, {"v": "demo"}, {"v": "0.25"}]},
+                                                                      {"f": [here, {"v": "Cloud Run"}, {"v": None}, {"v": "0.5"}]}]})
     result = billing_actuals("test-project.billing_export.gcp_billing_export_v1_ABC", "test-project", "t", client=httpx.Client(transport=httpx.MockTransport(handler)), app="demo")
     assert result["total_net_cost_usd"] == 2.25 and result["by_service"][0] == {"service": "Cloud Run", "net_cost_usd": 2.0}
     assert result["by_app"] == [{"app": "demo", "net_cost_usd": 1.75}, {"app": "(unlabelled)", "net_cost_usd": 0.5}]
     assert result["app"] == {"name": "demo", "net_cost_usd": 1.75, "by_service": [{"service": "Cloud Run", "net_cost_usd": 1.5}, {"service": "Artifact Registry", "net_cost_usd": 0.25}]}
     assert "lab-deploy-app" in captured["body"]["query"] and "`test-project.billing_export.gcp_billing_export_v1_ABC`" in captured["body"]["query"]
-    assert captured["body"]["queryParameters"][0]["parameterValue"]["value"] == "test-project"
+    assert captured["body"]["queryParameters"][0]["parameterValue"]["arrayValues"] == [{"value": "test-project"}]  # staging alone
+    assert result["by_project"] == [{"project": "test-project", "environment": "staging", "net_cost_usd": 2.25}] and "by_environment" not in result["app"]
     with pytest.raises(ValueError, match="project.dataset.table"):
         billing_actuals("not a table", "test-project", "t")
 

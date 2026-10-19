@@ -1315,6 +1315,9 @@ class Controller:
                      "PROBE_SERVICE_ACCOUNT": target.probe_service_account, "RECOVERY_BUCKET": target.recovery_bucket}
         self.github.ensure_protected_environment(platform.repository, app.production.environment, platform.branch, production.reviewers)
         self.github.set_environment_variables(platform.repository, app.production.environment, variables)
+        # The weekly cost report runs in staging and reads the billing account's one export, which holds both projects; this
+        # names the application's production for it (docs/ROADMAP.md 16.7).
+        self.github.set_environment_variables(app.pipeline_repo, app.environment, {"PRODUCTION_PROJECT_ID": target.project_id})
         steps["environment"] = {"name": app.production.environment, "reviewers": list(production.reviewers), "variables": sorted(variables)}
         if not self.promotion_access_on_main(app):
             proposed = self.propose_infrastructure(principal, app_id, allow_writes=True, through="add_production")
@@ -1966,9 +1969,39 @@ class Controller:
         plan["outcome"] = {"state": plan["state"], "conclusion": workflow.get("conclusion"), "run_url": workflow.get("html_url"),
                            "completed_at": workflow.get("updated_at"), "recorded_at": time.time()}
         plan["workflow"] = {key: workflow.get(key) for key in ("id", "status", "conclusion", "html_url", "head_sha", "run_attempt", "created_at", "updated_at")}
+        if plan.get("kind") == "promotion" and plan["state"] == "succeeded" and not plan.get("release_tag"):
+            plan["release_tag"] = self.release_tag(owner, plan)
         if plan["state"] in {"failed", "cancelled", "timed_out"}:
             self.record_recovery(owner, app, plan, persist=False)
         self.persist(owner, plan)
+
+    def release_tag(self, owner, plan):
+        """The release tag of a promotion that succeeded (docs/ROADMAP.md 16.7): production/<service>/<day>-<plan>, an annotated
+        tag at the promoted commit in the application's repository that names the plan, the image and who approved it. Best
+        effort: a tag that cannot be written (a repository the App is not installed on, a rule there) is recorded with why,
+        and production is not affected. None when the GitHub adapter cannot write tags."""
+        create = getattr(self.github, "create_tag", None)
+        if not callable(create):
+            return None
+        receipt, source, outcome = plan.get("receipt") or {}, plan.get("source") or {}, plan.get("outcome") or {}
+        day = str(outcome.get("completed_at") or "")[:10]
+        day = day if re.fullmatch(r"\d{4}-\d\d-\d\d", day) else datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+        service, repository = plan["target"]["service"], plan["repository"]
+        name = f"production/{service}/{day}-{plan['id'][:8]}"
+        approved = ", ".join((receipt.get("promotion") or {}).get("approved_by") or []) or "a production reviewer"
+        message = "\n".join([f"{service} promoted to production on {day} by Fast Deploy, approved by {approved}.", "",
+                             f"Plan: {plan['id']}", f"Staging release: {source.get('plan')}", f"Image: {source.get('digest')}",
+                             f"Project: {plan['target']['project_id']}", f"Revision: {receipt.get('revision')}", f"Run: {outcome.get('run_url')}"])
+        record = {"name": name, "repository": repository, "sha": plan["sha"]}
+        try:
+            made = create(repository, name, plan["sha"], message)
+        except Exception as exc:  # noqa: BLE001 - a tag records a release; it is never a reason to doubt one
+            note = explain(exc) or str(exc)[:200]
+            self.store.record_event("release_tag", name=name, identity=owner, application=plan["application"], outcome="failed", detail=note)
+            return {**record, "created": False, "note": note[:300]}
+        self.store.record_event("release_tag", name=name, identity=owner, application=plan["application"],
+                                outcome="existed" if made.get("existed") else "created", detail=f"{repository}@{plan['sha'][:12]}")
+        return {**record, "created": True, "url": made.get("url")}
 
     def record_recovery(self, owner, app, plan, persist=True):
         if plan.get("kind") in ("promotion", "production_rollback"):

@@ -68,6 +68,8 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/platform
           GH_TOKEN: ${{ github.token }}
           BILLING_EXPORT_TABLE: ${{ vars.BILLING_EXPORT_TABLE }}
+          # Written by add_production: the application's production, whose spend the same export holds (docs/ROADMAP.md 16.7).
+          PRODUCTION_PROJECT_ID: ${{ vars.PRODUCTION_PROJECT_ID }}
           ONBOARDING_SUMMARY: ${{ vars.ONBOARDING_SUMMARY }}
         run: python -m labdeploy.cost
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
