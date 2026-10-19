@@ -23,10 +23,10 @@ It stops before creating anything when any of these fails:
 - The default branch is `main` (the platform releases only from main).
 - `Dockerfile` exists at the root (the build recipe).
 - `platform.yaml` exists at the root (the app's contract with the platform) and is valid.
-- `requirements.txt` exists (pinned runtime dependencies).
+- `requirements.txt` exists (pinned runtime dependencies); for a Node.js service, `package.json` and `package-lock.json`.
 - `platform.yaml` says `reviewed: true` (a person has read it).
 - Unless `platform.yaml` says `tests: none`: test files (`tests/`, `test_*.py` or `*_test.py`) and
-  `requirements-dev.txt` (installs pytest for the test step).
+  `requirements-dev.txt` (installs pytest for the test step); for Node.js, a `test` script or files `node --test` finds.
 - The `Dockerfile` has `EXPOSE <port>` matching the port in `platform.yaml` (the port Cloud Run sends requests to).
 
 Everything else below is checked by review or recommended; the release can still fail later if the app breaks the
@@ -40,6 +40,7 @@ rules in section 4 (for example, the health check never answers).
 | `platform.yaml` | Required | Name, port, health path, size, scaling, timeout, settings, secret names, needs, tests policy, access |
 | `requirements.txt` | Required | Runtime dependencies at exact versions; the release audits them for known security holes |
 | `requirements-dev.txt` | Required unless `tests: none` | Test tools (pytest), kept out of the image |
+| `package.json`, `package-lock.json` | Required for a Node.js service, instead of the requirement files | The dependencies, each locked with its integrity hash; audited for malicious packages and known security holes before anything installs |
 | `tests/` or `test_*.py` | Required unless `tests: none` | Prove the app works before anything is built |
 | `README.md` | Required by review | What the app is, how to run it, its health path, the settings it expects |
 | `LICENSE` | Required by review | The lab's license (MIT unless told otherwise) |
@@ -55,7 +56,7 @@ rules in section 4 (for example, the health check never answers).
 ```yaml
 api_version: lab/v1
 name: my-service          # 3 to 21 characters: a letter, then lowercase letters, digits, dashes
-runtime: python-http      # the only runtime today
+runtime: python-http      # or node-http, with node: "22", "24" or "26" instead of python
 port: 8080
 health_path: /health
 resources: { cpu: 1, memory_mib: 512 }   # the lab allows up to 2 CPUs and 2048 MiB
@@ -97,7 +98,8 @@ file is read to draft these, never deployed. Where each part of an app goes:
 
 - Listens on `0.0.0.0` at the port in `platform.yaml` (Cloud Run also passes it as `PORT`); plain HTTP, no TLS.
 - Answers the health path with 200 within seconds of starting, cheaply, without calling anything outside.
-- Runs as a non-root user; the server is started directly (`CMD ["uvicorn", ...]`) so it shuts down cleanly.
+- Runs as a non-root user; the server is started directly (`CMD ["uvicorn", ...]`, or `CMD ["node", "server.js"]`, never
+  `npm start`) so it shuts down cleanly. A Node.js server closes itself on `SIGTERM` and listens on every interface.
 - Keeps nothing on its own disk and no sessions in memory: the next request may reach another copy. Files go to a
   declared bucket, data to a declared database.
 - Does no work after the response is sent (CPU is only given during requests); batch work goes in `needs.migrate` or a
@@ -120,7 +122,7 @@ call the app need a token for the sign-in's client id, which the operator provid
 
 ## 6. Not supported
 
-Apps anyone can open without signing in, GPUs, runtimes other than Python web services, apps that keep state in the
+Apps anyone can open without signing in, GPUs, runtimes other than Python and Node.js web services, apps that keep state in the
 container, branches other than `main`, production, and editing the three workflow files the platform adds.
 
 ## 7. The short list for developers
@@ -130,6 +132,9 @@ When the operator asks "what do I tell developers?", give the three things they 
 1. A web service that listens on the port in `PORT` (8080) and answers `/health` quickly.
 2. `requirements.txt` with exact versions.
 3. Tests that pass with `python -m pytest`.
+
+For a Node.js service: `package.json` with its `package-lock.json` instead of `requirements.txt`, and tests that pass
+with `npm test` (or `node --test`).
 
 Everything else (Dockerfile, lock file, test tools, a health test, `platform.yaml`, CI, security policy, Dependabot) the
 platform drafts as one draft pull request: `check_repository` lists what is missing, `propose_configuration` with the
@@ -147,3 +152,10 @@ the start command, port and health route it finds, else 8080 and the TCP check) 
 naming the file and the fix: several apps or frameworks in one service, Django without `WSGI_APPLICATION`, no
 dependency list, conda-only or system packages, a Python outside 3.11 to 3.15, a committed secret, a notebook or a huge
 file as the app, and any private repository while the platform repository is public.
+
+A Node.js service (since 1.20.0) is read the same way: its Node.js line from `.nvmrc`, `.node-version` or
+`engines.node`, else the newest long-term-support line; its `package-lock.json`, else one the platform makes with every
+install script off; `scripts.start` when it runs `node` on a file of the repository. It refuses a start script that
+watches or transpiles (`nodemon`, `tsx`), a server on `localhost`, a lockfile from another package manager, a project
+that must be built first, a lockfile entry from outside the npm registry, and a line other than 22, 24 or 26 (22 is
+refused from 2027-04-30, 24 from 2028-04-30).

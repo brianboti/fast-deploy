@@ -44,7 +44,7 @@ jobs:
       - name: Lint workflows
         if: steps.scope.outputs.contracts_only != 'true'
         # Templates must be listed as files to be audited; templates/repo holds the CI and Dependabot files the checker drafts.
-        run: zizmor --no-progress .github/workflows .github/dependabot.yml templates/*.yml templates/repo/ci.yml templates/repo/dependabot.yml
+        run: zizmor --no-progress .github/workflows .github/dependabot.yml templates/*.yml templates/repo/ci.yml templates/repo/dependabot.yml templates/repo/ci-node.yml templates/repo/dependabot-node.yml
       # The same hadolint, version and checksum the deploy template uses for every application's Dockerfile.
       - name: Lint Dockerfiles
         if: steps.scope.outputs.contracts_only != 'true'

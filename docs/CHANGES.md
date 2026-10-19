@@ -1,3 +1,71 @@
+# 1.20.0: Node.js web services (Phase 18)
+
+Roadmap Phase 18 (docs/ROADMAP.md 18.1 to 18.7, decisions D41 to D46), from the research review of 2026-10-19
+(`docs/RESEARCH-2026-10-19.md` section 4). The platform took Python services only; it now takes a Node.js web service the
+same two ways, from a repository that follows the contract or as it is, with npm's 2026 defaults built in. Python
+services see no difference, and their contracts hash as before. Built and checked locally; the live exercise listed under
+Phase 18 has not run yet. 1.19.0 stays Phase 17's number.
+
+1. **The contract.** `runtime: node-http` with `node: "22"`, `"24"` or `"26"`; a contract names exactly one of `python`
+   and `node`. Each line is refused from its end of life (22 on 2027-04-30, 24 on 2028-04-30; the runbook lists them),
+   when a release or promotion is planned; a rollback is never refused. `build.scripts` lists the packages whose install
+   scripts may run, each as `name@version`; a name alone, a range or `--all` is refused. A Node.js service is started by
+   `node` itself, never through npm.
+2. **The reader.** A folder with `package.json` and no Python manifest is read with the Node.js ladders of the review's
+   section 4.2: the line (the Dockerfile, `.nvmrc`, `.node-version`, `.tool-versions`, `engines.node` read as an npm range,
+   `devEngines.runtime`, else the newest Active LTS line: 24 until 2026-10-28, 26 from then), the npm lockfile checked
+   entry by entry, what starts it, the port, the host, the health route, the settings, the install scripts and the tests.
+   It refuses with the file and the fix what D46 lists. The first refusal now reads "no Python or Node.js code or
+   manifest". The entry file and the modules it imports are read in up to three more passes, so a listen call in a
+   configuration module (Sophia's) is found. A host read from a variable whose default is `127.0.0.1` gets `0.0.0.0` in
+   the draft's `env`.
+3. **The lock the platform makes.** For a repository without a lockfile, `npm install --package-lock-only
+   --ignore-scripts --min-release-age=3` runs in a container on the controller's machine, by npm 11.10 or later: a Node 22
+   service is locked by Node 24's npm, because Node 22's npm 10.9.9 only warns about `min-release-age` and would lock
+   without the hold. The container refuses an older npm. Every entry must carry its integrity hash and come from the npm
+   registry before the lock is proposed as `apps/<service>/package-lock.json`.
+4. **The pipeline.** `actions/setup-node` 7.1.0 is pinned by commit, with `package-manager-cache: false`. OSV-Scanner
+   2.7.0, downloaded by version and checked against its SHA-256, reads the lockfile **before anything is installed**. For
+   every trust level, the release stops on a known malicious package, a critical or high finding with a fixed version,
+   an audit that did not finish, or an entry from outside the registry. Its summary goes into the release bundle
+   (`dependency-audit.json`) and the receipt, and the repository's own `osv-scanner.toml` is never read. Then come
+   `npm ci --ignore-scripts` (from the public registry whatever an `.npmrc` says), `npm audit signatures` as a note,
+   `npm rebuild` for `build.scripts`, and `npm test`. When there is no test script, `node --test` runs and must find a
+   test. The Python steps run for Python services only, and the policy step outputs the runtime, the line and the scripts.
+5. **The image.** `templates/repo/Dockerfile.node` is `node:<line>-slim` by index digest, resolved 2026-10-19:
+   `NODE_ENV=production`, `HOME=/tmp`, dependencies before the code, `npm ci --omit=dev --ignore-scripts` then the
+   contract's `npm rebuild`, `npm cache clean --force`, `USER 65532:65532`, and an exec-form `CMD` with `node`. Google's
+   buildpacks (`GOOGLE_NODEJS_VERSION`) build Node.js for reviewed code only. `node_modules`, `.npmrc` and `.yarnrc.yml`
+   are in the deny-list and the buildpacks' descriptor. The Dockerfile policy adds two notes, which never refuse: an image
+   started through npm, and an Alpine image for dependencies with native code.
+6. **The drafter and the checks.** A Node.js repository that follows the contract gets its own files: the Dockerfile,
+   `.dockerignore`, `test/health.test.mjs` on `node --test` (it starts the service on a free port), `platform.yaml`, CI on
+   setup-node with the same install, Dependabot for npm with a seven-day cooldown, and `package-lock.json` made as above.
+   `check_repository` asks a Node.js service for `package.json` and its lockfile instead of `requirements.txt`, and
+   `analyze_repository` recognizes one.
+7. **What the chat says.** A planned release names its runtime ("A Node.js 24 web service"). The release answer counts
+   the audited packages, and the reader's choices list the Node.js line, the host and the install scripts. The steps of a
+   Node.js run have their own words and advice, and a release proves its tests and its audit in the Node.js steps.
+8. **Documents.** The contract page has the Node.js table and refusals, a new section 1b (lines, the lockfile, install
+   scripts, the audit, cooldowns, converting pnpm, Yarn and Bun lockfiles), and the container notes (signals, memory,
+   keep-alive). The runbook has the two end-of-life dates and the pins to refresh. The chat guide, the operator skill and
+   its reference, and the handoff are updated too.
+
+What differs from the plan, and why:
+
+- A `build` script is refused only when the start command runs a file that is not committed. Sophia has one, and it
+  builds a browser extension, not the server.
+- Readiness routes (`/ready`, `/ping`, `/status`) and `/healthz` are offered to the reviewer, never chosen, as for Python:
+  such a route may call other services, and Cloud Run keeps `/healthz` for itself. Prefixed routes such as `/api/health`
+  are chosen.
+- The audit runs before the install and the tests, not after them as Python's does, so no package's code has run when a
+  malicious one is found. It also checks the lockfile's entries at every release, not only at import.
+- The drafted Dependabot file writes a seven-day cooldown, as it does for pip, where the review recommended Dependabot's
+  three-day default.
+
+Tests: 777 pass (100 new); ruff and zizmor clean.
+
+
 # 1.18.11: what the first tagged promotion showed
 
 Found on 2026-10-19 when the demo's re-pinned staging release was promoted to check the release tag (`docs/VALIDATION.md`).

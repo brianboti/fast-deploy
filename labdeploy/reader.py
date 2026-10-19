@@ -782,7 +782,8 @@ def node_line(repo, ladder, base, dockerfile, package):
             return line
         ladder.refuse(where, f"asks for Node.js {line}, outside the supported 22, 24 and 26", f"change {name} to {default_node()}")
         return None
-    ranges = [(f"engines.node {package['engines']['node']}", package["engines"]["node"])] if isinstance((package.get("engines") or {}).get("node"), str) else []
+    engines = package.get("engines") if isinstance(package.get("engines"), dict) else {}
+    ranges = [(f"engines.node {engines['node']}", engines["node"])] if isinstance(engines.get("node"), str) else []
     runtimes = (package.get("devEngines") or {}).get("runtime") if isinstance(package.get("devEngines"), dict) else None
     for item in runtimes if isinstance(runtimes, list) else [runtimes]:
         if isinstance(item, dict) and item.get("name") == "node" and isinstance(item.get("version"), str):

@@ -32,6 +32,37 @@ installs them), it asks for a Python outside 3.11 to 3.15, a secret is committed
 file), or the app is a notebook or a file over 100 MiB. A private repository is refused while the platform repository
 is public, because the platform's build logs would be public too.
 
+**A Node.js service** (since 1.20.0; `docs/ROADMAP.md` D41 to D46) is a folder with a `package.json` and no Python
+manifest. Its answers come from the same kind of ladder:
+
+| Question | Where the answer comes from, first match wins | When nothing says |
+|---|---|---|
+| How is the image built? | your `Dockerfile`; a `Procfile` (Google's buildpacks, for code the lab has reviewed only: they run install scripts) | the platform's own `node:<line>-slim` image, made at build time and never committed |
+| Which Node? | the Dockerfile's `FROM node:X`; `.nvmrc`; `.node-version`; the `nodejs` line of `.tool-versions`; `engines.node` (a range takes the highest of 22, 24 and 26 it allows); `devEngines.runtime` | the newest line in Active LTS: 24 until 2026-10-28, 26 from then |
+| Which packages? | `npm-shrinkwrap.json`; `package-lock.json` (version 2 or 3), installed with `npm ci` | the platform locks `package.json` once (below) |
+| What starts it? | the Dockerfile's `CMD`; the Procfile's `web:`; Compose's `command`; `scripts.start` when it is `node [flags] <file> [args]`; `main`; `server.js` or `index.js` | refused: say the start command |
+| Which port? | Compose `ports` (the container side); one `EXPOSE`; `--port` in the start command; the default in the code's `listen(process.env.PORT \|\| 8787)` | 8080, passed in as `PORT` |
+| Which host? | the listen call: a host read from a variable whose default is `127.0.0.1` gets `0.0.0.0` in the contract's `env` | every interface, Node's own default |
+| Health check? | a Compose `healthcheck`; a `/health` or `/healthcheck` route (Express, Fastify, Koa, Hono, Hapi, or `req.url === '/health'` in a plain server), prefixed paths like `/api/health` included | none: Cloud Run's TCP check, and the release says the HTTP check is off |
+| Install scripts? | the lockfile's packages that have one, kept only where `package.json`'s `allowScripts` pins them by version and the package needs it on Cloud Run | none run |
+| Tests? | `scripts.test` unless it is npm's placeholder; files `node --test` finds by its own patterns | none: said plainly, never invented |
+
+The packages are locked by the platform when the repository has no lockfile: `npm install --package-lock-only
+--ignore-scripts --min-release-age=3` with npm 11.10 or later in a container on the controller's machine (Node 22 bundles
+npm 10.9.9, which has no `min-release-age`, so a Node 22 service is locked by Node 24's npm 11.19.1), into
+`apps/<service>/package-lock.json`. Every entry must carry its integrity hash and come from the npm registry.
+
+For Node.js it also **refuses**: a start script that watches, transpiles or chains (`nodemon`, `ts-node`, `tsx`,
+`node --watch`, a development server, `concurrently`, `&&` or `sh -c`); a service that needs a build first (its start
+file is not in the repository, TypeScript on Node 22, Next.js, NestJS, Remix, SvelteKit, Astro or Nuxt) unless your own
+Dockerfile builds it; a listen call on a literal port that never reads `PORT`, on `127.0.0.1` or `localhost`, or Fastify
+without `host: '0.0.0.0'`; a front-end site with no server; two lockfiles, or `packageManager` and `engines` naming
+different managers; a `yarn.lock`, `pnpm-lock.yaml` or `bun.lock` (convert it, section 1b); a lockfile entry without an
+integrity hash or from git, a tarball elsewhere, a `file:` or `link:` path, or `bundleDependencies`; a workspace at the
+root (give one package's folder) or a package of one; a committed `.npmrc` or `.yarnrc.yml` with a literal token; and
+`engines.iojs`. A committed `node_modules/`, `dist/` or `.next/` is set aside with a note, and a `build` script that the
+start does not need (Sophia's builds a browser extension) is noted, not refused.
+
 Following the rest of this page is still the better path: your repository then carries its own tests, lock and
 workflows, and every change is reviewed in one place.
 
@@ -41,7 +72,9 @@ workflows, and every change is reviewed in one place.
    Cloud Run passes in `PORT` (8080 unless `platform.yaml` says otherwise), and answer `GET /health` with 200 within
    seconds of starting, without calling anything else.
 2. **Pinned requirements.** `requirements.txt` lists every runtime dependency at an exact version (`fastapi==0.143.1`).
-3. **Tests.** At least one pytest test (a `tests/` folder or `test_*.py` files) that passes with `python -m pytest`.
+   For Node.js: `package.json` and the `package-lock.json` npm writes beside it, both committed.
+3. **Tests.** At least one pytest test (a `tests/` folder or `test_*.py` files) that passes with `python -m pytest`. For
+   Node.js: a `test` script that `npm test` runs, or files that `node --test` finds (`test/*.test.mjs`, say).
 
 That is all you must write. Ask Claude *"check github.com/ORG/REPO"* to see what else is missing, then *"draft the files
 for it"*: the platform opens one draft pull request with everything below, and never changes a file you already have.
@@ -60,6 +93,12 @@ github.com/ORG/REPO"*.
 | `platform.yaml` | The deployment contract, with `reviewed: false`: the one file you must read before merging |
 | `.github/workflows/ci.yml` | Your tests on every pull request, with a read-only token |
 | `SECURITY.md`, `.github/dependabot.yml` | How to report a vulnerability; weekly, reviewable updates of the pins |
+
+For a Node.js service the draft holds a `Dockerfile` on your line's `node:<line>-slim` pinned by digest (`npm ci` with
+every install script off, a non-root user, `node` itself as the command), a `.dockerignore` that keeps `node_modules`
+out, `package-lock.json` when you have none (made as above), `test/health.test.mjs` on `node --test` (it starts the
+service on a free port and asks for the health path), `platform.yaml` with `runtime: node-http`, a CI workflow on
+`actions/setup-node` that installs the same way, and Dependabot for npm with a seven-day cooldown written in.
 
 **No Dockerfile at all?** A `Procfile` with one line (`web: uvicorn app:app --host 0.0.0.0 --port $PORT`) works too:
 Google's buildpacks then build the image. The images are several times larger (the demo app: about 394 MB against
@@ -85,6 +124,7 @@ levels:
 | `requirements-dev.txt` | Required unless `tests: none` | Test and lint tools (pytest, ruff), kept out of the image. | The test step (`pip install -r requirements-dev.txt`, then `python -m pytest`) |
 | `requirements.lock` | Recommended; required by review for anything beyond a demo | A hash-locked, reproducible install (`uv pip compile --universal --python-version X.Y --generate-hashes`, or `pip-compile --generate-hashes` run on the app's Python). A version pin alone still trusts whatever the index serves. | The test step installs it with `--require-hashes` when present; the audit step reads every package in it at its exact version, on the app's Python, without installing anything; the Dockerfile should install it too |
 | `tests/` or `test_*.py` | Required unless `tests: none` | Prove the app before anything is built; the same tests run in the app's own CI on pull requests. | `python -m pytest` in the deploy workflow and in the app's CI |
+| `package.json`, `package-lock.json` | Required for a Node.js service, instead of the requirement files | The dependencies and every package locked with its integrity hash (section 1b). | OSV-Scanner before anything is installed; `npm ci --ignore-scripts` for the tests and `npm ci --omit=dev --ignore-scripts` in the image; then `npm test` |
 | `.dockerignore` | Recommended | Keeps `.git`, virtual environments, tests, caches and local secrets out of the build context: smaller, faster, safer images. | `docker build` |
 | `pyproject.toml` | Recommended | One place for project metadata and the ruff and pytest configuration; `requirements*.txt` can be generated from it. | Developers and tools |
 | `README.md` | Required by review | What the service is, how to run it locally, its health path, the environment it expects. | People; the analyzer's review questions |
@@ -148,6 +188,64 @@ and export these files whenever the dependencies change; commit them with the ch
   and list pytest and the other test tools in `requirements-dev.txt`. The Dockerfile then uses a `python:*-slim` base
   and installs `requirements.lock`, like any other service.
 
+## 1b. Node.js lines, packages and install scripts
+
+**The line.** `platform.yaml` says `runtime: node-http` and `node: "22"`, `"24"` or `"26"`, the lines in long-term support
+(20 and the odd-numbered lines are refused). The tests, the dependency audit and the platform's image use it; keep your
+Dockerfile's `FROM node:X` the same. A line is refused from its end of life, and the dates are in the runbook: 22 on
+2027-04-30, 24 on 2028-04-30, 26 on 2029-04-30. The newest line in Active LTS is the default for a new contract (24 until
+2026-10-28, 26 from then).
+
+**The lockfile.** npm only in this version: `package-lock.json` (version 2 or 3) or `npm-shrinkwrap.json`, committed with
+`package.json` and installed with `npm ci`, which installs exactly the lockfile and stops when the two disagree. Every
+entry must carry its `integrity` hash and come from `https://registry.npmjs.org/`; a git dependency, a tarball from
+elsewhere, a `file:` or `link:` path and `bundleDependencies` are refused, because `npm ci` installs them without checking
+them against the registry. The platform reads no `.npmrc`: it installs from the public registry with npm's own settings.
+
+**Install scripts never run at install.** Every npm attack of 2025 and 2026 ran from a package's install script, so the
+platform installs with `npm ci --ignore-scripts` on every npm, then runs the scripts of the packages `platform.yaml` lists
+under `build.scripts`, each by name and exact version, and nothing else:
+
+```yaml
+build:
+  scripts: [sharp@0.34.4]   # npm rebuild sharp@0.34.4 after the install; a name alone, a range or --all is refused
+```
+
+The reader drafts that list from the lockfile's packages that have a script, keeping only those your `package.json`
+approves by version in its `allowScripts` field (`npm install-scripts approve` writes them, from npm 11.16), and only when
+the package needs its script on Cloud Run. It is often empty: a package that ships its native binary inside its tarball
+needs no script (onnxruntime-node's script only downloads GPU libraries; protobufjs's only prints a warning). Your own
+`package.json`'s `preinstall`, `postinstall` and `prepare` never run either; `npm test` runs your `pretest` and `test`.
+
+**The dependency audit.** Before anything is installed, OSV-Scanner 2.7.0 (pinned by version and checksum) reads the
+lockfile against the OSV database, which carries the malicious-package records (`MAL-`) of the OpenSSF. For every service,
+reviewed or not, a known malicious package, a critical or high finding with a fixed version, an audit that did not finish,
+or a lockfile entry from outside the registry stops the release; everything else is listed in the run's summary and in
+`dependency-audit.json` in the release bundle. `npm audit signatures` then checks the registry's signatures of what was
+installed, as a note. `npm audit` is not the gate: it needs the registry, and whether it returns malware advisories is
+not documented.
+
+**Cooldowns.** Most malicious versions were withdrawn within one to four hours, a worm's within days. Dependabot waits
+three days by default before it proposes a version; the Dependabot file the platform drafts writes seven, as it does for
+pip and Docker. npm 11.10 and later have `min-release-age` (in days) for your own installs, and the lock the platform makes
+uses three.
+
+**Other package managers** come later (a roadmap item). Until then, convert a pnpm, Yarn or Bun lockfile with npm 11.10 or
+later (Node 24 or 26 bundle it), from the service's folder, then review the lockfile's diff and run the tests:
+
+```bash
+rm -rf node_modules && npm install --package-lock-only --ignore-scripts --min-release-age=3
+```
+
+and remove the old file in the same commit (`git rm yarn.lock`, `pnpm-lock.yaml` or `bun.lock`) and any `packageManager`
+field that names another manager. npm follows a Yarn 1 `yarn.lock` where it can; for the others it resolves the versions
+again from `package.json`'s ranges.
+
+**What does not need a build.** The platform's image runs your code as committed: plain JavaScript, or TypeScript under
+Node's type stripping on 24 and 26 (`node src/index.ts`; enums and namespaces need `--experimental-transform-types`).
+A service that must be compiled or bundled first (`tsc` into `dist/`, Next.js, NestJS) commits the built output, or
+builds it with a Dockerfile of its own; a build stage in the platform's image is a later roadmap item.
+
 ## 2. The container: Cloud Run's contract and Docker's rules
 
 Required:
@@ -168,6 +266,23 @@ Required:
 - No work after the response. The platform deploys with CPU allocated only during requests, so background threads
   are throttled and may resume unexpectedly during a later request. Batch work belongs in `needs.migrate` or a job.
 - Handle every exception; a crash restarts the instance and slows startup for everyone queued behind it.
+
+For a Node.js service (the platform's own image does the first three):
+
+- Start `node` itself: `CMD ["node", "server.js"]`, never `npm start`. npm adds latency and does not pass `SIGTERM` on,
+  and in Cloud Run's second-generation environment the command is the container's first process, with no `--init`.
+- Handle `SIGTERM` yourself, or requests in flight fail when the instance stops:
+  `process.on('SIGTERM', () => server.close(() => process.exit(0)))`. The reader notes a server without one.
+- Listen on every interface: `server.listen(process.env.PORT || 8080)` does; Fastify needs `host: '0.0.0.0'`, and a
+  host read from a variable must not default to `127.0.0.1` in the container (the reader sets it to `0.0.0.0`).
+- Memory: Node sizes its heap from the instance's memory limit, half of it between 256 MiB and 4 GiB, so the default
+  512 MiB gives a 256 MiB heap. Raise `resources.memory_mib` when the service needs more (Google's buildpacks give the
+  heap 80 percent; `NODE_OPTIONS=--max-old-space-size=400` under `env` does the same). Buffers live outside the heap, and
+  an instance over its limit is stopped with "Memory limit exceeded".
+- Use a Debian image (`node:<line>-slim`), not Alpine, when a dependency carries native code: Alpine's musl does not load
+  binaries built for glibc. The Dockerfile policy notes both an `npm start` and an Alpine image with native code.
+- Node keeps idle connections open for five seconds (`keepAliveTimeout`); Google documents no idle timeout for Cloud Run's
+  front end, so the platform prescribes no other number.
 
 Recommended:
 
@@ -308,7 +423,7 @@ a later release, so the previous version keeps working while traffic moves.
 ```yaml
 api_version: lab/v1
 name: my-service          # 3 to 21 characters: a letter, then lowercase letters, digits, dashes; the Cloud Run service name
-runtime: python-http      # the only runtime today
+runtime: python-http      # or node-http, with node instead of python (section 1b)
 port: 8080
 health_path: /health
 resources: { cpu: 1, memory_mib: 512 }   # cpu 1 to 4, memory 512 to 4096; the lab's policy refuses more than 2 CPUs, 2048 MiB today
@@ -322,6 +437,7 @@ env:                      # plain configuration values
 secrets: [API_KEY]        # names only; the value lives in Secret Manager as my-service-API_KEY and arrives as the env var API_KEY
 tests: required           # or none, knowingly: every release then carries a warning
 python: "3.12"            # the Python the tests and the audit run on: 3.11 to 3.15; match the Dockerfile's base image
+# node: "24"              # node-http only, instead of python: "22", "24" or "26", each refused from its end of life
 needs:
   buckets: [uploads]      # env BUCKET_UPLOADS
   topics: [events]        # env TOPIC_EVENTS and SUBSCRIPTION_EVENTS
@@ -332,6 +448,7 @@ needs:
 build:
   context: service        # service (the folder holding platform.yaml) or repository (shared code in a monorepo; section 4a)
   network: default        # or none: the image builds with no network at all, for dependencies vendored in the repository
+  scripts: []             # node-http only: packages whose install scripts run after npm ci --ignore-scripts, as name@version
 trust: reviewed           # who has read the code: reviewed (the lab) or unknown (nobody); unset, reviewed here (section 5a)
 egress: internet          # where it may connect: internet, or private (Google's APIs and the lab's network only); unset, by trust
 domain: api.example.org   # production only: a name of the lab's own, through a load balancer with Cloud Armor, about $25 a month (section 6b)
@@ -366,6 +483,7 @@ shows the floor and the worst case before anything is deployed; start small and 
 
 - [ ] `Dockerfile` builds locally with `docker build --platform linux/amd64 .`, runs as non-root, listens on 8080
 - [ ] `python -m pytest` passes after installing `requirements-dev.txt`; `pip-audit --disable-pip -r requirements.lock` (or `pip-audit -r requirements.txt`) is clean on the app's Python
+- [ ] For Node.js: `npm ci --ignore-scripts && npm test` passes on the line in `platform.yaml`; `osv-scanner scan source --lockfile package-lock.json` is clean; the server handles `SIGTERM`
 - [ ] `GET /health` answers 200 within seconds of start
 - [ ] `platform.yaml` reviewed: size, scaling, timeout, env, secret names, needs; `reviewed: true`
 - [ ] Logs are JSON lines with `severity` and `message`; nothing sensitive is logged
@@ -408,9 +526,10 @@ removes the load balancer.
 
 ## 7. What is not supported
 
-Public endpoints (anyone without a sign-in), GPUs, runtimes other than Python HTTP services, stateful containers, a branch
-other than `main`, reaching production other than by promotion, editing the workflow files the platform adds, several
-containers in one service, and deploying a Compose file as such.
+Public endpoints (anyone without a sign-in), GPUs, runtimes other than Python and Node.js HTTP services, stateful
+containers, a branch other than `main`, reaching production other than by promotion, editing the workflow files the
+platform adds, several containers in one service, and deploying a Compose file as such. For Node.js, not yet (later
+roadmap items): pnpm, Yarn and Bun lockfiles, a build step in the platform's image, workspaces, and Node's permission model.
 
 ## Sources
 
@@ -426,3 +545,8 @@ containers in one service, and deploying a Compose file as such.
 - [Cloud SQL IAM database authentication](https://docs.cloud.google.com/sql/docs/postgres/iam-authentication) and [built-in users](https://docs.cloud.google.com/sql/docs/postgres/users): the IAM path Google recommends, and the password path for URL-only code
 - [Docker: .dockerignore files](https://docs.docker.com/build/concepts/context/#dockerignore-files): a `<Dockerfile>.dockerignore` beside the Dockerfile takes precedence over the context root's
 - [GitHub community health files](https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/creating-a-default-community-health-file): `SECURITY.md`, `CONTRIBUTING.md`, `SUPPORT.md`, and the per-repository `LICENSE`
+- [Optimize Node.js applications for Cloud Run](https://docs.cloud.google.com/run/docs/tips/nodejs): start with `node`, not `npm start`; startup and memory
+- [Node.js release schedule](https://github.com/nodejs/Release) and [Docker and Node.js best practices](https://github.com/nodejs/docker-node/blob/main/docs/BestPractices.md): the LTS lines and their end-of-life dates; `NODE_ENV=production`, a non-root user, exec-form `CMD`, signals and PID 1, slim over Alpine for native code
+- npm's documents for [`npm ci`](https://docs.npmjs.com/cli/v11/commands/npm-ci), [`npm rebuild`](https://docs.npmjs.com/cli/v11/commands/npm-rebuild) and [its configuration](https://docs.npmjs.com/cli/v11/using-npm/config) (`ignore-scripts`, `min-release-age`), and npm's changelog for `allowScripts`
+- [OSV-Scanner](https://google.github.io/osv-scanner/): lockfile scanning, JSON output and exit codes; the OpenSSF malicious-packages records it carries
+- `docs/RESEARCH-2026-10-19.md` section 4, the review this part of the contract comes from
