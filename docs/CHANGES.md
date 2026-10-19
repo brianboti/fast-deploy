@@ -36,7 +36,9 @@ Upgrade, before the first domain: apply production's foundation (`scripts/apply-
 raise its `monthly_budget_usd` (docs/RUNBOOK.md, "A custom domain"). An application with its own workflows needs them at
 1.18.9 before its `platform.yaml` names a domain. Roots without a domain plan no change.
 
-Tests: 673 pass (9 new in `tests/test_domain.py`); ruff clean; `terraform fmt` and `terraform validate` clean for a
+Also recorded here: the cap-fire drill's pass on production after 1.18.8's fix (docs/VALIDATION.md).
+
+Tests: 674 pass (9 new in `tests/test_domain.py`); ruff clean; `terraform fmt` and `terraform validate` clean for a
 production root with a domain and for the foundation.
 
 

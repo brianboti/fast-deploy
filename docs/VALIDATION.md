@@ -703,3 +703,14 @@ paths (sections above). Staging's cap identity holds the same grants, so staging
 Google's native spend cap, tripped live in staging, was the backstop that worked. 1.18.8 lets the cap act as each
 application's runtime identity, and makes the drill reopen whatever happens after it publishes.
 
+After the fix:
+
+| Trial | What was done | Observed |
+|---|---|---|
+| The fix applied | #90 merged (`cd6ad5c`); Infrastructure apply run 39263701581 | Every staging root gained the cap's grant on its own runtime identity. Production's job was approved through the API at the operator's request: one grant, policy passed, applied. An older unapproved run from #89 (no changes) held production's queue and was cancelled |
+| The cap-fire drill, again | `scripts/cap-drill.sh fast-deploy-prod-c602` from main, the machine on `cd6ad5c` | **Passed.** The notification went out at 13:55:51, and the cap's own identity changed `lab-demo`'s ingress at 13:55:52 (audit log). The drill saw it internal-only at 13:55:56 and 404 from outside. The execution SUCCEEDED: "cap enforced at 1.0001 of the budget: 1 services closed, 0 databases stopped". The drill reopened it at 13:55:58 (closed about six seconds), and it answered 403 without a token again. No new revision (100 percent on `lab-demo-r58bf13c4ade44389`), and no second delivery a minute later |
+| Production in the weekly cost report | `add_production` for `demo` once more | `PRODUCTION_PROJECT_ID = fast-deploy-prod-c602` on `lab-demo-app`'s staging environment, nothing else changed. lab-demo-app#24 re-pins its workflows to `cd6ad5c`; the report shows production's spend once that is merged |
+
+Not yet: a release tag (written at the next promotion), and the failure alert's email from the first drill's failed
+execution (13:25 UTC), which is the operator's to confirm.
+
