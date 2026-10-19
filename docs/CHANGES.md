@@ -1,3 +1,21 @@
+# 1.20.6: the docker command on the controller's machine
+
+Found on 2026-10-19 in the live exercise of Phase 18: importing `node-nolock` (a Node.js 22 service without a lockfile)
+stopped with "The dependencies could not be locked: Docker is not installed on this machine". The machine has Docker's
+daemon (Debian 13's `docker.io` 26.1.5, its socket active, the controller's user in the `docker` group) but no `docker`
+command: Debian 13 ships the command in `docker-cli`, which `docker.io` only recommends, and the startup script installs
+with `--no-install-recommends`. So every lock the platform makes on the machine failed, a Python service's (D27) as well
+as a Node.js one's (D42), since the controller moved there on 2026-10-18; no import had needed one until now.
+
+1. **The startup script installs `docker-cli`** beside `docker.io`. The script is the machine's metadata, which changes in
+   place: the next foundation apply updates it without replacing the machine, and the script installs the package at the
+   next boot. A running machine gets it at once with `sudo apt-get install -y --no-install-recommends docker-cli`.
+
+1.20.5 is the weekly pin refresh (#103), open at the time of writing.
+
+Tests: 811 pass; ruff clean.
+
+
 # 1.20.4: after a release, the machine and the re-pins by themselves
 
 Two chores followed every merge into the platform repository's `main`, by hand: updating the controller's machine
