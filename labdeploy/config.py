@@ -251,6 +251,20 @@ class Platform(StrictModel):
         return self
 
 
+class PlatformUpdates(StrictModel):
+    """What follows a platform release on main by itself (docs/RUNBOOK.md, "After a release"), once this block is in the
+    machine's configuration: the machine installs main once its checks have passed and the delay is over, then each
+    application's workflows are re-pinned to the commit the controller runs. Without the block, both stay manual."""
+    machine: bool = True  # the machine installs main by itself, with its health check and the way back
+    workflows: bool = True  # applications whose pinned runner is older get the re-pin pull request
+    # How long a change to what the controller runs must have been on main, its checks passed, before the machine installs
+    # it, and how long the controller must have run a commit before applications are re-pinned to it: the window in which
+    # a release can still be stopped.
+    delay_minutes: int = Field(default=60, ge=0, le=10_080)
+    # The machine restarts the controller only after nobody has used Claude's tools or the REST API for this long.
+    quiet_minutes: int = Field(default=10, ge=0, le=240)
+
+
 class ObserverIdentity(StrictModel):
     """A viewer-only cloud identity the controller impersonates (laptop) or carries (machine) for live health and logs."""
     service_account: str = Field(pattern=r"^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$")
@@ -303,6 +317,7 @@ class Config(StrictModel):
     principals: list[Principal]
     application_settings: dict[str, ApplicationSettings] = Field(default_factory=dict)
     platform: Platform | None = None
+    platform_updates: PlatformUpdates | None = None  # None: after a release, the machine and the re-pins stay manual
     observer: ObserverIdentity | None = None
     github_app: GitHubApp | None = None
     oauth: OAuth | None = None

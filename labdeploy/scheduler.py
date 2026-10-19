@@ -1,6 +1,8 @@
-"""Background work inside the controller process: auto-deploy, following unfinished releases, the daily watchdog, nightly backups.
+"""Background work inside the controller process: auto-deploy, following unfinished releases, the daily watchdog, nightly
+backups, and what follows a platform release (the machine's update and the re-pins).
 
-One daemon thread wakes every fifteen seconds and runs whichever job is due. Each job is a plain method on the
+One daemon thread wakes every fifteen seconds, reads the configuration file again if it changed (so a pause or a switch
+applies to the jobs without waiting for a request), and runs whichever job is due. Each job is a plain method on the
 controller, so tests call it directly, and every outcome lands in the audit trail and in get_controller_status.
 """
 import datetime
@@ -28,8 +30,20 @@ class Scheduler(threading.Thread):
             "follow": (controller.follow_tick, lambda: 60, 45),
             # Contracts the platform keeps (docs/ROADMAP.md D32): release pull requests, and merged contracts not yet released.
             "contracts": (controller.contract_tick, lambda: 60, 50),
+            # After a platform release (labdeploy/updates.py): the machine's update, then the re-pins; off without platform_updates.
+            "platform_updates": (controller.platform_updates_tick, lambda: 300, 90),
         }
+        self.config = config
         self.state = {name: {"next_run": started + first, "last_run": None, "last_result": None, "last_error": None} for name, (_, _, first) in self.jobs.items()}
+
+    def refresh(self):
+        """Read the configuration file again when it changed; an invalid one is ignored and reported, as for a request."""
+        refresh = getattr(self.config, "refresh", None)
+        if callable(refresh):
+            try:
+                refresh()
+            except Exception:  # noqa: BLE001 - the previous configuration stays in force
+                log.exception("reading the configuration again failed")
 
     def run_job(self, name):
         fn, interval, _ = self.jobs[name]
@@ -45,6 +59,7 @@ class Scheduler(threading.Thread):
 
     def run(self):
         while not self.stop_event.wait(15):
+            self.refresh()
             now = time.time()
             for name in self.jobs:
                 if now >= self.state[name]["next_run"]:

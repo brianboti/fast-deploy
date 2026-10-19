@@ -291,9 +291,10 @@ is no open SSH port: `scripts/machine.sh` goes through Identity-Aware Proxy, and
 | To | Run on the laptop, in the repository |
 |---|---|
 | See it | `scripts/machine.sh status`: the three services, the commit it runs, disk, memory, `/healthz` |
-| Read its logs | `scripts/machine.sh logs` (the controller), `logs litestream`, `logs caddy`, `logs startup` (the boot script) |
+| Read its logs | `scripts/machine.sh logs` (the controller), `logs litestream`, `logs caddy`, `logs startup` (the boot script), `logs update` (its own updates) |
 | Restart the controller | `scripts/machine.sh restart` |
-| Update the platform it runs | after the merge, `scripts/machine.sh update $(git rev-parse origin/main)`: only a commit on main installs, and the previous one comes back if the new one does not answer within a minute |
+| Update the platform it runs | after the merge, `scripts/machine.sh update $(git rev-parse origin/main)`: only a commit on main installs, and the previous one comes back if the new one does not answer within a minute. With `platform_updates` on, the machine does this by itself (section "After a release") |
+| Run its startup script again | `scripts/machine.sh startup`, after a foundation apply changed the script: what is already right stays, and Caddy restarts for a second |
 | Change its configuration | `scripts/machine.sh config-get /tmp/machine.yaml`, edit, `scripts/machine.sh config-put /tmp/machine.yaml`: checked before it goes; principals, applications and settings apply at once, `oauth` and `github_app` changes need `restart` |
 | Back up now, or drill | `scripts/machine.sh backup`, `scripts/machine.sh drill` |
 | Hold it while a laptop takes over | `scripts/machine.sh stop` (not even a reboot starts it); `scripts/machine.sh start` releases the hold |
@@ -331,6 +332,88 @@ When Google Cloud itself is out, the laptop is the fallback:
 
 If Google ends the free tier (it gives thirty days' notice), the machine costs about $6.11 a month more. The fallback
 design, Cloud Run with a scheduler job (`docs/RESEARCH-2026-10-16.md`, section 5.3, design B), is not built.
+
+## After a release
+
+Since 1.20.4 the two chores that follow every merge into the platform repository's `main` can run by themselves: the
+machine installs the new code, and each application's three workflow files are re-pinned to it. They run only once
+`platform_updates` is in the machine's configuration; without it both stay manual (`scripts/machine.sh update`,
+`update_app_workflows`).
+
+```yaml
+platform_updates:        # in the machine's configuration: scripts/machine.sh config-get, edit, config-put
+  machine: true          # the machine installs main by itself
+  workflows: true        # applications are re-pinned to the commit the controller runs
+  delay_minutes: 60      # the window in which a release can still be stopped
+  quiet_minutes: 10      # the controller restarts only after this long without a tool call
+```
+
+What happens after each merge, in this order:
+
+1. **Main's checks.** The controller waits for the **Platform tests** run that the merge itself started on `main`. When it
+   fails, nothing is installed until a newer commit lands and passes.
+2. **The machine**, only when the merge changed something the controller runs (`labdeploy/`, `templates/`, `schema/`,
+   `requirements.lock`); documents, contracts under `apps/`, scripts and infrastructure never restart it. An hour after
+   main's checks passed on that change (a newer change to those files starts the hour again), at a moment when nobody has
+   used Claude's tools for ten minutes and no release is on its way to GitHub, the controller writes the commit into a
+   request file next to its database. The controller cannot restart itself, so the machine's own update service
+   (`fast-deploy-update`, run as root) takes the request: it installs the commit with `fast-deploy-install` (only a
+   commit on `main`, and never one older than the commit that runs), waits for `/healthz`, watches the controller two more
+   minutes, and puts the previous commit back if it stops answering or restarts. It asks for one commit at a time and
+   waits for the machine's report before the next. Claude's tools are away while the controller restarts (seconds, up
+   to a minute when a background job is finishing); releases already running carry on on GitHub.
+3. **The workflows.** An hour after the controller started on the new commit (never less than ten minutes, whatever the
+   delay, and never while the machine is installing), each application whose workflows pin an
+   older runner gets the usual pull request, "Update Fast Deploy workflows to platform X", and the one it opened for an
+   earlier commit is closed. An older runner means a change to the templates, the lock files or the modules the workflows
+   run (the list in `labdeploy/updates.py`, checked by a test); a release that changes only the controller re-pins
+   nothing. The controller merges the pull request itself only where it merges an application's own pull requests: the
+   application's `auto_merge` allows it (its own setting, else `onboarding.auto_merge`), its checks have passed, and it
+   changes exactly the three workflow files as the platform rendered them. Otherwise it waits for you. Merging releases an
+   application with `auto_deploy`, as a re-pin by hand does. An application whose contract the platform keeps has no pin,
+   and nothing happens for it.
+4. **The record.** Every step is in `list_events` ("platform update", "workflow update"), and `get_controller_status` says
+   what happens next and when. `platform.minimum_commit` never moves by itself: raising it stays your decision.
+
+To stop it:
+
+| To stop | Do |
+|---|---|
+| Everything, releases included | `paused: true` in the machine's configuration |
+| The machine's own updates | `platform_updates.machine: false` |
+| The re-pins | `platform_updates.workflows: false` |
+| One application's automatic merge | `application_settings.APP.auto_merge: false`: its re-pins wait for you |
+| One re-pin | close its pull request: it is not opened again for that commit |
+| The controller itself | `scripts/machine.sh stop`: nothing is installed while it is held |
+
+A change through `config-put` reaches the background jobs within fifteen seconds; they read a changed configuration on
+their own. An update the machine has already started finishes, with its own way back.
+
+When something goes wrong:
+
+- **"went back from X"**: the new commit did not answer or restarted. `scripts/machine.sh logs` (the controller) and
+  `scripts/machine.sh logs update` say why. The machine does not try X again, nor a later commit that leaves the
+  controller's code as X had it (a contract release or a document on top of it); fix it on `main`, and the next commit
+  that changes what the controller runs and passes is installed.
+- **"could not install X yet"** (`not_installed`): nothing changed on the machine (GitHub could not be reached, the
+  controller was held, or another install held the machine); it is asked for again half an hour later.
+- **"nothing reported for over an hour"**: `scripts/machine.sh status` shows the update service and its last result,
+  `scripts/machine.sh logs update` what it did. After two hours without a report the controller stops waiting: the commit
+  it runs by then counts as installed, or the commit is asked for again.
+- **A re-pin waiting for you**: `get_controller_status` names the pull request and why (its checks failed, it changes more
+  than the three files, it has conflicts, or `auto_merge` is off).
+
+Setting it up, once, after the merge that brings 1.20.4:
+
+1. Apply the foundation: `scripts/apply-foundation.sh PROJECT`. The machine's startup script changes in its metadata, in
+   place (one change, if nothing else is pending); nothing restarts.
+2. `scripts/machine.sh startup` runs that script again on the machine: it adds `fast-deploy-update` and the path unit that
+   starts it, and the folder its results go to. Caddy restarts for a second.
+3. `scripts/machine.sh update $(git rev-parse origin/main)` installs 1.20.4 by hand, the last time.
+4. Add `platform_updates: {}` (or the block above) to the machine's configuration with `config-get` and `config-put`.
+
+Cost: nothing at idle, a few GitHub API calls every five minutes. A re-pin costs what one by hand costs: the
+application's checks (free minutes for a public repository) and, with `auto_deploy`, one staging release.
 
 ## The laptop is off or asleep
 
@@ -652,7 +735,8 @@ and the apps' pins carry the name, so the order matters:
 ## Monthly checklist
 
 - `get_controller_status` and the last watchdog findings; the backup bucket has copies from the last day.
-- `scripts/machine.sh status`: the three services active, the disk under half full, the commit the one you expect.
+- `scripts/machine.sh status`: the three services active, the disk under half full, the commit the one you expect, and
+  the last automatic update; `get_controller_status` names any re-pin that waits for you.
 - Every quarter: the restore drill (`scripts/machine.sh drill`; the watchdog reminds).
 - Twice a year, for production: the rollback drill, the cap-fire drill and, for each database there, the data restore
   drill (section Production).
