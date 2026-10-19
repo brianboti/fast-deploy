@@ -48,9 +48,9 @@ manifest. Its answers come from the same kind of ladder:
 | Tests? | `scripts.test` unless it is npm's placeholder; files `node --test` finds by its own patterns | none: said plainly, never invented |
 
 The packages are locked by the platform when the repository has no lockfile: `npm install --package-lock-only
---ignore-scripts --min-release-age=3` with npm 11.10 or later in a container on the controller's machine (Node 22 bundles
-npm 10.9.9, which has no `min-release-age`, so a Node 22 service is locked by Node 24's npm 11.19.1), into
-`apps/<service>/package-lock.json`. Every entry must carry its integrity hash and come from the npm registry.
+--ignore-scripts --min-release-age=3` with npm 11.10 or later, in a container of your Node.js line on the controller's
+machine (Node 22 bundles npm 10.9.9, which has no `min-release-age`, so npm 11.19.1 is installed there first, by version
+and checked against its integrity hash), into `apps/<service>/package-lock.json`. Every entry must carry its integrity hash and come from the npm registry.
 
 For Node.js it also **refuses**: a start script that watches, transpiles or chains (`nodemon`, `ts-node`, `tsx`,
 `node --watch`, a development server, `concurrently`, `&&` or `sh -c`); a service that needs a build first (its start

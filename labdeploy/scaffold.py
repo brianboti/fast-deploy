@@ -50,11 +50,13 @@ NODE_IMAGES = {
     "24": "sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5",
     "26": "sha256:0d1e33586362bb9e608c4e751e7a9e7edb55c9ac11461ed5666af696cc461dd4",
 }
-# The line whose image makes a Node.js service's lock (docs/ROADMAP.md D42): npm's min-release-age arrived in npm 11.10.0
+# The npm that makes a Node.js service's lock (docs/ROADMAP.md D42, 18.3): min-release-age arrived in npm 11.10.0
 # (2026-02-11), and Node 22 bundles npm 10.9.9, which only warns about a flag it does not know and would lock without the
-# hold. A Node 22 service is therefore locked by Node 24's npm (11.19.1); lockfile version 3 is the same from npm 9 on. The
-# container refuses an npm older than 11.10 rather than lock without the hold.
-LOCK_IMAGE_LINE = {"22": "24", "24": "24", "26": "26"}
+# hold. In the node:22-slim container, npm 11.19.1 (the npm Node 24.22 bundles; it runs on Node 22.9 and later and has no
+# install script) is therefore installed by version and checked against the integrity hash the registry published for it,
+# read 2026-10-19. The lock is still resolved on the service's own line, as npm prefers versions whose engines it meets.
+# Every container refuses an npm older than 11.10 rather than lock without the hold.
+LOCK_NPM = {"22": ("11.19.1", "sha512-ztsxKxt/kkIaAs+2i0GU6I+DRmUdrNasxTZKJe9TCdSjKxlhah/4r/hl5ygMD6XAg1qZ9c2TNomR4qgOydp10g==")}
 NODE_LOCK_OPTIONS = "--package-lock-only --ignore-scripts --min-release-age=3"
 # Exact versions checked on PyPI on 2026-10-14 (the demo app and the platform pin the same test tools).
 DEV_PINS = {"pytest": "9.1.1", "httpx": "0.28.1"}
@@ -624,13 +626,29 @@ def node_lock_command(path=""):
     return f"cd {folder} && {command}" if folder else command
 
 
+def pinned_npm_check(version, folder):
+    """JavaScript that exits 4 unless the npm installed in `folder` is `version` with the integrity hash given as its first
+    argument, read from the lockfile npm wrote there."""
+    return (f"const e = (require('{folder}/package-lock.json').packages || {{}})['node_modules/npm'] || {{}}; "
+            f"if (e.version !== '{version}' || e.integrity !== process.argv[1]) {{ console.error('npm ' + e.version + "
+            "' does not match its pinned version and integrity'); process.exit(4); }")
+
+
 def node_lock_container(line):
-    """The docker command node_lock runs: node:<line>-slim by digest (Node 24's for a Node 22 service, LOCK_IMAGE_LINE), a
-    non-root user, package.json on stdin and package-lock.json on stdout. npm resolves with every script off and nothing
-    published in the last three days; nothing from the repository reaches a command line."""
+    """The docker command node_lock runs: the service's own node:<line>-slim by digest, a non-root user, package.json on
+    stdin and package-lock.json on stdout. npm resolves with every script off and nothing published in the last three days;
+    for a line whose npm is older than 11.10 (LOCK_NPM), a pinned npm is installed first and checked against its integrity
+    hash. Nothing from the repository reaches a command line."""
+    steps = ["set -eu", "cat > package.json"]
+    if line in LOCK_NPM:
+        version, integrity = LOCK_NPM[line]
+        pinned = f"{CONTAINER_HOME}/npm-pinned"
+        steps += [f"mkdir {pinned}",
+                  f"(cd {pinned} && npm install --no-audit --no-fund --ignore-scripts --loglevel=error npm@{version} >&2)",
+                  f"node -e {shlex.quote(pinned_npm_check(version, pinned))} {shlex.quote(integrity)}",
+                  f'npm() {{ node {pinned}/node_modules/npm/bin/npm-cli.js "$@"; }}']
     script = "; ".join((
-        "set -eu",
-        "cat > package.json",
+        *steps,
         "version=$(npm --version)",
         'major=${version%%.*}; rest=${version#*.}; minor=${rest%%.*}',
         'if [ "$major" -lt 11 ] || { [ "$major" -eq 11 ] && [ "$minor" -lt 10 ]; }; then '
@@ -639,7 +657,7 @@ def node_lock_container(line):
         "cat package-lock.json",
     ))
     return ["docker", "run", "--rm", "-i", *CONTAINER_LIMITS, "--user", "65532:65532", "-e", f"HOME={CONTAINER_HOME}",
-            "-e", "npm_config_update_notifier=false", "-w", CONTAINER_HOME, node_base_image(LOCK_IMAGE_LINE[line]), "sh", "-c", script]
+            "-e", "npm_config_update_notifier=false", "-w", CONTAINER_HOME, node_base_image(line), "sh", "-c", script]
 
 
 def node_lock(package_text, line, runner=docker_runner, path=""):

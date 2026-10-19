@@ -20,9 +20,11 @@ Phase 18 has not run yet. 1.19.0 stays Phase 17's number.
    configuration module (Sophia's) is found. A host read from a variable whose default is `127.0.0.1` gets `0.0.0.0` in
    the draft's `env`.
 3. **The lock the platform makes.** For a repository without a lockfile, `npm install --package-lock-only
-   --ignore-scripts --min-release-age=3` runs in a container on the controller's machine, by npm 11.10 or later: a Node 22
-   service is locked by Node 24's npm, because Node 22's npm 10.9.9 only warns about `min-release-age` and would lock
-   without the hold. The container refuses an older npm. Every entry must carry its integrity hash and come from the npm
+   --ignore-scripts --min-release-age=3` runs in a container of the service's own line on the controller's machine, by
+   npm 11.10 or later. Node 22's npm 10.9.9 only warns about `min-release-age` and would lock without the hold, so its
+   container first installs npm 11.19.1 by version and checks it against the integrity hash the registry published.
+   Every container refuses an npm older than 11.10, and the lock stays resolved on the service's own line, since npm
+   prefers the versions whose `engines` it meets. Every entry must carry its integrity hash and come from the npm
    registry before the lock is proposed as `apps/<service>/package-lock.json`.
 4. **The pipeline.** `actions/setup-node` 7.1.0 is pinned by commit, with `package-manager-cache: false`. OSV-Scanner
    2.7.0, downloaded by version and checked against its SHA-256, reads the lockfile **before anything is installed**. For
@@ -63,7 +65,7 @@ What differs from the plan, and why:
 - The drafted Dependabot file writes a seven-day cooldown, as it does for pip, where the review recommended Dependabot's
   three-day default.
 
-Tests: 777 pass (100 new); ruff and zizmor clean.
+Tests: 778 pass (101 new); ruff and zizmor clean.
 
 
 # 1.18.11: what the first tagged promotion showed

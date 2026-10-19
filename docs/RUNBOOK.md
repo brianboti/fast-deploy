@@ -503,8 +503,9 @@ specification" refuses it too); what already serves keeps serving.
 
 The pins to refresh with the line's releases, as for Python's: the `node:<line>-slim` index digests in
 `labdeploy/scaffold.py` (`docker buildx imagetools inspect node:24-slim`, the top "Digest:" line, resolved 2026-10-19),
-`actions/setup-node` in `templates/deploy-gcp.yml` and `templates/repo/ci-node.yml` (7.1.0 by commit), and OSV-Scanner's
-version and SHA-256 in `templates/deploy-gcp.yml` (2.7.0, from its release's checksums). Regenerate
+`actions/setup-node` in `templates/deploy-gcp.yml` and `templates/repo/ci-node.yml` (7.1.0 by commit), OSV-Scanner's
+version and SHA-256 in `templates/deploy-gcp.yml` (2.7.0, from its release's checksums), and the npm a Node 22 lock is
+made with (`LOCK_NPM` in `labdeploy/scaffold.py`: 11.19.1 and its registry integrity hash; it goes when 22 does). Regenerate
 `.github/workflows/deploy.yml` with `labdeploy.workflows.central_deploy` after a template change; a test keeps them equal.
 
 ## Someone cannot open an app's pages

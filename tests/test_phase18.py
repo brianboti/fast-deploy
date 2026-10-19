@@ -488,7 +488,7 @@ def fake_npm(calls, output=None):
 def test_the_lock_is_made_by_npm_11_10_or_later_with_every_script_off():
     calls = []
     package = json.dumps({"name": "svc", "version": "1.0.0", "dependencies": {"express": "^4.21.2"}})
-    for line, image in (("22", "node:24-slim@"), ("24", "node:24-slim@"), ("26", "node:26-slim@")):
+    for line, image in (("22", "node:22-slim@"), ("24", "node:24-slim@"), ("26", "node:26-slim@")):
         made = scaffold.node_lock(package, line, fake_npm(calls))
         assert made["error"] is None and json.loads(made["text"])["lockfileVersion"] == 3
         args, stdin = calls[-1]
@@ -497,6 +497,8 @@ def test_the_lock_is_made_by_npm_11_10_or_later_with_every_script_off():
         script = args[-1]
         assert "npm install --package-lock-only --ignore-scripts --min-release-age=3" in script and "--no-audit" in script
         assert 'if [ "$major" -lt 11 ] || { [ "$major" -eq 11 ] && [ "$minor" -lt 10 ]; }' in script  # npm 10 would ignore the hold
+        # Node 22's npm 10.9.9 has no min-release-age: its container installs npm 11.19.1 first and checks its integrity hash.
+        assert ("npm@11.19.1" in script and scaffold.LOCK_NPM["22"][1] in script) == (line == "22")
     assert scaffold.node_lock_command("api") == "cd api && npm install --package-lock-only --ignore-scripts --min-release-age=3"
     assert scaffold.node_lock(package, "24", fake_npm([], "not json"))["error"].startswith("the container did not return a usable package-lock.json")
     bad = json.loads(lockfile({"name": "svc", "dependencies": {"x": "1"}}))
@@ -709,7 +711,7 @@ def test_every_supported_line_has_a_well_formed_index_digest():
     assert tuple(scaffold.NODE_IMAGES) == node.NODES == ("22", "24", "26")
     assert all(digest.startswith("sha256:") and len(digest) == 71 for digest in scaffold.NODE_IMAGES.values())
     assert len(set(scaffold.NODE_IMAGES.values())) == 3 and scaffold.NODE_IMAGES_RESOLVED == "2026-10-19"
-    assert scaffold.LOCK_IMAGE_LINE == {"22": "24", "24": "24", "26": "26"}
+    assert set(scaffold.LOCK_NPM) == {"22"} and scaffold.LOCK_NPM["22"][1].startswith("sha512-")
     with pytest.raises(ValueError, match="not supported"):
         scaffold.node_base_image("20")
 
@@ -904,3 +906,13 @@ def test_compose_hono_and_hapi_say_where_a_node_service_listens():
     assert read(repo(deps={"hono": "^4", "@hono/node-server": "^1"}, files={"server.js": hono}))["spec"].port == 8788
     hapi = "const Hapi = require('@hapi/hapi');\nconst server = Hapi.server({ port: process.env.PORT || 3000, host: 'localhost' });\n"
     assert refused(read(repo(deps={"@hapi/hapi": "^21"}, files={"server.js": hapi})), "listens on localhost")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed here")
+def test_the_pinned_npm_is_checked_against_its_integrity_hash(tmp_path):
+    version, integrity = scaffold.LOCK_NPM["22"]
+    code = scaffold.pinned_npm_check(version, str(tmp_path))
+    for found, value, expected in ((version, integrity, 0), (version, "sha512-other", 4), ("10.9.9", integrity, 4), (None, None, 4)):
+        lock = {"packages": {"node_modules/npm": {"version": found, "integrity": value}}} if found else {"packages": {}}
+        (tmp_path / "package-lock.json").write_text(json.dumps(lock))
+        assert subprocess.run([shutil.which("node"), "-e", code, integrity], capture_output=True, text=True, timeout=60).returncode == expected
