@@ -12,7 +12,7 @@ from conftest import TARGET
 from test_phase2_release import make, release
 from test_release import IMAGE, PLAN_ID
 
-from labdeploy import provenance
+from labdeploy import pins, provenance
 from labdeploy.config import Config
 from labdeploy.github import GitHub
 from labdeploy.infra import ALLOWED_ROLES, app_root, check_plan
@@ -125,8 +125,8 @@ def test_the_deploy_job_picks_github_cosign_or_the_operator_exception():
     assert step["Attest build provenance"]["if"] == "inputs.image_digest == '' && steps.provenance.outputs.mode == 'github'"
     assert step["Verify build provenance"]["if"] == "steps.provenance.outputs.mode == 'github'"
     install = step["Install Cosign"]["run"]
-    assert "releases/download/v3.1.3/cosign-linux-amd64" in install and "| sha256sum --check --strict" in install
-    assert "4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71" in install
+    url, checksum = pins.mentions("cosign", "templates/deploy-gcp.yml")  # by version and SHA-256, as labdeploy/pins.py reads them
+    assert url in install and checksum + ' | sha256sum --check --strict' in install
     sign = step["Sign build provenance with Cloud KMS"]
     assert sign["if"] == "inputs.image_digest == '' && steps.provenance.outputs.mode == 'cosign-kms'"
     # Stored as the tag the registry keeps; never uploaded to a public transparency log.

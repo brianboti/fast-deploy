@@ -1,0 +1,127 @@
+# The weekly pin refresh (labdeploy/pins.py; docs/RUNBOOK.md "The weekly pin refresh"). Dependabot follows the platform's
+# GitHub Actions and Terraform providers; this follows the other pins: the tools the pipeline downloads by version and
+# checksum, the buildpacks and base images by digest, uv and the npm the lock containers install, CI's hadolint and
+# OpenTofu, and the machine's Caddy and Litestream. It proposes only releases at least seven days old, with checksums read
+# from official release metadata, checks each new download against them without running it, and opens or replaces one
+# pull request. It never merges: the platform's full CI runs on that pull request, and a person reviews and merges it.
+# The first job reads the metadata with the read-only token and holds no secret. Only the second, which reads nothing from
+# the internet and runs nothing downloaded, holds the pins App's key (environment `pins`, docs/SETUP.md 7o): a pull request
+# opened with the workflow's own token would start no CI, and that token cannot change workflow files.
+name: Weekly pin refresh
+on:
+  schedule:
+    - cron: '23 5 * * 1' # Mondays, before the weekly CI audit (06:19) and the drift check (07:37)
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: pins
+  cancel-in-progress: false
+jobs:
+  propose:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.proposal.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Read the official release metadata and write the new pins
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/proposal"
+          python -m labdeploy.pins refresh --report "$RUNNER_TEMP/proposal/pull-request.md" --plan "$RUNNER_TEMP/proposal/plan.json"
+      - name: Check each new download against its new pin
+        run: python -m labdeploy.pins verify "$RUNNER_TEMP/proposal/plan.json"
+      - name: Keep the proposal for the pull request
+        id: proposal
+        env:
+          APP: ${{ vars.PINS_APP_CLIENT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --binary > "$RUNNER_TEMP/proposal/pins.patch"
+          if [ -s "$RUNNER_TEMP/proposal/pins.patch" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; else echo "changed=false" >> "$GITHUB_OUTPUT"; fi
+          if [ -z "$APP" ]; then
+            echo "::warning title=Weekly pin refresh::The pins App is not set up (docs/SETUP.md 7o), so no pull request opens: this run's summary holds the proposal"
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pins-proposal
+          path: ${{ runner.temp }}/proposal
+          retention-days: 7
+          if-no-files-found: error
+  pull-request:
+    needs: propose
+    if: vars.PINS_APP_CLIENT_ID != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: pins
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: pins-proposal
+          path: ${{ runner.temp }}/proposal
+      - name: Token for the pull request
+        id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.PINS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PINS_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+      # One pull request at a time on one branch: replaced while it is open, closed when main needs none of it any more.
+      - name: Open, replace or close the pull request
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          APP_SLUG: ${{ steps.token.outputs.app-slug }}
+          CHANGED: ${{ needs.propose.outputs.changed }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRANCH=pins/weekly-refresh
+          PROPOSAL="$RUNNER_TEMP/proposal"
+          OPEN=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
+          if [ "$CHANGED" != "true" ]; then
+            if [ -n "$OPEN" ]; then
+              gh pr close "$OPEN" --repo "$GITHUB_REPOSITORY" --delete-branch --comment "This week's refresh finds every pin on main current, or its newer release still under seven days old: nothing here is needed any more."
+            fi
+            echo "Nothing to propose this week" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # The proposal may change only the files that hold pins.
+          ALLOWED=$(python3 -m labdeploy.pins paths)
+          for FILE in $(git apply --numstat "$PROPOSAL/pins.patch" | cut -f3); do
+            grep -qxF "$FILE" <<< "$ALLOWED" || { echo "::error title=Weekly pin refresh::the proposal changes $FILE, which holds no pin"; exit 1; }
+          done
+          git apply --index "$PROPOSAL/pins.patch"
+          BOT_ID=$(gh api "users/$APP_SLUG[bot]" --jq .id)
+          jq -r .message "$PROPOSAL/plan.json" > "$RUNNER_TEMP/message.txt"
+          git -c user.name="$APP_SLUG[bot]" -c user.email="$BOT_ID+$APP_SLUG[bot]@users.noreply.github.com" commit --quiet --file "$RUNNER_TEMP/message.txt"
+          REMOTE="https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git"
+          if [ -n "$OPEN" ] && git fetch --quiet --depth 1 "$REMOTE" "refs/heads/$BRANCH" && git diff --quiet FETCH_HEAD HEAD; then
+            echo "The open pull request already holds these pins: only its text is updated"
+          else
+            git push --quiet --force "$REMOTE" "HEAD:refs/heads/$BRANCH"
+          fi
+          TITLE=$(jq -r .title "$PROPOSAL/plan.json")
+          if [ -n "$OPEN" ]; then
+            gh pr edit "$OPEN" --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file "$PROPOSAL/pull-request.md"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --title "$TITLE" --body-file "$PROPOSAL/pull-request.md"
+          fi
