@@ -1,0 +1,12 @@
+# Imported by Fast Deploy from streamlit/streamlit-example at 8bd2197e4ba6 on 2026-10-20, read as it is: the pull request that added
+# this file lists every choice and where it came from. Merging is the review (docs/ROADMAP.md D32); a release moves source.commit.
+source:
+  repository: streamlit/streamlit-example
+  commit: 8bd2197e4ba68dd68127a264dc6708f0a96f23c8
+name: streamlit-example
+health_path: null
+tests: none
+build:
+  recipe: platform
+  entrypoint: streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port
+    $PORT --server.headless true
