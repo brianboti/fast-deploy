@@ -135,7 +135,13 @@ say: *"Deploy https://github.com/ORG/REPO as it is."* Nothing is added to that r
 
 1. The platform reads it: how it is built, which Python or Node.js, its packages, what starts it, its port and health
    check, its tests. Each choice names the file it came from; what it cannot read safely, it refuses, and says the file
-   and the fix.
+   and the fix. Since 1.22.0 it reads more and refuses less (roadmap Phase 20): a Streamlit, Gradio or Dash app, an
+   aiohttp server or a plain `python main.py` is started the way its framework documents when no application object is
+   found, with a note that the first revision's log decides; a Poetry project or a Pipfile without a lock, a `setup.py`,
+   a `requirements/` folder and `apt.txt` are read or locked by the platform; a Node.js service on a literal port, or
+   started by `nodemon` or `pm2`, is taken as it is; a `.nvmrc` or `.python-version` naming a line at its end of life
+   gets the lowest supported line with a note. A root that holds several services names them, and *"Deploy everything
+   in REPO"* opens one contract pull request per folder.
 2. It opens one pull request on the platform repository with the contract (`apps/NAME/platform.yaml`) and the locks it
    made. **A person reviews and merges it: that merge is the review.** The controller never merges a contract.
 3. Then the usual steps run on their own: the cloud setup, the GitHub environment (`staging-NAME`, in the platform

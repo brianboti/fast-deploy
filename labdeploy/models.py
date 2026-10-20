@@ -157,6 +157,12 @@ ENTRYPOINT = r"^[A-Za-z0-9_./:=,+@%${}() -]+$"
 # line in Active LTS on the day it is drafted.
 NODE_END_OF_LIFE = {"22": datetime.date(2027, 4, 30), "24": datetime.date(2028, 4, 30), "26": datetime.date(2029, 4, 30)}
 NODE_ACTIVE_LTS_FROM = {"22": datetime.date(2024, 10, 29), "24": datetime.date(2025, 10, 28), "26": datetime.date(2026, 10, 28)}
+# Lines that have reached their end of life (docs/ROADMAP.md D48): a version file that asks for one of these gets the
+# lowest supported line and a note naming the date; a Dockerfile's own FROM stays refused. Node's release schedule and
+# Python's version status page, read on 2026-10-20.
+NODE_ENDED = {"16": datetime.date(2023, 9, 11), "17": datetime.date(2022, 6, 1), "18": datetime.date(2025, 4, 30), "19": datetime.date(2023, 6, 1),
+              "20": datetime.date(2026, 4, 30), "21": datetime.date(2024, 6, 1), "23": datetime.date(2025, 6, 1), "25": datetime.date(2026, 6, 1)}
+PYTHON_ENDED = {"3.7": datetime.date(2023, 6, 27), "3.8": datetime.date(2024, 10, 7), "3.9": datetime.date(2025, 10, 31), "3.10": datetime.date(2026, 10, 1)}
 # What starts a Node.js service is node itself: npm and the other managers add latency and do not pass SIGTERM on (D45).
 PACKAGE_MANAGERS = ("npm", "npx", "yarn", "pnpm", "bun", "corepack")
 # A package and its exact version, as package.json's allowScripts pins it (npm install-scripts approve): an optional scope,

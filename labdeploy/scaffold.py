@@ -1180,19 +1180,104 @@ def start_command(entrypoint):
     return ["sh", "-c", f"exec {entrypoint}"] if "$" in entrypoint else shlex.split(entrypoint)
 
 
-def platform_dockerfile(spec, locked, lockfile="package-lock.json"):
+# System packages a Python service lists for the platform's image (docs/ROADMAP.md 20.3): Heroku's Aptfile, Railpack's and
+# Streamlit's packages.txt, apt.txt. Debian package names only; anything else in the file stops the build rather than
+# reaching a shell.
+SYSTEM_PACKAGE_FILES = ("apt.txt", "Aptfile", "packages.txt", "apt-packages.txt")
+SYSTEM_PACKAGE = re.compile(r"[a-z0-9][a-z0-9+.-]{1,99}(?::[a-z0-9]+)?(?:=[A-Za-z0-9+:~.-]+)?")
+
+
+def system_packages(text):
+    """The package names of an apt.txt, Aptfile or packages.txt: one per line, comments and blank lines left out. Raises
+    ValueError on a line that is not a Debian package name (a URL, a shell word, a .deb file)."""
+    packages = []
+    for line in (text or "").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        for word in line.split():
+            if not SYSTEM_PACKAGE.fullmatch(word):
+                raise ValueError(f"{word!r} is not a Debian package name; the platform installs named packages only (no URLs or .deb files)")
+            packages.append(word)
+    return list(dict.fromkeys(packages))
+
+
+def single_file_packages(lock_text):
+    """Packages of a hash-locked requirements file that have exactly one distribution file: usually a source distribution
+    alone, which needs a compiler (20.3). A wheel-only package counted here costs a build stage and nothing else."""
+    found = []
+    for block in re.split(r"\n(?=\S)", lock_text or ""):
+        name = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*==", block)
+        if name and block.count("--hash=") == 1:
+            found.append(normalize(name.group(1)))
+    return found
+
+
+def build_facts(folder):
+    """What the platform's Python Dockerfile needs to know about a build context: the system packages its files list, whether
+    the lock holds a source distribution (a build stage with a compiler), whether it is a Django project (collectstatic)."""
+    folder = Path(folder)
+    packages = []
+    for name in SYSTEM_PACKAGE_FILES:
+        if (folder / name).is_file():
+            packages += system_packages((folder / name).read_text(errors="replace"))
+    lock = (folder / "requirements.lock").read_text(errors="replace") if (folder / "requirements.lock").is_file() else ""
+    return {"system": list(dict.fromkeys(packages)), "sources": single_file_packages(lock), "django": (folder / "manage.py").is_file()}
+
+
+def python_platform_dockerfile(spec, locked, facts=None):
+    """The platform's own Dockerfile for a Python contract (templates/repo/Dockerfile.platform): python:X.Y-slim by digest, the
+    listed system packages installed, a build stage with a compiler when the lock holds a source distribution or system
+    packages are listed (only its virtual environment enters the image), Django's static files collected at build, a numeric
+    non-root user, and the contract's entrypoint as the command (docs/ROADMAP.md 13.3 and 20.3)."""
+    facts = facts or {"system": [], "sources": [], "django": False}
+    requirements = "requirements.lock" if locked else "requirements.txt"
+    install = ("--require-hashes -r " if locked else "-r ") + requirements
+    system = ""
+    if facts["system"]:
+        system = ("# System packages the repository lists (apt.txt, Aptfile or packages.txt), as Heroku and Railpack install them.\n"
+                  "RUN apt-get update && apt-get install -y --no-install-recommends " + " ".join(facts["system"])
+                  + " \\\n && rm -rf /var/lib/apt/lists/*\n")
+    compile_stage = bool(facts["system"] or facts["sources"])
+    if compile_stage:
+        why = ("the lock holds a source distribution (" + ", ".join(facts["sources"][:4]) + ")" if facts["sources"] else "system packages are listed")
+        build_stage = (f"# A build stage with a compiler (docs/ROADMAP.md 20.3): {why}, so the dependencies are built here and only the\n"
+                       "# virtual environment enters the image below.\n"
+                       f"FROM python:{spec.python}-slim@{BASE_IMAGES[spec.python]} AS build\n"
+                       "ENV PYTHONUNBUFFERED=1 HOME=/tmp\n"
+                       "RUN apt-get update && apt-get install -y --no-install-recommends build-essential " + " ".join(facts["system"])
+                       + " \\\n && rm -rf /var/lib/apt/lists/*\n"
+                       "WORKDIR /app\n"
+                       f"COPY {requirements} ./\n"
+                       f"RUN python -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir {install}\n\n")
+        install_lines = "COPY --from=build /opt/venv /opt/venv\n"
+        venv_path = " PATH=/opt/venv/bin:$PATH"
+    else:
+        build_stage, venv_path = "", ""
+        install_lines = ("# Dependencies before the code: a code change then rebuilds one layer instead of reinstalling every dependency.\n"
+                         f"COPY {requirements} ./\nRUN pip install --no-cache-dir {install}\n")
+    collectstatic = ""
+    if facts["django"]:
+        collectstatic = ("# Django's static files, collected at build as Heroku does (docs/ROADMAP.md 20.3); a settings module that needs\n"
+                         "# a value at import stops the build here, and the contract's env is the place to give it.\n"
+                         "RUN python manage.py collectstatic --noinput\n")
+    return fill(template("Dockerfile.platform"), PYTHON=spec.python, RESOLVED=BASE_IMAGES_RESOLVED, DIGEST=BASE_IMAGES[spec.python],
+                BUILD_STAGE=build_stage, VENV_PATH=venv_path, SYSTEM=system, INSTALL=install_lines, COLLECTSTATIC=collectstatic, PORT=spec.port,
+                CMD=json.dumps(start_command(spec.build.entrypoint)))
+
+
+def platform_dockerfile(spec, locked, lockfile="package-lock.json", facts=None):
     """The platform's own Dockerfile for a contract with build.recipe: platform: the drafted Dockerfile's steps (python:X.Y-slim
     or node:<line>-trixie-slim by digest, dependencies before the code, a numeric non-root user) with the contract's entrypoint as
-    its command. `locked` says whether a Python service has requirements.lock; `lockfile` names a Node.js service's lock."""
+    its command. `locked` says whether a Python service has requirements.lock; `lockfile` names a Node.js service's lock;
+    `facts` (build_facts) says what a Python build context lists and holds."""
     if spec.build.recipe != "platform" or not spec.build.entrypoint:
         raise ValueError("The platform makes a Dockerfile only for build.recipe: platform with build.entrypoint")
-    if spec.runtime == "node-http":
-        text = node_dockerfile({"node": spec.node, "port": spec.port, "command": start_command(spec.build.entrypoint), "lockfile": lockfile,
-                                "scripts": spec.build.scripts})
-        image = f"node:{spec.node}-slim by its multi-architecture index digest, resolved {NODE_IMAGES_RESOLVED}"
-    else:
-        text = dockerfile({"python": spec.python, "port": spec.port, "command": start_command(spec.build.entrypoint)}, locked)
-        image = f"python:{spec.python}-slim by its multi-architecture index digest, resolved {BASE_IMAGES_RESOLVED}"
+    if spec.runtime != "node-http":
+        return python_platform_dockerfile(spec, locked, facts)
+    text = node_dockerfile({"node": spec.node, "port": spec.port, "command": start_command(spec.build.entrypoint), "lockfile": lockfile,
+                            "scripts": spec.build.scripts})
+    image = f"node:{spec.node}-slim by its multi-architecture index digest, resolved {NODE_IMAGES_RESOLVED}"
     body = text[re.search(r"(?m)^FROM ", text).start():].replace("# Only what .dockerignore lets in is copied.",
                                                                   "# Only what passed the platform's deny-list was copied into this build context.")
     return ("# Made by Fast Deploy at build time from the contract (build.recipe: platform, docs/ROADMAP.md 13.3); never committed.\n"
@@ -1228,7 +1313,7 @@ def render_build(app_dir, out_dir, spec):
     locked = (target / "requirements.lock").is_file()
     if not locked and not (target / "requirements.txt").is_file():
         raise ValueError("The service has neither requirements.lock nor requirements.txt, and the contract names no lock the platform made")
-    (target / "Dockerfile").write_text(platform_dockerfile(spec, locked))
+    (target / "Dockerfile").write_text(platform_dockerfile(spec, locked, facts=build_facts(target)))
     return copied
 
 
@@ -1319,7 +1404,10 @@ def main(argv=None):
         else:
             lock = os.environ.get("PLATFORM_LOCK")
             locked = (Path(args.app_dir) / "requirements.lock").is_file() or bool(lock and Path(lock).is_file())
-            print(platform_dockerfile(spec, locked, node_lockfile(args.app_dir) or "package-lock.json"), end="")
+            facts = build_facts(args.app_dir)
+            if lock and Path(lock).is_file() and not (Path(args.app_dir) / "requirements.lock").is_file():
+                facts["sources"] = single_file_packages(Path(lock).read_text(errors="replace"))  # the lock the build step copies in later
+            print(platform_dockerfile(spec, locked, node_lockfile(args.app_dir) or "package-lock.json", facts), end="")
     except ValueError as exc:
         print(f"::error::{exc}", file=sys.stderr)
         return 1

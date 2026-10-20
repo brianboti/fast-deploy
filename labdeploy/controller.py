@@ -411,6 +411,32 @@ class Controller:
         with self._onboarding_lock:
             return Onboarder(self).start(principal, repository, app_id, auto_deploy, path, as_is=as_is)
 
+    def onboard_all(self, principal, repository, auto_deploy=False):
+        """"Deploy everything in REPO" (docs/ROADMAP.md D56, 20.5): one onboarding as it is per service the repository holds,
+        each named after its folder (the root's after the repository), through check_repository's list of services. Each
+        opens its own contract pull request; a person's merge of each is the review."""
+        from .onboarding import Onboarder, normalize_repository
+        if "*" not in principal.applications or not principal.can_deploy:
+            raise ValueError("Onboarding every service of a repository needs an identity that may onboard: applications: ['*'] with can_deploy")
+        seen = self.contracts.inspect(normalize_repository(repository), "")
+        found = [entry["path"] for entry in seen["services"]]
+        view = {"repository": seen["repository"], "services": found, "onboardings": []}
+        if not found:
+            view["next_action"] = ("No service was found: neither the root nor a folder holds a dependency manifest beside an entry file. "
+                                   "Name the folder with check_repository and its path.")
+            return view
+        with self._onboarding_lock:
+            for path in found:
+                try:
+                    view["onboardings"].append(Onboarder(self).start(principal, seen["repository"], None, auto_deploy, path or None, as_is=True))
+                except ValueError as exc:
+                    view["onboardings"].append({"repository": seen["repository"], "path": path, "state": "refused", "error": str(exc)[:300]})
+        states = [str(item.get("state")) for item in view["onboardings"]]
+        view["next_action"] = (f"{len(found)} service{'s' if len(found) != 1 else ''} found ({', '.join(folder or 'the root' for folder in found[:6])}); "
+                               f"each is onboarded as it is on its own ({', '.join(sorted(set(states)))}). A person reviews and merges each contract pull "
+                               "request; get_onboarding_status with each application's name follows it.")
+        return view
+
     def import_contract(self, principal, repository, path=None, name=None):
         """Read one service of a repository as it is and open the pull request that adds its contract to the platform
         repository (docs/ROADMAP.md 13.1); nothing is added to the repository itself, and merging is the review."""

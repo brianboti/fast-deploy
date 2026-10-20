@@ -1,3 +1,76 @@
+# 1.22.0: read more, refuse less (Phase 20)
+
+Roadmap Phase 20 (docs/ROADMAP.md 20.1 to 20.7, decisions D48, D50 and D56 at their defaults), from the research review
+of 2026-10-20 (`docs/RESEARCH-2026-10-20.md`, sections 4, 6.4, 7.1 and the appendix). That review ran the reader over 33
+public Python and Node.js repositories: 3 were taken as they are and 30 refused, two thirds of the refusals being the
+platform's own choices or bugs rather than Cloud Run's needs. This version fixes the bugs and gives the reader the
+breadth the source builders (Google's buildpacks, Railpack) have. Only the reader, the lock converters, the platform's
+own Python Dockerfile and `onboard_application` change: the pipeline, the gates and the contract's shape are the same,
+and nothing is ever written into an application's repository. Built and checked locally; the live exercise listed under
+Phase 20 has not run yet.
+
+1. **The survey as a test** (20.6). The 33 repositories' file trees and the texts the reader reads are recorded under
+   `tests/fixtures/survey/` (2.8 MB, gzipped), with the expected contract or refusal for each in `tests/test_survey.py`.
+   The same sample now reads as **8 accepted and 42 refusals**, from 3 and 60: a Streamlit demo, a Gradio web UI, a
+   Django project that includes `requirements/base.txt`, ComfyUI (`python main.py`) and Open WebUI's backend join the
+   three of 1.21.0. Of the 25 still refused, 9 carry a Dockerfile that runs as root (Phase 22's wrapper user), 8 need
+   the builds, package managers or workspaces of Phase 21, and 8 need one answer from a person (a real `.env`, a
+   requirements file per hardware, a folder above several services, a command the files do not say).
+2. **The reader's bugs** (20.1). `.env.local.example` and every other documented example (`.env.<name>.example`,
+   `.sample`, `.template`, `.dist`) are examples, not secrets. A Django project is one with `django` among its
+   dependencies or a `manage.py` that imports Django, never a settings file that mentions the word (Litestar's
+   fullstack template was read as Django); without `WSGI_APPLICATION`, the one `<package>/wsgi.py` or `asgi.py` beside
+   `manage.py` says the application. `-r` includes in `requirements.txt` are followed inside the service's folder, and a
+   `requirements/` folder with no `requirements.txt` is read from its production, base or only file (one file per
+   hardware is refused until a person names one). `main.py`, `app.py` and the frameworks' other discovery names are
+   fetched by name at any depth before shallower helpers, so a large application's entry is read (Open WebUI's
+   `backend/open_webui/main.py` never was). Only the entry file and its imports decide a Node.js service's host, never a
+   helper script. A notebook is a note, never the refusal. A root whose services live in folders names them in every
+   refusal, not only the manifest one.
+3. **Python entries** (20.2, D50). When no application object is found, the dependency that names the framework decides
+   the command and the environment, as Google's buildpacks and Railpack do: Streamlit (`streamlit run FILE
+   --server.address 0.0.0.0 --server.port $PORT --server.headless true`), Gradio (`python FILE` with
+   `GRADIO_SERVER_NAME` and `GRADIO_SERVER_PORT`), Chainlit, Dash, Panel, Shiny, NiceGUI, Reflex, each from its own
+   entry-file list; FastAPI, Flask, Litestar and the other ASGI and WSGI frameworks on `module:app` by name at any depth
+   (uvicorn or gunicorn), when the object was not read; aiohttp as a factory under `python -m aiohttp.web`, an object
+   under gunicorn's aiohttp worker, else `python main.py`; Sanic and Tornado; Django's `ASGI_APPLICATION`. The last rung
+   is `python main.py` (or `app.py`, `server.py`, `run.py`) with `HOST=0.0.0.0` and `PORT` set. A literal port in the
+   entry file (`launch(server_port=7860)`, an argparse `--port` default) goes into the contract. Every such rung notes
+   that the first revision's log decides and that `build.entrypoint` in the review overrides it. Several candidate
+   objects are ranked as the frameworks rank them (`main.py` before `app.py`, `app` before `api`, examples and tools
+   last) and refused only on a tie.
+4. **Python manifests** (20.3). `[tool.poetry.dependencies]` without a `poetry.lock`, a `Pipfile` without its lock, and
+   the `install_requires` of `setup.cfg` or `setup.py` (read as a literal list with `ast`, never run; a computed list is
+   refused) are locked by the platform in its lock container, as `requirements.txt` is. `pdm.lock` and a PEP 751
+   `pylock.toml` are read at their hashes. `apt.txt`, `Aptfile` and `packages.txt` are installed in the platform's own
+   Python image (`templates/repo/Dockerfile.platform`, rendered at build time), in a build stage that also carries a
+   compiler whenever system packages are listed or the lock holds a package with a single distribution file (usually a
+   source distribution); only the finished virtual environment enters the final image. A Django project gets
+   `collectstatic` at build, as Heroku runs it, and the review offers `needs.migrate: [python, manage.py, migrate]`.
+   Package names are checked before they reach the Dockerfile; `bindep.txt` stays refused.
+5. **Node.js** (20.4). A literal port that never reads `PORT` becomes `port: N` instead of a refusal (gcloud's `--port`
+   sets the container port and `PORT` alike). `nodemon`, `node-dev`, `pm2`, `pm2-runtime` and `forever` on a file are
+   rewritten to `node <file>` with a note (with `--exec` or an ecosystem file they stay refused, as `concurrently` and a
+   chain do). `main` falls through the whole entry list (`app.js`, `main.js`, `src/index.js`, `server/index.mjs`, ...).
+   A lockfile behind its `package.json` is set aside and `package.json` locked again by the platform. Lockfiles are read
+   up to 5 MB (past GitHub's 1 MB contents limit the blob is fetched by its sha). `HOST`, `HOSTNAME` and `NITRO_HOST`
+   are set to `0.0.0.0` for the frameworks that read them.
+6. **Dead lines and everything in one go** (20.5, D48 and D56). A `.nvmrc`, `.node-version`, `.tool-versions`,
+   `engines.node`, `.python-version`, `runtime.txt`, `Pipfile.lock` or `requires-python` that names a line at its end of
+   life (Node 16, 18, 20 and the odd lines; Python 3.10 and older) takes the lowest supported line (22, or 3.11) with a
+   note naming the date (`NODE_ENDED` and `PYTHON_ENDED` in `labdeploy/models.py`); a Dockerfile's own `FROM` stays the
+   developer's and is refused as before. `onboard_application(url, all=true)` ("deploy everything in REPO") opens one
+   contract pull request per service a root holds, named after its folder, through `check_repository`'s list of
+   services, and the chat answer lists them; a root with one service in a folder takes that folder without asking. The
+   tool's description changed, so `schema/tools.sha256.json` is re-pinned.
+7. **Documents** (20.7). The contract page's "what the platform assumes" tables and refusal paragraphs, its sections 1a
+   and 1b; CLAUDE-CHAT's "Deploy it as it is"; the operator skill and its reference (the skill zip on claude.ai needs
+   re-uploading); the roadmap's Phase 20 status; the handoff.
+
+Tests: 910 pass (62 new, on top of 848); ruff clean. The survey test reads fixtures only: nothing from the sampled
+repositories is run.
+
+
 # 1.21.0: what a data-bearing application needs (Phase 19)
 
 Roadmap Phase 19 (docs/ROADMAP.md 19.1 to 19.5, decision D47), from the research review of 2026-10-19

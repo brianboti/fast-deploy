@@ -354,6 +354,13 @@ class Onboarder:
         name = record["application"] if SERVICE_NAME.fullmatch(record["application"]) else None
         view = contracts.inspect(record["repository"], record.get("path", ""), name)
         read = view["read"]
+        folders = [entry["path"] for entry in view["services"] if entry["path"]]
+        if read["refusals"] and not record.get("path") and len(folders) == 1 and not any(entry["path"] == "" for entry in view["services"]):
+            # D56: a root that holds one service in a folder takes that folder without asking.
+            record["path"] = folders[0]
+            record["steps"]["folder"] = {"path": folders[0], "why": "the root holds no service of its own; this folder does"}
+            view = contracts.inspect(view["repository"], folders[0], name)
+            read = view["read"]
         record["repository"] = view["repository"]
         record["steps"]["validating"] = {"as_is": True, "choices": read["choices"], "ignored": read["ignored"], "notes": read["notes"],
                                          "refusals": read["refusals"], "head": view["head"], "repository_id": view["repository_id"],

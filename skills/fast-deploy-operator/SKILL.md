@@ -96,7 +96,7 @@ changes until a person merges. **Act** tools change the cloud.
 | `rollback_production` | Act | Send production's visitors back to the version before its live promotion: seconds, no build; it too waits for a production reviewer's approval |
 | `rollback_staging` | Act | Send visitors back to the version that served before the live one: seconds, no build |
 | `cancel_deployment` | Act | Stop a running release; the recovery workflow puts visitors back if the release had started moving them |
-| `onboard_application` | Act | From a repository link to a running service, unattended; `as_is: true` takes the repository as it is |
+| `onboard_application` | Act | From a repository link to a running service, unattended; `as_is: true` takes the repository as it is; `all: true` takes every service a root holds, one contract per folder |
 
 If none of these tools is available, the connector is off or needs a new sign-in: say so and point the operator to
 Customize → Connectors. If only one tool is missing, the controller runs an older version than this playbook; tell the
@@ -140,10 +140,16 @@ laptop).
    pull request adding its contract (`apps/NAME/platform.yaml`) to the platform repository, and waits: **a person's merge
    is the review**, never the controller's. Then it continues as above, without workflows in the repository: the
    platform's own pipeline releases it. When it is refused, each refusal names a file and its fix (a committed `.env`, a
-   Python outside 3.11 to 3.15, no dependency list, several candidate apps, a Dockerfile that pipes a download into a
-   shell or runs as root): turn them into the developer message. Such code runs contained: a working key in it or a
-   fixable serious vulnerability stops its release, and it reaches no internet unless a person merges `egress: internet`
-   into its contract. Say so when its plan or status shows it.
+   Dockerfile on a Python outside 3.11 to 3.15, no dependency list, two candidate apps that rank the same, a Dockerfile
+   that pipes a download into a shell or runs as root): turn them into the developer message. Since 1.22.0 the reader
+   also starts a Streamlit, Gradio or plain `python main.py` service the way its framework documents when no app object
+   is found (the answer's notes say the first revision's log decides), reads a Poetry project or Pipfile without a lock,
+   `setup.py`, a `requirements/` folder and `apt.txt`, takes a Node.js literal port or a `nodemon` start as it is, and
+   builds a dead `.nvmrc` or `.python-version` line on the lowest supported one with a note. When a root holds its
+   services in folders, the refusals name them: "deploy everything in REPO" is `onboard_application` with `all: true`,
+   one contract pull request per folder. Such code runs contained: a working key in it or a fixable serious vulnerability
+   stops its release, and it reaches no internet unless a person merges `egress: internet` into its contract. Say so
+   when its plan or status shows it.
    A **Node.js** repository (a `package.json`, since 1.20.0) goes the same way. Its own refusals have fixes too: a start
    script with `nodemon` or `tsx`, a server on `localhost`, a `yarn.lock` or `pnpm-lock.yaml` (convert to
    `package-lock.json`), a project that must be built first, a Node.js line other than 22, 24 or 26. No package's install

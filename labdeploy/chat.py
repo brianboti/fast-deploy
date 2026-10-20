@@ -666,6 +666,33 @@ def onboarding(view, now=None):
                    else "nothing to do; it continues on its own every minute.")
 
 
+def onboarding_all(view):
+    """onboard_application with all=true (D56): one line per service the repository holds."""
+    repository = f"`{view.get('repository')}`"
+    items = view.get("onboardings") or []
+    if not items:
+        return compose(f"**No service was found in {repository}.**", ["Neither the root nor a folder holds a dependency manifest beside an entry file"],
+                       "tell me the folder that holds the service, and I'll check it.")
+    lines = []
+    for item in items:
+        where = f"`{item.get('path')}`" if item.get("path") else "the root"
+        name = f"`{item.get('application')}`" if item.get("application") else "unnamed"
+        state = str(item.get("state") or "")
+        if state == "refused":
+            lines.append(f"- {where} → {name}: refused, {clip(item.get('error'), 160)}")
+        elif state == "blocked":
+            lines.append(f"- {where} → {name}: stopped at {item.get('blocked_at') or 'the first step'}: {clip(item.get('error'), 160)}")
+        elif state == "complete":
+            lines.append(f"- {where} → {name}: already onboarded")
+        else:
+            pr = ((item.get("steps") or {}).get("contract") or {})
+            opened = f", contract {link('#' + str(pr['pull_request']), pr.get('url'))}" if pr.get("pull_request") else ""
+            lines.append(f"- {where} → {name}: {state.replace('_', ' ')}{opened}")
+    head = f"**Onboarding {plural(len(items), 'service')} of {repository}, each as it is.**"
+    return compose(head, [], "a person reviews and merges each contract pull request (merging is the review); ask me 'where is NAME's onboarding?' "
+                   "to follow one.", block="\n".join(lines))
+
+
 def check(result):
     """check_repository."""
     where = f"`{result.get('repository')}`" + (f", folder `{result['path']}`" if result.get("path") else "")

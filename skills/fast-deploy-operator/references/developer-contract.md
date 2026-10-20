@@ -152,14 +152,26 @@ When the developer will not or should not change their repository, `onboard_appl
 `import_contract` for the pull request alone) adds nothing to it. The platform reads it by fixed rules (Dockerfile, then
 Procfile, then its own Dockerfile; the Python the repository names, else 3.12; its lock, else one the platform compiles;
 the start command, port and health route it finds, else 8080 and the TCP check) and proposes the contract as
-`apps/NAME/platform.yaml` in the platform repository; a person's merge is the review. It refuses rather than guesses,
-naming the file and the fix: several apps or frameworks in one service, Django without `WSGI_APPLICATION`, no
-dependency list, conda-only or system packages, a Python outside 3.11 to 3.15, a committed secret, a notebook or a huge
-file as the app, and any private repository while the platform repository is public.
+`apps/NAME/platform.yaml` in the platform repository; a person's merge is the review. Since 1.22.0 (roadmap Phase 20)
+it reads more before refusing: when no application object is found, the dependency that names the framework decides
+the command (Streamlit, Gradio, Chainlit, Dash, Panel, Shiny, NiceGUI, Reflex, aiohttp, Sanic, Tornado; FastAPI or Flask
+on `main:app` by name at any depth), then `python main.py` with `HOST=0.0.0.0`, each with a note that the first
+revision's log decides and that `build.entrypoint` overrides it; a Poetry project or Pipfile without a lock, `setup.py`,
+`setup.cfg`, `pdm.lock`, `pylock.toml`, a `requirements/` folder and `-r` includes are read or locked by the platform;
+`apt.txt` packages are installed in its image with a compiler in a build stage; Django gets `collectstatic` at build and
+`needs.migrate` offered; a `.python-version` naming a dead line gets 3.11 with a note. It still refuses, naming the
+file and the fix: two apps that rank the same, Django with neither `WSGI_APPLICATION` nor one `wsgi.py`, no dependency
+list, conda-only packages, a Dockerfile on a Python outside 3.11 to 3.15, a committed secret (documented examples like
+`.env.local.example` are not secrets), a huge file, and any private repository while the platform repository is public.
+A root whose services live in folders names them in every refusal; `onboard_application` with `all: true` opens one
+contract per folder, and a root with a single service folder takes it without asking.
 
 A Node.js service (since 1.20.0) is read the same way: its Node.js line from `.nvmrc`, `.node-version` or
-`engines.node`, else the newest long-term-support line; its `package-lock.json`, else one the platform makes with every
-install script off; `scripts.start` when it runs `node` on a file of the repository. It refuses a start script that
-watches or transpiles (`nodemon`, `tsx`), a server on `localhost`, a lockfile from another package manager, a project
-that must be built first, a lockfile entry from outside the npm registry, and a line other than 22, 24 or 26 (22 is
-refused from 2027-04-30, 24 from 2028-04-30).
+`engines.node`, else the newest long-term-support line (a file naming a dead line, 16, 18 or 20, gets 22 with a note
+since 1.22.0); its `package-lock.json` (up to 5 MB; one behind `package.json` is locked again), else one the platform
+makes with every install script off; `scripts.start` when it runs `node` on a file of the repository, or `nodemon`,
+`node-dev`, `pm2` or `forever` on one (rewritten to `node`); else `main`, `server.js`, `index.js`, `app.js` and the rest
+of the entry list; a literal port in the listen call becomes `port`. It refuses a start script that transpiles or chains
+(`tsx`, `&&`), a server on `localhost`, a lockfile from another package manager, a project that must be built first, a
+lockfile entry from outside the npm registry, and a line newer than 26 (22 is refused from 2027-04-30, 24 from
+2028-04-30).

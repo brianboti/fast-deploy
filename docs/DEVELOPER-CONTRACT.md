@@ -15,22 +15,30 @@ turn into guessing, it refuses and names the file to fix. The contract it writes
 | Question | Where the answer comes from, first match wins | When nothing says |
 |---|---|---|
 | How is the image built? | your `Dockerfile`; a `Procfile` (Google's buildpacks) | the platform's own Dockerfile, made at build time and never committed |
-| Which Python? | the Dockerfile's `FROM python:X.Y`; `.python-version`; `runtime.txt`; `Pipfile.lock`; `requires-python` (3.12 when it allows it) | 3.12 |
-| Which packages? | `requirements.lock`; a hashed `requirements.txt`; `uv.lock`; `poetry.lock`; `Pipfile.lock`; the pip part of `environment.yml`; `requirements.txt`; `pyproject.toml` dependencies | refused: there is no list of dependencies |
-| What starts it? | the Dockerfile's `CMD`; the Procfile's `web:`; Compose's `command`; `[tool.fastapi] entrypoint`; Django's `WSGI_APPLICATION`; one `app = FastAPI()` or `Flask(...)` object, or one `create_app()` | refused: say the start command |
-| Which port? | Compose `ports` (the container side); one `EXPOSE`; `--port` in the start command | 8080, passed in as `PORT` |
+| Which Python? | the Dockerfile's `FROM python:X.Y`; `.python-version`; `runtime.txt`; `Pipfile.lock`; `requires-python` (3.12 when it allows it). A version file naming a line at its end of life (3.10 and older) gets 3.11, the lowest supported line, with a note saying the date (since 1.22.0, D48); a Dockerfile's own `FROM` is yours and stays refused | 3.12 |
+| Which packages? | `requirements.lock`; a hashed `requirements.txt`; `uv.lock`; `poetry.lock`; `Pipfile.lock`; `pdm.lock`; `pylock.toml`; the pip part of `environment.yml`; `requirements.txt` (its `-r` includes followed inside the folder; since 1.22.0) or the `requirements/` folder's production, base or only file; `pyproject.toml` dependencies; then, locked by the platform: `[tool.poetry.dependencies]`, a `Pipfile`, `setup.cfg`'s or `setup.py`'s `install_requires` (read as a literal list, never run) | refused: there is no list of dependencies |
+| What starts it? | the Dockerfile's `CMD`; the Procfile's `web:`; Compose's `command`; `[tool.fastapi] entrypoint`; Django's `WSGI_APPLICATION` or `ASGI_APPLICATION`, else its `<package>/wsgi.py` or `asgi.py` beside `manage.py`; the application object or factory the frameworks' own discovery would pick first (`main.py` before `app.py`, `app` before `api`; FastAPI, Starlette, Quart, Litestar, Falcon, Flask, Bottle); then the dependency that names the framework (D50, since 1.22.0): Streamlit, Gradio, Chainlit, Dash, Panel, Shiny, NiceGUI and Reflex with their own commands and variables; FastAPI, Flask and the others with `uvicorn` or `gunicorn` on `main:app` by name at any depth; aiohttp (a factory under `python -m aiohttp.web`, an object under gunicorn's worker, else `python main.py`), Sanic and Tornado; last, `python main.py` (or `app.py`, `server.py`, `run.py`) with `HOST=0.0.0.0` | refused: say the start command |
+| Which port? | Compose `ports` (the container side); one `EXPOSE`; `--port` in the start command; a literal in the entry file's `run(port=N)`, `launch(server_port=N)` or `--port` default (since 1.22.0) | 8080, passed in as `PORT` |
+| System packages? | `apt.txt`, `Aptfile` or `packages.txt`, installed in the platform's image, with a compiler at hand in a build stage (since 1.22.0) | none |
 | Health check? | a Compose `healthcheck`; a `/health` route in the code | none: Cloud Run's TCP check, and the release says the HTTP check is off |
 | Settings and needs? | names read from the code, Compose and `.env.example`, a Postgres service in Compose | names are listed for a person to fill in; values are never read |
 | Tests? | pytest's configuration, a `tests/` folder, `test_*.py` files | none: said plainly, never invented |
 
 The packages are locked by the platform when the repository has no lock: with uv, in a container of your Python, every
-package pinned with its hashes (`apps/<service>/requirements.lock`); the tests get a lock of their own with pytest.
+package pinned with its hashes (`apps/<service>/requirements.lock`); the tests get a lock of their own with pytest. A
+command the dependency decided (a Streamlit app, `python main.py`) is a guess the gates make safe: the first revision's
+log says whether it serves, and `build.entrypoint` in the review overrides it. A Django project gets `collectstatic` at
+build, and the review offers `needs.migrate`.
 
-It **refuses rather than guesses** when a service has several candidate apps or frameworks, a Django project lacks
-`WSGI_APPLICATION`, there is no dependency list, it needs conda-only or system packages (unless your own Dockerfile
-installs them), it asks for a Python outside 3.11 to 3.15, a secret is committed (`.env`, a private key, a credentials
-file), or the app is a notebook or a file over 100 MiB. A private repository is refused while the platform repository
-is public, because the platform's build logs would be public too.
+It **refuses rather than guesses** when two candidate apps rank the same (two `app` objects in files of the same name
+and depth), a Django project has neither `WSGI_APPLICATION` nor one `wsgi.py` beside `manage.py`, there is no dependency
+list (or a `requirements/` folder holds one file per hardware and names none as the base), it needs conda-only packages
+(unless your own Dockerfile installs them), its own Dockerfile builds on a Python outside 3.11 to 3.15, a secret is
+committed (`.env`, a private key, a credentials file; `.env.local.example` and the other documented examples are not
+secrets), or a file is over 100 MiB. A notebook beside the code is a note, never the refusal. A private repository is
+refused while the platform repository is public, because the platform's build logs would be public too. A root whose
+services live in folders names them in every refusal; *"deploy everything in REPO"* (`onboard_application` with `all`)
+opens one contract per folder (D56), and a root with one service in a folder takes that folder without asking.
 
 **A Node.js service** (since 1.20.0; `docs/ROADMAP.md` D41 to D46) is a folder with a `package.json` and no Python
 manifest. Its answers come from the same kind of ladder:
@@ -38,11 +46,11 @@ manifest. Its answers come from the same kind of ladder:
 | Question | Where the answer comes from, first match wins | When nothing says |
 |---|---|---|
 | How is the image built? | your `Dockerfile`; a `Procfile` (Google's buildpacks, for code the lab has reviewed only: they run install scripts) | the platform's own image on `node:<line>-trixie-slim` (Debian 13), made at build time and never committed |
-| Which Node? | the Dockerfile's `FROM node:X`; `.nvmrc`; `.node-version`; the `nodejs` line of `.tool-versions`; `engines.node` (a range takes the highest of 22, 24 and 26 it allows); `devEngines.runtime` | the newest line in Active LTS: 24 until 2026-10-28, 26 from then |
-| Which packages? | `npm-shrinkwrap.json`; `package-lock.json` (version 2 or 3), installed with `npm ci` | the platform locks `package.json` once (below) |
-| What starts it? | the Dockerfile's `CMD`; the Procfile's `web:`; Compose's `command`; `scripts.start` when it is `node [flags] <file> [args]`; `main`; `server.js` or `index.js` | refused: say the start command |
-| Which port? | Compose `ports` (the container side); one `EXPOSE`; `--port` in the start command; the default in the code's `listen(process.env.PORT \|\| 8787)` | 8080, passed in as `PORT` |
-| Which host? | the listen call: a host read from a variable whose default is `127.0.0.1` gets `0.0.0.0` in the contract's `env` | every interface, Node's own default |
+| Which Node? | the Dockerfile's `FROM node:X`; `.nvmrc`; `.node-version`; the `nodejs` line of `.tool-versions`; `engines.node` (a range takes the highest of 22, 24 and 26 it allows); `devEngines.runtime`. A version file or range naming only a line at its end of life (16, 18, 20, the odd lines) gets 22, the lowest supported line, with a note saying the date (since 1.22.0, D48); a Dockerfile's own `FROM` is yours and stays refused | the newest line in Active LTS: 24 until 2026-10-28, 26 from then |
+| Which packages? | `npm-shrinkwrap.json`; `package-lock.json` (version 2 or 3, up to 5 MB), installed with `npm ci`; a lockfile that disagrees with `package.json` is set aside and `package.json` locked again by the platform (since 1.22.0) | the platform locks `package.json` once (below) |
+| What starts it? | the Dockerfile's `CMD`; the Procfile's `web:`; Compose's `command`; `scripts.start` when it is `node [flags] <file> [args]`, or `nodemon`, `node-dev`, `pm2` or `forever` on a file (rewritten to `node <file>`, since 1.22.0); `main`; then `server.js`, `index.js`, `app.js`, `main.js`, `src/index.js`, `server/index.mjs` and the rest of the entry list | refused: say the start command |
+| Which port? | Compose `ports` (the container side); one `EXPOSE`; `--port` in the start command; the code's `listen(process.env.PORT \|\| 8787)`, or its literal `listen(3000)` even when `PORT` is never read (since 1.22.0: Cloud Run's `--port` sets the container port and `PORT` alike) | 8080, passed in as `PORT` |
+| Which host? | the entry file's listen call and the modules it imports, never a helper script: a host read from a variable whose default is `127.0.0.1` gets `0.0.0.0` in the contract's `env`; `HOST`, `HOSTNAME` or `NITRO_HOST` are set to `0.0.0.0` for the frameworks that read them (Next.js, Astro, Nuxt, the serve commands of React Router and Remix) | every interface, Node's own default |
 | Health check? | a Compose `healthcheck`; a `/health` or `/healthcheck` route (Express, Fastify, Koa, Hono, Hapi, or `req.url === '/health'` in a plain server), prefixed paths like `/api/health` included | none: Cloud Run's TCP check, and the release says the HTTP check is off |
 | Install scripts? | the lockfile's packages that have one, kept only where `package.json`'s `allowScripts` pins them by version and the package needs it on Cloud Run | none run |
 | Tests? | `scripts.test` unless it is npm's placeholder; files `node --test` finds by its own patterns | none: said plainly, never invented |
@@ -52,16 +60,18 @@ The packages are locked by the platform when the repository has no lockfile: `np
 machine (Node 22 bundles npm 10.9.9, which has no `min-release-age`, so npm 11.19.1 is installed there first, by version
 and checked against its integrity hash), into `apps/<service>/package-lock.json`. Every entry must carry its integrity hash and come from the npm registry.
 
-For Node.js it also **refuses**: a start script that watches, transpiles or chains (`nodemon`, `ts-node`, `tsx`,
-`node --watch`, a development server, `concurrently`, `&&` or `sh -c`); a service that needs a build first (its start
-file is not in the repository, TypeScript on Node 22, Next.js, NestJS, Remix, SvelteKit, Astro or Nuxt) unless your own
-Dockerfile builds it; a listen call on a literal port that never reads `PORT`, on `127.0.0.1` or `localhost`, or Fastify
-without `host: '0.0.0.0'`; a front-end site with no server; two lockfiles, or `packageManager` and `engines` naming
-different managers; a `yarn.lock`, `pnpm-lock.yaml` or `bun.lock` (convert it, section 1b); a lockfile entry without an
-integrity hash or from git, a tarball elsewhere, a `file:` or `link:` path, or `bundleDependencies`; a workspace at the
-root (give one package's folder) or a package of one; a committed `.npmrc` or `.yarnrc.yml` with a literal token; and
-`engines.iojs`. A committed `node_modules/`, `dist/` or `.next/` is set aside with a note, and a `build` script that the
-start does not need (Sophia's builds a browser extension) is noted, not refused.
+For Node.js it also **refuses**: a start script that transpiles or chains (`ts-node`, `tsx`, `node --watch`, a
+development server, `concurrently`, `&&` or `sh -c`; `nodemon`, `node-dev`, `pm2` and `forever` on a file are rewritten
+to `node <file>` since 1.22.0, and refused only with `--exec` or an ecosystem file); a service that needs a build first
+(its start file is not in the repository, TypeScript on Node 22, Next.js, NestJS, Remix, SvelteKit, Astro or Nuxt)
+unless your own Dockerfile builds it; a listen call on `127.0.0.1` or `localhost`, or Fastify without
+`host: '0.0.0.0'` (a literal port is taken as `port` since 1.22.0); a front-end site with no server; two lockfiles, or
+`packageManager` and `engines` naming different managers; a `yarn.lock`, `pnpm-lock.yaml` or `bun.lock` (convert it,
+section 1b); a lockfile entry without an integrity hash or from git, a tarball elsewhere, a `file:` or `link:` path, or
+`bundleDependencies`; a lockfile over 5 MB; a workspace at the root (give one package's folder) or a package of one; a
+committed `.npmrc` or `.yarnrc.yml` with a literal token; a line newer than 26; and `engines.iojs`. A committed
+`node_modules/`, `dist/` or `.next/` is set aside with a note, as is a lockfile behind its `package.json`, and a `build`
+script that the start does not need (Sophia's builds a browser extension) is noted, not refused.
 
 Following the rest of this page is still the better path: your repository then carries its own tests, lock and
 workflows, and every change is reviewed in one place.
@@ -188,6 +198,20 @@ and export these files whenever the dependencies change; commit them with the ch
   and list pytest and the other test tools in `requirements-dev.txt`. The Dockerfile then uses a `python:*-slim` base
   and installs `requirements.lock`, like any other service.
 
+**What the platform reads as it is, when there is no lock** (since 1.22.0, roadmap 20.3): a repository taken as it is
+need not export anything. `[tool.poetry.dependencies]` without a `poetry.lock`, a `Pipfile` without its lock, and the
+`install_requires` of `setup.cfg` or `setup.py` are read as text (Poetry's `^1.2` becomes `>=1.2,<2.0`; a `setup.py`
+whose list is computed rather than written out is refused, because reading it would mean running it) and locked by the
+platform with uv, like a `requirements.txt`. `pdm.lock` and a PEP 751 `pylock.toml` are read at their recorded hashes,
+like `poetry.lock`. A `requirements.txt` that includes other files (`-r requirements/base.txt`) is followed inside the
+service's folder, and a `requirements/` folder with no `requirements.txt` beside it is read from its `production.txt`,
+`prod.txt`, `base.txt` or `main.txt`, else its only file; a folder with one file per hardware is refused until a person
+names one. System packages listed in `apt.txt`, `Aptfile` or `packages.txt` (Debian names, one per line) are installed
+in the platform's image, in a build stage that also carries a compiler, so a dependency that ships only as a source
+distribution builds there and only the finished virtual environment enters the image. A Django project (`manage.py`
+beside `django`) gets `python manage.py collectstatic --noinput` at build, as Heroku runs it; a settings module that
+needs a value at import stops the build, and the contract's `env` is where to give it.
+
 ## 1b. Node.js lines, packages and install scripts
 
 **The line.** `platform.yaml` says `runtime: node-http` and `node: "22"`, `"24"` or `"26"`, the lines in long-term support
@@ -201,6 +225,9 @@ Dockerfile's `FROM node:X` the same. A line is refused from its end of life, and
 entry must carry its `integrity` hash and come from `https://registry.npmjs.org/`; a git dependency, a tarball from
 elsewhere, a `file:` or `link:` path and `bundleDependencies` are refused, because `npm ci` installs them without checking
 them against the registry. The platform reads no `.npmrc`: it installs from the public registry with npm's own settings.
+A lockfile is read up to 5 MB (a monorepo's is often 2 to 5 MB; since 1.22.0). For a repository taken as it is, a lockfile
+that is behind its `package.json` is set aside and `package.json` is locked again by the platform, as below; your own
+lockfile is used once the two are committed together.
 
 **Install scripts never run at install.** Every npm attack of 2025 and 2026 ran from a package's install script, so the
 platform installs with `npm ci --ignore-scripts` on every npm, then runs the scripts of the packages `platform.yaml` lists
