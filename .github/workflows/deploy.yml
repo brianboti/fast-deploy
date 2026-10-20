@@ -366,6 +366,7 @@ jobs:
         if: steps.policy.outputs.runtime == 'node-http'
         env:
           PYTHONPATH: ${{ github.workspace }}/platform
+          NODE_VERSION: ${{ steps.policy.outputs.node }}
         shell: bash
         run: |
           set -euo pipefail
@@ -373,17 +374,37 @@ jobs:
           if [ -n "$PLATFORM_NODE_LOCK" ] && [ -f "$PLATFORM_NODE_LOCK" ] && [ ! -f "$APP_DIR/package-lock.json" ] && [ ! -f "$APP_DIR/npm-shrinkwrap.json" ]; then
             cp "$PLATFORM_NODE_LOCK" "$APP_DIR/package-lock.json"
           fi
-          LOCK="$APP_DIR/npm-shrinkwrap.json"
-          [ -f "$LOCK" ] || LOCK="$APP_DIR/package-lock.json"
-          [ -f "$LOCK" ] || { echo "::error title=Dependency audit::the service has no package-lock.json and the contract names no lock the platform made"; exit 1; }
+          # 21.1 to 21.4: the manager the lockfile names (npm, pnpm, Yarn or Bun), where the lockfile is (the service's folder, or
+          # the workspace root above it), its commands and the build plan, read once from the checkout and kept for the next steps.
+          python -m labdeploy.scaffold node-facts app --path "$APP_PATH" --node "$NODE_VERSION" > "$RUNNER_TEMP/node-facts.sh"
+          . "$RUNNER_TEMP/node-facts.sh"
+          [ -n "$LOCKFILE" ] || { echo "::error title=Dependency audit::the service has no lockfile (package-lock.json, pnpm-lock.yaml, yarn.lock or bun.lock, its own or its workspace root's) and the contract names no lock the platform made"; exit 1; }
+          LOCK="app/$LOCK_DIR/$LOCKFILE"
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/osv-scanner" https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64
           echo "160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b  $RUNNER_TEMP/osv-scanner" | sha256sum --check --strict
           chmod +x "$RUNNER_TEMP/osv-scanner"
-          cp "$LOCK" "$RUNNER_TEMP/osv/package-lock.json"
+          cp "$LOCK" "$RUNNER_TEMP/osv/$LOCKFILE"
           : > "$RUNNER_TEMP/osv-scanner.toml"
           STATUS=0
-          "$RUNNER_TEMP/osv-scanner" scan source --lockfile "$RUNNER_TEMP/osv/package-lock.json" --config "$RUNNER_TEMP/osv-scanner.toml" --format json > "$RUNNER_TEMP/osv.json" || STATUS=$?
+          "$RUNNER_TEMP/osv-scanner" scan source --lockfile "$RUNNER_TEMP/osv/$LOCKFILE" --config "$RUNNER_TEMP/osv-scanner.toml" --format json > "$RUNNER_TEMP/osv.json" || STATUS=$?
           python -m labdeploy.scan osv "$RUNNER_TEMP/osv.json" --exit-code "$STATUS" --lockfile "$LOCK" --json bundle/dependency-audit.json
+      # 21.1: the manager the lockfile names, installed by version and integrity with scripts off (labdeploy.scaffold MANAGER_PINS),
+      # never through Corepack, which Node.js 25 and later no longer ship; npm needs nothing. Its command goes on PATH for the
+      # install and the tests; the image installs it the same way in its build stage.
+      - name: Install the package manager the lockfile names
+        if: steps.policy.outputs.runtime == 'node-http'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "$RUNNER_TEMP/node-facts.sh"
+          if [ "$MANAGER" != "npm" ]; then
+            python -m labdeploy.scaffold manager-install "$MANAGER" "$RUNNER_TEMP/manager" > "$RUNNER_TEMP/manager-install.sh"
+            bash "$RUNNER_TEMP/manager-install.sh"
+            echo "$RUNNER_TEMP/manager/bin" >> "$GITHUB_PATH"
+            echo "Package manager: $TITLE $VERSION, installed by version and integrity for $LOCKFILE" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
       # D43: the install for the tests puts the lockfile's packages into the checkout with every install script off, the
       # development dependencies included, from the public registry whatever an .npmrc says; npm audit signatures then checks
       # the registry's signatures of what came in, a note and never a gate. The build cleans the checkout before it builds.
@@ -393,15 +414,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -n "$PLATFORM_NODE_LOCK" ] && [ -f "$GITHUB_WORKSPACE/$PLATFORM_NODE_LOCK" ] && [ ! -f package-lock.json ] && [ ! -f npm-shrinkwrap.json ]; then
+          . "$RUNNER_TEMP/node-facts.sh"
+          # A workspace member installs at the root, with the root's lockfile (21.4).
+          if [ -n "$MEMBER" ]; then cd "$GITHUB_WORKSPACE/app/$LOCK_DIR"; fi
+          if [ "$MANAGER" = "npm" ] && [ -n "$PLATFORM_NODE_LOCK" ] && [ -f "$GITHUB_WORKSPACE/$PLATFORM_NODE_LOCK" ] && [ ! -f package-lock.json ] && [ ! -f npm-shrinkwrap.json ]; then
             cp "$GITHUB_WORKSPACE/$PLATFORM_NODE_LOCK" package-lock.json
           fi
           NPM_FLAGS=(--registry=https://registry.npmjs.org/ --strict-ssl=true --no-audit --no-fund)
-          npm ci --ignore-scripts "${NPM_FLAGS[@]}"
-          if npm audit signatures --registry=https://registry.npmjs.org/ > "$RUNNER_TEMP/signatures.txt" 2>&1; then
-            echo "Registry signatures (npm audit signatures): $(grep -E 'verified|missing|invalid' "$RUNNER_TEMP/signatures.txt" | tr '\n' ' ')" | tee -a "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::warning title=Registry signatures::not every package's registry signature verified (a note, not a gate): $(tail -n 3 "$RUNNER_TEMP/signatures.txt" | tr '\n' ' ')"
+          # Each manager's frozen install from the public registry, every install script off (21.1).
+          case "$MANAGER" in
+            npm) npm ci --ignore-scripts "${NPM_FLAGS[@]}" ;;
+            pnpm) pnpm install --frozen-lockfile --ignore-scripts --registry=https://registry.npmjs.org/ ;;
+            yarn) YARN_ENABLE_SCRIPTS=false YARN_NPM_REGISTRY_SERVER=https://registry.npmjs.org yarn install --immutable ;;
+            yarn1) yarn install --frozen-lockfile --ignore-scripts --non-interactive --registry https://registry.npmjs.org/ ;;
+            bun) bun install --frozen-lockfile --ignore-scripts ;;
+            *) echo "::error::unknown package manager $MANAGER"; exit 1 ;;
+          esac
+          if [ "$MANAGER" = "npm" ]; then
+            if npm audit signatures --registry=https://registry.npmjs.org/ > "$RUNNER_TEMP/signatures.txt" 2>&1; then
+              echo "Registry signatures (npm audit signatures): $(grep -E 'verified|missing|invalid' "$RUNNER_TEMP/signatures.txt" | tr '\n' ' ')" | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning title=Registry signatures::not every package's registry signature verified (a note, not a gate): $(tail -n 3 "$RUNNER_TEMP/signatures.txt" | tr '\n' ' ')"
+            fi
           fi
       - name: Run unit tests (Node.js)
         if: steps.policy.outputs.tests == 'required' && steps.policy.outputs.runtime == 'node-http'
@@ -411,13 +445,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Only the packages the contract lists run their install scripts, each by name and exact version (D43).
+          . "$RUNNER_TEMP/node-facts.sh"
+          # Only the packages the contract lists run their install scripts, each by name and exact version (D43), through the
+          # manager that installed them (21.1).
           if [ -n "$SCRIPTS" ]; then
             read -r -a PACKAGES <<< "$SCRIPTS"
-            npm rebuild --ignore-scripts=false "${PACKAGES[@]}"
+            case "$MANAGER" in
+              pnpm) pnpm rebuild "${PACKAGES[@]}" ;;
+              yarn) yarn rebuild "${PACKAGES[@]}" ;;
+              bun) bun pm trust "${PACKAGES[@]}" ;;
+              *) npm rebuild --ignore-scripts=false "${PACKAGES[@]}" ;;
+            esac
           fi
           if node -e 'const t = (require("./package.json").scripts || {}).test || ""; process.exit(t && !/no test specified/.test(t) ? 0 : 1)'; then
-            npm test
+            if [ "$MANAGER" = "npm" ]; then npm test; else $RUN test; fi
           else
             # No test script of its own: node --test with its default file patterns, its JUnit report kept for the count.
             node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination="$RUNNER_TEMP/node-test.xml"
@@ -430,14 +471,20 @@ jobs:
         env:
           HADOLINT_BLOCKING: ${{ vars.HADOLINT_BLOCKING || 'true' }}
           RECIPE: ${{ steps.policy.outputs.recipe }}
+          CONTEXT: ${{ steps.policy.outputs.context }}
           PYTHONPATH: ${{ github.workspace }}/platform
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p bundle
           if [ "$RECIPE" = "platform" ]; then
-            # The platform's own Dockerfile for this contract, exactly as the build step renders it.
-            python -m labdeploy.scaffold platform-dockerfile "$APP_DIR" --spec "$SPEC_SOURCE" > "$RUNNER_TEMP/Dockerfile.platform"
+            # The platform's own Dockerfile for this contract, exactly as the build step renders it (from the repository root for
+            # a workspace member, build.context: repository, 21.4).
+            if [ "$CONTEXT" = "repository" ]; then
+              python -m labdeploy.scaffold platform-dockerfile app --spec "$SPEC_SOURCE" --path "$APP_PATH" > "$RUNNER_TEMP/Dockerfile.platform"
+            else
+              python -m labdeploy.scaffold platform-dockerfile "$APP_DIR" --spec "$SPEC_SOURCE" > "$RUNNER_TEMP/Dockerfile.platform"
+            fi
             LINTED="$RUNNER_TEMP/Dockerfile.platform"
             export SHOWN="Dockerfile (the platform's)"
           elif [ "$RECIPE" = "repository" ] && [ -f "$APP_DIR/Dockerfile" ]; then
@@ -508,9 +555,11 @@ jobs:
           LOCK_SOURCE=repository
           LOCK_FILE="$APP_DIR/requirements.lock"
           if [ "$RUNTIME" = "node-http" ]; then
-            # npm reads npm-shrinkwrap.json before package-lock.json; the platform's lock (D42) when the service has neither.
-            LOCK_FILE="$APP_DIR/npm-shrinkwrap.json"
-            [ -f "$LOCK_FILE" ] || LOCK_FILE="$APP_DIR/package-lock.json"
+            # The lockfile the manager installs from (21.1): the service's own (npm reads npm-shrinkwrap.json before package-lock.json),
+            # its workspace root's (21.4), or the platform's npm lock (D42) when the service has none.
+            . "$RUNNER_TEMP/node-facts.sh"
+            LOCK_FILE="$APP_DIR/package-lock.json"
+            if [ -n "$LOCKFILE" ]; then LOCK_FILE="app/$LOCK_DIR/$LOCKFILE"; fi
             if [ ! -f "$LOCK_FILE" ] && [ -n "$PLATFORM_NODE_LOCK" ] && [ -f "$PLATFORM_NODE_LOCK" ]; then
               cp "$PLATFORM_NODE_LOCK" "$LOCK_FILE"
               LOCK_SOURCE=platform
@@ -525,7 +574,12 @@ jobs:
             # The platform's own Dockerfile (docs/ROADMAP.md D31, 13.3): the service's files are copied through the
             # platform's deny-list (no .env, keys, tests, caches or notebooks), the Dockerfile is rendered for this contract
             # beside them, and nothing is written to the repository.
-            python -m labdeploy.scaffold render-build "$APP_DIR" "$RUNNER_TEMP/platform-build" --spec "$SPEC_SOURCE"
+            if [ "$CONTEXT" = "repository" ]; then
+              # A workspace member (21.4): the whole repository is the context, and the image copies one package out of it.
+              python -m labdeploy.scaffold render-build app "$RUNNER_TEMP/platform-build" --spec "$SPEC_SOURCE" --path "$APP_PATH"
+            else
+              python -m labdeploy.scaffold render-build "$APP_DIR" "$RUNNER_TEMP/platform-build" --spec "$SPEC_SOURCE"
+            fi
             cap_context "$RUNNER_TEMP/platform-build"
             docker build --no-cache "${DOCKER_NETWORK[@]}" --platform linux/amd64 -t "lab-app:$COMMIT_SHA" "$RUNNER_TEMP/platform-build"
             DOCKERFILE_USED="$RUNNER_TEMP/platform-build/Dockerfile"

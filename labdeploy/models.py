@@ -210,8 +210,9 @@ class Build(StrictModel):
             if not match or len(match.group(1)) > 214:
                 raise ValueError(f"'{entry}' in build.scripts is not a package with its exact version (onnxruntime-node@1.30.0): "
                                  "a name alone, a range or --all is never enough")
-        if self.context == "repository" and self.recipe != "repository":
-            raise ValueError("build.context: repository needs the service's own Dockerfile (build.recipe: repository)")
+        if self.context == "repository" and self.recipe == "buildpacks":
+            # repository: the service's own Dockerfile, or the platform's image for one package of a workspace (docs/ROADMAP.md 21.4).
+            raise ValueError("build.context: repository needs the service's own Dockerfile (build.recipe: repository) or the platform's image (platform)")
         if self.recipe == "platform" and not self.entrypoint:
             raise ValueError("build.recipe: platform needs build.entrypoint, the command that starts the service")
         if self.recipe == "repository" and self.entrypoint:

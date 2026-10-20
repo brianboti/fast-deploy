@@ -105,6 +105,7 @@ class Pin:
     stack: str = ""    # gcr: the io.buildpacks.stack.id label the image must carry
     tags: str = ""     # dockerhub: the version tag that names the image's release and Debian, as a regular expression
     notes: str = ""    # pypi, npm: the release notes, {version} standing for the version
+    scripts_ok: bool = False  # npm: the package has an install script that the platform skips (installed with scripts off) and does not need
 
 
 def release_url(repository, asset):
@@ -210,6 +211,24 @@ PINS = (
         "makes a Node.js 22 service's lock on the controller's machine (Node 22's own npm cannot hold back new releases)", CONTROLLER,
         line="11", line_note="npm 12 blocks dependency scripts by default and no Node.js line bundles it yet.",
         notes="https://github.com/npm/cli/releases/tag/v{version}"),
+    # The other package managers (docs/ROADMAP.md 21.1), each from its npm package at the integrity the registry published,
+    # installed with scripts off in the pipeline and in the platform's Node.js image; a new major waits for a person.
+    Pin("pnpm", "pnpm", "npm", "pnpm", ((SCAFFOLD, '    "pnpm": ("{version}", "{integrity}"),  # published {released}'),),
+        "installs a service whose lockfile is pnpm-lock.yaml, frozen and with every install script off, in the pipeline and in the platform's image",
+        PIPELINE, line="12", line_note="pnpm's majors change the lockfile format and the defaults of its settings.",
+        notes="https://github.com/pnpm/pnpm/releases/tag/v{version}", scripts_ok=True),
+    Pin("yarn", "Yarn", "npm", "@yarnpkg/cli-dist", ((SCAFFOLD, '    "yarn": ("{version}", "{integrity}"),  # published {released}'),),
+        "installs a service whose yarn.lock is Yarn 2 or later's, immutable and with scripts off, in the pipeline and in the platform's image",
+        PIPELINE, line="4", line_note="Yarn's majors change the lockfile format and the settings of .yarnrc.yml.",
+        notes="https://github.com/yarnpkg/berry/releases/tag/%40yarnpkg%2Fcli%2F{version}"),
+    Pin("yarn1", "Yarn 1", "npm", "yarn", ((SCAFFOLD, '    "yarn1": ("{version}", "{integrity}"),  # published {released}'),),
+        "installs a service whose yarn.lock is Yarn 1's, frozen and with scripts off, in the pipeline and in the platform's image",
+        PIPELINE, line="1", line_note="Yarn 1 is in maintenance; its lockfile format is the one a `# yarn lockfile v1` file carries.",
+        notes="https://github.com/yarnpkg/yarn/releases/tag/v{version}", scripts_ok=True),
+    Pin("bun", "Bun", "npm", "@oven/bun-linux-x64", ((SCAFFOLD, '    "bun": ("{version}", "{integrity}"),  # published {released}'),),
+        "installs a service whose lockfile is bun.lock, frozen and with scripts off, in the pipeline and in the platform's image (Bun's Linux x64 binary)",
+        PIPELINE, line="1", line_note="Bun's majors are its breaking releases.",
+        notes="https://github.com/oven-sh/bun/releases/tag/bun-v{version}"),
     # The actions the templates use (tests/test_pins.py keeps this list equal to theirs and to .github/dependabot.yml's ignore list).
     action("actions/checkout", "7", "checks out the code in every workflow, an application's own and its drafted CI included"),
     action("actions/setup-python", "7", "installs Python in the pipeline, CI, promotion and an application's drafted CI"),
@@ -630,16 +649,16 @@ def from_npm(pin, current, web, now):
         if meta.get("deprecated") or published is None:
             continue
         if now - published < COOLDOWN:
-            found.waiting.append((f"npm {version}", published, pin.notes.format(version=version)))
+            found.waiting.append((f"{pin.title} {version}", published, pin.notes.format(version=version)))
             continue
         scripts = meta.get("scripts") or {}
         if meta.get("engines") != engines:
-            return held(found, f"npm {version} asks for {meta.get('engines')} where {current['version']} asked for {engines}: check it still runs on Node.js 22")
-        if meta.get("hasInstallScript") or any(scripts.get(name) for name in ("preinstall", "install", "postinstall")):
-            return held(found, f"npm {version} has an install script, and the lock container installs npm with scripts off")
+            return held(found, f"{pin.title} {version} asks for {meta.get('engines')} where {current['version']} asked for {engines}: check it still runs on Node.js 22")
+        if not pin.scripts_ok and (meta.get("hasInstallScript") or any(scripts.get(name) for name in ("preinstall", "install", "postinstall"))):
+            return held(found, f"{pin.title} {version} has an install script, and the platform installs {pin.title} with scripts off")
         integrity = (meta.get("dist") or {}).get("integrity") or ""
         if not re.fullmatch(FIELDS["integrity"], integrity):
-            return held(found, f"the registry publishes no SHA-512 integrity for npm {version}")
+            return held(found, f"the registry publishes no SHA-512 integrity for {pin.title} {version}")
         found.status, found.released, found.label = "update", published, version
         found.new = {"version": version, "integrity": integrity, "released": day(published)}
         found.sources = [("release notes", pin.notes.format(version=version)), ("the registry's metadata", f"{api}/{version}")]

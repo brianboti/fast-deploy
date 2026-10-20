@@ -103,7 +103,7 @@ def not_found(url):
 def test_every_pin_is_found_once_in_every_place_and_its_places_agree():
     current = pins.read()
     actions = [pin for pin in pins.PINS if pin.kind == "action"]
-    assert set(current) == set(pins.BY_KEY) and len(pins.PINS) == 33 and len(actions) == 10
+    assert set(current) == set(pins.BY_KEY) and len(pins.PINS) == 37 and len(actions) == 10
     for pin in pins.PINS:
         fields = {"commit", "version"} if pin.kind == "action" else {name for _, pattern in pin.places for name in pins.fields_of(pattern)}
         assert set(current[pin.key]) == fields, pin.key

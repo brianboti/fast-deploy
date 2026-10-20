@@ -630,9 +630,15 @@ Cost effect: none; a wrong guess costs one failed build and its scan (about $0.2
 
 ## Phase 21: Node.js builds and managers (about four days) → version 1.23.0
 
-Status: planned on 2026-10-20 (research review sections 4, 6.3 and 7.2). The three items the review of 2026-10-19 ranked
-7 to 9, now first because the survey shows them in 8 of 15 Node.js repositories. Nothing in Phases 13 to 16 changes: the
-audit, the scans, containment and the bake already handle whatever the build stage produces.
+Status: planned on 2026-10-20 (research review sections 4, 6.3 and 7.2) and built the same day as 1.23.0, on 1.22.5
+after the live exercise of Phase 20 (code, tests and documents, checked locally; the live exercise below has not run).
+The survey (`tests/test_survey.py`) now reads 14 of the 33 repositories as they are and refuses 27 things, from 8 and 42
+at 1.22.0: NestJS's starter, three Next.js applications on pnpm or npm, Dify's web package out of its pnpm workspace and
+a Yarn 1 Express boilerplate joined; what still stops the Node.js sample is Phase 22's (the root user, Fastify's host, a
+static site). `turbo prune` was left out: the whole workspace is installed and one package deployed out of it. The three
+items the review of 2026-10-19 ranked 7 to 9, built first because the survey shows them in 8 of 15 Node.js
+repositories. Nothing in Phases 13 to 16 changes: the audit, the scans, containment and the bake already handle whatever
+the build stage produces.
 
 | Item | Change | Where |
 |---|---|---|
@@ -674,7 +680,7 @@ exercise records the figure.
 
 ## Later, unscheduled (research item 13 of 2026-10-14; reviews of 2026-10-16, 2026-10-19 and 2026-10-20)
 
-`cache: valkey` behind operator approval with its floor in every plan (two days plus a trial; Memorystore never scales to zero); `gpu: l4` with one instance, zonal redundancy off, weights on a read-only bucket volume and the cap able to stop it (three days plus a trial; instance-based billing); after Phase 18, now Phase 21 (planned 2026-10-20): pnpm, Yarn and Bun lockfiles, a build step and workspaces; Node's permission model as an opt-in, `--permission-audit` first (half a day; it restricts no network before Node 25); a filtered internet egress through Cloud NAT and Cloud NGFW FQDN rules, if a backup model provider ever justifies about $5 a month before traffic and a test (one day); a container-only runtime for a third language (two days); Firebase Hosting for a public front-end only if the lab ever allows public exposure; Cloud Deploy pipelines with approvals and automated canaries, if the runner's split release of Phase 16 ever proves too little (the first pipeline is free, each further one $5 a month); SLSA Build Level 3 by isolating the signing job in the central pipeline; OpenTelemetry when an application needs traces beyond Cloud Run's own.
+`cache: valkey` behind operator approval with its floor in every plan (two days plus a trial; Memorystore never scales to zero); `gpu: l4` with one instance, zonal redundancy off, weights on a read-only bucket volume and the cap able to stop it (three days plus a trial; instance-based billing); after Phase 21 (built 2026-10-20 as 1.23.0, which installs pnpm, Yarn and Bun lockfiles, builds and workspaces): `turbo prune --docker` for a pruned workspace install instead of the whole workspace (half a day); Node's permission model as an opt-in, `--permission-audit` first (half a day; it restricts no network before Node 25); a filtered internet egress through Cloud NAT and Cloud NGFW FQDN rules, if a backup model provider ever justifies about $5 a month before traffic and a test (one day); a container-only runtime for a third language (two days); Firebase Hosting for a public front-end only if the lab ever allows public exposure; Cloud Deploy pipelines with approvals and automated canaries, if the runner's split release of Phase 16 ever proves too little (the first pipeline is free, each further one $5 a month); SLSA Build Level 3 by isolating the signing job in the central pipeline; OpenTelemetry when an application needs traces beyond Cloud Run's own.
 
 Not planned, because the evidence is against it for this lab: a second cloud or a cloud-agnostic layer; Score, Radius, the Open Application Model, Dapr, Crossplane or TOSCA; Compose as a deployment unit; multi-architecture image builds; worker pools or Memorystore by default; Kubernetes; model-written Terraform; autonomous remediation; forks or mirrors of application repositories; an LLM that sets up environments without a person's review; Cloud Run domain mapping or the preview custom URLs for production; statistical canary analysis; multi-region failover; Cloud SQL Enterprise Plus; Cloud Armor Enterprise; an always-on instance-based controller or application; chaos experiments in production; image debloating; Cloud Run sandboxes for the application itself; and, from the review of 2026-10-19: generating a lockfile silently at build time or installing without one; running install scripts, or honouring name-only script approvals; relying on the bundled npm's script policy (it only warns on every Node line today); Alpine images for an application with native addons; SQLite on a bucket mount; Secure Web Proxy or Cloud NAT for one backup provider; public exposure for Microsoft-account users; Google's buildpacks for unreviewed Node code; `npm audit` as the gate. SBOMs and Binary Authorization, deferred on 2026-10-14, are now Phase 14.
 
