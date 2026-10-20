@@ -93,7 +93,8 @@ def contract_check(github, repository, folder=""):
         repository = repo["full_name"]
     branch = repo["default_branch"] or "main"
     if branch != "main":
-        raise Blocked(f"The default branch is {branch}; the platform releases only from main")
+        raise Blocked(f"The default branch is {branch}; the platform's own workflows release only from main. Deploy it as it is instead "
+                      "(onboard_application with as_is true): the platform then keeps the contract and reads the repository's default branch")
     everything = github.tree(repository, branch)
     tree = everything
     if folder:
@@ -363,8 +364,8 @@ class Onboarder:
             read = view["read"]
         record["repository"] = view["repository"]
         record["steps"]["validating"] = {"as_is": True, "choices": read["choices"], "ignored": read["ignored"], "notes": read["notes"],
-                                         "refusals": read["refusals"], "head": view["head"], "repository_id": view["repository_id"],
-                                         "owner_id": view["owner_id"]}
+                                         "refusals": read["refusals"], "head": view["head"], "branch": view.get("branch") or "main",
+                                         "repository_id": view["repository_id"], "owner_id": view["owner_id"]}
         if read["refusals"] or read["spec"] is None:
             raise Blocked("It cannot be taken as it is: " + "; ".join(f"{item['file']} {item['problem']} (fix: {item['fix']})" for item in read["refusals"][:6]))
         record["service"] = read["spec"].name
@@ -449,7 +450,9 @@ class Onboarder:
                 if platform is None:
                     raise ValueError("Set platform.repository in the controller configuration before onboarding repositories")
                 layout = {"workflow": "deploy.yml", "environment": f"staging-{service}", "contract": "platform", "pipeline_repository": platform.repository}
-            entry = {"repository": record["repository"], "branch": "main", "service": service, "auto_deploy": record["auto_deploy"],
+            # A repository taken as it is is released from its own default branch (1.22.1); one with its own workflows from main.
+            branch = (record["steps"].get("validating") or {}).get("branch") or "main"
+            entry = {"repository": record["repository"], "branch": branch, "service": service, "auto_deploy": record["auto_deploy"],
                      "path": folder, **layout,
                      "target": {"project_id": project, "region": region, "service": service, "registry": service,
                                 "deploy_service_account": f"{service}-deploy@{project}.iam.gserviceaccount.com",

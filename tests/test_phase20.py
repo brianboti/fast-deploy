@@ -135,6 +135,45 @@ def test_aiohttp_runs_as_a_factory_an_object_or_the_main_file():
     assert client_only["spec"].build.entrypoint.startswith("uvicorn src.api.main:app")  # aiohttp the client never decides over the object
 
 
+def test_a_python_entry_file_that_reads_host_gets_every_interface():
+    """1.22.1, from the Phase 20 live exercise: the aiohttp rung (and every other `python FILE` rung) sets HOST when the file
+    reads it, as the Node.js rule does, because its development default (127.0.0.1) cannot be reached on Cloud Run."""
+    main = ("import os\nfrom aiohttp import web\n\ndef main():\n    app = web.Application()\n"
+            "    web.run_app(app, host=os.environ.get('HOST', '127.0.0.1'), port=int(os.environ.get('PORT', '8080')))\n")
+    result = read({"requirements.txt": "aiohttp\n", "main.py": main})
+    assert result["spec"].build.entrypoint == "python main.py" and result["spec"].env == {"HOST": "0.0.0.0"}  # noqa: S104
+    assert choice(result, "Host")["from"] == "main.py" and "development default" in choice(result, "Host")["value"]
+    silent = read({"requirements.txt": "aiohttp\n", "main.py": "from aiohttp import web\n\ndef main():\n    web.run_app(web.Application())\n"})
+    assert silent["spec"].build.entrypoint == "python main.py" and silent["spec"].env == {}  # nothing read, nothing set
+    gradio = read({"requirements.txt": "gradio\n", "app.py": "import os, gradio as gr\nhost = os.getenv('HOST')\n"})
+    assert gradio["spec"].env == {"GRADIO_SERVER_NAME": "0.0.0.0", "GRADIO_SERVER_PORT": "8080", "HOST": "0.0.0.0"}  # noqa: S104
+    kept = read({"requirements.txt": "aiohttp\n", "main.py": main, "platform.yaml": "name: svc\nenv:\n  HOST: '::'\n"})
+    assert kept["spec"].env == {"HOST": "::"}  # the contract's own value stays
+
+
+def test_a_repository_as_it_is_is_read_and_released_from_its_own_default_branch(tmp_path):
+    """1.22.1, found live: streamlit/streamlit-example and HackSoftware/Django-Styleguide-Example keep `master`, and the as-is
+    path refused both before the reader ran. The contract pins a commit of the default branch; its own-workflows checklist
+    still needs main and says so."""
+    c, brian, gh, _ = controller_with(tmp_path)
+    gh.repos["lab/old"] = {"files": {"main.py": FASTAPI, "requirements.txt": "fastapi==0.115.0\n"}, "default_branch": "master"}
+    asked = []
+    original = gh.branch_head
+    gh.branch_head = lambda repository, branch="main": (asked.append((repository, branch)), original(repository, branch))[1]
+    view = c.contracts.inspect("lab/old")
+    assert view["branch"] == "master" and ("lab/old", "master") in asked and view["read"]["spec"] is not None
+    check = c.check_repository(brian, "lab/old")
+    assert check["ready"] is False and "release only from main" in check["error"] and check["as_it_is"]["ready"]
+    assert "as_is true" in check["next_action"] and check["branch"] == "master"
+    first = c.onboard(brian, "lab/old", as_is=True)
+    assert first["state"] == "merging_contract" and first["steps"]["validating"]["branch"] == "master"
+    gh.merge_pull_request(PLATFORM_OF(c), first["steps"]["contract"]["pull_request"], "reviewed by a person")
+    assert c.advance_onboarding("old")["state"] == "planning"
+    app = c.config.applications["old"]
+    assert app.central and app.branch == "master"  # deploy_latest and the comparison with the live release follow master
+    assert c.config.applications["asis"].branch == "main" if "asis" in c.config.applications else True
+
+
 def test_an_asgi_framework_without_an_object_read_is_assumed_by_name_at_any_depth():
     paths = ["backend/open_webui/main.py", "backend/open_webui/__init__.py", "backend/requirements.txt", "backend/open_webui/retrieval/loaders/main.py", "backend", "backend/open_webui"]
     texts = {"backend/requirements.txt": "fastapi\naiohttp\nuvicorn\n", "backend/open_webui/retrieval/loaders/main.py": "import aiohttp\n", "backend/open_webui/__init__.py": ""}

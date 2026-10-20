@@ -1,3 +1,25 @@
+# 1.22.1: a repository's own default branch, and HOST for the Python rungs
+
+Found on 2026-10-20 at the start of the live exercise of Phase 20 (docs/ROADMAP.md), before anything was built.
+
+1. **A repository taken as it is is read from its own default branch.** `check_repository` on both public candidates of
+   the exercise, `streamlit/streamlit-example` and `HackSoftware/Django-Styleguide-Example`, stopped before the reader ran:
+   "The default branch is master; the platform releases only from main". The rule came from the platform's own
+   workflows, which trigger on `main`; a contract the platform keeps (13.1) pins a commit and a release moves that commit
+   to the branch's head, so the branch's name never mattered there. The reader, `import_contract` and `onboard_application`
+   with `as_is` or `all` now read the repository's default branch, whatever it is, and the registered application follows
+   it (`deploy_latest`, the comparison with the live release; the application model's rule that binds the branch to `main`
+   now holds only for an application with its own workflows). A repository that takes the platform's own workflows
+   still needs `main`, and the checklist's message now says to deploy it as it is instead; `check_repository` answers for
+   "as it is" even when the checklist is blocked by the branch.
+2. **A `python FILE` rung sets `HOST` when the entry file reads it.** 1.22.0 promised `HOST=0.0.0.0` for the last rung
+   and set it there, but the aiohttp, Gradio, Tornado and NiceGUI rungs set only their frameworks' own variables; a
+   `main.py` that reads `HOST` with the usual development default (127.0.0.1) would bind an address Cloud Run cannot
+   reach, and its first revision would fail. The contract now carries `HOST: 0.0.0.0` for such a file, with a "Host"
+   choice naming the file, as it has for a Node.js service since 1.20.0; a value the contract already gives stays.
+
+Tests: 912 pass (2 new); ruff clean.
+
 # 1.22.0: read more, refuse less (Phase 20)
 
 Roadmap Phase 20 (docs/ROADMAP.md 20.1 to 20.7, decisions D48, D50 and D56 at their defaults), from the research review

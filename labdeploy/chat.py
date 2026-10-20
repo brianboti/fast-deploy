@@ -698,6 +698,20 @@ def check(result):
     where = f"`{result.get('repository')}`" + (f", folder `{result['path']}`" if result.get("path") else "")
     missing = [item for item in result.get("checklist") or [] if not item.get("ok")]
     extra = [item for item in result.get("recommended") or [] if not item.get("ok")]
+    if result.get("error") and not result.get("checklist"):
+        # The checklist for the platform's own workflows could not run (another default branch, a missing folder); since 1.22.1
+        # the reader's own answer still comes, so a `master` repository is "ready as it is" rather than "0 required items missing".
+        as_is = result.get("as_it_is") or {}
+        if as_is.get("ready"):
+            return compose(f"**Ready as it is: {where}.**",
+                           [result["error"], "Taken as it is, adding nothing to the repository: " + "; ".join(choice_lines(as_is.get("choices"), 3))],
+                           "say “deploy it as it is” and I'll propose its contract to the platform repository (a person's merge is the review).")
+        block = ""
+        if as_is.get("refusals"):
+            groups = grouped_refusals(as_is["refusals"])
+            block = "As it is, it is refused too:\n" + "\n".join(f"{number}. {files} {str(problem).rstrip('.')}. Fix: {str(fix).rstrip('.')}."
+                                                             for number, (files, problem, fix) in enumerate(groups[:5], 1))
+        return compose(f"**Not ready yet: {where}.**", [result["error"]], "fix what the error names; nothing was created.", block=block or None)
     if result.get("ready"):
         facts = ["Everything the platform needs is there"]
         if extra:
