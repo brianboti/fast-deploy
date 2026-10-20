@@ -73,7 +73,9 @@ class Application(StrictModel):
     def workflow_fixed(self):
         if self.service != self.target.service:
             raise ValueError("Service must match the configured cloud target")
-        if self.branch != "main":
+        if self.branch != "main" and self.contract != "platform":
+            # The application's own workflows and the trust of its deploy identity are bound to main. A contract the platform
+            # keeps runs on the platform's pipeline, so the application's branch is only where deploy_latest looks (1.22.1).
             raise ValueError("MVP workflow and identity trust are restricted to main")
         if self.path and (not SERVICE_PATH.fullmatch(self.path) or ".." in self.path.split("/")):
             raise ValueError("path is the service's folder inside the repository, such as services/api: relative, no hidden or parent folders")

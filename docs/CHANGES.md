@@ -1,3 +1,64 @@
+# 1.22.3: certifi 2026.10.19, for compromised root certificates
+
+Found on 2026-10-20 in the live exercise of Phase 20: the platform's own dependency audit began failing every pull request
+at 21:42 UTC, two hours after GitHub published GHSA-6q48-6c7w-9gw2 (critical, 2026-10-20 19:35 UTC): certifi before
+2026.10.19 bundles emSign root certificates whose intermediate keys are compromised, so a client trusting that bundle can
+be shown a forged certificate. The controller uses certifi's bundle for every HTTPS call it makes, to GitHub and to
+Google. The trial's infrastructure pull requests and main's own checks stopped on it too.
+
+1. **certifi 2026.10.19** in `requirements.lock`, `requirements-dev.lock` and `audit.lock`, made with the commands in their
+   headers and `--upgrade-package certifi`, so nothing else moves; the hashes are PyPI's for the wheel and the source
+   distribution, published 2026-10-20 02:24 UTC. A security fix does not wait out the seven days the weekly pin refresh
+   gives a new release.
+
+The application locks the platform keeps that still name certifi 2026.7.22 (`apps/llm-debate-backend/`, and the test lock
+of `apps/lab-demo-two/`) are not changed here: their next release's audit names it, and locking them again is a change of
+its own.
+
+Tests: unchanged; `pip-audit` finds no known vulnerability in the three locks.
+
+
+# 1.22.2: "deploy everything" answers at once
+
+Found on 2026-10-20 in the live exercise of Phase 20. `onboard_application` with `all=true` on a repository holding four
+services (a Gradio app, an aiohttp app, a Node.js service and a Django project) read all four, compiled three locks on the
+machine and opened the four contract pull requests in about a minute and a half, and the call that asked had timed out
+long before: the work was done, and the answer was lost. In Phase 18 the same call answered in seconds because the
+Node.js services carried their lockfiles; a Python service's lock is compiled at this step, Gradio's alone runs to a
+thousand lines.
+
+1. **The call returns once each service is read.** Each onboarding stops at the `contract` step, and the onboarding
+   tick, which runs every minute, compiles the lock and opens the contract pull request, one service after another. The
+   answer says so ("read as it is; its contract pull request opens within a minute"), and `get_onboarding_status` or a
+   second "deploy everything" shows the pull requests once they are open. A single `onboard_application` call still
+   opens its pull request before answering, as before.
+
+Built on 1.22.1 (#128).
+
+Tests: 912 pass; ruff clean.
+
+# 1.22.1: a repository's own default branch, and HOST for the Python rungs
+
+Found on 2026-10-20 at the start of the live exercise of Phase 20 (docs/ROADMAP.md), before anything was built.
+
+1. **A repository taken as it is is read from its own default branch.** `check_repository` on both public candidates of
+   the exercise, `streamlit/streamlit-example` and `HackSoftware/Django-Styleguide-Example`, stopped before the reader ran:
+   "The default branch is master; the platform releases only from main". The rule came from the platform's own
+   workflows, which trigger on `main`; a contract the platform keeps (13.1) pins a commit and a release moves that commit
+   to the branch's head, so the branch's name never mattered there. The reader, `import_contract` and `onboard_application`
+   with `as_is` or `all` now read the repository's default branch, whatever it is, and the registered application follows
+   it (`deploy_latest`, the comparison with the live release; the application model's rule that binds the branch to `main`
+   now holds only for an application with its own workflows). A repository that takes the platform's own workflows
+   still needs `main`, and the checklist's message now says to deploy it as it is instead; `check_repository` answers for
+   "as it is" even when the checklist is blocked by the branch.
+2. **A `python FILE` rung sets `HOST` when the entry file reads it.** 1.22.0 promised `HOST=0.0.0.0` for the last rung
+   and set it there, but the aiohttp, Gradio, Tornado and NiceGUI rungs set only their frameworks' own variables; a
+   `main.py` that reads `HOST` with the usual development default (127.0.0.1) would bind an address Cloud Run cannot
+   reach, and its first revision would fail. The contract now carries `HOST: 0.0.0.0` for such a file, with a "Host"
+   choice naming the file, as it has for a Node.js service since 1.20.0; a value the contract already gives stays.
+
+Tests: 912 pass (2 new); ruff clean.
+
 # 1.22.0: read more, refuse less (Phase 20)
 
 Roadmap Phase 20 (docs/ROADMAP.md 20.1 to 20.7, decisions D48, D50 and D56 at their defaults), from the research review
