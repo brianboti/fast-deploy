@@ -141,7 +141,8 @@ say: *"Deploy https://github.com/ORG/REPO as it is."* Nothing is added to that r
    a `requirements/` folder and `apt.txt` are read or locked by the platform; a Node.js service on a literal port, or
    started by `nodemon` or `pm2`, is taken as it is; a `.nvmrc` or `.python-version` naming a line at its end of life
    gets the lowest supported line with a note. A root that holds several services names them, and *"Deploy everything
-   in REPO"* opens one contract pull request per folder.
+   in REPO"* opens one contract pull request per folder. The repository is read from its own default branch, whatever
+   its name (since 1.22.1); only a repository that takes the platform's own workflows needs `main`.
 2. It opens one pull request on the platform repository with the contract (`apps/NAME/platform.yaml`) and the locks it
    made. **A person reviews and merges it: that merge is the review.** The controller never merges a contract.
 3. Then the usual steps run on their own: the cloud setup, the GitHub environment (`staging-NAME`, in the platform

@@ -128,12 +128,13 @@ class Contracts:
         info = github.repository(repository)
         if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", info.get("full_name") or "") and info["full_name"].lower() == repository.lower():
             repository = info["full_name"]
-        if (info.get("default_branch") or "main") != "main":
-            raise ValueError(f"The default branch is {info.get('default_branch')}; the platform releases only from main")
-        head = github.branch_head(repository, "main")
+        # The repository's own default branch, whatever its name (1.22.1): the contract pins a commit of it, and a release
+        # moves that commit to the branch's head. Found live on both public candidates of the Phase 20 exercise (master).
+        branch = info.get("default_branch") or "main"
+        head = github.branch_head(repository, branch)
         paths, sizes = github.tree(repository, head, sizes=True)
         if path and path not in paths:
-            raise ValueError(f"{repository} has no folder {path} on main")
+            raise ValueError(f"{repository} has no folder {path} on {branch}")
         texts, skipped = {}, []
         wanted = reader.files_to_read(paths, path)
         for _ in range(4):  # a Node.js service's entry file and its imports are read in up to three more passes
@@ -157,7 +158,7 @@ class Contracts:
                                        "fix": "keep this repository's own workflows (follow docs/DEVELOPER-CONTRACT.md), or make the platform "
                                               "repository private first"})
             result["spec"] = None
-        return {"repository": repository, "path": path, "head": head, "private": bool(info.get("private")),
+        return {"repository": repository, "path": path, "branch": branch, "head": head, "private": bool(info.get("private")),
                 "repository_id": info.get("repository_id"), "owner_id": info.get("owner_id"), "read": result,
                 "services": reader.services(paths, texts) if not path else []}
 
