@@ -11,8 +11,10 @@ answer is the same.
 
 1. **The platform's Python image uninstalls pip, setuptools and wheel** after the dependencies are installed and Django's
    static files collected, before the user line, in both variants (the plain image, and the build stage's virtual
-   environment plus the base's interpreter). The tests, the audit and the migration job are untouched: the tests install
-   on the runner, the audit reads the lock, and the job runs the image's own command.
+   environment plus the base's interpreter). Any of the three the service's own lock names stays: a package that imports
+   `pkg_resources` or declares setuptools needs it at run time, and the Dockerfile says so. The tests, the audit and the
+   migration job are untouched: the tests install on the runner, the audit reads the lock, and the job runs the image's
+   own command.
 
 Nothing on the machine changes: the pipeline renders the Dockerfile from the platform's main at build time, so the next
 release of `django-static` takes it (one build, about $0.26).

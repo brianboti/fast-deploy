@@ -141,11 +141,20 @@ def test_the_platforms_python_image_keeps_no_package_manager():
     after the install and collectstatic, before the user line, in both variants."""
     spec = AppSpec.model_validate({"name": "svc", "python": "3.11", "build": {"recipe": "platform", "entrypoint": "python main.py"}})
     plain = scaffold.python_platform_dockerfile(spec, True, {"system": [], "sources": [], "django": True})
-    assert "RUN python -m pip uninstall -y pip setuptools wheel\n" in plain
+    assert "RUN python -m pip uninstall -y setuptools wheel pip\n" in plain  # pip last: it removes the others before itself
     assert plain.index("collectstatic --noinput") < plain.index("pip uninstall") < plain.index("USER 65532:65532")
     staged = scaffold.python_platform_dockerfile(spec, True, {"system": ["libpq5"], "sources": [], "django": False})
-    assert "RUN /opt/venv/bin/python -m pip uninstall -y pip setuptools wheel && /usr/local/bin/python -m pip uninstall -y pip setuptools wheel\n" in staged
+    assert "RUN /opt/venv/bin/python -m pip uninstall -y setuptools wheel pip && /usr/local/bin/python -m pip uninstall -y setuptools wheel pip\n" in staged
     assert staged.index("COPY --from=build /opt/venv /opt/venv") < staged.index("pip uninstall") < staged.index("USER 65532:65532")
+    # A lock that names one of the three keeps it: a package that imports pkg_resources needs setuptools at run time.
+    lock = "fastapi==0.115.0 \\\n    --hash=sha256:" + "1" * 64 + "\nsetuptools==80.9.0 \\\n    --hash=sha256:" + "2" * 64 + "\n"
+    assert scaffold.kept_build_tools(lock) == ["setuptools"] and scaffold.kept_build_tools("") == []
+    kept = scaffold.python_platform_dockerfile(spec, True, {"system": [], "sources": [], "django": False, "keep": ["setuptools"]})
+    assert "RUN python -m pip uninstall -y wheel pip\n" in kept and "The lock names setuptools: the service keeps it." in kept
+    kept_staged = scaffold.python_platform_dockerfile(spec, True, {"system": ["libpq5"], "sources": [], "django": False, "keep": ["setuptools", "pip"]})
+    assert "RUN /opt/venv/bin/python -m pip uninstall -y wheel && /usr/local/bin/python -m pip uninstall -y setuptools wheel pip\n" in kept_staged
+    everything = scaffold.python_platform_dockerfile(spec, True, {"system": [], "sources": [], "django": False, "keep": ["setuptools", "wheel", "pip"]})
+    assert "pip uninstall" not in everything and "The lock names setuptools and wheel and pip" in everything
 
 
 def test_a_python_entry_file_that_reads_host_gets_every_interface():

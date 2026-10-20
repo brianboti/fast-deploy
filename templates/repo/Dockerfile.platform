@@ -7,10 +7,7 @@ ENV PYTHONUNBUFFERED=1 HOME=/tmp__VENV_PATH__
 __SYSTEM__WORKDIR /app
 __INSTALL__# Only what passed the platform's deny-list was copied into this build context.
 COPY . .
-__COLLECTSTATIC__# No package manager stays in the image, as in the platform's Node.js image: the base image's pip, setuptools and wheel are
-# build tools the service never runs, and the scan reads their libraries as the service's (found live: wheel and
-# jaraco-context in python:3.11-slim, two fixable high findings that stopped a release; docs/CHANGES.md 1.22.5).
-__TRIM__# A numeric user that does not exist in the image: the service never runs as root.
+__COLLECTSTATIC____TRIM__# A numeric user that does not exist in the image: the service never runs as root.
 USER 65532:65532
 EXPOSE __PORT__
 CMD __CMD__
