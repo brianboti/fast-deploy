@@ -857,7 +857,13 @@ service (and `django-static`'s migration job), its recovery bucket with every ob
 `terraform destroy` of its root and its GitHub environment; the operator ran the five deletions and
 `scripts/machine.sh unregister` for each after this record was written (the session that ran the exercise may not
 delete), and the pull request that removes `apps/<service>/` and `infra/gcp/apps/<service>/` for the five followed.
-TBD-DECOMMISSION-RESULT
+The operator's run matched the dry run for each: the service deleted (and `django-static`'s job), "deleted
+gs://…-recovery with every object version" ("Removing buckets: Completed 1/1"), "deleted the registry … and its images",
+six `forgot` lines (the registry, its two grants, the service, the bucket, its grant), "Destroy complete! Resources: 28
+destroyed.", and "deleted staging-<service> on brianboti/fast-deploy". Checked afterwards, by the reviewing session and
+again by this one: no Cloud Run service or job, recovery bucket, registry, service account or environment of the five is
+left; each `<service>-provenance` key's one version is `DESTROY_SCHEDULED`; the other thirteen services are untouched.
+The contracts and roots went in #139.
 
 What it cost: four images, each scanned once by Artifact Analysis (`aiohttp-main`, `node-port`, `django-static` twice)
 at about $0.26, about $1.04 of the $1.30 to $1.82 approved; the two releases the audit stopped built nothing, and the
