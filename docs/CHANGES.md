@@ -1,3 +1,22 @@
+# 1.22.2: "deploy everything" answers at once
+
+Found on 2026-10-20 in the live exercise of Phase 20. `onboard_application` with `all=true` on a repository holding four
+services (a Gradio app, an aiohttp app, a Node.js service and a Django project) read all four, compiled three locks on the
+machine and opened the four contract pull requests in about a minute and a half, and the call that asked had timed out
+long before: the work was done, and the answer was lost. In Phase 18 the same call answered in seconds because the
+Node.js services carried their lockfiles; a Python service's lock is compiled at this step, Gradio's alone runs to a
+thousand lines.
+
+1. **The call returns once each service is read.** Each onboarding stops at the `contract` step, and the onboarding
+   tick, which runs every minute, compiles the lock and opens the contract pull request, one service after another. The
+   answer says so ("read as it is; its contract pull request opens within a minute"), and `get_onboarding_status` or a
+   second "deploy everything" shows the pull requests once they are open. A single `onboard_application` call still
+   opens its pull request before answering, as before.
+
+Built on 1.22.1 (#128).
+
+Tests: 912 pass; ruff clean.
+
 # 1.22.1: a repository's own default branch, and HOST for the Python rungs
 
 Found on 2026-10-20 at the start of the live exercise of Phase 20 (docs/ROADMAP.md), before anything was built.
