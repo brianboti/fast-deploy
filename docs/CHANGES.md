@@ -1,3 +1,24 @@
+# 1.22.5: no package manager in the platform's Python image
+
+Found on 2026-10-20 in the live exercise of Phase 20. `django-static`, the trial's Django project, was built on
+`python:3.11-slim` (its `.python-version` asked for 3.10, a line at its end of life, so the lowest supported line ran it,
+D48) and stopped at the image scan: "2 critical or high findings with a fix available, in code nobody has reviewed".
+Neither was the service's: `wheel 0.45.1` (CVE-2026-24049, fixed in 0.46.2) and `jaraco-context 5.3` (CVE-2026-23949,
+fixed in 6.1, inside setuptools) come with the base image, which ships pip, setuptools and wheel for Python 3.11; the
+3.12 image ships pip alone, and `aiohttp-main` on it passed the same scan (five high findings, none fixable). The
+service never runs any of the three. The same thing stopped the platform's Node.js image in Phase 18 (1.20.9), and the
+answer is the same.
+
+1. **The platform's Python image uninstalls pip, setuptools and wheel** after the dependencies are installed and Django's
+   static files collected, before the user line, in both variants (the plain image, and the build stage's virtual
+   environment plus the base's interpreter). The tests, the audit and the migration job are untouched: the tests install
+   on the runner, the audit reads the lock, and the job runs the image's own command.
+
+Nothing on the machine changes: the pipeline renders the Dockerfile from the platform's main at build time, so the next
+release of `django-static` takes it (one build, about $0.26).
+
+Tests: 913 pass (1 new); ruff clean.
+
 # 1.22.3: certifi 2026.10.19, for compromised root certificates
 
 Found on 2026-10-20 in the live exercise of Phase 20: the platform's own dependency audit began failing every pull request

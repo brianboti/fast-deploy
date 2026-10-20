@@ -135,6 +135,19 @@ def test_aiohttp_runs_as_a_factory_an_object_or_the_main_file():
     assert client_only["spec"].build.entrypoint.startswith("uvicorn src.api.main:app")  # aiohttp the client never decides over the object
 
 
+def test_the_platforms_python_image_keeps_no_package_manager():
+    """1.22.5, from the Phase 20 live exercise: python:3.11-slim ships setuptools and wheel, whose libraries the image scan read
+    as the service's (two fixable high findings stopped django-static); the final image uninstalls pip, setuptools and wheel
+    after the install and collectstatic, before the user line, in both variants."""
+    spec = AppSpec.model_validate({"name": "svc", "python": "3.11", "build": {"recipe": "platform", "entrypoint": "python main.py"}})
+    plain = scaffold.python_platform_dockerfile(spec, True, {"system": [], "sources": [], "django": True})
+    assert "RUN python -m pip uninstall -y pip setuptools wheel\n" in plain
+    assert plain.index("collectstatic --noinput") < plain.index("pip uninstall") < plain.index("USER 65532:65532")
+    staged = scaffold.python_platform_dockerfile(spec, True, {"system": ["libpq5"], "sources": [], "django": False})
+    assert "RUN /opt/venv/bin/python -m pip uninstall -y pip setuptools wheel && /usr/local/bin/python -m pip uninstall -y pip setuptools wheel\n" in staged
+    assert staged.index("COPY --from=build /opt/venv /opt/venv") < staged.index("pip uninstall") < staged.index("USER 65532:65532")
+
+
 def test_a_python_entry_file_that_reads_host_gets_every_interface():
     """1.22.1, from the Phase 20 live exercise: the aiohttp rung (and every other `python FILE` rung) sets HOST when the file
     reads it, as the Node.js rule does, because its development default (127.0.0.1) cannot be reached on Cloud Run."""

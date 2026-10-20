@@ -1252,18 +1252,20 @@ def python_platform_dockerfile(spec, locked, facts=None):
                        f"RUN python -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir {install}\n\n")
         install_lines = "COPY --from=build /opt/venv /opt/venv\n"
         venv_path = " PATH=/opt/venv/bin:$PATH"
+        trim = "RUN /opt/venv/bin/python -m pip uninstall -y pip setuptools wheel && /usr/local/bin/python -m pip uninstall -y pip setuptools wheel\n"
     else:
         build_stage, venv_path = "", ""
         install_lines = ("# Dependencies before the code: a code change then rebuilds one layer instead of reinstalling every dependency.\n"
                          f"COPY {requirements} ./\nRUN pip install --no-cache-dir {install}\n")
+        trim = "RUN python -m pip uninstall -y pip setuptools wheel\n"
     collectstatic = ""
     if facts["django"]:
         collectstatic = ("# Django's static files, collected at build as Heroku does (docs/ROADMAP.md 20.3); a settings module that needs\n"
                          "# a value at import stops the build here, and the contract's env is the place to give it.\n"
                          "RUN python manage.py collectstatic --noinput\n")
     return fill(template("Dockerfile.platform"), PYTHON=spec.python, RESOLVED=BASE_IMAGES_RESOLVED, DIGEST=BASE_IMAGES[spec.python],
-                BUILD_STAGE=build_stage, VENV_PATH=venv_path, SYSTEM=system, INSTALL=install_lines, COLLECTSTATIC=collectstatic, PORT=spec.port,
-                CMD=json.dumps(start_command(spec.build.entrypoint)))
+                BUILD_STAGE=build_stage, VENV_PATH=venv_path, SYSTEM=system, INSTALL=install_lines, COLLECTSTATIC=collectstatic, TRIM=trim,
+                PORT=spec.port, CMD=json.dumps(start_command(spec.build.entrypoint)))
 
 
 def platform_dockerfile(spec, locked, lockfile="package-lock.json", facts=None):
