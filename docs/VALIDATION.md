@@ -734,3 +734,73 @@ Not yet: a release tag, which is written at the next promotion.
 
 What it showed: a terminal state was never read again, however late GitHub's own records came in. 1.18.11 reads such a run
 again for six hours and records it once every check has reported.
+
+## Live exercise of Phase 18: Node.js web services (2026-10-19 and 2026-10-20 UTC)
+
+Asked for by the operator after the merge of #98 (`0059caf`, 1.20.0). With the operator's agreement, one public test
+repository, `brianboti/fast-deploy-node-trial`, holds eight small Express services in folders, one per case of the
+roadmap's list, and about $2 of staging releases was approved. Every contract pull request was merged by the operator;
+infrastructure and release pull requests were merged by the controller (`onboarding.auto_merge`, on by default).
+
+Before anything ran live, the eight services were read, locked, built and scanned on the laptop's Docker with the 1.20.0
+code:
+
+| Check | Observed |
+|---|---|
+| The reader on the eight folders (`labdeploy.reader`, the controller's file selection) | Five ready as they are: `node-bare` (the platform's image, Node.js 24 by default), `node-docker` (its own Dockerfile, line from `FROM node:24`), `node-procfile` (the Procfile through the buildpacks, `trust: reviewed` from its own `platform.yaml`), `node-onnx` (`.nvmrc` 24; install scripts: "none run: onnxruntime-node@1.30.0: its postinstall only downloads the CUDA and TensorRT libraries ..."), `node-nolock` (Node.js 22 from `engines.node 22.x`, locked by the platform). Three refused, each with its fix |
+| The platform's lock for Node.js 22 | **Failed**: "npm could not lock the dependencies: Node.js v22.23.3". The pinned npm 11.19.1 was installed into a folder with no `package.json`, so npm walked up to the service's own, installed itself there and left no lockfile to check. Fixed in 1.20.1 (#100); afterwards npm 11.19.1 was installed and checked, 65 packages locked, the service's dependencies untouched |
+| The platform's image | `node-bare` and `node-onnx` built from the rendered Dockerfile (82 MB and 197 MB on arm64): `/health` answered; `node-onnx`'s `/add` ran a two-input ONNX model (sum 42) with every install script off; SIGTERM ended the container with exit 0 |
+| The audit on a planted package | OSV-Scanner 2.7.0 (checked against its SHA-256) and `python -m labdeploy.scan osv` on a lockfile with `flatmap-stream@0.1.1`: "1 known malicious package in the lockfile (MAL-2025-20690 (flatmap-stream@0.1.1))". GitHub's own advisory for it (GHSA-9x64-5r7x-2q53, CWE-506, no fixed version) counted only as "critical, no fix": alone it would not have stopped a release. Fixed in 1.20.2 (#101) |
+
+Live, with the controller on 1.20.4 (`a43a22d`, installed by the operator after #100 merged):
+
+| Item | What was done | Observed |
+|---|---|---|
+| 5. Three refusals | `check_repository` on `node-nodemon`, `node-localhost`, `node-pnpm` | Each refused with its fix: "scripts.start restarts on file changes (nodemon), a development tool: `nodemon server.js`. Fix: start the service with node itself ..."; "`node-localhost/server.js` listens on localhost, which Cloud Run cannot reach. Fix: listen on every interface ..."; "`node-pnpm/pnpm-lock.yaml` is pnpm's lockfile, which this version of the platform does not install. Fix: convert it to a package-lock.json ..." |
+| The repository's root | `check_repository` without a folder | Told to add a `package.json` at the root, listed a Python `requirements.txt` as missing and offered to draft a Dockerfile for it, although the reader had found the eight folders. Fixed in 1.20.8 (#110): the answer names the folders |
+| Onboarding as it is | `onboard_application` with `as_is` for five folders | Contract pull requests #104 to #107 (and #113, below) in seconds, merged by the operator; infrastructure #111, #112, #114, #115 and #116 (38 to add each, idle floor +$0.06 a month, the provenance key) planned one at a time, then merged and applied by the controller; environments created; first releases dispatched by the onboarding |
+| 6. The lock the platform makes | `onboard_application` for `node-nolock` | First "Docker is not installed on this machine": the machine has Docker's daemon (Debian 13's `docker.io`) but not the `docker` command, which Debian 13 ships in `docker-cli` and `docker.io` only recommends, so every lock on the machine, Python's too, had failed since the move. Fixed in 1.20.7 (#109); the operator installed `docker-cli` on the running machine. Then the machine locked it in 49 seconds (#113, `apps/node-nolock/package-lock.json`: lockfile version 3, 65 packages, only `express` at the root, the same versions as on the laptop). The release's tests installed from that lock and passed |
+| 2b. A Procfile through the buildpacks | `node-procfile`, `trust: reviewed` | **Live in 9 minutes** (plan `7db6de65`): dependency audit passed (65 packages), tests passed, health check passed; the buildpacks gave it Node.js 24.19.0 (the platform's image has 24.22.0); the run image's scan reported 3 critical and 22 high (24 fixable), not blocking for reviewed code (D28). `/health` answered with a token, 403 without |
+| 1, 2a, 3, 6. The other first releases | `node-bare`, `node-docker`, `node-onnx`, `node-nolock` | Tests and the dependency audit passed for all four (`node-onnx`'s tests ran the model with scripts off on the runner), then the image scan stopped each: "13 critical or high findings with a fix available, in code nobody has reviewed". None was in their code: the official `node:24-slim` and `node:22-slim` are Debian 12, whose `perl` had five critical and five high findings fixed in deb12u4 that the image had not taken (the pinned digest was that day's newest), and npm's bundled `brace-expansion` and `undici` three high. Fixed in 1.20.9 (#117): Debian 13 (`node:<line>-trixie-slim`) and no package manager left in the image |
+| 2a. A Dockerfile of its own | The developer's fix in the test repository (`e027aa1`: `node:24-trixie-slim`, package managers removed); `deploy_latest` opened release pull request #118, merged by the controller | **Live in 8 minutes** (plan `5388883c`): Dockerfile rules passed; the scan found 5 high, none fixable, which the gate lets through; contained (no internet, second generation). The release said "1 possible secret to check": TruffleHog's match in Yarn's README, which the base image's layer still holds after the build deletes Yarn. Fixed in 1.20.10 (#120) |
+| 4. A planted malicious package | `flatmap-stream@0.1.1` planted in `node-docker` (`ebc3002`); `deploy_latest`, release pull request #119 merged by the controller | **Stopped by the audit** before anything was installed (plan `a760c03a`): "Dependency audit (OSV-Scanner 2.7.0) of package-lock.json: finished, 66 packages ... 1 known malicious package in the lockfile (MAL-2025-20690 (flatmap-stream@0.1.1))". The install, the tests, the build and the deploy were skipped; `node-docker` kept serving `e027aa1` |
+| 1. Recovery | `recover.yml` after the releases; a second release of `node-docker`'s same commit for the rollback drill | The recovery workflow ran one job per service for all five (run 39318189592, all succeeded). The second release planned a reuse of the attested image and stopped at its provenance: "made from a different contract": the platform's main had moved since the image was built, and a kept contract's provenance names main's commit of that time. Every kept contract, Python's too, failed this way. Fixed in 1.20.11 (#121) |
+| 7. Sophia | The 1.20.0 reader on `~/Downloads/BetterCare_chatbot-main`, as text (it is in no repository yet) | No refusal. Draft: `sophia-bettercare`, Node.js 24 (the default: nothing names a line), `node server/index.mjs` (the start script's `--env-file-if-exists=.env` dropped), port 8787, `env: HOST=0.0.0.0` (its default is 127.0.0.1), health `/api/health`, `npm test`, the platform's image, `build.scripts` empty (onnxruntime-node's script is not needed). Notes: the build script is not run, no SIGTERM handler, SQLite on local disk, it uses `@anthropic-ai/sdk`, `@huggingface/transformers` and `openai` |
+
+What Sophia still needs, from the platform (Phase 19 as decided on 2026-10-19) and from its own code: a GitHub repository
+without the data (public while the platform repository is; data/index, the embeddings and the model kept out); its
+corpus, embeddings and embedding model on a read-only bucket mount (19.1) instead of a download from Hugging Face at
+every start; Claude through Vertex AI (19.3, the operator's Model Garden click), which also means no API key and no
+`server-side-fallback` beta; its users' state moved from SQLite to Firestore (the developer's change; the reader's note
+still names `state: sqlite`, which the operator dropped); a SIGTERM handler; the OpenAI backup either off or behind
+`egress: internet` after a review; identity from IAP instead of the trusted `X-Sophia-User` header; logs to stdout; the
+settings given under `env` and `secrets`; `ORT_DISABLE_TELEMETRY=1` (onnxruntime-node 1.30.0 starts a telemetry client
+on Linux, checked in the container; the platform's image has no CA bundle for it and contained services reach no
+internet, but the setting says so); and SharePoint's item-level permissions settled before anyone beyond the site's
+owners uses it. Its admin page starts test suites with `process.execPath`, which works on an image without npm, but the
+platform's image leaves `test/` out, so they would find nothing in production.
+
+After #117, #120 and #121 were merged and installed on the machine (1.20.11, `64d80e4`, 2026-10-20 14:12 UTC):
+
+| Item | What was done | Observed |
+|---|---|---|
+| 1. The platform's Node.js image | `create_deployment_plan` and `deploy_staging` for `node-bare` (the same contract, `00b11f6`) | **Live in 8 minutes** (plan `db4403b2`, revision `node-bare-rdb4403b24dc84108`) on `node:24-trixie-slim`: dependency audit passed (65 packages), tests and the health check passed, "no working keys found" (the image's three patterns counted as installed code, 1.20.10), the scan 5 high with no fix (let through); contained. It answered `{"node":"v24.22.0"}` with a token, 403 without |
+| 3. A native binary, every script off | The same for `node-onnx` | **Live in 9 minutes** (plan `f8364e78`): audit passed (79 packages). `/add?a=40&b=2` answered `{"sum":42,"platform":"linux-x64"}`: onnxruntime-node 1.30.0's binary loaded on Cloud Run, its install script never run |
+| 6. The platform's lock, released | The same for `node-nolock` | **Live in 8 minutes** (plan `b83aee32`): installed and tested from the lock the machine made, `node:22-trixie-slim`; it answered `{"node":"v22.23.3"}` |
+| 1. Recovered as on Python | A second release of `node-bare`'s commit, then `rollback_staging` | The plan reused the attested image (plan `a8c62218`: "tests passed in an earlier release", no build, no new scan), live in 7 minutes. The rollback (plan `286a0f2c`), asked at 14:29:50 UTC, had moved every visitor back to `node-bare-rdb4403b24dc84108` 67 seconds later (the Python drill: 53 seconds); the controller records that release as live again, and the recovery workflow had run one job per service after each release |
+
+The platform's main did not move between the two releases of `node-bare`, so the reuse took the plan's own contract
+commit: the case 1.20.11 fixes (main moved, the service's folder unchanged) is covered by its tests and has not run live.
+
+Smaller observations, not changed: the buildpacks' Node.js trails the platform's image (24.19.0 against 24.22.0);
+`check_repository` on a folder with a pnpm lockfile offers to draft a `package-lock.json`, which leaves two lockfiles
+until the developer removes `pnpm-lock.yaml`; a release pull request from `deploy_latest` merges itself once its checks
+pass (`onboarding.auto_merge` and `may_merge_own_requests` both default to on), so only contract changes wait for a
+person; a rollback between two releases of one commit reads "Now serving: `00b11f6` … No longer serving: `00b11f6`"; and
+`list_applications` counts a service's new commits across the whole repository ("2 new commits" for `node-bare`, both in
+other folders).
+
+What it cost: nine new images, each scanned once by Artifact Analysis (the first round of five, `node-docker`'s rebuild
+and the three releases after #117), about $2.34 at $0.26 each; the reuse and the stopped releases built nothing. While
+the five services exist, their provenance keys cost about $0.30 a month and their images about a gigabyte of the
+registry; Cloud Run idles at nothing.
