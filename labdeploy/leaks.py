@@ -14,13 +14,15 @@ import sys
 from pathlib import Path
 
 # Where an image holds what the application installed rather than wrote: packages, the system's own files, the buildpacks'
-# layers. An unconfirmed finding there is a pattern in someone else's code (found live: URL patterns in httpx, pip and
-# pandas tests, two in dpkg's lists); a working key is reported wherever it is.
-THIRD_PARTY = ("/usr/", "/var/lib/", "/lib/", "/opt/conda/", "/layers/", "site-packages/", "dist-packages/")
+# layers, a Node.js service's node_modules and the Yarn the official node images carry. An unconfirmed finding there is a
+# pattern in someone else's code (found live: URL patterns in httpx, pip and pandas tests, two in dpkg's lists, one in
+# /opt/yarn-v1.22.22/README.md, read from the node image's own layer although the platform's build deletes Yarn); a
+# working key is reported wherever it is.
+THIRD_PARTY = ("/usr/", "/var/lib/", "/lib/", "/opt/conda/", "/opt/yarn-", "/layers/", "site-packages/", "dist-packages/", "node_modules/")
 
 
 def third_party(path):
-    return any(marker in path if marker.endswith("-packages/") else path.startswith(marker) for marker in THIRD_PARTY)
+    return any(marker in path if marker.endswith(("-packages/", "node_modules/")) else path.startswith(marker) for marker in THIRD_PARTY)
 
 
 def findings(lines, strip=""):

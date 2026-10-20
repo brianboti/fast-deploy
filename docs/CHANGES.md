@@ -1,3 +1,24 @@
+# 1.20.10: no false secret in every Node.js release
+
+Found on 2026-10-19 in the live exercise of Phase 18: `node-docker`'s release said "no working keys found (1 possible
+secret to check)", and the service's own files held none (the checkout's scan found nothing). TruffleHog reads an image
+layer by layer, and the official node images carry Yarn in `/opt/yarn-v1.22.22/`, whose README matches a pattern; the
+platform's build deletes Yarn in a later layer, but the base layer still holds the file. The secret scan counted only
+Python's installed packages and the system's folders as someone else's code, so every Node.js release would have asked
+the operator to check Yarn's README, and a pattern in any installed npm package would have read as the service's own.
+
+1. **`node_modules/` and the node image's `/opt/yarn-…` count as installed code**, like `site-packages/`: an unconfirmed
+   pattern there is counted, not listed. A working key is still reported wherever it is, and stops a build of code nobody
+   has reviewed.
+
+Checked with TruffleHog 3.97.4 on `node:24-trixie-slim` and on node-docker's image: the only patterns are in Debian's
+package database (`/var/lib/dpkg/`) and Yarn's README, none verified.
+
+Built while 1.20.8 and 1.20.9 were open (#110, #117); merged on top of them.
+
+Tests: 837 pass; ruff clean.
+
+
 # 1.20.9: the platform's Node.js image passes its own gate
 
 Found on 2026-10-19 in the live exercise of Phase 18: the first releases of `node-bare`, `node-docker`, `node-onnx` and
