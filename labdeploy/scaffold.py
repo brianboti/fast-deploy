@@ -1213,16 +1213,30 @@ def single_file_packages(lock_text):
     return found
 
 
+# The base image's build tools, uninstalled from the final image unless the service's lock names them (1.22.5): pip last, so
+# it removes the others before itself.
+BUILD_TOOLS = ("setuptools", "wheel", "pip")
+
+
+def kept_build_tools(lock_text):
+    """Which of pip, setuptools and wheel the service's hash-locked requirements pin: a package that imports pkg_resources
+    or declares setuptools keeps it in the image."""
+    pinned = {normalize(match.group(1)) for match in re.finditer(r"(?m)^([A-Za-z0-9][A-Za-z0-9._-]*)\s*==", lock_text or "")}
+    return [name for name in BUILD_TOOLS if name in pinned]
+
+
 def build_facts(folder):
     """What the platform's Python Dockerfile needs to know about a build context: the system packages its files list, whether
-    the lock holds a source distribution (a build stage with a compiler), whether it is a Django project (collectstatic)."""
+    the lock holds a source distribution (a build stage with a compiler), whether it is a Django project (collectstatic), and
+    which of the base image's build tools the lock names (kept in the image)."""
     folder = Path(folder)
     packages = []
     for name in SYSTEM_PACKAGE_FILES:
         if (folder / name).is_file():
             packages += system_packages((folder / name).read_text(errors="replace"))
     lock = (folder / "requirements.lock").read_text(errors="replace") if (folder / "requirements.lock").is_file() else ""
-    return {"system": list(dict.fromkeys(packages)), "sources": single_file_packages(lock), "django": (folder / "manage.py").is_file()}
+    return {"system": list(dict.fromkeys(packages)), "sources": single_file_packages(lock), "django": (folder / "manage.py").is_file(),
+            "keep": kept_build_tools(lock)}
 
 
 def python_platform_dockerfile(spec, locked, facts=None):
@@ -1231,6 +1245,8 @@ def python_platform_dockerfile(spec, locked, facts=None):
     packages are listed (only its virtual environment enters the image), Django's static files collected at build, a numeric
     non-root user, and the contract's entrypoint as the command (docs/ROADMAP.md 13.3 and 20.3)."""
     facts = facts or {"system": [], "sources": [], "django": False}
+    keep = [name for name in BUILD_TOOLS if name in (facts.get("keep") or [])]
+    drop = [name for name in BUILD_TOOLS if name not in keep]
     requirements = "requirements.lock" if locked else "requirements.txt"
     install = ("--require-hashes -r " if locked else "-r ") + requirements
     system = ""
@@ -1252,18 +1268,28 @@ def python_platform_dockerfile(spec, locked, facts=None):
                        f"RUN python -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir {install}\n\n")
         install_lines = "COPY --from=build /opt/venv /opt/venv\n"
         venv_path = " PATH=/opt/venv/bin:$PATH"
+        # The service's packages live in the virtual environment; the base interpreter's three are never the service's.
+        venv_trim = f"/opt/venv/bin/python -m pip uninstall -y {' '.join(drop)} && " if drop else ""
+        trim_line = f"RUN {venv_trim}/usr/local/bin/python -m pip uninstall -y setuptools wheel pip\n"
     else:
         build_stage, venv_path = "", ""
         install_lines = ("# Dependencies before the code: a code change then rebuilds one layer instead of reinstalling every dependency.\n"
                          f"COPY {requirements} ./\nRUN pip install --no-cache-dir {install}\n")
+        trim_line = f"RUN python -m pip uninstall -y {' '.join(drop)}\n" if drop else ""
+    trim = ("# No package manager stays in the image, as in the platform's Node.js image: the base image's pip, setuptools and wheel are\n"
+            "# build tools the service never runs, and the scan reads their libraries as the service's (found live: wheel and\n"
+            "# jaraco-context in python:3.11-slim, two fixable high findings that stopped a release; docs/CHANGES.md 1.22.5).\n")
+    if keep:
+        trim += f"# The lock names {' and '.join(keep)}: the service keeps {'it' if len(keep) == 1 else 'them'}.\n"
+    trim += trim_line
     collectstatic = ""
     if facts["django"]:
         collectstatic = ("# Django's static files, collected at build as Heroku does (docs/ROADMAP.md 20.3); a settings module that needs\n"
                          "# a value at import stops the build here, and the contract's env is the place to give it.\n"
                          "RUN python manage.py collectstatic --noinput\n")
     return fill(template("Dockerfile.platform"), PYTHON=spec.python, RESOLVED=BASE_IMAGES_RESOLVED, DIGEST=BASE_IMAGES[spec.python],
-                BUILD_STAGE=build_stage, VENV_PATH=venv_path, SYSTEM=system, INSTALL=install_lines, COLLECTSTATIC=collectstatic, PORT=spec.port,
-                CMD=json.dumps(start_command(spec.build.entrypoint)))
+                BUILD_STAGE=build_stage, VENV_PATH=venv_path, SYSTEM=system, INSTALL=install_lines, COLLECTSTATIC=collectstatic, TRIM=trim,
+                PORT=spec.port, CMD=json.dumps(start_command(spec.build.entrypoint)))
 
 
 def platform_dockerfile(spec, locked, lockfile="package-lock.json", facts=None):

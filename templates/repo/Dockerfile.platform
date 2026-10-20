@@ -7,7 +7,7 @@ ENV PYTHONUNBUFFERED=1 HOME=/tmp__VENV_PATH__
 __SYSTEM__WORKDIR /app
 __INSTALL__# Only what passed the platform's deny-list was copied into this build context.
 COPY . .
-__COLLECTSTATIC__# A numeric user that does not exist in the image: the service never runs as root.
+__COLLECTSTATIC____TRIM__# A numeric user that does not exist in the image: the service never runs as root.
 USER 65532:65532
 EXPOSE __PORT__
 CMD __CMD__
