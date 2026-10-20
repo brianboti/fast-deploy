@@ -164,7 +164,7 @@ def test_a_repository_as_it_is_is_read_and_released_from_its_own_default_branch(
     assert view["branch"] == "master" and ("lab/old", "master") in asked and view["read"]["spec"] is not None
     check = c.check_repository(brian, "lab/old")
     assert check["ready"] is False and "release only from main" in check["error"] and check["as_it_is"]["ready"]
-    assert "as_is true" in check["next_action"] and check["branch"] == "master"
+    assert "as_is true" in check["next_action"] and check["next_action"].count("as it is") == 1 and check["branch"] == "master"
     first = c.onboard(brian, "lab/old", as_is=True)
     assert first["state"] == "merging_contract" and first["steps"]["validating"]["branch"] == "master"
     gh.merge_pull_request(PLATFORM_OF(c), first["steps"]["contract"]["pull_request"], "reviewed by a person")

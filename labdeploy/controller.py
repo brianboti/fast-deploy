@@ -513,10 +513,11 @@ class Controller:
         elif folders:
             view["next_action"] = (f"The services live in folders ({', '.join(folders[:6])}" + (f" and {len(folders) - 6} more" if len(folders) > 6 else "")
                                    + f"): check one with check_repository and its path, such as path {folders[0]}.")
+        elif view["as_it_is"].get("ready") and result is None:
+            view["next_action"] = blocked.rstrip(".") + "."  # it already says to deploy it as it is (found live: said twice, 1.22.4)
         elif view["as_it_is"].get("ready"):
-            view["next_action"] = ((missing_message(result["checklist"]) if result is not None else blocked.rstrip(".") + ".")
-                                   + " Or deploy it as it is, adding nothing to the repository: onboard_application with as_is true (its contract is "
-                                   "kept in the platform repository).")
+            view["next_action"] = (missing_message(result["checklist"]) + " Or deploy it as it is, adding nothing to the repository: onboard_application "
+                                   "with as_is true (its contract is kept in the platform repository).")
         elif result is None:
             view["next_action"] = "Fix what the error names; nothing was created."
         else:

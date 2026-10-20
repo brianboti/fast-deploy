@@ -297,6 +297,7 @@ is no open SSH port: `scripts/machine.sh` goes through Identity-Aware Proxy, and
 | Run its startup script again | `scripts/machine.sh startup`, after a foundation apply changed the script: what is already right stays, and Caddy restarts for a second |
 | Change its configuration | `scripts/machine.sh config-get /tmp/machine.yaml`, edit, `scripts/machine.sh config-put /tmp/machine.yaml`: checked before it goes; principals, applications and settings apply at once, `oauth` and `github_app` changes need `restart` |
 | Back up now, or drill | `scripts/machine.sh backup`, `scripts/machine.sh drill` |
+| Forget a retired application | `scripts/machine.sh unregister APP`, after `scripts/decommission.sh APP --yes` (section "Retire an application") |
 | Hold it while a laptop takes over | `scripts/machine.sh stop` (not even a reboot starts it); `scripts/machine.sh start` releases the hold |
 
 Docker is on the machine only for the lock files onboarding compiles (decision D27); it starts when first used, and its
@@ -724,6 +725,22 @@ Once a month, or after changing channels:
    **Lab Deploy: spending-cap workflow failed** must reach the alert email (and the webhook when configured) and
    close itself half an hour later.
 3. `gcloud monitoring channels list --format="table(displayName,type,enabled,verificationStatus)"` must show the channels enabled and verified.
+
+## Retire an application
+
+`scripts/decommission.sh SERVICE` shows what retiring one application deletes, and `--yes` does it, in the order
+`lab-deploy decommission` prints (since 1.22.4; it ran for the five test services of Phase 20's live exercise): the Cloud
+Run service and its migration job, the recovery bucket with every version of its objects (it is versioned) and the image
+registry, each only when it is still there and each stopping the script when it fails, then `terraform destroy`
+of `infra/gcp/apps/SERVICE` in the official container with the pipeline's state, after those resources are taken out of
+the state (the service's deletion protection and the bucket's `prevent_destroy` would refuse the destroy otherwise), then
+the GitHub environment `staging-SERVICE` of a contract the platform keeps. It refuses an application whose root declares
+data (a database, buckets, topics): retire that deliberately first (below), merge the root without it, then run it. What
+it cannot do it prints at the end: remove `infra/gcp/apps/SERVICE/` (and `apps/SERVICE/`) in a pull request, and
+`scripts/machine.sh unregister SERVICE` so the controller forgets the application (its plans stay as history). Cloud KMS
+keeps the provenance key by name with its versions scheduled for destruction, and the Workload Identity pool stays
+soft-deleted for thirty days, so an application of the same name within that time imports both rather than creating them.
+Needs Docker running, gcloud signed in as the project owner and gh signed in.
 
 ## Retire a database deliberately
 

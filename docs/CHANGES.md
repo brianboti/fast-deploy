@@ -1,3 +1,24 @@
+# 1.22.4: a script that retires an application
+
+Found on 2026-10-20 in the live exercise of Phase 20, whose five test services had to go afterwards. Since 0.8.0
+`lab-deploy decommission` prints the order that retires an application without leaving a bill or a dangling trust, and
+nobody had run it to the end: the pipeline never destroys, the service module guards the service and the recovery bucket
+against Terraform's destroy on purpose, and the steps were typed by hand (the two database retirements of the 1.4 trial
+were one-off scripts).
+
+1. **`scripts/decommission.sh SERVICE [--yes]`** shows, then does, that order: the Cloud Run service and its migration
+   job, the recovery bucket with every version of its objects (it is versioned, one `releases/<service>.json` per
+   release) and the image registry, each deleted only while it is still there and each stopping the script when the
+   deletion fails, so nothing leaves the state while it still exists; `terraform destroy` of the application's root in the
+   official container with the pipeline's state after those resources are taken out of it, and the GitHub environment of
+   a contract the platform keeps. It refuses a root that declares data (a database, buckets, topics) and points at the
+   runbook's deliberate retirement. What it cannot do it prints: the pull request that removes the root and the kept
+   contract, and `scripts/machine.sh unregister SERVICE`, new, which runs the controller's `unregister` on the machine.
+2. **`check_repository` said "deploy it as it is" twice** for a repository whose checklist the branch rule blocks
+   (1.22.1): the blocked message already says it, so the next action is that message alone.
+
+Tests: 912 pass; ruff clean. `docs/RUNBOOK.md` has the section "Retire an application".
+
 # 1.22.3: certifi 2026.10.19, for compromised root certificates
 
 Found on 2026-10-20 in the live exercise of Phase 20: the platform's own dependency audit began failing every pull request
