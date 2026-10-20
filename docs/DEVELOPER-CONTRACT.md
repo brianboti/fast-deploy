@@ -36,7 +36,10 @@ list (or a `requirements/` folder holds one file per hardware and names none as 
 (unless your own Dockerfile installs them), its own Dockerfile builds on a Python outside 3.11 to 3.15, a secret is
 committed (`.env`, a private key, a credentials file; `.env.local.example` and the other documented examples are not
 secrets), or a file is over 100 MiB. A notebook beside the code is a note, never the refusal. A private repository is
-refused while the platform repository is public, because the platform's build logs would be public too. A root whose
+refused while the platform repository is public, because the platform's build logs would be public too. The repository
+is read from its own default branch, whatever its name (`master` included, since 1.22.1): the contract pins a commit of
+it, and a release moves that commit to the branch's head; only a repository that takes the platform's own workflows
+needs `main`. A root whose
 services live in folders names them in every refusal; *"deploy everything in REPO"* (`onboard_application` with `all`)
 opens one contract per folder (D56), and a root with one service in a folder takes that folder without asking.
 
