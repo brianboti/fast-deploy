@@ -517,8 +517,11 @@ per model, the application's own changes, and the decision to open an applicatio
 
 ## Phase 18: Node.js web services (about six days) → version 1.20.0
 
-Status: built on 2026-10-19 as 1.20.0 (code, tests and documents, checked locally; the live exercise below has not run
-yet). Planned the same day from research review sections 4.1 to 4.6; 1.19.0 stays Phase 17's number. The platform is Python-only at three points: the contract's `runtime` and `python` fields, the
+Status: built on 2026-10-19 as 1.20.0 and exercised live on 2026-10-19 and 2026-10-20 (`docs/VALIDATION.md`): every
+item of the list below passed, after seven findings fixed in 1.20.1, 1.20.2 and 1.20.7 to 1.20.11 (the Node.js 22 lock,
+GitHub's malware advisories, the docker command on the machine, a repository with services in folders, the platform's
+Node.js image on Debian 13 without a package manager, a false secret from the image's Yarn, and the reuse of a kept
+contract's image). Planned the same day from research review sections 4.1 to 4.6; 1.19.0 stays Phase 17's number. The platform is Python-only at three points: the contract's `runtime` and `python` fields, the
 reader's first refusal, and the pipeline's test and audit steps. Each has a Node equivalent that is released, pinned and
 documented, and two of them (OSV-Scanner for the audit, install scripts off by default) are stronger than the Python
 path's. Nothing built in Phases 13 to 16 changes: the secret scan, the Dockerfile policy, hadolint, Trivy, Artifact
