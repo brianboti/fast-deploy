@@ -463,9 +463,21 @@ class Controller:
                                 "refusals": read["refusals"], "ignored": read["ignored"], "notes": read["notes"], "services": seen["services"]}
         except Exception as exc:  # noqa: BLE001 - the checklist stands on its own
             view["as_it_is"] = {"ready": False, "error": (explain(exc) or str(exc))[:300]}
+        # A root that holds no service of its own (its only refusal is the missing manifest) while its folders do: the
+        # answer names the folders rather than offering a Dockerfile or a manifest for the root (live 2026-10-19).
+        empty_root = ("no dependency manifest", "has Node.js code but no package.json")
+        refusals = view["as_it_is"].get("refusals") or []
+        folders = [entry["path"] for entry in view["as_it_is"].get("services") or [] if entry.get("path")]
+        if folders and refusals and all(str(item.get("problem", "")).startswith(empty_root) for item in refusals):
+            view["as_it_is"]["folders"] = folders
+        else:
+            folders = []
         if result["ready"]:
             view["next_action"] = (f"Ready to deploy: onboard_application with {repository}" + (f" and path {path}" if path else "")
                                    + (". The platform can still draft the recommended " + ", ".join(writable) + " with propose_configuration." if writable else "."))
+        elif folders:
+            view["next_action"] = (f"The services live in folders ({', '.join(folders[:6])}" + (f" and {len(folders) - 6} more" if len(folders) > 6 else "")
+                                   + f"): check one with check_repository and its path, such as path {folders[0]}.")
         elif view["as_it_is"].get("ready"):
             view["next_action"] = (missing_message(result["checklist"]) + " Or deploy it as it is, adding nothing to the repository: onboard_application "
                                    "with as_is true (its contract is kept in the platform repository).")

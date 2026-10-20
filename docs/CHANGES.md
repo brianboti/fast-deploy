@@ -24,7 +24,45 @@ Checked on Docker: `node-bare` built this way has no critical or high finding wi
 `docs/VALIDATION.md` once this is on the machine. A Dockerfile of a repository's own on `node:<line>-slim` is still stopped
 the same way: the contract page names the fix.
 
-1.20.7 and 1.20.8 are open at the time of writing (#109, #110).
+1.20.7 and 1.20.8 are the docker command on the machine (#109) and a repository whose services live in folders (#110).
+
+Tests: 837 pass; ruff clean.
+
+
+# 1.20.8: a repository whose services live in folders
+
+Found on 2026-10-19 in the live exercise of Phase 18, by `check_repository` on the root of
+`brianboti/fast-deploy-node-trial`, which keeps eight Node.js services in folders and nothing at its root. The answer said
+the root "has Node.js code but no package.json", told the developer to add one there, listed a Python `requirements.txt`
+among the missing files, and offered to draft a Dockerfile and a contract for the root. The reader had found the eight
+folders, but nothing said so.
+
+1. **The reader names the folders.** At a root with no `package.json` whose folders hold services, the fix reads "the
+   service lives in node-bare, node-docker, node-localhost and 5 more: take that folder (path node-bare), or add a
+   package.json at the root", as it already did for Python.
+2. **The check says which folder to take.** When the root's only refusal is that it holds no service of its own,
+   `check_repository` names the folders and asks which one to check or deploy, instead of listing files for the root.
+   A root refused for something of its own (a committed secret) still shows that refusal.
+
+1.20.5 to 1.20.7 are the weekly pin refresh (#103, #108) and the docker command on the machine (#109).
+
+Tests: 837 pass; ruff clean.
+
+
+# 1.20.7: the docker command on the controller's machine
+
+Found on 2026-10-19 in the live exercise of Phase 18: importing `node-nolock` (a Node.js 22 service without a lockfile)
+stopped with "The dependencies could not be locked: Docker is not installed on this machine". The machine has Docker's
+daemon (Debian 13's `docker.io` 26.1.5, its socket active, the controller's user in the `docker` group) but no `docker`
+command: Debian 13 ships the command in `docker-cli`, which `docker.io` only recommends, and the startup script installs
+with `--no-install-recommends`. So every lock the platform makes on the machine failed, a Python service's (D27) as well
+as a Node.js one's (D42), since the controller moved there on 2026-10-18; no import had needed one until now.
+
+1. **The startup script installs `docker-cli`** beside `docker.io`. The script is the machine's metadata, which changes in
+   place: the next foundation apply updates it without replacing the machine, and the script installs the package at the
+   next boot. A running machine gets it at once with `sudo apt-get install -y --no-install-recommends docker-cli`.
+
+1.20.5 and 1.20.6 are the weekly pin refresh (#103, #108).
 
 Tests: 836 pass; ruff clean.
 
@@ -131,7 +169,6 @@ read the pins now. Cost: nothing on this public repository (about 11 runner minu
 cloud resource.
 
 Tests: 797 pass (19 new); ruff and zizmor clean.
-
 
 
 # 1.20.4: after a release, the machine and the re-pins by themselves
