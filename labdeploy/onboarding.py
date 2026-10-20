@@ -93,7 +93,8 @@ def contract_check(github, repository, folder=""):
         repository = repo["full_name"]
     branch = repo["default_branch"] or "main"
     if branch != "main":
-        raise Blocked(f"The default branch is {branch}; the platform releases only from main")
+        raise Blocked(f"The default branch is {branch}; the platform's own workflows release only from main. Deploy it as it is instead "
+                      "(onboard_application with as_is true): the platform then keeps the contract and reads the repository's default branch")
     everything = github.tree(repository, branch)
     tree = everything
     if folder:
@@ -275,7 +276,7 @@ class Onboarder:
         return None
 
     # ---- entry points
-    def start(self, principal, repository, app_id=None, auto_deploy=False, path=None, as_is=False):
+    def start(self, principal, repository, app_id=None, auto_deploy=False, path=None, as_is=False, until=None):
         if "*" not in principal.applications:
             raise ValueError("Onboarding needs an identity that may see every application: applications: ['*'] in the controller configuration")
         if not principal.can_deploy:
@@ -307,13 +308,15 @@ class Onboarder:
             measures = record.setdefault("measures", {})
             measures["interventions"] = measures.get("interventions", 0) + 1
             record["state"], record["error"] = record.pop("blocked_at", "validating"), None
-        return self.advance(record)
+        return self.advance(record, until)
 
-    def advance(self, record):
-        """Run every step that can finish now; stop at the first that waits, blocks or completes."""
+    def advance(self, record, until=None):
+        """Run every step that can finish now; stop at the first that waits, blocks or completes, or on reaching `until`: a
+        state left to the onboarding tick, which runs it within a minute (1.22.2: one call for several services returns
+        once each is read, and the lock compiles and contract pull requests follow in the background)."""
         for _ in range(len(STEPS)):
             state = record["state"]
-            if state not in ACTIVE:
+            if state not in ACTIVE or state == until:
                 break
             try:
                 getattr(self, "step_" + state)(record)
@@ -363,8 +366,8 @@ class Onboarder:
             read = view["read"]
         record["repository"] = view["repository"]
         record["steps"]["validating"] = {"as_is": True, "choices": read["choices"], "ignored": read["ignored"], "notes": read["notes"],
-                                         "refusals": read["refusals"], "head": view["head"], "repository_id": view["repository_id"],
-                                         "owner_id": view["owner_id"]}
+                                         "refusals": read["refusals"], "head": view["head"], "branch": view.get("branch") or "main",
+                                         "repository_id": view["repository_id"], "owner_id": view["owner_id"]}
         if read["refusals"] or read["spec"] is None:
             raise Blocked("It cannot be taken as it is: " + "; ".join(f"{item['file']} {item['problem']} (fix: {item['fix']})" for item in read["refusals"][:6]))
         record["service"] = read["spec"].name
@@ -449,7 +452,9 @@ class Onboarder:
                 if platform is None:
                     raise ValueError("Set platform.repository in the controller configuration before onboarding repositories")
                 layout = {"workflow": "deploy.yml", "environment": f"staging-{service}", "contract": "platform", "pipeline_repository": platform.repository}
-            entry = {"repository": record["repository"], "branch": "main", "service": service, "auto_deploy": record["auto_deploy"],
+            # A repository taken as it is is released from its own default branch (1.22.1); one with its own workflows from main.
+            branch = (record["steps"].get("validating") or {}).get("branch") or "main"
+            entry = {"repository": record["repository"], "branch": branch, "service": service, "auto_deploy": record["auto_deploy"],
                      "path": folder, **layout,
                      "target": {"project_id": project, "region": region, "service": service, "registry": service,
                                 "deploy_service_account": f"{service}-deploy@{project}.iam.gserviceaccount.com",

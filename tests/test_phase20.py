@@ -135,6 +135,45 @@ def test_aiohttp_runs_as_a_factory_an_object_or_the_main_file():
     assert client_only["spec"].build.entrypoint.startswith("uvicorn src.api.main:app")  # aiohttp the client never decides over the object
 
 
+def test_a_python_entry_file_that_reads_host_gets_every_interface():
+    """1.22.1, from the Phase 20 live exercise: the aiohttp rung (and every other `python FILE` rung) sets HOST when the file
+    reads it, as the Node.js rule does, because its development default (127.0.0.1) cannot be reached on Cloud Run."""
+    main = ("import os\nfrom aiohttp import web\n\ndef main():\n    app = web.Application()\n"
+            "    web.run_app(app, host=os.environ.get('HOST', '127.0.0.1'), port=int(os.environ.get('PORT', '8080')))\n")
+    result = read({"requirements.txt": "aiohttp\n", "main.py": main})
+    assert result["spec"].build.entrypoint == "python main.py" and result["spec"].env == {"HOST": "0.0.0.0"}  # noqa: S104
+    assert choice(result, "Host")["from"] == "main.py" and "development default" in choice(result, "Host")["value"]
+    silent = read({"requirements.txt": "aiohttp\n", "main.py": "from aiohttp import web\n\ndef main():\n    web.run_app(web.Application())\n"})
+    assert silent["spec"].build.entrypoint == "python main.py" and silent["spec"].env == {}  # nothing read, nothing set
+    gradio = read({"requirements.txt": "gradio\n", "app.py": "import os, gradio as gr\nhost = os.getenv('HOST')\n"})
+    assert gradio["spec"].env == {"GRADIO_SERVER_NAME": "0.0.0.0", "GRADIO_SERVER_PORT": "8080", "HOST": "0.0.0.0"}  # noqa: S104
+    kept = read({"requirements.txt": "aiohttp\n", "main.py": main, "platform.yaml": "name: svc\nenv:\n  HOST: '::'\n"})
+    assert kept["spec"].env == {"HOST": "::"}  # the contract's own value stays
+
+
+def test_a_repository_as_it_is_is_read_and_released_from_its_own_default_branch(tmp_path):
+    """1.22.1, found live: streamlit/streamlit-example and HackSoftware/Django-Styleguide-Example keep `master`, and the as-is
+    path refused both before the reader ran. The contract pins a commit of the default branch; its own-workflows checklist
+    still needs main and says so."""
+    c, brian, gh, _ = controller_with(tmp_path)
+    gh.repos["lab/old"] = {"files": {"main.py": FASTAPI, "requirements.txt": "fastapi==0.115.0\n"}, "default_branch": "master"}
+    asked = []
+    original = gh.branch_head
+    gh.branch_head = lambda repository, branch="main": (asked.append((repository, branch)), original(repository, branch))[1]
+    view = c.contracts.inspect("lab/old")
+    assert view["branch"] == "master" and ("lab/old", "master") in asked and view["read"]["spec"] is not None
+    check = c.check_repository(brian, "lab/old")
+    assert check["ready"] is False and "release only from main" in check["error"] and check["as_it_is"]["ready"]
+    assert "as_is true" in check["next_action"] and check["branch"] == "master"
+    first = c.onboard(brian, "lab/old", as_is=True)
+    assert first["state"] == "merging_contract" and first["steps"]["validating"]["branch"] == "master"
+    gh.merge_pull_request(PLATFORM_OF(c), first["steps"]["contract"]["pull_request"], "reviewed by a person")
+    assert c.advance_onboarding("old")["state"] == "planning"
+    app = c.config.applications["old"]
+    assert app.central and app.branch == "master"  # deploy_latest and the comparison with the live release follow master
+    assert c.config.applications["asis"].branch == "main" if "asis" in c.config.applications else True
+
+
 def test_an_asgi_framework_without_an_object_read_is_assumed_by_name_at_any_depth():
     paths = ["backend/open_webui/main.py", "backend/open_webui/__init__.py", "backend/requirements.txt", "backend/open_webui/retrieval/loaders/main.py", "backend", "backend/open_webui"]
     texts = {"backend/requirements.txt": "fastapi\naiohttp\nuvicorn\n", "backend/open_webui/retrieval/loaders/main.py": "import aiohttp\n", "backend/open_webui/__init__.py": ""}
@@ -332,13 +371,17 @@ def test_deploy_everything_opens_one_contract_per_service(tmp_path):
                                       "README.md": "two services\n"}, "default_branch": "main"}
     view = c.onboard_all(brian, "https://github.com/lab/mono")
     assert view["services"] == ["api", "web"] and [item["application"] for item in view["onboardings"]] == ["mono-api", "mono-web"]
-    assert all(item["state"] == "merging_contract" and item["as_is"] for item in view["onboardings"])
+    # 1.22.2: the call returns once each service is read; the lock compiles and the contract pull requests come from the tick.
+    assert all(item["state"] == "contract" and item["as_is"] for item in view["onboardings"]) and not gh.prs
+    assert "opens its contract pull request within a minute" in view["next_action"]
+    answer = chat.onboarding_all(view)
+    assert answer.startswith("**Onboarding 2 services of `lab/mono`, each as it is.**") and "`api` → `mono-api`: read as it is; its contract pull request opens within a minute" in answer
+    assert c.onboarding_tick() == {"mono-api": "merging_contract", "mono-web": "merging_contract"}
+    view = c.onboard_all(brian, "lab/mono")  # asking again shows the same two onboardings, now waiting for a person
+    assert all(item["state"] == "merging_contract" for item in view["onboardings"])
     numbers = {item["steps"]["contract"]["pull_request"] for item in view["onboardings"]}
     assert len(numbers) == 2 and {gh.prs[(PLATFORM_OF(c), n)]["branch"] for n in numbers} == {"lab-deploy/contract-mono-api", "lab-deploy/contract-mono-web"}
-    answer = chat.onboarding_all(view)
-    assert answer.startswith("**Onboarding 2 services of `lab/mono`, each as it is.**") and "`api` → `mono-api`: merging contract, contract" in answer
-    again = c.onboard_all(brian, "lab/mono")  # asking twice continues the same two onboardings
-    assert [item["application"] for item in again["onboardings"]] == ["mono-api", "mono-web"]
+    assert "`api` → `mono-api`: merging contract, contract" in chat.onboarding_all(view)
     gh.repos["lab/empty"] = {"files": {"README.md": "x\n"}, "default_branch": "main"}
     assert c.onboard_all(brian, "lab/empty")["onboardings"] == [] and "No service was found" in chat.onboarding_all(c.onboard_all(brian, "lab/empty"))
 

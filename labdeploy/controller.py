@@ -428,13 +428,16 @@ class Controller:
         with self._onboarding_lock:
             for path in found:
                 try:
-                    view["onboardings"].append(Onboarder(self).start(principal, seen["repository"], None, auto_deploy, path or None, as_is=True))
+                    # 1.22.2: each service is read now; its lock compiles and its contract pull request follow within a minute, from
+                    # the onboarding tick (live on 2026-10-20: four lock compiles in one call outlived the tool call that asked).
+                    view["onboardings"].append(Onboarder(self).start(principal, seen["repository"], None, auto_deploy, path or None, as_is=True, until="contract"))
                 except ValueError as exc:
                     view["onboardings"].append({"repository": seen["repository"], "path": path, "state": "refused", "error": str(exc)[:300]})
         states = [str(item.get("state")) for item in view["onboardings"]]
+        opening = ("; the controller compiles each one's lock and opens its contract pull request within a minute" if "contract" in states else "")
         view["next_action"] = (f"{len(found)} service{'s' if len(found) != 1 else ''} found ({', '.join(folder or 'the root' for folder in found[:6])}); "
-                               f"each is onboarded as it is on its own ({', '.join(sorted(set(states)))}). A person reviews and merges each contract pull "
-                               "request; get_onboarding_status with each application's name follows it.")
+                               f"each is onboarded as it is on its own ({', '.join(sorted(set(states)))}){opening}. A person reviews and merges each "
+                               "contract pull request; get_onboarding_status with each application's name follows it.")
         return view
 
     def import_contract(self, principal, repository, path=None, name=None):
@@ -474,19 +477,25 @@ class Controller:
             raise ValueError("Checking a repository that is not registered needs an identity that may see every application: applications: ['*']")
         repository, path = normalize_repository(repository), normalize_path(path)
         try:
-            result = contract_check(self.github, repository, path)
+            result, blocked = contract_check(self.github, repository, path), None
         except Blocked as exc:
-            return {"repository": repository, "path": path, "ready": False, "error": str(exc),
-                    "next_action": "Fix what the error names; nothing was created."}
-        view = {key: result[key] for key in ("repository", "path", "branch", "ready", "checklist", "recommended")}
-        writable = [entry["item"] for entry in result["checklist"] + result["recommended"] if entry["platform_writes"]]
-        view["platform_can_draft"] = writable
+            # 1.22.1: the checklist for the platform's own workflows is blocked (another default branch, a folder that is not
+            # there), but the repository may still be taken as it is, so the reader's answer below is given all the same.
+            result, blocked = None, str(exc)
+        if result is None:
+            view = {"repository": repository, "path": path, "branch": None, "ready": False, "checklist": [], "recommended": [], "error": blocked}
+            writable = []
+        else:
+            view = {key: result[key] for key in ("repository", "path", "branch", "ready", "checklist", "recommended")}
+            writable = [entry["item"] for entry in result["checklist"] + result["recommended"] if entry["platform_writes"]]
+            view["platform_can_draft"] = writable
         # As it is (docs/ROADMAP.md 13.5): what the reader would choose without changing the repository, and what it refuses.
         try:
             seen = self.contracts.inspect(repository, path)
             read = seen["read"]
             view["as_it_is"] = {"ready": not read["refusals"] and read["spec"] is not None, "service": read["service"], "choices": read["choices"],
                                 "refusals": read["refusals"], "ignored": read["ignored"], "notes": read["notes"], "services": seen["services"]}
+            view["branch"] = view["branch"] or seen.get("branch")
         except Exception as exc:  # noqa: BLE001 - the checklist stands on its own
             view["as_it_is"] = {"ready": False, "error": (explain(exc) or str(exc))[:300]}
         # A root that holds no service of its own (its only refusal is the missing manifest) while its folders do: the
@@ -498,15 +507,18 @@ class Controller:
             view["as_it_is"]["folders"] = folders
         else:
             folders = []
-        if result["ready"]:
+        if result is not None and result["ready"]:
             view["next_action"] = (f"Ready to deploy: onboard_application with {repository}" + (f" and path {path}" if path else "")
                                    + (". The platform can still draft the recommended " + ", ".join(writable) + " with propose_configuration." if writable else "."))
         elif folders:
             view["next_action"] = (f"The services live in folders ({', '.join(folders[:6])}" + (f" and {len(folders) - 6} more" if len(folders) > 6 else "")
                                    + f"): check one with check_repository and its path, such as path {folders[0]}.")
         elif view["as_it_is"].get("ready"):
-            view["next_action"] = (missing_message(result["checklist"]) + " Or deploy it as it is, adding nothing to the repository: onboard_application "
-                                   "with as_is true (its contract is kept in the platform repository).")
+            view["next_action"] = ((missing_message(result["checklist"]) if result is not None else blocked.rstrip(".") + ".")
+                                   + " Or deploy it as it is, adding nothing to the repository: onboard_application with as_is true (its contract is "
+                                   "kept in the platform repository).")
+        elif result is None:
+            view["next_action"] = "Fix what the error names; nothing was created."
         else:
             view["next_action"] = missing_message(result["checklist"])
         return view
