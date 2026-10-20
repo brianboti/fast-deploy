@@ -584,7 +584,7 @@ move: its contract's `node` (and its Dockerfile's `FROM node:X`) to the newer li
 the date, a plan or a promotion on the old line is refused with the reason (the pipeline's "Validate reviewed
 specification" refuses it too); what already serves keeps serving.
 
-The weekly pin refresh (next section) keeps the `node:<line>-slim` index digests, OSV-Scanner, the npm a Node 22 lock is
+The weekly pin refresh (next section) keeps the `node:<line>-trixie-slim` index digests, OSV-Scanner, the npm a Node 22 lock is
 made with (`LOCK_NPM` in `labdeploy/scaffold.py`; it goes when 22 does) and, since 1.20.6, `actions/setup-node` current:
 setup-node is pinned by commit in `templates/deploy-gcp.yml` and `templates/repo/ci-node.yml`, and the refresh writes it
 there and in `.github/workflows/deploy.yml` at once. After a template change by hand, regenerate
@@ -602,7 +602,7 @@ with its official source, the line of releases the platform follows, and every p
 |---|---|---|
 | TruffleHog, Trivy, OSV-Scanner, hadolint, pack and Cosign: version and SHA-256 | `templates/deploy-gcp.yml`; Cosign also `.github/workflows/promote.yml`, hadolint also `.github/workflows/ci.yml` | GitHub's release API and each project's checksum list |
 | The buildpacks builders and run images, by digest | `templates/deploy-gcp.yml` | gcr.io's list of images, with their upload times |
-| The `python:X.Y-slim` and `node:<line>-slim` index digests, with the release and the Debian each carries | `labdeploy/scaffold.py`; 3.12 also the platform's and the demo app's Dockerfiles | Docker Hub's tag API |
+| The `python:X.Y-slim` and `node:<line>-trixie-slim` index digests, with the release and the Debian each carries | `labdeploy/scaffold.py`; 3.12 also the platform's and the demo app's Dockerfiles | Docker Hub's tag API |
 | uv and its wheel hashes; the npm for Node 22 locks and its integrity | `labdeploy/scaffold.py` | PyPI's index API; the npm registry |
 | OpenTofu: version and SHA-256 | `.github/workflows/ci.yml` | GitHub's release API and OpenTofu's checksum list |
 | Caddy (SHA-512) and Litestream (SHA-256) | `infra/gcp/modules/project/controller-startup.sh` | GitHub's release API and each project's checksum list |
