@@ -1,3 +1,23 @@
+# 1.22.3: certifi 2026.10.19, for compromised root certificates
+
+Found on 2026-10-20 in the live exercise of Phase 20: the platform's own dependency audit began failing every pull request
+at 21:42 UTC, two hours after GitHub published GHSA-6q48-6c7w-9gw2 (critical, 2026-10-20 19:35 UTC): certifi before
+2026.10.19 bundles emSign root certificates whose intermediate keys are compromised, so a client trusting that bundle can
+be shown a forged certificate. The controller uses certifi's bundle for every HTTPS call it makes, to GitHub and to
+Google. The trial's infrastructure pull requests and main's own checks stopped on it too.
+
+1. **certifi 2026.10.19** in `requirements.lock`, `requirements-dev.lock` and `audit.lock`, made with the commands in their
+   headers and `--upgrade-package certifi`, so nothing else moves; the hashes are PyPI's for the wheel and the source
+   distribution, published 2026-10-20 02:24 UTC. A security fix does not wait out the seven days the weekly pin refresh
+   gives a new release.
+
+The application locks the platform keeps that still name certifi 2026.7.22 (`apps/llm-debate-backend/`, and the test lock
+of `apps/lab-demo-two/`) are not changed here: their next release's audit names it, and locking them again is a change of
+its own.
+
+Tests: unchanged; `pip-audit` finds no known vulnerability in the three locks.
+
+
 # 1.22.2: "deploy everything" answers at once
 
 Found on 2026-10-20 in the live exercise of Phase 20. `onboard_application` with `all=true` on a repository holding four
