@@ -166,7 +166,7 @@ assumes" and section 1b):
   command.
 
 *"Analyze REPO"* and *"Draft the files for REPO"* work for a Node.js repository that follows the contract too: the draft
-holds a Dockerfile on `node:<line>-slim`, a `node --test` health check, CI on `actions/setup-node` and Dependabot for npm.
+holds a Dockerfile on `node:<line>-trixie-slim`, a `node --test` health check, CI on `actions/setup-node` and Dependabot for npm.
 
 ## Pages for people
 

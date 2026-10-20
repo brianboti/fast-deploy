@@ -17,9 +17,61 @@ anything else had merged.
 Promotions verify a staging image against the contract commit of the staging plan that released it, so they read the
 same. Not exercised live yet: it needs this on the machine.
 
-1.20.9 and 1.20.10 are open at the time of writing (#117, #120).
+Built while 1.20.9 and 1.20.10 were open (#117, #120); merged on top of them.
 
 Tests: 838 pass; ruff clean.
+
+
+# 1.20.10: no false secret in every Node.js release
+
+Found on 2026-10-19 in the live exercise of Phase 18: `node-docker`'s release said "no working keys found (1 possible
+secret to check)", and the service's own files held none (the checkout's scan found nothing). TruffleHog reads an image
+layer by layer, and the official node images carry Yarn in `/opt/yarn-v1.22.22/`, whose README matches a pattern; the
+platform's build deletes Yarn in a later layer, but the base layer still holds the file. The secret scan counted only
+Python's installed packages and the system's folders as someone else's code, so every Node.js release would have asked
+the operator to check Yarn's README, and a pattern in any installed npm package would have read as the service's own.
+
+1. **`node_modules/` and the node image's `/opt/yarn-…` count as installed code**, like `site-packages/`: an unconfirmed
+   pattern there is counted, not listed. A working key is still reported wherever it is, and stops a build of code nobody
+   has reviewed.
+
+Checked with TruffleHog 3.97.4 on `node:24-trixie-slim` and on node-docker's image: the only patterns are in Debian's
+package database (`/var/lib/dpkg/`) and Yarn's README, none verified.
+
+Built while 1.20.8 and 1.20.9 were open (#110, #117); merged on top of them.
+
+Tests: 837 pass; ruff clean.
+
+
+# 1.20.9: the platform's Node.js image passes its own gate
+
+Found on 2026-10-19 in the live exercise of Phase 18: the first releases of `node-bare`, `node-docker`, `node-onnx` and
+`node-nolock` (code nobody has reviewed, from `brianboti/fast-deploy-node-trial`) passed their tests and the dependency
+audit, then stopped at the image's scan: "13 critical or high findings with a fix available, in code nobody has
+reviewed". None of them was in the services' code. Artifact Analysis and Trivy agree on the image the platform pins:
+
+- `node:24-slim` and `node:22-slim` are Debian 12, whose `perl` (5.36.0-7+deb12u3) had five critical and five high
+  findings fixed in deb12u4, which the official image had not taken; the pinned digest was that day's newest.
+- npm's own bundled libraries (`brace-expansion` 5.0.9, `undici` 6.28.0) carried three high findings with fixes.
+
+So no Node.js service nobody had reviewed could be released on the platform's image. The Python images are Debian 13 and
+had no such finding.
+
+1. **Debian 13 for every Node.js line.** The platform's image, its lock containers and the drafted Dockerfile build on
+   `node:<line>-trixie-slim` by index digest (22.23.3 and 24.22.0, the same releases as before; `node:26-slim` was already
+   Debian 13, its digest unchanged). The weekly pin refresh follows the same tags.
+2. **No package manager in the image.** After `npm ci` (and `npm rebuild` for `build.scripts`), npm, npx, Corepack and
+   Yarn are removed: node itself starts the service. A service that runs `npm` while it serves fails there; the contract
+   page says so and how to start a child process with `process.execPath` instead.
+
+Checked on Docker: `node-bare` built this way has no critical or high finding with a fix (Trivy 0.74.0), answers
+`/health`, stops cleanly on SIGTERM and is 84 MB; both Node.js Dockerfiles pass hadolint 2.15.1. The live releases are in
+`docs/VALIDATION.md` once this is on the machine. A Dockerfile of a repository's own on `node:<line>-slim` is still stopped
+the same way: the contract page names the fix.
+
+1.20.7 and 1.20.8 are the docker command on the machine (#109) and a repository whose services live in folders (#110).
+
+Tests: 837 pass; ruff clean.
 
 
 # 1.20.8: a repository whose services live in folders
