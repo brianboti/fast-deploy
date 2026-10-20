@@ -3,7 +3,8 @@
 # run for real. Without --yes it only shows what it would delete. The pipeline never destroys anything; this is the
 # operator's deliberate deletion, run on the laptop as the project owner.
 #   1. the Cloud Run service (and its migration job, when the contract declares one)
-#   2. the recovery bucket, emptied first, and the image registry (both guarded against Terraform's destroy on purpose)
+#   2. the recovery bucket with every version of its objects (it is versioned), and the image registry (both guarded
+#      against Terraform's destroy on purpose); a deletion that fails stops the script here, before anything leaves the state
 #   3. `terraform destroy` of the application's root, after those three are taken out of its state; Terraform drops the
 #      identities, trust, alerts and dashboard it still owns, and schedules the provenance key's versions for destruction
 #   4. the GitHub environment of a contract the platform keeps (staging-<service>, on the platform repository)
@@ -48,7 +49,7 @@ BUCKET="$PROJECT-$SERVICE-recovery"
 cat <<PLAN
 Retiring $SERVICE in $PROJECT ($REGION); the root is $ROOT.
   1. Cloud Run service $SERVICE$([[ $MIGRATE == 1 ]] && echo " and its job $SERVICE-migrate")
-  2. recovery bucket gs://$BUCKET (emptied first) and the image registry $SERVICE
+  2. recovery bucket gs://$BUCKET (every object version) and the image registry $SERVICE
   3. terraform destroy of $ROOT (state apps/$SERVICE/staging in $PROJECT-tfstate), after the three above are removed from its state
 $([[ -n "$ENVIRONMENT" ]] && echo "  4. GitHub environment $ENVIRONMENT on $PLATFORM_REPO (the contract is kept by the platform)")
 PLAN
@@ -56,15 +57,35 @@ if [[ $YES != 1 ]]; then
   echo "Dry run: nothing was deleted. Run again with --yes to do it."
   exit 0
 fi
+# Each deletion runs only when the resource is still there, and a deletion that fails stops the script (set -e): nothing
+# leaves Terraform's state until it is gone from the cloud, so no orphan is left behind to bill.
 echo "--- 1. the service"
-gcloud run services delete "$SERVICE" --region "$REGION" --project "$PROJECT" --quiet 2>&1 | tail -1 || true
+if gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT" --format="value(name)" > /dev/null 2>&1; then
+  gcloud run services delete "$SERVICE" --region "$REGION" --project "$PROJECT" --quiet
+else
+  echo "the service $SERVICE is already gone"
+fi
 if [[ $MIGRATE == 1 ]]; then
-  gcloud run jobs delete "$SERVICE-migrate" --region "$REGION" --project "$PROJECT" --quiet 2>&1 | tail -1 || true
+  if gcloud run jobs describe "$SERVICE-migrate" --region "$REGION" --project "$PROJECT" --format="value(name)" > /dev/null 2>&1; then
+    gcloud run jobs delete "$SERVICE-migrate" --region "$REGION" --project "$PROJECT" --quiet
+  else
+    echo "the job $SERVICE-migrate is already gone"
+  fi
 fi
 echo "--- 2. the recovery bucket and the registry"
-gcloud storage rm -r "gs://$BUCKET/**" --project "$PROJECT" --quiet 2>/dev/null || true
-gcloud storage buckets delete "gs://$BUCKET" --project "$PROJECT" --quiet 2>&1 | tail -1 || true
-gcloud artifacts repositories delete "$SERVICE" --location "$REGION" --project "$PROJECT" --quiet 2>&1 | tail -1 || true
+if gcloud storage buckets describe "gs://$BUCKET" --project "$PROJECT" --format="value(name)" > /dev/null 2>&1; then
+  # The bucket keeps versions (releases/<service>.json has one per release): --all-versions removes them all, then the bucket.
+  gcloud storage rm --recursive --all-versions "gs://$BUCKET" --project "$PROJECT"
+  echo "deleted gs://$BUCKET with every object version"
+else
+  echo "the bucket gs://$BUCKET is already gone"
+fi
+if gcloud artifacts repositories describe "$SERVICE" --location "$REGION" --project "$PROJECT" --format="value(name)" > /dev/null 2>&1; then
+  gcloud artifacts repositories delete "$SERVICE" --location "$REGION" --project "$PROJECT" --quiet
+  echo "deleted the registry $SERVICE and its images"
+else
+  echo "the registry $SERVICE is already gone"
+fi
 echo "--- 3. terraform destroy"
 TOKEN=$(gcloud auth print-access-token)
 tf() { docker run --rm -e GOOGLE_OAUTH_ACCESS_TOKEN="$TOKEN" -e USER_PROJECT_OVERRIDE=true -e GOOGLE_BILLING_PROJECT="$PROJECT" -v "$PWD/infra/gcp":/infra -w "/infra/apps/$SERVICE" hashicorp/terraform:1.13.5 "$@"; }

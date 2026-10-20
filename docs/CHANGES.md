@@ -7,7 +7,9 @@ against Terraform's destroy on purpose, and the steps were typed by hand (the tw
 were one-off scripts).
 
 1. **`scripts/decommission.sh SERVICE [--yes]`** shows, then does, that order: the Cloud Run service and its migration
-   job, the recovery bucket (emptied first) and the image registry, `terraform destroy` of the application's root in the
+   job, the recovery bucket with every version of its objects (it is versioned, one `releases/<service>.json` per
+   release) and the image registry, each deleted only while it is still there and each stopping the script when the
+   deletion fails, so nothing leaves the state while it still exists; `terraform destroy` of the application's root in the
    official container with the pipeline's state after those resources are taken out of it, and the GitHub environment of
    a contract the platform keeps. It refuses a root that declares data (a database, buckets, topics) and points at the
    runbook's deliberate retirement. What it cannot do it prints: the pull request that removes the root and the kept

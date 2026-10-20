@@ -730,7 +730,8 @@ Once a month, or after changing channels:
 
 `scripts/decommission.sh SERVICE` shows what retiring one application deletes, and `--yes` does it, in the order
 `lab-deploy decommission` prints (since 1.22.4; it ran for the five test services of Phase 20's live exercise): the Cloud
-Run service and its migration job, the recovery bucket (emptied first) and the image registry, then `terraform destroy`
+Run service and its migration job, the recovery bucket with every version of its objects (it is versioned) and the image
+registry, each only when it is still there and each stopping the script when it fails, then `terraform destroy`
 of `infra/gcp/apps/SERVICE` in the official container with the pipeline's state, after those resources are taken out of
 the state (the service's deletion protection and the bucket's `prevent_destroy` would refuse the destroy otherwise), then
 the GitHub environment `staging-SERVICE` of a contract the platform keeps. It refuses an application whose root declares
