@@ -1,0 +1,13 @@
+# Imported by Fast Deploy from brianboti/fast-deploy-phase20-trial (django-static) at 014840da4074 on 2026-10-20, read as it is: the pull request that added
+# this file lists every choice and where it came from. Merging is the review (docs/ROADMAP.md D32); a release moves source.commit.
+source:
+  repository: brianboti/fast-deploy-phase20-trial
+  path: django-static
+  commit: 014840da4074fe64e55ddeed7562f302fbed9615
+name: django-static
+concurrency: 8
+tests: none
+python: '3.11'
+build:
+  recipe: platform
+  entrypoint: gunicorn --bind 0.0.0.0:8080 --workers 1 --threads 8 --timeout 0 trial.wsgi:application
