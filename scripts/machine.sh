@@ -16,6 +16,8 @@
 #   scripts/machine.sh stop              hold the controller: stopped, and not started again by a reboot (before a laptop
 #                                        takes over)
 #   scripts/machine.sh start             release the hold and start it
+#   scripts/machine.sh unregister APP    the controller forgets an onboarded application (after scripts/decommission.sh);
+#                                        its plans and audit events stay as history
 #   scripts/machine.sh ssh               a shell on the machine
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -74,6 +76,10 @@ case "$COMMAND" in
     iap 'sudo touch /var/lib/fast-deploy/held && sudo systemctl stop fast-deploy && echo "The controller is held: stopped, and no reboot starts it."' ;;
   start)
     iap 'sudo rm -f /var/lib/fast-deploy/held && sudo systemctl start fast-deploy && sleep 3 && systemctl is-active fast-deploy' ;;
+  unregister)
+    APP=${2:?usage: scripts/machine.sh unregister APP}
+    [[ "$APP" =~ ^[a-z][a-z0-9-]{0,40}$ ]] || { echo "APP is the application's name as list_applications shows it"; exit 1; }
+    as_controller "unregister $APP" ;;
   ssh)
     gcloud compute ssh "$NAME" --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap ;;
   *)
