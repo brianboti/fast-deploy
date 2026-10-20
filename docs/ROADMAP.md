@@ -5,6 +5,7 @@ Every item below was a gap found in those reviews when this was written; the sta
 Phases 9 to 12 were added on 2026-10-14 from the research review `docs/RESEARCH-2026-10-14.md`; their decisions are D21 to D30.
 Phases 13 to 17 were added on 2026-10-16 from the research review `docs/RESEARCH-2026-10-16.md` (a repository as it is; production level); their decisions are D31 to D40.
 Phases 18 and 19 were added on 2026-10-19 from the research review `docs/RESEARCH-2026-10-19.md` (Node.js web services; what a data-bearing application needs); their decisions are D41 to D47.
+Phases 20 to 22 were added on 2026-10-20 from the research review `docs/RESEARCH-2026-10-20.md` (any Python or Node.js web service, as it is); their decisions are D48 to D56.
 
 Order of phases is by value per effort with cost first, then control, then scope, then the always-on move.
 Each phase ships as one platform version with tests, lint, `docs/CHANGES.md`, and a live staging exercise.
@@ -575,9 +576,100 @@ the operator, before any root declares a model; then by the pipeline.
 Cost effect: none at idle; a mounted bucket costs storage pennies; model calls are billed per token to the project and sit
 inside its budget and cap.
 
-## Later, unscheduled (research item 13 of 2026-10-14; reviews of 2026-10-16 and 2026-10-19)
+## Decisions the operator makes before Phases 20 to 22
 
-`cache: valkey` behind operator approval with its floor in every plan (two days plus a trial; Memorystore never scales to zero); `gpu: l4` with one instance, zonal redundancy off, weights on a read-only bucket volume and the cap able to stop it (three days plus a trial; instance-based billing); after Phase 18: pnpm, Yarn and Bun lockfiles through OSV-Scanner and the matching install (one day); a build step (`scripts.build`) with development dependencies in a build stage, pruned afterwards, for TypeScript and framework projects (one day); workspaces, one service per package with the root lockfile (one day); Node's permission model as an opt-in, `--permission-audit` first (half a day; it restricts no network before Node 25); a filtered internet egress through Cloud NAT and Cloud NGFW FQDN rules, if a backup model provider ever justifies about $5 a month before traffic and a test (one day); a container-only runtime for a third language (two days); Firebase Hosting for a public front-end only if the lab ever allows public exposure; Cloud Deploy pipelines with approvals and automated canaries, if the runner's split release of Phase 16 ever proves too little (the first pipeline is free, each further one $5 a month); SLSA Build Level 3 by isolating the signing job in the central pipeline; OpenTelemetry when an application needs traces beyond Cloud Run's own.
+Planned on 2026-10-20 from the research review `docs/RESEARCH-2026-10-20.md` (its section 7 ranks the items), asked for
+by the operator: the platform must deploy any Python or Node.js web service as it is, without a change to its code or
+repository, and must not read as a thing customised for one application. The review measured the platform on 33 public
+repositories (its section 4): the reader takes 3 as they are and refuses 30, two thirds of the refusals being the
+platform's own choices rather than Cloud Run's needs; with these three phases the same sample reads as about 20 of 33,
+and each of the 13 left needs one answer from a person (a folder, a command, a committed environment file to rotate, a
+dead base image in the repository's own Dockerfile). What stays human whatever the decisions: the merge of the
+contract as the review, secret values, the folder when a root holds several services, the command when the files do not
+say it, and the rule that nothing is public.
+
+| # | Decision | Needed by | Default if nothing is said |
+|---|---|---|---|
+| D48 | A version file (`.nvmrc`, `.python-version`, `engines`, `requires-python`) naming a line at end of life, for an image the platform builds | Phase 20 | The lowest supported line, with a note in the contract and the pull request; a Dockerfile's own `FROM` stays the developer's and is refused as today |
+| D49 | A start the reader cannot rewrite into `node <file>`: a chain (`a && b`), `npm start` with no script, a shell | Phase 22 | Run as written under the init of the platform's image, with a note; `nodemon`, `node-dev`, `pm2` and `forever` are rewritten to `node <file>` (Phase 20); `concurrently` and `npm-run-all` stay refused |
+| D50 | A Python service with no application object the reader knows | Phase 20 | The framework or server among the dependencies decides the command (Google's and Railpack's rule): `streamlit run`, `python main.py` with Gradio's variables, `uvicorn main:app`, `gunicorn main:app`, `python -m aiohttp.web`, with the entry file from the frameworks' own discovery lists; as the last rung `python <main file>` for the first of `main.py`, `app.py`, `server.py`, `run.py`, with `PORT` and `HOST` set and the note that the first revision's log decides; `build.entrypoint` overrides all of it |
+| D51 | A service that binds `127.0.0.1` or `localhost` and reads no variable for it | Phase 22 | A proxy sidecar (Nginx, as Google documents it) on the ingress port forwarding to the app's port on loopback, drafted into the contract as `proxy: true` with its cost note; off for a service that binds every interface; the developer's one line stays the better fix and the contract says so |
+| D52 | A Dockerfile of code nobody reviewed whose final image runs as root (9 of 33 in the survey, Google's own samples among them) | Phase 22 | The platform adds a wrapper stage (`FROM` the built image, `USER 65532`) when the contract says `build.user: 65532`, which the reader drafts for `trust: unknown`; a reviewer removes it to accept root; a service that writes to a root-owned path fails its first revision with `EACCES`, and the status names the fix |
+| D53 | Install scripts for a Node.js service | Phase 21 | Still none unless listed; the reader drafts `build.scripts` from the platform's table of packages whose script is needed on Cloud Run, each at its locked version, and leaves out those shipping their binaries; the merge approves the list; name-only and `--all` stay refused |
+| D54 | Tests of a repository taken as it is that cannot run on the platform (a browser, a database, a seed, Docker) | Phase 22 | `tests: report`: run, counted, never a stop; drafted when `scripts.test` or the pytest configuration names Playwright, Cypress, Selenium, `db:seed`, `docker`, `testcontainers` or a `DATABASE_URL`; `required` otherwise, as today |
+| D55 | A front-end site with no server of its own | Phase 22 | Built with its `build` script and served from the platform's static image (Caddy, pinned by digest, no package manager) behind IAP with `exposure: lab-members`; `public` stays refused; a site whose build needs a secret is refused with the name |
+| D56 | A repository root that holds several services | Phase 20 | `check_repository` names them (1.20.8); "deploy everything in REPO" (`onboard_application(url, all=true)`) opens one contract pull request per service, named after its folder; a root with one service in a folder takes that folder without asking |
+
+## Phase 20: read more, refuse less (about four days) → version 1.22.0
+
+Status: planned on 2026-10-20 (research review sections 4, 6.1, 6.4 and 7.1). The cheapest and largest change: the
+reader's bugs the survey found and the breadth the source builders have, for both languages. Every item changes the
+reader and the drafts only; the pipeline, the gates and the contract's shape are unchanged, and nothing is written into
+an application repository.
+
+| Item | Change | Where |
+|---|---|---|
+| 20.1 | The reader's bugs: `.env.<name>.example` is an example, not a secret; a Django project is one with `manage.py` or `django` among its dependencies, never a `settings.py` that mentions the word; `-r` includes and a `requirements/` folder are followed; `main.py`, `app.py` and the frameworks' discovery names are ranked by name at any depth before shallower files; only the entry file and its imports decide the host; a notebook is a note, never the refusal; a root that holds several services names them in every refusal | labdeploy/reader.py, labdeploy/scaffold.py, tests/ |
+| 20.2 | Python entries (D50): the dependency that names the framework decides the command and the environment for Streamlit, Gradio, Dash, Panel, Chainlit, Shiny, NiceGUI, Reflex, aiohttp, Sanic, Tornado and Django's ASGI, with the frameworks' own entry-file lists; `python <main file>` as the last rung; several candidates ranked by entry file as the frameworks rank them, refused only on a tie | labdeploy/reader.py, labdeploy/scaffold.py, docs/DEVELOPER-CONTRACT.md |
+| 20.3 | Python manifests: `setup.py` and `setup.cfg` compiled with uv; a Poetry project or a Pipfile without a lock locked by the platform in the lock container as `uv.lock` is exported today; `pdm.lock` and `pylock.toml` read; `apt.txt`, `Aptfile` and `packages.txt` installed in the platform's Dockerfile; a build stage with a compiler when the lock holds a source distribution; Django's `collectstatic` at build and `migrate` offered as `needs.migrate` in the review | labdeploy/reader.py, labdeploy/scaffold.py, templates/repo/Dockerfile |
+| 20.4 | Node.js: a literal port becomes `port: N` (`--port` sets the container port and `PORT` alike); `nodemon`, `node-dev`, `pm2` and `forever` rewritten to `node <file>`; `main` falls through `app.js`, `src/index.js`, `server/index.mjs` and the rest of the entry list; a stale lockfile locked again by the platform; the lockfile limit raised to 5 MB; `HOST` and `HOSTNAME` set to `0.0.0.0` for the frameworks that read them | labdeploy/reader.py, labdeploy/node.py, labdeploy/release.py |
+| 20.5 | Dead lines in version files (D48) and everything in one go (D56): `onboard_application(url, all=true)` opens one contract per service a root holds | labdeploy/reader.py, labdeploy/onboarding.py, labdeploy/server.py |
+| 20.6 | The survey as a test: the 33 repositories' trees and the files the reader reads, recorded as fixtures, with the expected contract or refusal for each, so a change to the reader shows its effect on the sample | tests/fixtures/survey/, tests/test_survey.py |
+| 20.7 | Documents: the contract page's "what the platform assumes" tables for the new rungs; CLAUDE-CHAT's "Deploy it as it is"; the skill | docs/, skills/ |
+
+Live exercise: a Streamlit app, a Gradio app and an aiohttp app started with `python main.py`, each deployed as it is from
+a public repository; a Django project with `requirements/base.txt`, `collectstatic` and `migrate`; a Node.js service on a
+literal port; a root with three services onboarded with one sentence.
+Requires regeneration of app workflows: no. Terraform apply: no.
+Cost effect: none; a wrong guess costs one failed build and its scan (about $0.26), which the gates make safe.
+
+## Phase 21: Node.js builds and managers (about four days) → version 1.23.0
+
+Status: planned on 2026-10-20 (research review sections 4, 6.3 and 7.2). The three items the review of 2026-10-19 ranked
+7 to 9, now first because the survey shows them in 8 of 15 Node.js repositories. Nothing in Phases 13 to 16 changes: the
+audit, the scans, containment and the bake already handle whatever the build stage produces.
+
+| Item | Change | Where |
+|---|---|---|
+| 21.1 | pnpm, Yarn and Bun lockfiles: installed by their own manager (installed by version and checksum, not Corepack, which Node 25 and later no longer ship), frozen (`--frozen-lockfile`, `--immutable`, `bun ci`), scripts off (`allowBuilds`, `enableScripts: false`, `trustedDependencies: []`), every entry checked against the registry as npm's is; OSV-Scanner reads all three | labdeploy/node.py, labdeploy/reader.py, templates/deploy-gcp.yml, .github/workflows/deploy.yml, templates/repo/Dockerfile.node |
+| 21.2 | A build stage: development dependencies installed, the `build` script (or the framework's command) run, the output copied into the runtime image without them; the frameworks' outputs and starts built in (Next.js standalone `server.js` with `HOSTNAME=0.0.0.0`, NestJS `dist/main.js`, React Router and Remix `build/server`, SvelteKit `build`, Nuxt `.output/server/index.mjs`, Astro `dist/server/entry.mjs`, AdonisJS `build/bin/server.js`); `NODE_ENV=production`; a build that needs a secret (Strapi, Payload) refused with the name | labdeploy/scaffold.py, labdeploy/node.py, templates/repo/Dockerfile.node, labdeploy/dockerpolicy.py |
+| 21.3 | TypeScript: a `.ts` entry runs under type stripping when `tsconfig.json` says `erasableSyntaxOnly`, is built with `tsc` in the build stage otherwise; `tsx` and `ts-node` starts rewritten to the built file | labdeploy/node.py, labdeploy/scaffold.py |
+| 21.4 | Workspaces: one service per package with the root lockfile (`npm --workspace`, `pnpm deploy --filter`, `yarn workspaces focus --production`, `turbo prune --docker` when `turbo.json` exists); `workspace:` dependencies resolved from the repository | labdeploy/reader.py, labdeploy/node.py, templates/ |
+| 21.5 | Install scripts (D53): the platform's table of packages whose script is needed on Cloud Run, drafted into `build.scripts` at the locked version for the merge to approve | labdeploy/node.py, labdeploy/reader.py |
+| 21.6 | Documents: the contract page's section 1b for the three managers, the build stage and workspaces; the roadmap's "later" list trimmed | docs/DEVELOPER-CONTRACT.md, docs/ROADMAP.md, skills/ |
+
+Live exercise: a NestJS starter, a Next.js app on pnpm, a SvelteKit app in a pnpm workspace and an Express service on
+Yarn, each deployed as it is; a package with a needed install script (`sharp` below 0.33) drafted, approved and loaded.
+Requires regeneration of app workflows: yes (the templates change; Python applications see no difference). Terraform
+apply: no.
+Cost effect: none at idle; a build stage adds a minute or two of free runner time on a public repository.
+
+## Phase 22: run it, then say what to fix (about three days) → version 1.24.0
+
+Status: planned on 2026-10-20 (research review sections 5 and 7.3). What the source builders do with nothing: try the
+convention, and when the first revision fails, say exactly why. The platform reads the candidate's own logs into the
+release status already, so it can do the second half better than any of them.
+
+| Item | Change | Where |
+|---|---|---|
+| 22.1 | A proxy sidecar (D51): Nginx, pinned by digest, as the ingress container forwarding to the app's port on loopback, drafted as `proxy: true` when the reader sees a loopback bind it cannot override by a variable; its allocation shown in the plan's cost note | labdeploy/release.py, labdeploy/models.py, labdeploy/cost.py, labdeploy/reader.py |
+| 22.2 | An init in the platform's images (tini, by version and checksum), so a chained start script (D49) runs and still gets `SIGTERM`; the Dockerfile policy's note for shell-form commands names it | templates/repo/Dockerfile, templates/repo/Dockerfile.node, labdeploy/dockerpolicy.py |
+| 22.3 | The root user (D52): a wrapper stage over a repository's own image when the contract says `build.user`, built with `--build-context` from the image just built; drafted for `trust: unknown`; the `EACCES` diagnosis in the status | templates/deploy-gcp.yml, .github/workflows/deploy.yml, labdeploy/scaffold.py, labdeploy/status.py |
+| 22.4 | Static sites (D55): the platform's static image (Caddy) serving the `build` script's output behind IAP; `runtime: static` in the contract | labdeploy/models.py, labdeploy/reader.py, templates/repo/Dockerfile.static |
+| 22.5 | `tests: report` (D54), and the status that says which suite was skipped as a stop | labdeploy/models.py, labdeploy/reader.py, templates/deploy-gcp.yml, labdeploy/status.py |
+| 22.6 | The diagnosis: Google's documented failure messages ("failed to start and then listen on the port", "memory limit exceeded", the probe failures, gunicorn's worker timeout, `EACCES`) mapped to the one line the developer changes, and to the contract key the operator changes when it is the platform's to fix (`port`, `env.HOST`, `resources.memory_mib`, `proxy`, `build.user`); the chat answer carries it as the next action | labdeploy/status.py, labdeploy/chat.py, docs/CLAUDE-CHAT.md |
+
+Live exercise: a Fastify service without a host, served through the sidecar; a service started by a chain under the init,
+stopped cleanly on a release; Google's own Cloud Run Python sample deployed as it is with the wrapper user; a Vite site
+behind IAP; a suite that needs Playwright reported, not stopping the release; a candidate that listens on the wrong port
+diagnosed with the contract key to change.
+Requires regeneration of app workflows: yes (22.3, 22.5). Terraform apply: no.
+Cost effect: none at idle; the sidecar's memory and CPU are billed as the app's, only while requests are served, and the
+exercise records the figure.
+
+## Later, unscheduled (research item 13 of 2026-10-14; reviews of 2026-10-16, 2026-10-19 and 2026-10-20)
+
+`cache: valkey` behind operator approval with its floor in every plan (two days plus a trial; Memorystore never scales to zero); `gpu: l4` with one instance, zonal redundancy off, weights on a read-only bucket volume and the cap able to stop it (three days plus a trial; instance-based billing); after Phase 18, now Phase 21 (planned 2026-10-20): pnpm, Yarn and Bun lockfiles, a build step and workspaces; Node's permission model as an opt-in, `--permission-audit` first (half a day; it restricts no network before Node 25); a filtered internet egress through Cloud NAT and Cloud NGFW FQDN rules, if a backup model provider ever justifies about $5 a month before traffic and a test (one day); a container-only runtime for a third language (two days); Firebase Hosting for a public front-end only if the lab ever allows public exposure; Cloud Deploy pipelines with approvals and automated canaries, if the runner's split release of Phase 16 ever proves too little (the first pipeline is free, each further one $5 a month); SLSA Build Level 3 by isolating the signing job in the central pipeline; OpenTelemetry when an application needs traces beyond Cloud Run's own.
 
 Not planned, because the evidence is against it for this lab: a second cloud or a cloud-agnostic layer; Score, Radius, the Open Application Model, Dapr, Crossplane or TOSCA; Compose as a deployment unit; multi-architecture image builds; worker pools or Memorystore by default; Kubernetes; model-written Terraform; autonomous remediation; forks or mirrors of application repositories; an LLM that sets up environments without a person's review; Cloud Run domain mapping or the preview custom URLs for production; statistical canary analysis; multi-region failover; Cloud SQL Enterprise Plus; Cloud Armor Enterprise; an always-on instance-based controller or application; chaos experiments in production; image debloating; Cloud Run sandboxes for the application itself; and, from the review of 2026-10-19: generating a lockfile silently at build time or installing without one; running install scripts, or honouring name-only script approvals; relying on the bundled npm's script policy (it only warns on every Node line today); Alpine images for an application with native addons; SQLite on a bucket mount; Secure Web Proxy or Cloud NAT for one backup provider; public exposure for Microsoft-account users; Google's buildpacks for unreviewed Node code; `npm audit` as the gate. SBOMs and Binary Authorization, deferred on 2026-10-14, are now Phase 14.
 
@@ -605,5 +697,8 @@ Not planned, because the evidence is against it for this lab: a second cloud or 
 | 17 | about four days, plus the institution's steps | no | the organization and the production foundation once |
 | 18 | about six days | yes | no |
 | 19 | about two days, plus the trials | no | the foundation once per project, then by the pipeline |
+| 20 | about four days | no | no |
+| 21 | about four days | yes | no |
+| 22 | about three days | yes | no |
 
-About nine and a half days of work for Phases 0 to 5, plus the live exercises, which take an hour or two per phase. Phase 6 adds about eleven days and a trial per resource type. Phases 9 to 12 add about fifteen and a half days, planned on 2026-10-14 from `docs/RESEARCH-2026-10-14.md`. Phases 13 to 17 add about twenty-three days, planned on 2026-10-16 from `docs/RESEARCH-2026-10-16.md`; their idle cost is about $4 a month for the controller's machine and about $0.06 for the production project, everything else being a per-app or per-tier choice shown on the approval block. Phases 18 and 19 add about eight days, planned on 2026-10-19 from `docs/RESEARCH-2026-10-19.md`; they add no idle cost, and model calls through Vertex are billed per token inside the project's budget.
+About nine and a half days of work for Phases 0 to 5, plus the live exercises, which take an hour or two per phase. Phase 6 adds about eleven days and a trial per resource type. Phases 9 to 12 add about fifteen and a half days, planned on 2026-10-14 from `docs/RESEARCH-2026-10-14.md`. Phases 13 to 17 add about twenty-three days, planned on 2026-10-16 from `docs/RESEARCH-2026-10-16.md`; their idle cost is about $4 a month for the controller's machine and about $0.06 for the production project, everything else being a per-app or per-tier choice shown on the approval block. Phases 18 and 19 add about eight days, planned on 2026-10-19 from `docs/RESEARCH-2026-10-19.md`; they add no idle cost, and model calls through Vertex are billed per token inside the project's budget. Phases 20 to 22 add about eleven days, planned on 2026-10-20 from `docs/RESEARCH-2026-10-20.md`; they add no idle cost, and widen what the platform takes as it is from 3 to about 20 of the 33 repositories the review measured.
