@@ -488,7 +488,7 @@ def fake_npm(calls, output=None):
 def test_the_lock_is_made_by_npm_11_10_or_later_with_every_script_off():
     calls = []
     package = json.dumps({"name": "svc", "version": "1.0.0", "dependencies": {"express": "^4.21.2"}})
-    for line, image in (("22", "node:22-slim@"), ("24", "node:24-slim@"), ("26", "node:26-slim@")):
+    for line, image in (("22", "node:22-trixie-slim@"), ("24", "node:24-trixie-slim@"), ("26", "node:26-trixie-slim@")):
         made = scaffold.node_lock(package, line, fake_npm(calls))
         assert made["error"] is None and json.loads(made["text"])["lockfileVersion"] == 3
         args, stdin = calls[-1]
@@ -759,7 +759,15 @@ def test_the_platforms_node_dockerfile():
     text = scaffold.platform_dockerfile(node_spec(scripts=["sharp@0.34.4"]), True, "package-lock.json")
     assert text.startswith("# Made by Fast Deploy at build time") and f"FROM {scaffold.node_base_image('24')}\n" in text
     assert "ENV NODE_ENV=production HOME=/tmp\n" in text and "COPY package.json package-lock.json ./\n" in text
-    assert "RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm rebuild sharp@0.34.4 && npm cache clean --force\n" in text
+    assert "RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm rebuild sharp@0.34.4 && npm cache clean --force \\\n" in text
+    # Live 2026-10-19: node:24-slim (Debian 12) carried perl's fixable critical findings and npm's bundled libraries three
+    # fixable high ones, so the gate stopped every Node.js service nobody had reviewed. Debian 13, and no package manager left.
+    assert "-trixie-slim@" in scaffold.node_base_image("24") and all("trixie" in comment for comment in Path("labdeploy/scaffold.py").read_text().split(
+        "NODE_IMAGES = {", 1)[1].split("}", 1)[0].splitlines()[1:])
+    removed = text.split("npm cache clean --force", 1)[1].split("COPY . .", 1)[0]
+    for path in ("/usr/local/lib/node_modules/npm", "/usr/local/lib/node_modules/corepack", "/usr/local/bin/npm", "/usr/local/bin/npx",
+                 "/usr/local/bin/corepack", "/usr/local/bin/yarn", "/usr/local/bin/yarnpkg", "/opt/yarn-v*"):
+        assert f" {path}" in removed
     assert text.index("RUN npm ci") < text.index("COPY . .") < text.index("USER 65532:65532") and "EXPOSE 8787\n" in text
     assert text.rstrip().endswith('CMD ["node", "server/index.mjs"]') and "npm start" not in text.split("never npm start")[0]
     plain = scaffold.platform_dockerfile(node_spec(), True, "npm-shrinkwrap.json")
@@ -906,6 +914,27 @@ def test_check_repository_asks_a_node_service_for_its_lockfile(tmp_path):
     missing = contract_check(Repo(), "lab/svc")
     lock = next(item for item in missing["checklist"] if item["item"] == "package-lock.json")
     assert not lock["ok"] and lock["platform_writes"] and not missing["ready"]
+
+
+def test_a_repository_whose_node_services_live_in_folders_is_told_which_folder_to_take(tmp_path):
+    # Live 2026-10-19 (brianboti/fast-deploy-node-trial, eight services in folders): the root was told to add a package.json
+    # and, by the checklist, a requirements.txt; the folders were found but never named.
+    folders = {f"{name}/{path}": text for name in ("api", "web", "jobs", "admin") for path, text in repo().items()}
+    root = read(folders)
+    assert refused(root, "has Node.js code but no package.json")
+    assert root["refusals"][0]["fix"] == "the service lives in admin, api, jobs and 1 more: take that folder (path admin), or add a package.json at the root"
+    assert read({"server.js": SERVER})["refusals"][0]["fix"].startswith("add a package.json that lists the dependencies")  # nothing in folders
+    c, brian, gh, _ = controller_with(tmp_path)
+    gh.repos["lab/mono"] = {"files": folders, "default_branch": "main"}
+    view = c.check_repository(brian, "lab/mono")
+    assert view["as_it_is"]["folders"] == ["admin", "api", "jobs", "web"]
+    assert view["next_action"] == "The services live in folders (admin, api, jobs, web): check one with check_repository and its path, such as path admin."
+    text = chat.check(view)
+    assert text.startswith("**`lab/mono` keeps its services in folders: `admin`, `api`, `jobs`, `web`.**") and "requirements.txt" not in text
+    # A root that is refused for something of its own keeps its refusals: a committed secret is never hidden behind the folders.
+    gh.repos["lab/mono"]["files"][".env"] = "TOKEN=x\n"
+    view = c.check_repository(brian, "lab/mono")
+    assert "folders" not in view["as_it_is"] and "committed secret" in chat.check(view)
 
 
 def test_propose_configuration_locks_a_node_service_on_the_controllers_machine(tmp_path, monkeypatch):

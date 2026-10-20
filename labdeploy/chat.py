@@ -684,6 +684,13 @@ def check(result):
     next_line = ("I can open a draft pull request with " + ", ".join(f"`{name}`" for name in can) + " and the other files the platform can "
                  "write; a person reviews it, sets `reviewed: true` and merges." if can else "the developer adds them; I can write them a short message.")
     as_is = result.get("as_it_is") or {}
+    folders = as_is.get("folders") or []
+    if folders:
+        # A root that holds no service of its own: name the folders instead of offering files for the root.
+        named = ", ".join(f"`{folder}`" for folder in folders[:8]) + (f" and {len(folders) - 8} more" if len(folders) > 8 else "")
+        return compose(f"**{where} keeps its services in folders: {named}.**",
+                       ["The root holds no service of its own, so nothing is drafted for it"],
+                       f"tell me which one to check or deploy (its folder is the path), for example `{folders[0]}`.")
     if as_is.get("ready"):
         facts = ["Or take it as it is, adding nothing to the repository: " + "; ".join(choice_lines(as_is.get("choices"), 3))]
         next_line = ("say “deploy it as it is” and I'll propose its contract to the platform repository (a person's merge is the review), or "
