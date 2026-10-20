@@ -1,0 +1,14 @@
+# Imported by Fast Deploy from brianboti/fast-deploy-phase20-trial (node-port) at 014840da4074 on 2026-10-20, read as it is: the pull request that added
+# this file lists every choice and where it came from. Merging is the review (docs/ROADMAP.md D32); a release moves source.commit.
+source:
+  repository: brianboti/fast-deploy-phase20-trial
+  path: node-port
+  commit: 014840da4074fe64e55ddeed7562f302fbed9615
+name: node-port
+runtime: node-http
+port: 3000
+tests: none
+node: '22'
+build:
+  recipe: platform
+  entrypoint: node server.js
