@@ -1,0 +1,15 @@
+# Imported by Fast Deploy from brianboti/fast-deploy-phase20-trial (gradio-hello) at 014840da4074 on 2026-10-20, read as it is: the pull request that added
+# this file lists every choice and where it came from. Merging is the review (docs/ROADMAP.md D32); a release moves source.commit.
+source:
+  repository: brianboti/fast-deploy-phase20-trial
+  path: gradio-hello
+  commit: 014840da4074fe64e55ddeed7562f302fbed9615
+name: gradio-hello
+health_path: null
+env:
+  GRADIO_SERVER_NAME: 0.0.0.0
+  GRADIO_SERVER_PORT: '8080'
+tests: none
+build:
+  recipe: platform
+  entrypoint: python app.py
