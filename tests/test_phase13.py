@@ -552,6 +552,32 @@ def test_plans_for_kept_contracts_bind_both_commits(tmp_path):
     assert "contract" not in c.plan(brian, "demo")["approval"]  # an application's own contract: the block reads as before
 
 
+def test_a_kept_contract_reuses_its_image_while_its_folder_is_unchanged_on_main(tmp_path):
+    # Live 2026-10-19 (node-docker): every other merge moves the platform's main, and the pipeline verifies a reused image's
+    # provenance against the plan's contract commit, so the reuse stopped with "made from a different contract".
+    c, brian, gh, _ = controller_with(tmp_path)
+    gh.repos[PLATFORM]["files"][contract_path("asis")] = contract()
+    from conftest import TARGET
+    c.store.register_application("asis", {"repository": "lab/asis", "service": "asis", "target": {**TARGET, "service": "asis", "registry": "asis"},
+                                          "contract": "platform", "pipeline_repository": PLATFORM, "workflow": "deploy.yml", "environment": "staging-asis"})
+    c.refresh_registry()
+    built = c.plan(brian, "asis")
+    image = f"{TARGET['region']}-docker.pkg.dev/{TARGET['project_id']}/asis/asis@sha256:" + "a" * 64
+    built = {**{key: value for key, value in built.items() if key not in ("state", "live_dispatch_enabled", "next_action")},
+             "contract": {**built["contract"], "commit": "c" * 40}, "receipt": {"image": image, "provenance": "required"}}
+    c.store.finish(brian.name, built, "succeeded")  # released when main was at c…; main is now at f…
+    asked = []
+    gh.changed_files = lambda repository, base, head: asked.append((repository, base, head)) or (["labdeploy/chat.py", "apps/other/platform.yaml"], True)
+    again = c.plan(brian, "asis")
+    assert asked == [(PLATFORM, "c" * 40, "f" * 40)]
+    assert again["reuse_image"] == image and again["contract"]["commit"] == "c" * 40  # the commit its provenance names, an ancestor of main
+    gh.changed_files = lambda repository, base, head: (["apps/asis/package-lock.json"], True)  # the platform's lock changed: build again
+    rebuilt = c.plan(brian, "asis")
+    assert "reuse_image" not in rebuilt and rebuilt["contract"]["commit"] == "f" * 40
+    gh.changed_files = lambda repository, base, head: ([], False)  # GitHub's list was cut at 300 files: nothing is ruled out
+    assert "reuse_image" not in c.plan(brian, "asis")
+
+
 def test_check_repository_offers_the_as_it_is_route(tmp_path):
     c, brian, gh, _ = controller_with(tmp_path)
     view = c.check_repository(brian, "lab/asis")
