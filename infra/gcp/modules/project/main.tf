@@ -16,7 +16,7 @@ locals {
 }
 
 resource "google_project_service" "apis" {
-  for_each           = toset(["run.googleapis.com", "artifactregistry.googleapis.com", "iam.googleapis.com", "iamcredentials.googleapis.com", "sts.googleapis.com", "storage.googleapis.com", "monitoring.googleapis.com", "recommender.googleapis.com", "pubsub.googleapis.com", "firestore.googleapis.com", "iap.googleapis.com"])
+  for_each           = toset(["run.googleapis.com", "artifactregistry.googleapis.com", "iam.googleapis.com", "iamcredentials.googleapis.com", "sts.googleapis.com", "storage.googleapis.com", "monitoring.googleapis.com", "recommender.googleapis.com", "pubsub.googleapis.com", "firestore.googleapis.com", "iap.googleapis.com", "aiplatform.googleapis.com"])
   service            = each.value
   disable_on_destroy = false
 }
@@ -48,6 +48,14 @@ resource "google_project_iam_custom_role" "tag_manager" {
   title       = "Lab Deploy registry tag manager"
   description = "Lets a deployer retire serving-<revision> tags in its own repository"
   permissions = ["artifactregistry.tags.delete"]
+}
+# Calls to a model through Vertex AI (needs.models, docs/ROADMAP.md D47) and nothing else: the stock Vertex AI User role
+# carried 459 permissions on 2026-10-19, most of them to create resources that bill. Granted per app by its own root.
+resource "google_project_iam_custom_role" "model_user" {
+  role_id     = "labDeployModelUser"
+  title       = "Lab Deploy model user"
+  description = "Calls models through Vertex AI (predictions only); creates nothing"
+  permissions = ["aiplatform.endpoints.predict"]
 }
 
 # Budget: alerts at 50%, 90%, 100% and 100% forecast; with the cap enabled, every notification also reaches a topic.

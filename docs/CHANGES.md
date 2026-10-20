@@ -1,3 +1,40 @@
+# 1.21.0: what a data-bearing application needs (Phase 19)
+
+Roadmap Phase 19 (docs/ROADMAP.md 19.1 to 19.5, decision D47), from the research review of 2026-10-19
+(`docs/RESEARCH-2026-10-19.md` section 5), built on top of 1.20.0. An application can now read files from a bucket at a
+fixed path and call Claude through Google Cloud with no internet and no API key. Applications that declare neither see no
+difference: their contracts hash and their roots render as before, and their releases only gain two flags that clear
+volumes nobody added. Built and checked locally; the live exercise listed under Phase 19 has not run yet.
+
+1. **Bucket mounts.** `needs.mounts` maps a declared bucket to the absolute path where the code reads it
+   (`mounts: { corpus: /app/data/index }`). Every release clears the mounts and volumes it finds and mounts what the
+   contract names, read only, through Cloud Storage FUSE (gcloud clears before it adds; read in its source). A mount puts
+   the service in the second-generation environment, which FUSE needs. A path that would hide what the container needs
+   (`/app` itself, `/tmp`, `/var`, the system folders) is refused, as are overlapping mounts. The runtime identity already
+   held `roles/storage.objectUser` on its buckets, so nothing changes in Terraform.
+2. **Claude through Vertex AI.** `needs.models: [claude]` sets `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION=global`,
+   which the Anthropic SDK's Vertex client reads, and the app's root grants its runtime identity the foundation's new role
+   `labDeployModelUser`: one permission, `aiplatform.endpoints.predict`, rather than Vertex AI User and its 459. The
+   foundation turns on `aiplatform.googleapis.com` and publishes the role as `model_user_role`; a root that declares a model
+   reads it, and its plan stops with the step to take when the foundation has not been applied. The global endpoint is the
+   one Private Google Access reaches, so a contained app needs no internet. The cost view lists the model with its
+   per-token prices from the Billing Catalog of 2026-10-19 (Claude Opus 5.5 $4 and $20 per million input and output
+   tokens, Sonnet 5.5 $2 and $10). The plan policy accepts the role as a foundation custom role and still refuses
+   `roles/aiplatform.user`.
+3. **Long requests.** `timeout_seconds` goes up to 3600, Cloud Run's own ceiling, for a service that streams long answers.
+4. **Dropped before it was built: `state: sqlite`.** The plan had a Litestream sidecar replicate an app's SQLite file to a
+   bucket. Every release runs the old and the new revision at once (the candidate's probes, the bake, production's split),
+   each with its own copy and its own Litestream writing the same replica, so one side's writes would be lost on every
+   release. A small database goes in Firestore or Postgres; Sophia's moves to Firestore. The research review carries a dated
+   update, which also corrects its claim that Firestore is free here: the platform's named databases bill from the first
+   operation.
+5. **Documents.** The contract page says where files, a small database and a model API go, and describes both new needs;
+   the runbook has the three steps for an app that calls Claude (the foundation, Model Garden, the app's root); the roadmap
+   records what was built and what was dropped.
+
+Tests: 848 pass (10 new, on top of 1.20.11); ruff clean; `terraform validate` passes on an app root and the foundation (Terraform 1.13.5).
+
+
 # 1.20.11: an unchanged contract's image is reused again
 
 Found on 2026-10-19 in the live exercise of Phase 18, while making a second live revision of `node-docker` for the

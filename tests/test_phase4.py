@@ -23,7 +23,7 @@ def test_spec_accepts_env_secrets_tests_policy_and_timeout():
     assert spec.env["GREETING"] == "hello" and spec.secrets == ["API_KEY"] and spec.tests == "none" and spec.timeout_seconds == 120
     assert AppSpec(name="demo").timeout_seconds == 60 and AppSpec(name="demo").tests == "required"
     for bad in ({"env": {"port": "1"}}, {"env": {"PORT": "1"}}, {"env": {"A": "x\ny"}}, {"secrets": ["API_KEY", "API_KEY"]}, {"env": {"A": "1"}, "secrets": ["A"]},
-                {"timeout_seconds": 301}, {"tests": "sometimes"}, {"env": {f"V{i}": "x" for i in range(33)}}):
+                {"timeout_seconds": 3601}, {"tests": "sometimes"}, {"env": {f"V{i}": "x" for i in range(33)}}):
         with pytest.raises(ValueError):
             AppSpec(name="demo", **bad)
     assert spec_hash(AppSpec(name="demo", env={"A": "1"})) != spec_hash(AppSpec(name="demo", env={"A": "2"}))

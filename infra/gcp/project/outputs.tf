@@ -4,6 +4,7 @@ output "region" { value = var.region }
 output "state_bucket" { value = local.state_bucket }
 output "alert_channels" { value = module.project.alert_channels }
 output "tag_manager_role" { value = module.project.tag_manager_role }
+output "model_user_role" { value = module.project.model_user_role }
 output "cap_service_account" { value = module.project.cap_service_account }
 output "backup_bucket" { value = module.project.backup_bucket }
 output "cap_operator_role" { value = module.project.cap_operator_role }

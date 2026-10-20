@@ -1,5 +1,6 @@
 output "alert_channels" { value = concat(google_monitoring_notification_channel.alert_email[*].id, google_monitoring_notification_channel.alert_webhook[*].id) }
 output "tag_manager_role" { value = google_project_iam_custom_role.tag_manager.name }
+output "model_user_role" { value = google_project_iam_custom_role.model_user.name }
 output "cap_service_account" { value = local.cap_enabled ? google_service_account.cap[0].email : "" }
 output "backup_bucket" { value = google_storage_bucket.backups.name }
 output "cap_operator_role" { value = local.cap_enabled ? google_project_iam_custom_role.cap_operator[0].name : "" }

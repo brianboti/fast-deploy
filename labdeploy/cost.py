@@ -79,6 +79,13 @@ NEEDS_PRICING = {
                   "note": "Standard edition, regional (us-central1): cents per 100,000 operations and 15 cents per GiB-month stored, from the first operation"},
     "postgres": {"instance_usd_month": 7.67, "storage_usd_per_gb_month": 0.09, "storage_gb": 10, "backup_usd_per_gb_month": 0.08,
                  "note": "db-f1-micro (shared core, Enterprise, zonal) in us-central1 with 10 GB of HDD: billed every hour it exists; stopped, only the storage"},
+    # Claude on Vertex AI by the token, from the Cloud Billing Catalog read on 2026-10-19 (service Vertex AI, global endpoint;
+    # the us endpoint adds 10 percent): the same as Anthropic's list prices. Nothing while idle (docs/ROADMAP.md D47).
+    "claude": {"usd_per_million_tokens": {"claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.20, "cache_write_5m": 5.0},
+                                          "claude-sonnet-5-5": {"input": 2.0, "output": 10.0, "cache_read": 0.10, "cache_write_5m": 2.50}},
+               "verified": "2026-10-19",
+               "note": "Billed per call to this project, inside its budget and spending cap, at project level rather than per app; a person "
+                       "enables each model once in Model Garden. The catalog listed no other Claude model under Vertex AI on 2026-10-19."},
 }
 # Production's postgres by needs.database_tier (docs/ROADMAP.md D39), from the Cloud Billing Catalog read on 2026-10-16
 # (docs/RESEARCH-2026-10-16.md, section 9): a standby doubles the instance and its storage; the SLA needs a dedicated CPU.
@@ -119,6 +126,8 @@ def needs_costs(spec, pricing=NEEDS_PRICING, environment="staging"):
         items.append({"need": "postgres", "name": spec.name, "floor_usd_month": _usd(floor), "pricing": p})
     if environment == "production" and spec.domain:  # staging keeps its run.app address
         items.append({"need": "domain", "name": spec.domain, "floor_usd_month": domain_floor(), "pricing": DOMAIN_PRICING})
+    for model in spec.needs.models:
+        items.append({"need": "model", "name": model, "floor_usd_month": 0.0, "pricing": pricing[model]})
     return items
 
 

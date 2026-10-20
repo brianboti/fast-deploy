@@ -396,6 +396,9 @@ between requests. Each part has one place:
 |---|---|---|
 | Each component that answers HTTP (API, admin pages, a second service) | Its own service with its own `platform.yaml`, in its own folder (section 4a) | Each scales to zero and is billed on its own |
 | Postgres, Firestore, files, topics | `needs` in `platform.yaml` | The platform creates, backs up and connects them |
+| Files the code reads at a fixed path (a corpus, a model, a search index) | A bucket need mounted read only (`needs.mounts`), filled by a person or a script | They stay out of the repository and the image; what an instance writes to its own disk is memory, and it is wiped |
+| A small database kept in a file (SQLite) | Firestore or Postgres under `needs`, never a file on the instance's disk | The disk is wiped when the instance stops, and during a release the old and new versions run side by side, each with its own copy, so one side's writes would be lost |
+| Calls to Claude | `needs.models: [claude]`: Claude through Vertex AI | No internet and no API key: the global endpoint is reached through Private Google Access, billed to the project inside its cap |
 | Cache or session store (Redis, memcached) | None by default: keep it in the process's memory or in Firestore. A managed cache never scales to zero (tens of dollars a month), so it is the operator's decision, not the contract's | Postgres with Redis is the most common pairing in real apps; the answer must be explicit |
 | Background worker or queue consumer (Celery, RQ, Dramatiq) | A topic need with a push subscription to a request-billed service, or a Cloud Run job for batches | Pull workers need an always-on instance, which the platform does not run |
 | Front end for lab members | Build it and serve the built files from the API's own container (for example FastAPI's `StaticFiles`) with `exposure: lab-members` | No extra service and the same sign-in; a separate public site is not offered |
@@ -425,6 +428,26 @@ before anything new serves, instead of freezing the table behind it. Drivers bui
 own `PGOPTIONS` under `env` to change it. Write migrations that only add (columns, tables, indexes) and remove things in
 a later release, so the previous version keeps working while traffic moves.
 
+**Files from a bucket.** `needs.mounts` maps a declared bucket to the folder where the code reads it
+(`mounts: { corpus: /app/data/index }`): every release mounts it read only through Cloud Storage FUSE and drops any mount
+the contract no longer names. A mount runs the service in the second-generation environment, can add a little to a cold
+start, and fails the start if it takes over 30 seconds. FUSE has no file locking and is not a full POSIX filesystem, so
+it carries files the app only reads; a database never goes there. The path is absolute and may not hide what the container
+needs (`/app` itself, `/tmp`, `/var`, the system folders); mount below the app's folder or in one of its own (`/models`).
+Fill the bucket once with `gcloud storage cp -r ./index gs://PROJECT-SERVICE-corpus/`; the code reads the files at the
+same paths as before.
+
+**Claude through Google Cloud.** `needs.models: [claude]` lets the service call Claude on Vertex AI with no internet and
+no API key. Its identity gets a role with one permission (calling a model), and the service gets
+`ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION=global`, which the Anthropic SDK's Vertex client reads
+(`AnthropicVertex` from `@anthropic-ai/vertex-sdk`, or `AnthropicVertex()` from `anthropic[vertex]` in Python). Use the
+global region: Private Google Access does not reach Vertex AI's regional and multi-region endpoints. The server-side
+`fallbacks` parameter, the Files and Batches APIs and the server-side tools are not offered there; streaming, tool use,
+prompt caching, adaptive thinking and `output_config.effort` are. On 2026-10-19 the Billing Catalog priced Claude Opus 5.5
+($4 input, $20 output per million tokens) and Sonnet 5.5 ($2 and $10) on the global endpoint, the same as Anthropic's list;
+calls bill to the project, inside its budget and spending cap, and nothing while idle. The operator enables each model once
+per project in Model Garden (`docs/RUNBOOK.md`).
+
 ## 5. platform.yaml reference
 
 ```yaml
@@ -436,7 +459,7 @@ health_path: /health
 resources: { cpu: 1, memory_mib: 512 }   # cpu 1 to 4, memory 512 to 4096; the lab's policy refuses more than 2 CPUs, 2048 MiB today
 scaling: { minimum: 0, maximum: 2 }      # minimum 0 or 1 (1 keeps an instance warm all month); maximum up to 3 under the lab's policy
 concurrency: 80           # requests one instance serves at once; higher is cheaper when the app can take it
-timeout_seconds: 60       # per request, up to 300
+timeout_seconds: 60       # per request, up to 3600 (a service that streams long answers holds its request open)
 exposure: authenticated   # programs with a Google identity token; or lab-members: people, after a Google sign-in, listed accounts only
 state: stateless
 env:                      # plain configuration values
@@ -452,6 +475,8 @@ needs:
   database_auth: iam      # postgres only: iam (no password anywhere) or password (DATABASE_URL arrives as a secret; section 4b)
   database_tier: standard # postgres only, production only: standard, ha (a standby) or sla (a standby and a dedicated CPU)
   migrate: []             # e.g. [alembic, upgrade, head]: a job from the same image, before traffic moves
+  mounts: {}              # e.g. { uploads: /app/data/uploads }: a declared bucket mounted read only at that path (section 4b)
+  models: []              # e.g. [claude]: Claude through Vertex AI, no internet or API key (section 4b)
 build:
   context: service        # service (the folder holding platform.yaml) or repository (shared code in a monorepo; section 4a)
   network: default        # or none: the image builds with no network at all, for dependencies vendored in the repository
