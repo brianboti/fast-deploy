@@ -789,8 +789,11 @@ After #117, #120 and #121 were merged and installed on the machine (1.20.11, `64
 | 6. The platform's lock, released | The same for `node-nolock` | **Live in 8 minutes** (plan `b83aee32`): installed and tested from the lock the machine made, `node:22-trixie-slim`; it answered `{"node":"v22.23.3"}` |
 | 1. Recovered as on Python | A second release of `node-bare`'s commit, then `rollback_staging` | The plan reused the attested image (plan `a8c62218`: "tests passed in an earlier release", no build, no new scan), live in 7 minutes. The rollback (plan `286a0f2c`), asked at 14:29:50 UTC, had moved every visitor back to `node-bare-rdb4403b24dc84108` 67 seconds later (the Python drill: 53 seconds); the controller records that release as live again, and the recovery workflow had run one job per service after each release |
 
-The platform's main did not move between the two releases of `node-bare`, so the reuse took the plan's own contract
-commit: the case 1.20.11 fixes (main moved, the service's folder unchanged) is covered by its tests and has not run live.
+The platform's main did not move between those two releases of `node-bare`. It moved when #99 merged (`b23eeba`), with
+`apps/node-bare/` unchanged, which is the case 1.20.11 fixes. A third release of the same commit (plan `62d1ea3d`) then
+kept the contract commit the image was built with (`64d80e4`) and reused the image, and the pipeline verified it: "Provenance
+verified: …/node-bare@sha256:9c3f042e… was built from brianboti/fast-deploy-node-trial at 00b11f642b1a by
+brianboti/fast-deploy/.github/workflows/deploy.yml on main"; live in 6 minutes, no build and no new scan.
 
 Smaller observations, not changed: the buildpacks' Node.js trails the platform's image (24.19.0 against 24.22.0);
 `check_repository` on a folder with a pnpm lockfile offers to draft a `package-lock.json`, which leaves two lockfiles
