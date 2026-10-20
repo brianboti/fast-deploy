@@ -276,7 +276,7 @@ class Onboarder:
         return None
 
     # ---- entry points
-    def start(self, principal, repository, app_id=None, auto_deploy=False, path=None, as_is=False):
+    def start(self, principal, repository, app_id=None, auto_deploy=False, path=None, as_is=False, until=None):
         if "*" not in principal.applications:
             raise ValueError("Onboarding needs an identity that may see every application: applications: ['*'] in the controller configuration")
         if not principal.can_deploy:
@@ -308,13 +308,15 @@ class Onboarder:
             measures = record.setdefault("measures", {})
             measures["interventions"] = measures.get("interventions", 0) + 1
             record["state"], record["error"] = record.pop("blocked_at", "validating"), None
-        return self.advance(record)
+        return self.advance(record, until)
 
-    def advance(self, record):
-        """Run every step that can finish now; stop at the first that waits, blocks or completes."""
+    def advance(self, record, until=None):
+        """Run every step that can finish now; stop at the first that waits, blocks or completes, or on reaching `until`: a
+        state left to the onboarding tick, which runs it within a minute (1.22.2: one call for several services returns
+        once each is read, and the lock compiles and contract pull requests follow in the background)."""
         for _ in range(len(STEPS)):
             state = record["state"]
-            if state not in ACTIVE:
+            if state not in ACTIVE or state == until:
                 break
             try:
                 getattr(self, "step_" + state)(record)

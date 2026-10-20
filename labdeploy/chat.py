@@ -684,6 +684,8 @@ def onboarding_all(view):
             lines.append(f"- {where} → {name}: stopped at {item.get('blocked_at') or 'the first step'}: {clip(item.get('error'), 160)}")
         elif state == "complete":
             lines.append(f"- {where} → {name}: already onboarded")
+        elif state == "contract":
+            lines.append(f"- {where} → {name}: read as it is; its contract pull request opens within a minute")
         else:
             pr = ((item.get("steps") or {}).get("contract") or {})
             opened = f", contract {link('#' + str(pr['pull_request']), pr.get('url'))}" if pr.get("pull_request") else ""

@@ -371,13 +371,17 @@ def test_deploy_everything_opens_one_contract_per_service(tmp_path):
                                       "README.md": "two services\n"}, "default_branch": "main"}
     view = c.onboard_all(brian, "https://github.com/lab/mono")
     assert view["services"] == ["api", "web"] and [item["application"] for item in view["onboardings"]] == ["mono-api", "mono-web"]
-    assert all(item["state"] == "merging_contract" and item["as_is"] for item in view["onboardings"])
+    # 1.22.2: the call returns once each service is read; the lock compiles and the contract pull requests come from the tick.
+    assert all(item["state"] == "contract" and item["as_is"] for item in view["onboardings"]) and not gh.prs
+    assert "opens its contract pull request within a minute" in view["next_action"]
+    answer = chat.onboarding_all(view)
+    assert answer.startswith("**Onboarding 2 services of `lab/mono`, each as it is.**") and "`api` → `mono-api`: read as it is; its contract pull request opens within a minute" in answer
+    assert c.onboarding_tick() == {"mono-api": "merging_contract", "mono-web": "merging_contract"}
+    view = c.onboard_all(brian, "lab/mono")  # asking again shows the same two onboardings, now waiting for a person
+    assert all(item["state"] == "merging_contract" for item in view["onboardings"])
     numbers = {item["steps"]["contract"]["pull_request"] for item in view["onboardings"]}
     assert len(numbers) == 2 and {gh.prs[(PLATFORM_OF(c), n)]["branch"] for n in numbers} == {"lab-deploy/contract-mono-api", "lab-deploy/contract-mono-web"}
-    answer = chat.onboarding_all(view)
-    assert answer.startswith("**Onboarding 2 services of `lab/mono`, each as it is.**") and "`api` → `mono-api`: merging contract, contract" in answer
-    again = c.onboard_all(brian, "lab/mono")  # asking twice continues the same two onboardings
-    assert [item["application"] for item in again["onboardings"]] == ["mono-api", "mono-web"]
+    assert "`api` → `mono-api`: merging contract, contract" in chat.onboarding_all(view)
     gh.repos["lab/empty"] = {"files": {"README.md": "x\n"}, "default_branch": "main"}
     assert c.onboard_all(brian, "lab/empty")["onboardings"] == [] and "No service was found" in chat.onboarding_all(c.onboard_all(brian, "lab/empty"))
 

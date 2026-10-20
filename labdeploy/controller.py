@@ -428,13 +428,16 @@ class Controller:
         with self._onboarding_lock:
             for path in found:
                 try:
-                    view["onboardings"].append(Onboarder(self).start(principal, seen["repository"], None, auto_deploy, path or None, as_is=True))
+                    # 1.22.2: each service is read now; its lock compiles and its contract pull request follow within a minute, from
+                    # the onboarding tick (live on 2026-10-20: four lock compiles in one call outlived the tool call that asked).
+                    view["onboardings"].append(Onboarder(self).start(principal, seen["repository"], None, auto_deploy, path or None, as_is=True, until="contract"))
                 except ValueError as exc:
                     view["onboardings"].append({"repository": seen["repository"], "path": path, "state": "refused", "error": str(exc)[:300]})
         states = [str(item.get("state")) for item in view["onboardings"]]
+        opening = ("; the controller compiles each one's lock and opens its contract pull request within a minute" if "contract" in states else "")
         view["next_action"] = (f"{len(found)} service{'s' if len(found) != 1 else ''} found ({', '.join(folder or 'the root' for folder in found[:6])}); "
-                               f"each is onboarded as it is on its own ({', '.join(sorted(set(states)))}). A person reviews and merges each contract pull "
-                               "request; get_onboarding_status with each application's name follows it.")
+                               f"each is onboarded as it is on its own ({', '.join(sorted(set(states)))}){opening}. A person reviews and merges each "
+                               "contract pull request; get_onboarding_status with each application's name follows it.")
         return view
 
     def import_contract(self, principal, repository, path=None, name=None):
