@@ -602,10 +602,15 @@ say it, and the rule that nothing is public.
 
 ## Phase 20: read more, refuse less (about four days) → version 1.22.0
 
-Status: planned on 2026-10-20 (research review sections 4, 6.1, 6.4 and 7.1). The cheapest and largest change: the
-reader's bugs the survey found and the breadth the source builders have, for both languages. Every item changes the
-reader and the drafts only; the pipeline, the gates and the contract's shape are unchanged, and nothing is written into
-an application repository.
+Status: planned on 2026-10-20 (research review sections 4, 6.1, 6.4 and 7.1) and built the same day as 1.22.0 with the
+defaults of D48, D50 and D56 (code, tests and documents, checked locally; the live exercise below has not run). The
+survey of section 4 is now a test (`tests/test_survey.py`, 20.6): the same 33 repositories read as 8 accepted and 42
+refusals, from 3 and 60 at 1.21.0; of the 25 still refused, 9 carry a Dockerfile that runs as root (Phase 22's wrapper
+user; four of them also name a dead line in that Dockerfile or a real `.env`), 8 need the builds, managers or workspaces
+of Phase 21, and 8 need one answer from a person (a real `.env`, a requirements file per hardware, a folder above
+several services, a command the files do not say). The cheapest and largest change: the reader's bugs the survey found and the
+breadth the source builders have, for both languages. Every item changes the reader and the drafts only; the pipeline,
+the gates and the contract's shape are unchanged, and nothing is written into an application repository.
 
 | Item | Change | Where |
 |---|---|---|

@@ -354,10 +354,14 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
                             auto_deploy: Annotated[bool, described("True to release every future merge to main on its own; off by default.")] = False,
                             path: PATH = None,
                             as_is: Annotated[bool, described("True to take the repository as it is: nothing is added to it, and its contract becomes a "
-                                                             "pull request on the platform repository that a person merges.")] = False) -> dict[str, Any]:
+                                                             "pull request on the platform repository that a person merges.")] = False,
+                            all: Annotated[bool, described("True to onboard every service the repository holds, as it is, one per folder "
+                                                           "(\"deploy everything in REPO\"): one contract pull request each.")] = False) -> dict[str, Any]:
         """From a repository link to a running service, for a repository that follows docs/DEVELOPER-CONTRACT.md: validate and register it,
         merge its infrastructure and workflow pull requests once the policy and checks pass, create the GitHub environment and release the
         first commit. One call per service; call again to continue, or after fixing what blocked it. Changes cloud resources."""
+        if all:
+            return chat.attach(chat.onboarding_all, controller.onboard_all(identity.get(), repository, auto_deploy))
         return chat.attach(chat.onboarding, controller.onboard(identity.get(), repository, application, auto_deploy, path, as_is=as_is))
 
     @tool(title="Import a contract (pull request)", annotations=CREATES_RECORD)

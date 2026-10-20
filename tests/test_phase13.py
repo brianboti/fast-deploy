@@ -202,14 +202,14 @@ def test_the_reader_reads_compose_for_port_health_needs_and_command():
     ({"env.prod": "", "main.py": FASTAPI, "requirements.txt": "fastapi\n"}, "committed secret"),  # found live, with env.yaml
     ({"env.yaml": "", "main.py": FASTAPI, "requirements.txt": "fastapi\n"}, "committed secret"),
     ({"Dockerfile": "FROM python:3.10-slim\n", "main.py": FASTAPI, "requirements.txt": "fastapi\n"}, "outside the supported 3.11 to 3.15"),
-    ({".python-version": "3.9\n", "main.py": FASTAPI, "requirements.txt": "fastapi\n"}, "outside the supported 3.11 to 3.15"),
+    ({".python-version": "3.6\n", "main.py": FASTAPI, "requirements.txt": "fastapi\n"}, "outside the supported 3.11 to 3.15"),  # 3.9: D48, test_phase20
     ({"environment.yml": "dependencies:\n  - python=3.12\n  - gdal\n", "main.py": FASTAPI}, "conda packages"),
     ({"main.py": FASTAPI}, "no dependency manifest"),
-    ({"main.py": FASTAPI, "admin.py": "from flask import Flask\napp = Flask(__name__)\n", "requirements.txt": "fastapi\nflask\n"}, "several candidate"),
+    ({"a.py": FASTAPI, "b.py": FASTAPI, "requirements.txt": "fastapi\n"}, "several candidate"),  # a tie; main.py over admin.py is ranked since 1.22.0
     ({"manage.py": "import django\n", "site/settings.py": "INSTALLED_APPS = []\n", "requirements.txt": "django\n"}, "WSGI_APPLICATION"),
-    ({"analysis.ipynb": "{}", "helpers.py": "x = 1\n", "requirements.txt": "pandas\n"}, "notebook"),
+    ({"analysis.ipynb": "{}", "helpers.py": "x = 1\n", "requirements.txt": "pandas\n"}, "says nothing that starts the service"),  # the notebook is a note
     ({".gitattributes": "*.bin filter=lfs diff=lfs merge=lfs -text\n", "model.bin": "pointer", "main.py": FASTAPI, "requirements.txt": "fastapi\n"}, "Git LFS"),
-    ({"apt.txt": "libgdal-dev\n", "main.py": FASTAPI, "requirements.txt": "fastapi\n"}, "system packages"),
+    ({"bindep.txt": "libgdal-dev [platform:dpkg]\n", "main.py": FASTAPI, "requirements.txt": "fastapi\n"}, "bindep's format"),  # apt.txt is installed since 1.22.0
 ])
 def test_the_reader_refuses_instead_of_guessing(files, fragment):
     result = read(files)

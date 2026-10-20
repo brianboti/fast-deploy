@@ -161,10 +161,10 @@ def test_dev_engines_runtime_is_the_last_rung_before_the_default():
 
 
 @pytest.mark.parametrize(("files", "fragment"), [
-    ({".nvmrc": "18\n"}, "outside the supported 22, 24 and 26"),
-    ({".nvmrc": "lts/iron\n"}, "outside the supported 22, 24 and 26"),
+    # A version file naming a line at its end of life (18, 20, 25) takes the lowest supported line since 1.22.0 (D48, test_phase20).
+    ({".nvmrc": "27\n"}, "outside the supported 22, 24 and 26"),
     ({".nvmrc": "node\n"}, "not a Node.js line"),
-    ({".node-version": "25.1.0\n"}, "outside the supported 22, 24 and 26"),
+    ({".node-version": "28.0.0\n"}, "outside the supported 22, 24 and 26"),
     ({"Dockerfile": "FROM node:20-slim\nUSER 65532\nCMD [\"node\", \"server.js\"]\n"}, "builds on Node.js 20"),
 ])
 def test_a_line_outside_22_24_and_26_is_refused(files, fragment):
@@ -227,7 +227,7 @@ def test_lockfiles_that_npm_ci_cannot_trust_or_use_are_refused():
     assert refused(read(repo(files={"package-lock.json": "{not json"})), "not valid JSON")
     stale = json.loads(repo()["package-lock.json"])
     stale["packages"][""]["dependencies"] = {"express": "^4.0.0"}
-    assert refused(read(repo(files={"package-lock.json": json.dumps(stale)})), "does not match package.json")
+    assert read(repo(files={"package-lock.json": json.dumps(stale)}))["lock"]["action"] == "lock"  # locked again by the platform since 1.22.0 (20.4)
     assert refused(read(repo(deps={"mylib": "github:lab/mylib", "express": "^4"})), "through a local path, a git repository or a URL")
     assert refused(read(repo(deps={"shared": "workspace:*"})), "through a local path")
     assert refused(read(repo(extra={"bundleDependencies": ["express"]})), "bundleDependencies")
@@ -276,7 +276,8 @@ def test_scripts_a_cloud_run_service_never_needs_are_left_out_and_said_why():
 
 # ---- 18.2 what starts it (D45, D46)
 @pytest.mark.parametrize(("start", "fragment", "fix"), [
-    ("nodemon server.js", "restarts on file changes (nodemon)", "start the service with node itself"),
+    # nodemon, node-dev, pm2 and forever on a file are rewritten to node since 1.22.0 (20.4, test_phase20); with --exec they still refuse.
+    ("nodemon --exec babel-node server.js", "restarts on file changes (nodemon)", "start the service with node itself"),
     ("ts-node src/index.ts", "transpiles TypeScript at start (ts-node)", "commit the built output"),
     ("tsx watch src/index.ts", "transpiles TypeScript at start (tsx)", "commit the built output"),
     ("node --watch server.js", "watches or debugs (--watch)", "start the service with node itself"),
@@ -287,7 +288,7 @@ def test_scripts_a_cloud_run_service_never_needs_are_left_out_and_said_why():
     ("concurrently \"node api.js\" \"node worker.js\"", "starts several processes at once", "start the service with node itself"),
     ("node migrate.js && node server.js", "chains commands through a shell", "start the service with node itself"),
     ("sh -c 'node server.js'", "runs a shell", "start the service with node itself"),
-    ("pm2-runtime server.js", "process manager", "start the service with node itself"),
+    ("pm2-runtime ecosystem.config.js", "process manager", "start the service with node itself"),
     ("npm run serve", "runs npm, not node", "start the service with node itself"),
 ])
 def test_a_start_script_that_watches_transpiles_or_chains_is_refused(start, fragment, fix):
@@ -359,7 +360,7 @@ def test_the_repositorys_own_dockerfile_meets_the_policy_and_its_node_notes():
 # ---- 18.2 port, host and health (D46)
 def test_a_server_must_read_port_and_listen_on_every_interface():
     literal = read(repo(files={"server.js": "const http = require('http');\nhttp.createServer(() => {}).listen(3000);\n"}))
-    assert refused(literal, "listens on port 3000 and never reads PORT")
+    assert not literal["refusals"] and literal["spec"].port == 3000  # port: 3000 in the contract since 1.22.0 (20.4): --port sets PORT alike
     loopback = read(repo(files={"server.js": "require('http').createServer().listen(process.env.PORT, '127.0.0.1');\n"}))
     assert refused(loopback, "listens on 127.0.0.1, which Cloud Run cannot reach")
     fastify = read(repo(deps={"fastify": "^5.0.0"}, files={"server.js": "const app = require('fastify')();\napp.listen({ port: process.env.PORT || 3000 });\n"}))
@@ -847,7 +848,7 @@ def test_the_drafter_keeps_what_exists_and_says_what_it_cannot_draft():
     result = drafted(files)
     assert "Dockerfile" not in result["files"] and "test/health.test.mjs" not in result["files"] and ".github/workflows/ci.yml" not in result["files"]
     assert "Dockerfile" in result["existing"] and "test/health.test.js" in result["existing"]
-    refused_draft = drafted(repo(start="nodemon server.js"))
+    refused_draft = drafted(repo(start="concurrently \"node api.js\" \"node worker.js\""))  # nodemon is rewritten to node since 1.22.0 (20.4)
     assert refused_draft["files"] == {} and "scripts.start" in refused_draft["review"][1]
 
 

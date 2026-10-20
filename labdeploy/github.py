@@ -425,7 +425,8 @@ class GitHub:
 
     def contents(self, repository, ref, path, limit=65_536):
         """A regular file from any repository the credential can read, at a ref; None when it does not exist. Lock files may be
-        read up to GitHub's 1 MB contents limit (`limit`); every other input stays within 64 KiB."""
+        read up to `limit` (5 MB, docs/ROADMAP.md 20.4): past GitHub's 1 MB contents limit the file comes through the blobs
+        endpoint by its sha; every other input stays within 64 KiB."""
         try:
             response = self.request("GET", f"/repos/{repository}/contents/{quote(path, safe='/')}", params={"ref": ref})
         except httpx.HTTPStatusError as exc:
@@ -433,10 +434,16 @@ class GitHub:
                 return None
             raise
         data = response.json()
-        if not isinstance(data, dict) or data.get("type") != "file" or data.get("encoding") != "base64":
+        if not isinstance(data, dict) or data.get("type") != "file" or data.get("encoding") not in ("base64", "none"):
             raise ValueError("Expected regular, base64-encoded GitHub file")
-        if data.get("size", 0) > min(limit, 1_000_000):
-            raise ValueError(f"Repository input exceeds {min(limit, 1_000_000) // 1024} KiB")
+        if data.get("size", 0) > min(limit, 5_000_000):
+            raise ValueError(f"Repository input exceeds {min(limit, 5_000_000) // 1024} KiB")
+        if data.get("encoding") == "none":
+            # Over 1 MB the contents endpoint sends no content; the blob, read by its sha, carries up to 100 MB.
+            blob = self.request("GET", f"/repos/{repository}/git/blobs/{data.get('sha')}").json()
+            if not isinstance(blob, dict) or blob.get("encoding") != "base64":
+                raise ValueError("Expected a base64-encoded GitHub blob")
+            data = {**data, "content": blob.get("content") or ""}
         return {"sha": data.get("sha"), "text": base64.b64decode(data["content"], validate=False).decode("utf-8")}
 
     # ---- onboarding: read a repository's shape, follow its pull requests and runs, prepare its environment

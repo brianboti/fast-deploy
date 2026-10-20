@@ -1,0 +1,255 @@
+[
+ {
+  "entry": "fastapi/full-stack-fastapi-template:backend",
+  "file": "fastapi__full-stack-fastapi-template__backend.json.gz",
+  "paths": 305,
+  "texts": 36,
+  "skipped": []
+ },
+ {
+  "entry": "miguelgrinberg/microblog",
+  "file": "miguelgrinberg__microblog.json.gz",
+  "paths": 91,
+  "texts": 38,
+  "skipped": []
+ },
+ {
+  "entry": "wagtail/bakerydemo",
+  "file": "wagtail__bakerydemo.json.gz",
+  "paths": 306,
+  "texts": 60,
+  "skipped": []
+ },
+ {
+  "entry": "streamlit/streamlit-example",
+  "file": "streamlit__streamlit-example.json.gz",
+  "paths": 5,
+  "texts": 2,
+  "skipped": []
+ },
+ {
+  "entry": "oobabooga/text-generation-webui",
+  "file": "oobabooga__text-generation-webui.json.gz",
+  "paths": 422,
+  "texts": 59,
+  "skipped": [
+   "modules/chat.py"
+  ]
+ },
+ {
+  "entry": "nsidnev/fastapi-realworld-example-app",
+  "file": "nsidnev__fastapi-realworld-example-app.json.gz",
+  "paths": 157,
+  "texts": 60,
+  "skipped": []
+ },
+ {
+  "entry": "HackSoftware/Django-Styleguide-Example",
+  "file": "HackSoftware__Django-Styleguide-Example.json.gz",
+  "paths": 288,
+  "texts": 60,
+  "skipped": []
+ },
+ {
+  "entry": "GoogleCloudPlatform/python-docs-samples:run/helloworld",
+  "file": "GoogleCloudPlatform__python-docs-samples__run__helloworld.json.gz",
+  "paths": 6647,
+  "texts": 6,
+  "skipped": []
+ },
+ {
+  "entry": "litestar-org/litestar-fullstack",
+  "file": "litestar-org__litestar-fullstack.json.gz",
+  "paths": 612,
+  "texts": 60,
+  "skipped": []
+ },
+ {
+  "entry": "aio-libs/aiohttp-demos",
+  "file": "aio-libs__aiohttp-demos.json.gz",
+  "paths": 409,
+  "texts": 59,
+  "skipped": []
+ },
+ {
+  "entry": "langchain-ai/chat-langchain",
+  "file": "langchain-ai__chat-langchain.json.gz",
+  "paths": 202,
+  "texts": 30,
+  "skipped": []
+ },
+ {
+  "entry": "openai/openai-quickstart-python",
+  "file": "openai__openai-quickstart-python.json.gz",
+  "paths": 24,
+  "texts": 6,
+  "skipped": []
+ },
+ {
+  "entry": "comfyanonymous/ComfyUI",
+  "file": "comfyanonymous__ComfyUI.json.gz",
+  "paths": 1513,
+  "texts": 54,
+  "skipped": [
+   "server.py",
+   "nodes.py",
+   "comfy/model_base.py",
+   "comfy/model_detection.py",
+   "comfy/model_management.py",
+   "comfy/model_patcher.py"
+  ]
+ },
+ {
+  "entry": "AUTOMATIC1111/stable-diffusion-webui",
+  "file": "AUTOMATIC1111__stable-diffusion-webui.json.gz",
+  "paths": 368,
+  "texts": 58,
+  "skipped": [
+   "modules/processing.py"
+  ]
+ },
+ {
+  "entry": "lm-sys/FastChat",
+  "file": "lm-sys__FastChat.json.gz",
+  "paths": 254,
+  "texts": 58,
+  "skipped": [
+   "fastchat/conversation.py",
+   "fastchat/model/model_adapter.py"
+  ]
+ },
+ {
+  "entry": "open-webui/open-webui:backend",
+  "file": "open-webui__open-webui__backend.json.gz",
+  "paths": 5471,
+  "texts": 53,
+  "skipped": [
+   "backend/open_webui/main.py",
+   "backend/open_webui/config.py",
+   "backend/open_webui/models/chats.py",
+   "backend/open_webui/retrieval/utils.py",
+   "backend/open_webui/routers/auths.py",
+   "backend/open_webui/routers/channels.py",
+   "backend/open_webui/routers/chats.py"
+  ]
+ },
+ {
+  "entry": "langgenius/dify:api",
+  "file": "langgenius__dify__api.json.gz",
+  "paths": 17352,
+  "texts": 60,
+  "skipped": []
+ },
+ {
+  "entry": "gradio-app/gradio:demo/chatbot_simple",
+  "file": "gradio-app__gradio__demo__chatbot_simple.json.gz",
+  "paths": 3937,
+  "texts": 2,
+  "skipped": []
+ },
+ {
+  "entry": "heroku/node-js-getting-started",
+  "file": "heroku__node-js-getting-started.json.gz",
+  "paths": 27,
+  "texts": 4,
+  "skipped": []
+ },
+ {
+  "entry": "nestjs/typescript-starter",
+  "file": "nestjs__typescript-starter.json.gz",
+  "paths": 19,
+  "texts": 10,
+  "skipped": []
+ },
+ {
+  "entry": "fastify/demo",
+  "file": "fastify__demo.json.gz",
+  "paths": 101,
+  "texts": 50,
+  "skipped": []
+ },
+ {
+  "entry": "remix-run/indie-stack",
+  "file": "remix-run__indie-stack.json.gz",
+  "paths": 86,
+  "texts": 28,
+  "skipped": []
+ },
+ {
+  "entry": "sveltejs/realworld",
+  "file": "sveltejs__realworld.json.gz",
+  "paths": 78,
+  "texts": 21,
+  "skipped": []
+ },
+ {
+  "entry": "mckaywrigley/chatbot-ui",
+  "file": "mckaywrigley__chatbot-ui.json.gz",
+  "paths": 405,
+  "texts": 60,
+  "skipped": []
+ },
+ {
+  "entry": "gothinkster/node-express-realworld-example-app",
+  "file": "gothinkster__node-express-realworld-example-app.json.gz",
+  "paths": 91,
+  "texts": 41,
+  "skipped": []
+ },
+ {
+  "entry": "hagopj13/node-express-boilerplate",
+  "file": "hagopj13__node-express-boilerplate.json.gz",
+  "paths": 100,
+  "texts": 48,
+  "skipped": []
+ },
+ {
+  "entry": "socketio/chat-example",
+  "file": "socketio__chat-example.json.gz",
+  "paths": 10,
+  "texts": 3,
+  "skipped": []
+ },
+ {
+  "entry": "vercel/ai-chatbot",
+  "file": "vercel__ai-chatbot.json.gz",
+  "paths": 234,
+  "texts": 60,
+  "skipped": []
+ },
+ {
+  "entry": "GoogleCloudPlatform/nodejs-docs-samples:run/helloworld",
+  "file": "GoogleCloudPlatform__nodejs-docs-samples__run__helloworld.json.gz",
+  "paths": 3602,
+  "texts": 4,
+  "skipped": []
+ },
+ {
+  "entry": "huggingface/chat-ui",
+  "file": "huggingface__chat-ui.json.gz",
+  "paths": 1123,
+  "texts": 60,
+  "skipped": []
+ },
+ {
+  "entry": "shadcn-ui/taxonomy",
+  "file": "shadcn-ui__taxonomy.json.gz",
+  "paths": 249,
+  "texts": 38,
+  "skipped": []
+ },
+ {
+  "entry": "discord/discord-example-app",
+  "file": "discord__discord-example-app.json.gz",
+  "paths": 19,
+  "texts": 12,
+  "skipped": []
+ },
+ {
+  "entry": "langgenius/dify:web",
+  "file": "langgenius__dify__web.json.gz",
+  "paths": 17352,
+  "texts": 61,
+  "skipped": []
+ }
+]

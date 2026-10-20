@@ -1,0 +1,13 @@
+# Made by Fast Deploy at build time from the contract (build.recipe: platform, docs/ROADMAP.md 13.3); never committed.
+# python:__PYTHON__-slim by its multi-architecture index digest, resolved __RESOLVED__.
+__BUILD_STAGE__FROM python:__PYTHON__-slim@__DIGEST__
+# Log lines appear at once. The user below has no home directory: what tools write under ~ (caches, gunicorn's control
+# socket, which otherwise logs an error at every start) goes to /tmp, memory on Cloud Run.
+ENV PYTHONUNBUFFERED=1 HOME=/tmp__VENV_PATH__
+__SYSTEM__WORKDIR /app
+__INSTALL__# Only what passed the platform's deny-list was copied into this build context.
+COPY . .
+__COLLECTSTATIC__# A numeric user that does not exist in the image: the service never runs as root.
+USER 65532:65532
+EXPOSE __PORT__
+CMD __CMD__

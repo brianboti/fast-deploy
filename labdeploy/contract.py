@@ -139,7 +139,7 @@ class Contracts:
         for _ in range(4):  # a Node.js service's entry file and its imports are read in up to three more passes
             for item in wanted:
                 try:
-                    found = github.contents(repository, head, item, limit=1_000_000 if reader.large_files(item) else 65_536)
+                    found = github.contents(repository, head, item, limit=reader.size_limit(item))
                 except ValueError:
                     skipped.append(item)
                     continue

@@ -85,6 +85,11 @@ READINESS_ROUTE = re.compile(r"(^|/)(?:ready|readiness|live|liveness|ping|status
 ROUTE = re.compile(r"""(?:\.(?:get|all|head|route)\(\s*|\b(?:url|pathname|path)\s*===?\s*|\bcase\s+|\b(?:url|path)\s*:\s*)(["'`])(/[A-Za-z0-9/_.-]*)\1""")
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 EVERYWHERE = ("0.0.0.0", "::")  # noqa: S104 - Cloud Run's contract: listen on every interface
+# Frameworks and serve commands whose host comes from a variable (docs/RESEARCH-2026-10-20.md 6.3): Next.js standalone reads
+# HOSTNAME (Docker may set it to the container's id), Astro's Node adapter HOST, Nuxt's Nitro NITRO_HOST then HOST, the
+# serve commands of React Router and Remix HOST; the contract's env sets each to 0.0.0.0 (20.4).
+HOST_READERS = {"next": ("HOSTNAME",), "astro": ("HOST",), "nuxt": ("NITRO_HOST", "HOST"), "@react-router/serve": ("HOST",),
+                "@remix-run/serve": ("HOST",), "@sveltejs/kit": ("HOST",), "h3": ("HOST",), "nitropack": ("NITRO_HOST", "HOST")}
 
 
 # ---- versions
@@ -339,9 +344,18 @@ def start_words(script):
     first = words[0].rsplit("/", 1)[-1]
     if first in SHELLS:
         return None, "runs a shell"
-    if first in START_TOOLS:
+    rewritten = None
+    if first in RESTARTERS:
+        # 20.4: a restarter or process manager watches or restarts a file that node can run as it is; Cloud Run restarts the
+        # service itself, so the platform starts node on the same file. Its own flags are dropped; a flag that names another
+        # command to run (nodemon --exec, pm2's ecosystem file) is not a file for node, and stays refused below.
+        file = restarted_file(words[1:])
+        if file is None:
+            return None, START_TOOLS[first]
+        rewritten, words = first, ["node", file]
+    elif first in START_TOOLS:
         return None, START_TOOLS[first]
-    if first != "node":
+    elif first != "node":
         return None, f"runs {words[0]}, not node"
     flags, rest, dropped = [], words[1:], []
     while rest and rest[0].startswith("-"):
@@ -364,7 +378,36 @@ def start_words(script):
         flags.append(flag)
     if not rest:
         return None, "names no file for node to run"
-    return {"words": ["node", *flags, *rest], "file": rest[0].removeprefix("./"), "dropped": dropped, "env": env}, None
+    return {"words": ["node", *flags, *rest], "file": rest[0].removeprefix("./"), "dropped": dropped, "env": env, "rewritten": rewritten}, None
+
+
+# Development restarters and process managers whose file node runs as it is (docs/ROADMAP.md 20.4, D49).
+RESTARTERS = ("nodemon", "node-dev", "pm2", "pm2-runtime", "forever")
+RESTARTER_VALUE_FLAGS = ("-e", "--ext", "-w", "--watch", "-i", "--ignore", "-d", "--delay", "-x", "--exec", "-r", "--require", "--signal",
+                         "-n", "--name", "--interpreter", "--node-args", "-l", "--log", "-o", "--outFile", "--errFile", "--pidFile", "--sourceDir",
+                         "--workingDir", "--uid", "--gid", "-m", "--max", "--spinSleepTime", "--minUptime", "--killSignal", "-c", "--command",
+                         "--instances", "--max-memory-restart", "--cron", "--env")
+
+
+def restarted_file(words):
+    """The JavaScript file a restarter's command line names, or None when it runs another command (nodemon --exec, an npm
+    script, a pm2 ecosystem file) or names no file."""
+    rest = list(words)
+    if rest and rest[0] in ("start", "start-dev", "restart", "run"):  # pm2 start FILE, forever start FILE, pm2 run FILE
+        rest = rest[1:]
+    while rest and rest[0].startswith("-"):
+        flag = rest.pop(0)
+        name, _, value = flag.partition("=")
+        if name in ("-x", "--exec", "--interpreter", "-c", "--command"):
+            return None
+        if name in RESTARTER_VALUE_FLAGS and not value and rest:
+            rest.pop(0)
+    if not rest:
+        return None
+    file = rest[0].removeprefix("./")
+    if not CODE.search(file) or re.search(r"(^|/)(ecosystem[^/]*|[^/]+\.config)\.[cm]?js$", file):
+        return None  # pm2's ecosystem file describes processes; it is not the file node runs
+    return file
 
 
 # ---- where it listens
