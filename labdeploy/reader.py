@@ -976,6 +976,11 @@ def framework_start(repo, ladder, framework, file, words, env, literal, port):
     chosen = {key: value.replace("{port}", str(literal or port)) for key, value in env.items()}
     manifest = repo.at("requirements.txt") if repo.has("requirements.txt") else repo.at("pyproject.toml")
     ladder.choose("Start command", " ".join(command), f"{manifest} ({framework} among the dependencies; {repo.at(file)} is its entry file)")
+    if command[0] == "python" and "HOST" not in chosen and reads_setting(text, "HOST"):
+        # 1.22.1: the file itself binds the host it reads from HOST, usually with a development default (127.0.0.1) that Cloud
+        # Run cannot reach; the contract sets it, as it does for a Node.js service (1.20.0). The last rung sets it always.
+        chosen["HOST"] = EVERY_INTERFACE
+        ladder.choose("Host", "0.0.0.0 through HOST (the code reads it; a development default such as 127.0.0.1 cannot be reached on Cloud Run)", repo.at(file))
     if literal and literal != port:
         ladder.note(f"{repo.at(file)} starts {framework} on port {literal}; the contract says port: {literal}, and Cloud Run sends requests there")
     ladder.note(f"No application object was found, so {framework} among the dependencies decides the command, as Google's buildpacks and "
@@ -1147,6 +1152,11 @@ def health_ladder(repo, ladder, base, compose, sources):
                     "container): the release uses the TCP startup probe instead; a /health route would let it check HTTP")
     ladder.choose("Health", "none: Cloud Run's TCP startup probe; the HTTP health probe is off", "no health route found in the code read")
     return None
+
+
+def reads_setting(text, name):
+    """Whether a Python file reads the setting `name` from the environment, by the same patterns configuration_names uses."""
+    return any(name in pattern.findall(text or "") for pattern in CONFIG_PATTERNS)
 
 
 def configuration_names(repo, compose, sources):
