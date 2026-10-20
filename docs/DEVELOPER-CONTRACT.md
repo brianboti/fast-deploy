@@ -37,7 +37,7 @@ manifest. Its answers come from the same kind of ladder:
 
 | Question | Where the answer comes from, first match wins | When nothing says |
 |---|---|---|
-| How is the image built? | your `Dockerfile`; a `Procfile` (Google's buildpacks, for code the lab has reviewed only: they run install scripts) | the platform's own `node:<line>-slim` image, made at build time and never committed |
+| How is the image built? | your `Dockerfile`; a `Procfile` (Google's buildpacks, for code the lab has reviewed only: they run install scripts) | the platform's own image on `node:<line>-trixie-slim` (Debian 13), made at build time and never committed |
 | Which Node? | the Dockerfile's `FROM node:X`; `.nvmrc`; `.node-version`; the `nodejs` line of `.tool-versions`; `engines.node` (a range takes the highest of 22, 24 and 26 it allows); `devEngines.runtime` | the newest line in Active LTS: 24 until 2026-10-28, 26 from then |
 | Which packages? | `npm-shrinkwrap.json`; `package-lock.json` (version 2 or 3), installed with `npm ci` | the platform locks `package.json` once (below) |
 | What starts it? | the Dockerfile's `CMD`; the Procfile's `web:`; Compose's `command`; `scripts.start` when it is `node [flags] <file> [args]`; `main`; `server.js` or `index.js` | refused: say the start command |
@@ -94,7 +94,7 @@ github.com/ORG/REPO"*.
 | `.github/workflows/ci.yml` | Your tests on every pull request, with a read-only token |
 | `SECURITY.md`, `.github/dependabot.yml` | How to report a vulnerability; weekly, reviewable updates of the pins |
 
-For a Node.js service the draft holds a `Dockerfile` on your line's `node:<line>-slim` pinned by digest (`npm ci` with
+For a Node.js service the draft holds a `Dockerfile` on your line's `node:<line>-trixie-slim` pinned by digest (`npm ci` with
 every install script off, a non-root user, `node` itself as the command), a `.dockerignore` that keeps `node_modules`
 out, `package-lock.json` when you have none (made as above), `test/health.test.mjs` on `node --test` (it starts the
 service on a free port and asks for the health path), `platform.yaml` with `runtime: node-http`, a CI workflow on
@@ -280,8 +280,14 @@ For a Node.js service (the platform's own image does the first three):
   512 MiB gives a 256 MiB heap. Raise `resources.memory_mib` when the service needs more (Google's buildpacks give the
   heap 80 percent; `NODE_OPTIONS=--max-old-space-size=400` under `env` does the same). Buffers live outside the heap, and
   an instance over its limit is stopped with "Memory limit exceeded".
-- Use a Debian image (`node:<line>-slim`), not Alpine, when a dependency carries native code: Alpine's musl does not load
+- Use a Debian image (`node:<line>-trixie-slim`), not Alpine, when a dependency carries native code: Alpine's musl does not load
   binaries built for glibc. The Dockerfile policy notes both an `npm start` and an Alpine image with native code.
+- The platform's image keeps no package manager: after `npm ci`, npm, npx, Corepack and Yarn are removed, so a service
+  that runs `npm` while it serves fails there (start child processes with `process.execPath`, which is `node`). The
+  official `node:<line>-slim` of Node 22 and 24 is Debian 12; on 2026-10-19 its perl carried five critical findings with
+  a fix the image had not taken, and npm's own bundled libraries three high ones, so the vulnerability gate stopped every
+  service nobody had reviewed. A Dockerfile of your own on that image is stopped the same way: build on
+  `node:<line>-trixie-slim` and remove the package managers after the install.
 - Node keeps idle connections open for five seconds (`keepAliveTimeout`); Google documents no idle timeout for Cloud Run's
   front end, so the platform prescribes no other number.
 

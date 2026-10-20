@@ -264,7 +264,7 @@ class AppSpec(StrictModel):
     # The Python the tests and the dependency audit run on; match the Dockerfile's base image. A lock compiled for one
     # version can omit packages another needs (live: SQLAlchemy needs greenlet below 3.13, so a 3.13 lock failed on 3.12).
     python: Literal["3.11", "3.12", "3.13", "3.14", "3.15"] = "3.12"
-    # The Node.js line of a node-http service (D41): its tests, its audit and the platform's image (node:<line>-slim) use it.
+    # The Node.js line of a node-http service (D41): its tests, its audit and the platform's image (node:<line>-trixie-slim) use it.
     # Required for node-http and refused for python-http, so a contract names exactly one of python and node. A Node.js
     # service keeps python at its default, which every dump leaves out, so its hash and its full dump read back the same.
     node: Literal["22", "24", "26"] | None = None

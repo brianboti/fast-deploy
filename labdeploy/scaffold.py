@@ -28,43 +28,46 @@ DEFAULT_PYTHON = AppSpec.model_fields["python"].default
 DEFAULT_PORT = AppSpec.model_fields["port"].default
 DEFAULT_HEALTH = AppSpec.model_fields["health_path"].default
 
-# python:X.Y-slim multi-architecture index digests (Debian trixie: 3.11.17, 3.12.15, 3.13.16, 3.14.8 and 3.15.0), resolved
-# on the date below with `docker buildx imagetools inspect python:X.Y-slim`: the top "Digest:" line, which is the index
-# every architecture shares, never a per-platform manifest. To refresh, run that command for each version, replace the
-# digests and the date after review, and run tests/test_scaffold.py. A repository keeps its own pin once drafted; there,
-# Dependabot's docker updates refresh it.
+# python:X.Y-slim multi-architecture index digests, each with the Python release and the Debian it carries, resolved on the
+# date below: the index every architecture shares (`docker buildx imagetools inspect python:X.Y-slim`, the top "Digest:"
+# line), never a per-platform manifest. The weekly pin refresh (labdeploy/pins.py, .github/workflows/pins.yml) proposes a
+# newer index once Docker Hub's tag has pointed to it for seven days, and dates the change. A repository keeps its own pin
+# once drafted; there, Dependabot's docker updates refresh it.
 BASE_IMAGES_RESOLVED = "2026-10-14"
 BASE_IMAGES = {
-    "3.11": "sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce",
-    "3.12": "sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1",
-    "3.13": "sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f",
-    "3.14": "sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170",
-    "3.15": "sha256:f48fda6d59b2b3437781d1c3ccf4aa0e26ae871de3cdd758b49ab45ee7291619",
+    "3.11": "sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce",  # 3.11.17, Debian trixie
+    "3.12": "sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1",  # 3.12.15, Debian trixie
+    "3.13": "sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f",  # 3.13.16, Debian trixie
+    "3.14": "sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170",  # 3.14.8, Debian trixie
+    "3.15": "sha256:f48fda6d59b2b3437781d1c3ccf4aa0e26ae871de3cdd758b49ab45ee7291619",  # 3.15.0, Debian trixie
 }
-# node:<line>-slim multi-architecture index digests (Debian: bookworm for 22 and 24, trixie for 26; Node.js 22.23.3, 24.22.0
-# and 26.12.0), resolved on the date below with `docker buildx imagetools inspect node:<line>-slim`: the top "Digest:" line,
-# the index every architecture shares. Refreshed like BASE_IMAGES; a drafted repository's own pin is Dependabot's to refresh.
+# node:<line>-trixie-slim multi-architecture index digests, each with the Node.js release and the Debian it carries, resolved
+# and refreshed like BASE_IMAGES; a drafted repository's own pin is Dependabot's to refresh. Debian 13 for every line: the
+# default node:22-slim and node:24-slim are Debian 12, whose perl carried five critical findings with a fix on 2026-10-19
+# that the image had not taken, so code nobody has reviewed could not be released on them.
 NODE_IMAGES_RESOLVED = "2026-10-19"
 NODE_IMAGES = {
-    "22": "sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392",
-    "24": "sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5",
-    "26": "sha256:0d1e33586362bb9e608c4e751e7a9e7edb55c9ac11461ed5666af696cc461dd4",
+    "22": "sha256:154ba2f4d6fec323d28e4f4bb86bba4677f1223391a1979cf521304e03a98dfa",  # 22.23.3, Debian trixie
+    "24": "sha256:7f486cabe892bff8fef04c0f7da8dba84a560be3e4e2740b7a86afc57ebec315",  # 24.22.0, Debian trixie
+    "26": "sha256:0d1e33586362bb9e608c4e751e7a9e7edb55c9ac11461ed5666af696cc461dd4",  # 26.12.0, Debian trixie
 }
 # The npm that makes a Node.js service's lock (docs/ROADMAP.md D42, 18.3): min-release-age arrived in npm 11.10.0
 # (2026-02-11), and Node 22 bundles npm 10.9.9, which only warns about a flag it does not know and would lock without the
-# hold. In the node:22-slim container, npm 11.19.1 (the npm Node 24.22 bundles; it runs on Node 22.9 and later and has no
-# install script) is therefore installed by version and checked against the integrity hash the registry published for it,
-# read 2026-10-19. The lock is still resolved on the service's own line, as npm prefers versions whose engines it meets.
-# Every container refuses an npm older than 11.10 rather than lock without the hold.
-LOCK_NPM = {"22": ("11.19.1", "sha512-ztsxKxt/kkIaAs+2i0GU6I+DRmUdrNasxTZKJe9TCdSjKxlhah/4r/hl5ygMD6XAg1qZ9c2TNomR4qgOydp10g==")}
+# hold. In the node:22-trixie-slim container a newer npm 11 is therefore installed by version and checked against the integrity
+# hash the registry published for it. The weekly pin refresh keeps it on the newest npm 11 at least seven days old that
+# asks for the same Node.js versions (22.9 and later) and runs no install script. The lock is still resolved on the
+# service's own line, as npm prefers versions whose engines it meets. Every container refuses an npm older than 11.10
+# rather than lock without the hold.
+LOCK_NPM = {"22": ("11.19.1", "sha512-ztsxKxt/kkIaAs+2i0GU6I+DRmUdrNasxTZKJe9TCdSjKxlhah/4r/hl5ygMD6XAg1qZ9c2TNomR4qgOydp10g==")}  # published 2026-08-26
 NODE_LOCK_OPTIONS = "--package-lock-only --ignore-scripts --min-release-age=3"
 # Exact versions checked on PyPI on 2026-10-14 (the demo app and the platform pin the same test tools).
 DEV_PINS = {"pytest": "9.1.1", "httpx": "0.28.1"}
 SERVER_PINS = {"uvicorn": "0.54.0", "gunicorn": "26.2.0"}
-# uv for compile_lock, installed into the container only by these hashes: its manylinux wheels for x86_64 and aarch64
-# (Docker on an Apple silicon Mac runs aarch64 Linux). 0.12.24 (released 2026-10-08) rather than the 0.13 line, whose
-# first release was five days old when this was pinned and changed archive handling.
-UV_VERSION = "0.12.24"
+# uv for compile_lock and export_uv_lock, installed into the container only by these hashes, as PyPI publishes them: its
+# manylinux wheels for x86_64 and aarch64 (Docker on an Apple silicon Mac runs aarch64 Linux). The weekly pin refresh keeps
+# it on the newest 0.12 release at least seven days old: uv's minor versions are its breaking ones, and 0.13 changed archive
+# handling, so a newer line is a deliberate move (its `line` in labdeploy/pins.py).
+UV_VERSION = "0.12.24"  # released 2026-10-08
 UV_HASHES = (
     "e47005957dca320272ad68960b591b854b6bf0c3288368efb096d9ccd06b8404",  # manylinux_2_17_x86_64
     "94c9ed22c1b5d6861a72639e23c5707bb07a354b67ec0462e9a0169a9665b5fd",  # manylinux_2_17_aarch64
@@ -156,10 +159,10 @@ def base_image(python_version):
 
 
 def node_base_image(line):
-    """The pinned base image for a supported Node.js line: node:<line>-slim@<multi-architecture index digest>."""
+    """The pinned base image for a supported Node.js line: node:<line>-trixie-slim@<multi-architecture index digest>."""
     if line not in NODE_IMAGES:
         raise ValueError(f"Node.js {line} is not supported; choose one of {', '.join(NODE_IMAGES)}")
-    return f"node:{line}-slim@{NODE_IMAGES[line]}"
+    return f"node:{line}-trixie-slim@{NODE_IMAGES[line]}"
 
 
 def template(name):
@@ -635,7 +638,7 @@ def pinned_npm_check(version, folder):
 
 
 def node_lock_container(line):
-    """The docker command node_lock runs: the service's own node:<line>-slim by digest, a non-root user, package.json on
+    """The docker command node_lock runs: the service's own node:<line>-trixie-slim by digest, a non-root user, package.json on
     stdin and package-lock.json on stdout. npm resolves with every script off and nothing published in the last three days;
     for a line whose npm is older than 11.10 (LOCK_NPM), a pinned npm is installed first and checked against its integrity
     hash. Nothing from the repository reaches a command line."""
@@ -748,7 +751,7 @@ def dockerfile(found, locked):
 
 
 def node_dockerfile(found):
-    """The Node.js Dockerfile (docs/ROADMAP.md D45): node:<line>-slim by digest, NODE_ENV=production, the lockfile installed
+    """The Node.js Dockerfile (docs/ROADMAP.md D45): node:<line>-trixie-slim by digest, NODE_ENV=production, the lockfile installed
     with npm ci and every script off, then npm rebuild for the contract's build.scripts only, the code, a numeric non-root
     user and an exec-form CMD that starts node itself. `found`: node, port, command (words), lockfile, scripts."""
     scripts = found.get("scripts") or []
@@ -984,7 +987,7 @@ def node_health_test(found):
 
 def draft_node_files(repo, name=None, lock_text=None, fallback_name=None):
     """D26 for a Node.js service (docs/ROADMAP.md 18.6): the files docs/DEVELOPER-CONTRACT.md asks for that the service lacks,
-    drafted from what the reader reads in it: the Dockerfile on node:<line>-slim, .dockerignore, test/health.test.mjs on
+    drafted from what the reader reads in it: the Dockerfile on node:<line>-trixie-slim, .dockerignore, test/health.test.mjs on
     node --test, platform.yaml, ci.yml with setup-node, Dependabot for npm with its cooldown written in, SECURITY.md, and
     package-lock.json when the caller made one (node_lock). Nothing is drafted while the reader refuses the service."""
     from . import node as nodejs
@@ -1179,7 +1182,7 @@ def start_command(entrypoint):
 
 def platform_dockerfile(spec, locked, lockfile="package-lock.json"):
     """The platform's own Dockerfile for a contract with build.recipe: platform: the drafted Dockerfile's steps (python:X.Y-slim
-    or node:<line>-slim by digest, dependencies before the code, a numeric non-root user) with the contract's entrypoint as
+    or node:<line>-trixie-slim by digest, dependencies before the code, a numeric non-root user) with the contract's entrypoint as
     its command. `locked` says whether a Python service has requirements.lock; `lockfile` names a Node.js service's lock."""
     if spec.build.recipe != "platform" or not spec.build.entrypoint:
         raise ValueError("The platform makes a Dockerfile only for build.recipe: platform with build.entrypoint")

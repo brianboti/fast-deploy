@@ -8,7 +8,7 @@ import pytest
 import yaml
 from conftest import TARGET
 
-from labdeploy import dockerpolicy, leaks, reader, sbom, scaffold, scan
+from labdeploy import dockerpolicy, leaks, pins, reader, sbom, scaffold, scan
 from labdeploy.controller import recent, release_approval
 from labdeploy.infra import check_plan
 from labdeploy.models import AppSpec, containment, draft_dump, parse_contract
@@ -141,8 +141,10 @@ def test_the_pipeline_runs_every_gate_with_pinned_scanners_and_no_cache():
         # The repository's code runs only after its Dockerfile and its files have been checked.
         assert names.index("Scan the checkout for secrets") < names.index("Run unit tests") < names.index("Build without cloud credentials")
         install = steps[names.index("Install the scanners")]["run"]
-        assert "trufflehog_3.97.4_linux_amd64.tar.gz" in install and "dc24007c2f233bd61c05beabeb44aa27ea9b43288166279209abe0458c5ce76b" in install
-        assert "trivy_0.74.0_Linux-64bit.tar.gz" in install and "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a" in install
+        # Both scanners by version and SHA-256 as labdeploy/pins.py reads them, each held to its checksum before it is unpacked.
+        for key in ("trufflehog", "trivy"):
+            url, checksum = pins.mentions(key, "templates/deploy-gcp.yml")
+            assert url in install and install.index(url) < install.index(checksum + " | sha256sum --check --strict") < install.index(f"tar -xzf \"$RUNNER_TEMP/{key}.tar.gz\"")
         build = steps[names.index("Build without cloud credentials")]["run"]
         assert build.count("docker build --no-cache") == 3 and "deny-dockerignore" in build and "cap_context" in build
         assert '"${PACK_NETWORK[@]}"' in build and "--network=none" in build
@@ -304,3 +306,7 @@ def test_unconfirmed_patterns_in_installed_packages_are_counted_not_listed(tmp_p
     out = capsys.readouterr().out
     assert "httpx" not in out and "dpkg" not in out and "/app/settings.py" in out and "/usr/local/lib/x/creds.py" in out  # a working key anywhere
     assert "2 unconfirmed in installed packages or system files" in out and json.loads((tmp_path / "s.json").read_text())["installed"] == 2
+    # Node.js (live 2026-10-19): the official node image's Yarn README, read from its own layer although the build deletes
+    # Yarn, and a pattern in an installed npm package are someone else's code too; the service's own file is not.
+    assert leaks.third_party("/opt/yarn-v1.22.22/README.md") and leaks.third_party("/app/node_modules/aws-sdk/test/creds.js")
+    assert not leaks.third_party("/app/server.js") and not leaks.third_party("/app/lib/node_modules_helper.js")

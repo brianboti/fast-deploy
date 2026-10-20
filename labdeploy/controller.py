@@ -463,9 +463,21 @@ class Controller:
                                 "refusals": read["refusals"], "ignored": read["ignored"], "notes": read["notes"], "services": seen["services"]}
         except Exception as exc:  # noqa: BLE001 - the checklist stands on its own
             view["as_it_is"] = {"ready": False, "error": (explain(exc) or str(exc))[:300]}
+        # A root that holds no service of its own (its only refusal is the missing manifest) while its folders do: the
+        # answer names the folders rather than offering a Dockerfile or a manifest for the root (live 2026-10-19).
+        empty_root = ("no dependency manifest", "has Node.js code but no package.json")
+        refusals = view["as_it_is"].get("refusals") or []
+        folders = [entry["path"] for entry in view["as_it_is"].get("services") or [] if entry.get("path")]
+        if folders and refusals and all(str(item.get("problem", "")).startswith(empty_root) for item in refusals):
+            view["as_it_is"]["folders"] = folders
+        else:
+            folders = []
         if result["ready"]:
             view["next_action"] = (f"Ready to deploy: onboard_application with {repository}" + (f" and path {path}" if path else "")
                                    + (". The platform can still draft the recommended " + ", ".join(writable) + " with propose_configuration." if writable else "."))
+        elif folders:
+            view["next_action"] = (f"The services live in folders ({', '.join(folders[:6])}" + (f" and {len(folders) - 6} more" if len(folders) > 6 else "")
+                                   + f"): check one with check_repository and its path, such as path {folders[0]}.")
         elif view["as_it_is"].get("ready"):
             view["next_action"] = (missing_message(result["checklist"]) + " Or deploy it as it is, adding nothing to the repository: onboard_application "
                                    "with as_is true (its contract is kept in the platform repository).")
@@ -1128,6 +1140,21 @@ class Controller:
         image = receipt.get("image") if receipt.get("provenance") != "unavailable" else None
         prefix = f"{app.target.region}-docker.pkg.dev/{app.target.project_id}/{app.target.registry}/{app.target.service}@sha256:"
         same_build = same_image_inputs((prior or {}).get("spec"), spec)
+        built_with = ((prior or {}).get("contract") or {}).get("commit")
+        if image and built_with and built_with != found["commit"]:
+            # The image's signed provenance names the contract commit it was built from, and the pipeline verifies a reused
+            # image against the plan's; the platform repository's main moves with every merge (live 2026-10-19: "made from a
+            # different contract"). When nothing under apps/<service>/ changed since (the contract and the locks the platform
+            # made), the plan keeps that commit, an ancestor of main the pipeline accepts; otherwise the image is built again.
+            folder = found["path"].rsplit("/", 1)[0] + "/"
+            try:
+                files, complete = self.github.changed_files(platform.repository, built_with, found["commit"])
+            except Exception:  # noqa: BLE001 - a comparison that cannot be read rules nothing out: build again
+                files, complete = [], False
+            if complete and not any(name.startswith(folder) for name in files):
+                plan["contract"]["commit"] = built_with
+            else:
+                image = None
         if app.provenance == "unavailable":
             plan["warnings"].append("The operator's exception provenance: unavailable is set for this application: the image is built fresh and released "
                                     "without signed provenance. Remove it from the controller configuration once the cause is fixed.")

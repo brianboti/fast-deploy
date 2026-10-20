@@ -584,12 +584,88 @@ move: its contract's `node` (and its Dockerfile's `FROM node:X`) to the newer li
 the date, a plan or a promotion on the old line is refused with the reason (the pipeline's "Validate reviewed
 specification" refuses it too); what already serves keeps serving.
 
-The pins to refresh with the line's releases, as for Python's: the `node:<line>-slim` index digests in
-`labdeploy/scaffold.py` (`docker buildx imagetools inspect node:24-slim`, the top "Digest:" line, resolved 2026-10-19),
-`actions/setup-node` in `templates/deploy-gcp.yml` and `templates/repo/ci-node.yml` (7.1.0 by commit), OSV-Scanner's
-version and SHA-256 in `templates/deploy-gcp.yml` (2.7.0, from its release's checksums), and the npm a Node 22 lock is
-made with (`LOCK_NPM` in `labdeploy/scaffold.py`: 11.19.1 and its registry integrity hash; it goes when 22 does). Regenerate
-`.github/workflows/deploy.yml` with `labdeploy.workflows.central_deploy` after a template change; a test keeps them equal.
+The weekly pin refresh (next section) keeps the `node:<line>-trixie-slim` index digests, OSV-Scanner, the npm a Node 22 lock is
+made with (`LOCK_NPM` in `labdeploy/scaffold.py`; it goes when 22 does) and, since 1.20.6, `actions/setup-node` current:
+setup-node is pinned by commit in `templates/deploy-gcp.yml` and `templates/repo/ci-node.yml`, and the refresh writes it
+there and in `.github/workflows/deploy.yml` at once. After a template change by hand, regenerate
+`.github/workflows/deploy.yml` with `labdeploy.workflows.central_deploy` (a test keeps them equal).
+
+## The weekly pin refresh
+
+Since 1.20.5, `.github/workflows/pins.yml` runs on Mondays at 05:23 UTC and keeps current the pins Dependabot does not
+follow; since 1.20.6 these include the GitHub Actions the templates use. Dependabot reads only `.github/workflows`, so it
+would move such an action in the workflows and never in the templates they are made from; it now follows only the
+Terraform providers and the actions no template uses (`hashicorp/setup-terraform`). `labdeploy/pins.py` lists each pin
+with its official source, the line of releases the platform follows, and every place it is written:
+
+| Pins | Written in | Read from |
+|---|---|---|
+| TruffleHog, Trivy, OSV-Scanner, hadolint, pack and Cosign: version and SHA-256 | `templates/deploy-gcp.yml`; Cosign also `.github/workflows/promote.yml`, hadolint also `.github/workflows/ci.yml` | GitHub's release API and each project's checksum list |
+| The buildpacks builders and run images, by digest | `templates/deploy-gcp.yml` | gcr.io's list of images, with their upload times |
+| The `python:X.Y-slim` and `node:<line>-trixie-slim` index digests, with the release and the Debian each carries | `labdeploy/scaffold.py`; 3.12 also the platform's and the demo app's Dockerfiles | Docker Hub's tag API |
+| uv and its wheel hashes; the npm for Node 22 locks and its integrity | `labdeploy/scaffold.py` | PyPI's index API; the npm registry |
+| OpenTofu: version and SHA-256 | `.github/workflows/ci.yml` | GitHub's release API and OpenTofu's checksum list |
+| Caddy (SHA-512) and Litestream (SHA-256) | `infra/gcp/modules/project/controller-startup.sh` | GitHub's release API and each project's checksum list |
+| The actions the templates use (`actions/checkout`, `setup-python`, `setup-node`, `upload-artifact`, `download-artifact`, `attest-build-provenance`, `attest-sbom`, `create-github-app-token`; `google-github-actions/auth`, `setup-gcloud`), by commit, written `owner/name@<commit> # vX.Y.Z` | everywhere each appears: `templates/*.yml`, `templates/repo/*.yml`, `labdeploy/workflows.py` and every file in `.github/workflows` | GitHub's release API and the git refs API of the action's own repository |
+
+The rules. A release is proposed only once it is seven days old, counted from the later of its publication and its files'
+upload, and only from the line the platform follows (TruffleHog 3, Cosign 3, uv 0.12, npm 11, an action's major version,
+and so on); a newer line is listed in the pull request and never proposed. Each checksum is read from official release
+metadata, never computed from a download: for a file on GitHub, the SHA-256 GitHub recorded at upload, which the project's
+own checksum list must repeat (Caddy's list is SHA-512, and that is its pin); for an image, its registry's index digest
+(Docker Hub's tag must have pointed to it for seven days; Google uploads buildpacks images about weekly, so the newest one
+Google published that is seven days old is taken, with the line's stack label); for uv and npm, the hashes PyPI and the
+registry publish; for an action, the commit its release's tag names in the action's own repository, as GitHub's
+documentation asks (a commit from the action's repository, never a fork's). A newer npm must ask for the same Node.js
+versions and run no install script. Each week the job also checks that each pinned action's release tag still names the
+pinned commit: a release's tag never needs to move, so a moved one holds that action and says so. Then the job downloads
+each new file and checks it against its new pin, without running it, writes every place, regenerates
+`.github/workflows/deploy.yml`, writes each new action commit wherever the action appears (`labdeploy/workflows.py` and
+`deploy.yml` included), and opens one pull request, **Weekly pin refresh, DATE: ...**, or replaces last week's if it is
+still open. It never merges, and nothing in it touches Google Cloud.
+
+Reviewing it. The pull request lists each change with its release notes, GitHub's record of the file and the checksum
+list (for an action, its tag and the changes since the pinned commit), then what waits for its seven days, the newer
+lines, and anything that needs a look (sources that disagree, a pinned file that changed upstream, an image gone from its
+registry, an action's tag that moved). Read the release notes of the scanners for changed options and output: the pipeline
+reads TruffleHog's, Trivy's, OSV-Scanner's and hadolint's JSON. For an action, look for an input or output renamed or
+removed. CI is the gate: the full suite checks that every place agrees and that `.github/workflows/deploy.yml` equals its
+template. CI does not run a new tool or action on a real release, so look at the first release after the merge. Merge it
+like any pull request; revert it to undo.
+
+After the merge, a change arrives:
+- in the pipeline's tools and the buildpacks images: at the next release of each service under `apps/`, and for an
+  application with its own workflows once they are re-pinned (`update_app_workflows`);
+- in Cosign: also at the next promotion;
+- in CI's hadolint and OpenTofu: at once;
+- in the base images, uv and npm: in the controller's drafts and lock containers once the machine runs the merged commit
+  (`scripts/machine.sh update $(git rev-parse origin/main)`);
+- in Caddy and Litestream: on the controller's machine only after you apply the foundation (`scripts/apply-foundation.sh`)
+  and its startup script runs again (`scripts/machine.sh startup`, or a restart), since that script installs them;
+- in an action: in each of this repository's workflows at its next run (CI on the merge itself), in an application's own
+  workflows once Claude re-pins them, and in the CI the controller drafts once it runs the merged commit. When it is an
+  action `.github/workflows/infra-apply.yml` uses (checkout, Google's auth), merging also starts **Infrastructure apply**
+  for every application root, as Dependabot's bumps of them did before: that workflow runs when a push to main changes it,
+  and counts a change to an infrastructure workflow as one to every root. The pull request says so. Each apply goes
+  through its environment's protection and finds nothing to change while the drift check is clean; look at the drift
+  issue before you merge.
+
+With `platform_updates` on (section "After a release"), the machine update and the re-pins happen by themselves.
+
+By hand: `python -m labdeploy.pins check` shows what a refresh would propose today and writes nothing; `python -m
+labdeploy.pins list` shows the pins as the files hold them. To follow a newer line (uv 0.13, or `actions/upload-artifact`
+7 and `actions/download-artifact` 8 together, say), change its `line` in `PINS` in a reviewed pull request; the next run
+proposes it (or run **Weekly pin refresh** by hand). A new pin goes into `PINS` with its places: `tests/test_pins.py`
+fails while a download held to a checksum, or an image digest, in the files the job reads is missing from it, while a
+template uses an action that `PINS` and the ignore list in `.github/dependabot.yml` do not both name, and while a test
+spells out a pinned value instead of reading it.
+
+A red run means a place could not be found (someone reworded a pinned line: change the place in `PINS`; for an action,
+write it `owner/name@<commit> # vX.Y.Z` with the same commit everywhere), or a download did not match the pin read from its
+metadata (nothing is proposed; look at that release before anything else). A source
+that cannot be read leaves its pins as they are and says so in the pull request. The job needs the pins App (docs/SETUP.md
+section 7o); without it the proposal stays in the run's summary. It costs nothing: the repository is public, so
+GitHub-hosted runner minutes are free, and the job creates no cloud resources.
 
 ## An application that calls Claude
 
@@ -765,7 +841,8 @@ and the apps' pins carry the name, so the order matters:
   production shows production's spend beside staging's once `add_production` has run for it with 1.18.8.
 - Any `lab-deploy-cap-lifted` label left from the previous month (`gcloud run services list --format="table(name,labels)"`).
 - The native spend cap still exists (`scripts/spend-cap.sh check PROJECT`) and the drift issue on the platform repository is closed.
-- Dependabot pull requests on the platform repository; `pip-audit` runs every Monday in CI.
+- Dependabot pull requests and the weekly pin refresh's pull request on the platform repository (section "The weekly
+  pin refresh"); `pip-audit` runs every Monday in CI.
 - Node.js lines within a month of their end of life (section "Node.js lines and their end of life"): 22 on 2027-04-30,
   24 on 2028-04-30.
 - The GitHub token's expiry in the watchdog findings, while a laptop uses one.

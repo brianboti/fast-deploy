@@ -365,6 +365,9 @@ def test_the_startup_script_pins_its_tools_and_never_starts_the_controller_witho
         subprocess.run(["bash", "-n", str(STARTUP)], check=True)
     assert re.search(r"^CADDY_SHA512=[0-9a-f]{128}$", text, re.M) and re.search(r"^LITESTREAM_SHA256=[0-9a-f]{64}$", text, re.M)
     assert '| "${algorithm}sum" --check --strict --quiet' in text
+    # Live 2026-10-19: docker.io on Debian 13 only recommends docker-cli, so the locks found no docker command.
+    packages = re.search(r"^for package in (.*); do$", text, re.M).group(1).split()
+    assert {"docker.io", "docker-cli", "nftables"} <= set(packages) and "--no-install-recommends" in text
     units = re.findall(r"cat > /etc/systemd/system/([a-z-]+)\.service <<'EOF'\n(.*?)\nEOF", text, re.S)
     # The three that run all the time restart themselves; the machine's own update (1.20.4) runs once per request.
     assert sorted(name for name, _ in units) == ["caddy", "fast-deploy", "fast-deploy-update", "litestream"]
