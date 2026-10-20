@@ -1,0 +1,13 @@
+# Imported by Fast Deploy from brianboti/fast-deploy-phase20-trial (aiohttp-main) at 014840da4074 on 2026-10-20, read as it is: the pull request that added
+# this file lists every choice and where it came from. Merging is the review (docs/ROADMAP.md D32); a release moves source.commit.
+source:
+  repository: brianboti/fast-deploy-phase20-trial
+  path: aiohttp-main
+  commit: 014840da4074fe64e55ddeed7562f302fbed9615
+name: aiohttp-main
+env:
+  HOST: 0.0.0.0  # main.py defaults HOST to 127.0.0.1, which Cloud Run cannot reach (the review's edit; 1.22.1 drafts it)
+tests: none
+build:
+  recipe: platform
+  entrypoint: python main.py
