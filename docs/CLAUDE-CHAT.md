@@ -86,7 +86,7 @@ see (a rollback, a right-sizing pull request), ask Claude: a right-sizing propos
 
 **A token that does not see every application** (its `applications` list has no `"*"`, such as a student's read-only
 token for two apps) gets only the numbers and names of its own applications, in chat and on the page alike (since
-1.28.1). `get_cost_report` and the Cost view give the lines of the bill labelled with its applications, each beside the
+1.29.2). `get_cost_report` and the Cost view give the lines of the bill labelled with its applications, each beside the
 same line of the window before, with their right-sizing proposals, floor and ceiling; the whole project's bill (by Google
 service, its totals, the month so far and its budget) and other applications' lines are shown to an identity that sees
 every application, and the answer says so in one line. `get_controller_status` and the Activity view give each background

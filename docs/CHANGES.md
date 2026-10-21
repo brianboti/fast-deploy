@@ -31,12 +31,12 @@ names of its own applications only. The controller decides it in one place (`cos
    the answer repeats as a line.
 
 An identity with `"*"` sees exactly what it saw: every Monitor view's markup and both tools' answers, through the MCP
-endpoint, were compared byte for byte with 1.28.0's from the same records, for a deployer and for a read-only identity.
+endpoint, were compared byte for byte with 1.29.1's from the same records, for a deployer and for a read-only identity.
 
 Upgrade steps: update the machine. No configuration change. The skill is unchanged: Claude answers from the summary, which
 carries the line.
 
-Tests: 1,038 pass, 5 of them new. In `tests/test_monitor.py`, the Cost and Activity views beside `get_cost_report` and
+Tests: 1,047 pass, 5 of them new. In `tests/test_monitor.py`, the Cost and Activity views beside `get_cost_report` and
 `get_controller_status` called through the MCP endpoint, for a limited identity and for a `*` one; in `tests/test_chat.py`,
 both answers with parts hidden; in `tests/test_cost_tools.py`, the limited report, and the kept report left whole. The
 scoping test of 1.28.0 now looks for the new line, and the status tool test of 1.9.0 for the `hidden` sentence. Ruff check
