@@ -1555,6 +1555,41 @@ def render_build(app_dir, out_dir, spec, path=""):
     return copied
 
 
+def base_dockerfile(spec, lockfile):
+    """The test image of a Node.js application (docs/ROADMAP.md D69), from its contract: its Node line, its locked packages
+    with every install script off and then only build.scripts, npm kept, a writable /work, user 65532, and none of its code."""
+    if spec.runtime != "node-http" or spec.node not in NODE_IMAGES:
+        raise ValueError(f"{spec.name} is not a Node.js web service, so it has no test image a job can build on (base names a node-http application)")
+    if lockfile not in ("package-lock.json", "npm-shrinkwrap.json"):
+        raise ValueError(f"{spec.name}'s packages are locked with {lockfile or 'nothing'}; a test image is built from an npm lockfile "
+                         "(package-lock.json or npm-shrinkwrap.json) for now")
+    rebuild = (" \\\n && npm rebuild --ignore-scripts=false " + " ".join(spec.build.scripts)) if spec.build.scripts else ""
+    note = "; only build.scripts runs its own afterwards" if spec.build.scripts else ""
+    return fill(template("Dockerfile.node.base"), SERVICE=spec.name, NODE=spec.node, RESOLVED=NODE_IMAGES_RESOLVED, DIGEST=NODE_IMAGES[spec.node],
+                LOCKFILE=lockfile, REBUILD=rebuild, SCRIPTS_NOTE=note)
+
+
+def render_base(app_dir, out_dir, spec, path="", platform_lock=None):
+    """The build context of an application's test image (D69): its package.json and npm lockfile, from its folder `path` in
+    the checkout `app_dir` (or the lock the platform made for it), and the Dockerfile beside them. Nothing else is copied:
+    no code, no .npmrc. Returns the lockfile's name."""
+    import shutil
+    service = Path(app_dir).resolve(strict=True) / clean_path(path) if path else Path(app_dir).resolve(strict=True)
+    if not (service / "package.json").is_file() or (service / "package.json").is_symlink():
+        raise ValueError(f"{spec.name}'s folder holds no package.json")
+    lockfile = next((name for name in ("npm-shrinkwrap.json", "package-lock.json") if (service / name).is_file() and not (service / name).is_symlink()), None)
+    source = service / lockfile if lockfile else None
+    if source is None and platform_lock and Path(platform_lock).is_file():
+        lockfile, source = "package-lock.json", Path(platform_lock)
+    dockerfile = base_dockerfile(spec, lockfile)
+    target = Path(out_dir)
+    target.mkdir(parents=True, exist_ok=False)
+    shutil.copyfile(service / "package.json", target / "package.json")
+    shutil.copyfile(source, target / lockfile)
+    (target / "Dockerfile").write_text(dockerfile)
+    return lockfile
+
+
 def descriptor():
     """The buildpacks' project descriptor (project.toml, schema 0.2) the platform builds with: the same deny-list, so a
     buildpacks image never carries secrets, tests, notebooks or caches either."""
@@ -1636,6 +1671,12 @@ def main(argv=None):
     install.add_argument("folder")
     install.add_argument("--version", default="", help="an exact release (package.json's packageManager), else the platform's pin")
     install.add_argument("--integrity", default="", help="the sha512 integrity packageManager carries, if any")
+    base = commands.add_parser("render-base", help="write the build context of an application's test image, for jobs that build on it (D69)")
+    base.add_argument("app_dir")
+    base.add_argument("out_dir")
+    base.add_argument("--spec", required=True, help="the application's platform.yaml, or its contract kept in the platform repository")
+    base.add_argument("--path", default="")
+    base.add_argument("--platform-lock", default="", help="the npm lock the platform made for it, when it has none of its own")
     commands.add_parser("descriptor", help="print the buildpacks' project descriptor")
     commands.add_parser("deny-dockerignore", help="print the deny-list .dockerignore for a repository without one")
     args = parser.parse_args(argv)
@@ -1669,6 +1710,13 @@ def main(argv=None):
             print(f"INTEGRITY={shlex.quote(facts['integrity'] or '')}")
             print(f"BUILD={shlex.quote(' '.join(plan.get('build') or []))}")
             print(f"START={shlex.quote(' '.join(plan.get('start') or []))}")
+            return 0
+        if args.command == "render-base":
+            from .models import parse_contract
+            text = Path(args.spec).read_text()
+            spec = parse_contract(text)[0] if "\nsource:" in "\n" + text else parse_spec(text)
+            lockfile = render_base(args.app_dir, args.out_dir, spec, clean_path(args.path), args.platform_lock or None)
+            print(f"Test image of {spec.name}: Node.js {spec.node}, {lockfile}" + (f", build.scripts {' '.join(spec.build.scripts)}" if spec.build.scripts else ""), file=sys.stderr)
             return 0
         spec = parse_spec(Path(args.spec).read_text())
         if args.command == "render-build":

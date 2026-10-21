@@ -57,6 +57,7 @@ HANDOFF = "PROJECT_HANDOFF.md"
 WORKFLOWS = "labdeploy/workflows.py"
 PLATFORM_PY = "templates/repo/Dockerfile.platform"
 PLATFORM_NODE = "templates/repo/Dockerfile.node.platform"
+PLATFORM_BASE = "templates/repo/Dockerfile.node.base"  # the test image a job builds on (docs/ROADMAP.md D69)
 STATIC = "templates/repo/Dockerfile.static"  # the steps it adds to the platform pipeline pin actions too
 # Where actions are pinned by commit: every workflow of this repository, the templates an application's workflows and its
 # drafted CI are made from, and labdeploy/workflows.py. Each mention is `owner/name@<commit> # vX.Y.Z`.
@@ -196,7 +197,7 @@ PINS = (
         asset="litestream-{version}-linux-x86_64.tar.gz", sums="checksums.txt"),
     # tini, the init of the platform's images (docs/ROADMAP.md 22.2): downloaded in each image's first stage and held to its SHA-256.
     Pin("tini", "tini", "github", "krallin/tini",
-        tuple(place for path in (PLATFORM_PY, PLATFORM_NODE, STATIC)
+        tuple(place for path in (PLATFORM_PY, PLATFORM_NODE, PLATFORM_BASE, STATIC)
               for place in ((path, "releases/download/v{version}/tini-static-amd64"), (path, 'echo "{sha256}  /tini"'))),
         "starts every image the platform builds, so SIGTERM reaches the service and a chained start still stops cleanly", PIPELINE,
         line="0", asset="tini-static-amd64", sums="tini-static-amd64.sha256sum"),

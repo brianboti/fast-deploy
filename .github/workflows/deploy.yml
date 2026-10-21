@@ -49,6 +49,11 @@ on:
         required: false
         default: '300'
         type: string
+      base:
+        description: The application the jobs build on, at the commit its last release deployed (JSON service, repository, path, commit; docs/ROADMAP.md D69)
+        required: false
+        default: ''
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -63,6 +68,7 @@ env:
   IMAGE_DIGEST_INPUT: ${{ inputs.image_digest }}
   PROVENANCE_INPUT: ${{ inputs.provenance }}
   BAKE_SECONDS: ${{ inputs.bake_seconds }}
+  BASE_INPUT: ${{ inputs.base }}
   # Where this service lives in its repository (the checkout is app/; a monorepo service has its own folder) and the file
   # name of this workflow, which the build provenance names. Rendered per application by the platform; never edit by hand.
   APP_DIR: ${{ inputs.app_path != '' && format('app/{0}', inputs.app_path) || 'app' }}
@@ -250,6 +256,13 @@ jobs:
             echo "::notice title=Code nobody has reviewed::the platform's gates for code taken as it is apply: a working key stops the build, fixable critical and high vulnerabilities stop the release, the service runs contained (docs/ROADMAP.md D35)"
           fi
           [ "$TESTS" = "required" ] || echo "::warning::platform.yaml declares tests: none; no automated tests guard this release"
+      # The jobs the service starts (docs/ROADMAP.md D64) and the application whose test image they build on (D69).
+      - name: Read the jobs
+        id: jobs
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: python -m labdeploy.jobimages read "$SPEC_SOURCE" --base "$BASE_INPUT" >> "$GITHUB_OUTPUT"
       # The scanners of the gates (docs/ROADMAP.md 14.1, 14.2, 14.7), downloaded by version and checked against their SHA-256:
       # TruffleHog finds secrets and checks whether each still works; Trivy makes the parts list and reads Dockerfiles.
       - name: Install the scanners
@@ -714,6 +727,65 @@ jobs:
           set -euo pipefail
           "$RUNNER_TEMP/trivy" image --input bundle/image.tar --format cyclonedx --output bundle/sbom.cdx.json --quiet --skip-version-check
           python -m labdeploy.sbom bundle/sbom.cdx.json
+      # D69: the application the jobs build on, read-only at the commit its last release deployed, through the platform's GitHub
+      # App when it is installed (the variable APPS_APP_ID), else the read-only token APPS_READ_TOKEN, else this job's own token.
+      - name: Token for the base application's repository
+        id: base-token
+        if: steps.jobs.outputs.has_base == 'true' && vars.APPS_APP_ID != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.APPS_APP_ID }}
+          private-key: ${{ secrets.APPS_APP_PRIVATE_KEY }}
+          owner: ${{ steps.jobs.outputs.base_owner }}
+          repositories: ${{ steps.jobs.outputs.base_name }}
+          permission-contents: read
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.jobs.outputs.has_base == 'true'
+        with:
+          repository: ${{ steps.jobs.outputs.base_repository }}
+          ref: ${{ steps.jobs.outputs.base_commit }}
+          token: ${{ steps.base-token.outputs.token || secrets.APPS_READ_TOKEN || github.token }}
+          persist-credentials: false
+          path: base
+      # D69: its test image, made by the platform from its contract (its Node.js line, its npm lockfile with every install
+      # script off, then only its build.scripts), with none of its code. The jobs receive it as the build argument BASE.
+      - name: Build the test image the jobs build on
+        if: steps.jobs.outputs.has_base == 'true'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+          BASE_SERVICE: ${{ steps.jobs.outputs.base_service }}
+          BASE_PATH: ${{ steps.jobs.outputs.base_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SERVICE" =~ ^[a-z][a-z0-9-]{1,19}[a-z0-9]$ ]]
+          [[ "$BASE_PATH" = "." || "$BASE_PATH" =~ ^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*){0,7}$ ]]
+          git -C base clean -ffdxq
+          # A contract the platform keeps (apps/<service>/platform.yaml, with any lock it made), else the application's own.
+          SPEC="base/$BASE_PATH/platform.yaml"
+          LOCK=""
+          if [ -f "platform/apps/$BASE_SERVICE/platform.yaml" ]; then
+            SPEC="platform/apps/$BASE_SERVICE/platform.yaml"
+            LOCK="platform/apps/$BASE_SERVICE/package-lock.json"
+          fi
+          python -m labdeploy.scaffold render-base "base/$BASE_PATH" "$RUNNER_TEMP/base-build" --spec "$SPEC" --platform-lock "$LOCK"
+          docker build --no-cache --platform linux/amd64 -t "lab-base:$COMMIT_SHA" "$RUNNER_TEMP/base-build"
+      # 27.3: the images of the jobs the service starts, built and checked like the service's and still without cloud
+      # credentials: the Dockerfile policy and hadolint, no build cache, the secret scan of each image and its parts list.
+      - name: Build and check the jobs' images
+        if: steps.jobs.outputs.has_jobs == 'true'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+          TRUST: ${{ steps.policy.outputs.trust }}
+          NETWORK: ${{ steps.policy.outputs.network }}
+          HAS_BASE: ${{ steps.jobs.outputs.has_base }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_IMAGE=""
+          if [ "$HAS_BASE" = "true" ]; then BASE_IMAGE="lab-base:$COMMIT_SHA"; fi
+          python -m labdeploy.jobimages build "$SPEC_SOURCE" --app-dir "$APP_DIR" --app-path "$APP_PATH" --out bundle/jobs --trust "$TRUST" \
+            --network "$NETWORK" --base-image "$BASE_IMAGE" --base "$BASE_INPUT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-bundle
@@ -833,7 +905,15 @@ jobs:
           if os.environ['REUSING_IMAGE'] != 'true':
               with open('bundle/image.tar', 'rb') as f:
                   assert hashlib.file_digest(f, 'sha256').hexdigest() == Path('bundle/image.sha256').read_text().strip()
+          # A release whose service starts jobs builds their images again: an earlier run's images are not reused (27.3).
+          assert not (spec.jobs and os.environ['REUSING_IMAGE'] == 'true'), 'A release with jobs builds its images; it never reuses an earlier one'
           PY
+      - name: Read the jobs
+        id: jobs
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: python -m labdeploy.jobimages read bundle/platform.yaml --base "$BASE_INPUT" >> "$GITHUB_OUTPUT"
       # Provenance links this exact digest to this commit and workflow run; the release deploys only a verified digest.
       # A public repository uses GitHub's attestation. A private one, which GitHub attests only on Enterprise Cloud, signs
       # with the application's own Cloud KMS key through Cosign. Skipping it is the operator's exception, for a fresh build only.
@@ -919,7 +999,7 @@ jobs:
       # The Cloud KMS path: only this application's deployer may sign with its key, and the deployer is reachable only from
       # these workflows on main in the staging environment.
       - name: Install Cosign
-        if: steps.provenance.outputs.mode == 'cosign-kms'
+        if: steps.provenance.outputs.mode == 'cosign-kms' || (steps.jobs.outputs.has_jobs == 'true' && steps.provenance.outputs.mode != 'unavailable')
         env:
           PYTHONPATH: ${{ github.workspace }}/platform
         shell: bash
@@ -969,6 +1049,21 @@ jobs:
           set -euo pipefail
           "$COSIGN" verify-attestation --key "$PROVENANCE_KEY" --type slsaprovenance1 --insecure-ignore-tlog=true "$IMAGE_DIGEST" > "$RUNNER_TEMP/verified.jsonl"
           python -m labdeploy.provenance verify "$RUNNER_TEMP/verified.jsonl"
+      # 27.3: each job's image, its data files inspected, pushed as <service>-<job>, its provenance and parts list signed with
+      # the application's Cloud KMS key and verified (any repository: Cosign takes the images in a loop). The release reads
+      # job-images.json and points each job at its image.
+      - name: Push, sign and verify the jobs' images
+        if: steps.jobs.outputs.has_jobs == 'true'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+          SPEC_FILE: bundle/platform.yaml
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN=$(gcloud auth print-access-token)
+          GOOGLE_ACCESS_TOKEN="$TOKEN" python -m labdeploy.jobimages push bundle/platform.yaml --bundle bundle \
+            --image-prefix "$GCP_REGION-docker.pkg.dev/$GCP_PROJECT_ID/$REGISTRY_NAME/$SERVICE" --mode "$PROVENANCE_MODE" --key "${PROVENANCE_KEY:-}"
+          echo "JOB_IMAGES_FILE=$GITHUB_WORKSPACE/job-images.json" >> "$GITHUB_ENV"
       # 14.8: Binary Authorization. With the provenance above verified, the release attests the image with the project's
       # attestor key; a service that opts in (every application's, once its root follows the foundation) runs nothing else
       # when the policy is enforced. A reused image was attested by the run that built it.
@@ -995,6 +1090,13 @@ jobs:
           SPEC_FILE: bundle/platform.yaml
           BLOCK_ON_CRITICAL_VULNERABILITIES: ${{ vars.BLOCK_ON_CRITICAL_VULNERABILITIES || 'false' }}
         run: python -m labdeploy.scan
+      - name: Summarize the jobs' image vulnerabilities
+        if: steps.jobs.outputs.has_jobs == 'true'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+          SPEC_FILE: bundle/platform.yaml
+          BLOCK_ON_CRITICAL_VULNERABILITIES: ${{ vars.BLOCK_ON_CRITICAL_VULNERABILITIES || 'false' }}
+        run: python -m labdeploy.jobimages scan
       - name: Deploy, probe, promote; restore traffic on failure
         id: release
         env:
@@ -1015,6 +1117,8 @@ jobs:
           path: |
             release-receipt.json
             vulnerability-summary.json
+            vulnerability-summary-*.json
+            job-images.json
           if-no-files-found: warn
           retention-days: 30
   notify:
