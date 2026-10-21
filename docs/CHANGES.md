@@ -1,3 +1,37 @@
+# 1.27.0: cost between Mondays (Phase 24)
+
+Roadmap Phase 24 (docs/ROADMAP.md 24.1 to 24.4, decisions D62 and D63 at their defaults), stacked on 1.26.0 (#146). The
+review of 2026-10-21 found cost watched weekly and at the budget line, with nothing between and nothing to compare with
+("crawl" on the FinOps Foundation's ladder for anomalies and reporting). Nothing here acts; nothing adds a monthly charge.
+Built and checked locally; the live exercise listed under Phase 24 has not run yet.
+
+1. **The weekly report compares** (24.1, D62). Beside the window it reads the window before, of the same length, from the
+   same billing export (a third query of megabytes), and names what moved by more than a fifth and more than a dollar, by
+   Google service and by application, the largest change first. It adds the month so far per project, net of credits as
+   the invoice counts it, with a forecast (the month so far scaled to the month, marked rough in the first week). The
+   issue and the chat answer say them, and the chat answer sets the month against the project's recorded budget (the
+   webhook's one line is unchanged).
+2. **The digest's cost line, every day** (24.2, D63). Each project's month so far, its forecast, its budget as recorded
+   under `monthly_budgets_usd` (new; the settings page's "Budgets you created") and its native cap; a forecast above its
+   budget is something to look at. The observer reads the billing export: the foundation now gives it, and the machine,
+   BigQuery's job user role in the export's project and data viewer on the export's dataset only.
+3. **Google's Cost Anomaly Detection as the operator's step** (24.3). `docs/SETUP.md` 7q says how to turn it on (free,
+   hourly, daily summary by email); `cost_anomaly_detection: true` records it, and Monday's digest and the cost report
+   remind until it is recorded.
+4. **What the alerts cost** (24.4, D63). Monday's digest counts each project's alert policies and uptime executions against
+   the free allotments, names the services nobody but the health checks called in 30 days (candidates to retire; a person
+   decides), and the runbook's monthly checklist carries Google's alert pricing (no sooner than 2027-09-01).
+5. **The settings page** records the digest's hour (empty turns it off), the budgets and the anomaly detector.
+
+Upgrade steps: merge after #146; apply the foundation of the project that holds the billing export
+(`scripts/apply-foundation.sh lab-deploy-staging-f29a`) for the observer's grants; record the budgets
+(`lab-deploy-staging-f29a: 20`, `fast-deploy-prod-c602: 20`) and, once it is on, Cost Anomaly Detection, on the settings
+page; update the machine; re-pin applications with their own workflows (`update_app_workflows`) so their weekly report
+runs the new code (the template itself is unchanged); re-upload the skill.
+
+Tests: 1,013 pass (9 new, `tests/test_phase24.py`); ruff clean; `terraform validate` passes for the foundation.
+
+
 # 1.26.0: the voice after a release (Phase 23)
 
 Roadmap Phase 23 (docs/ROADMAP.md 23.1 to 23.6, decisions D57 to D61 at their defaults), from the research review of

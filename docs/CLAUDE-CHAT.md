@@ -71,7 +71,8 @@ the skill must be re-uploaded after every release that changes `skills/` (the re
 | "How is demo doing in production?" | `get_service_health` with `environment: production` | The same for production, with the error budget its objective has left |
 | "Show me demo's recent logs" | `get_recent_logs` | Last log lines through the read-only observer identity |
 | "What would demo cost?" | `estimate_cost` | Floor, compute ceiling, needs' floor, optional traffic scenario, findings |
-| "What did we actually spend?" | `get_cost_report` | The weekly right-sizing report with measured usage, proposals and billing export |
+| "What did we actually spend?" | `get_cost_report` | The weekly right-sizing report with measured usage, proposals and billing export; since 1.27.0 the period before beside it, what moved, and the month so far against the budget |
+| "Are we on budget this month?" | `get_digest` | The digest's cost line: each project's month so far, its forecast and its budget |
 | "Where is my release?" | `get_deployment_status` | Every workflow step, the release phases, candidate logs on failure, a next action |
 | "What happened today?", "How are things?" | `get_digest` | The daily digest: what shipped, how each release did a day later, apps with server errors, error lines or missed uptime checks, drift, what waits for you, or "all quiet" (since 1.26.0) |
 | "Did yesterday's release of demo go well?" | `get_deployment_status`, `get_service_health` | The release report a day after it: better, about the same, worse or too little traffic to compare, with the numbers against the week before |

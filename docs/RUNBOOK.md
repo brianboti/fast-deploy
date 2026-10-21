@@ -303,6 +303,12 @@ written by code from the controller's records and the observer's reads; neither 
   today** of the platform repository, sent to `notify_webhook_url` too, and `get_digest` shows it in chat. The watchdog's
   own webhook post is folded into it. When it reaches no one (the App lacks the Issues permission, no webhook) or stops,
   the watchdog says so, and the Controller watch workflow fails after two days without it.
+- **The cost line** (since 1.27.0, decision D63): every day the digest gives each project's spend this month from the
+  billing export, its forecast (the month so far scaled to the month) and its recorded budget, and says when a forecast
+  is above its budget. On Mondays it also counts each project's alert policies and uptime executions against Google's
+  free allotments, and names the services nobody but the health checks called in 30 days: candidates to retire with
+  `scripts/decommission.sh`, which a person decides. The weekly cost report sets the window before beside the window and
+  names what moved by more than a fifth and a dollar.
 - **The trust numbers** (decision D61) in `get_controller_status`: releases that reached users, went back on their own,
   were rolled back by a person; the change failure rate; the median time back to a good release; how many watches after
   a switch had too little traffic; restores that may have been for nothing (the same commit passed later). They are for
@@ -913,7 +919,9 @@ and the apps' pins carry the name, so the order matters:
 - Google's alert pricing: no sooner than 2027-09-01, $0.35 a month per metric reference in an alert policy (uptime,
   billing and quota alerts excepted). Before then, retire test services nobody uses (`scripts/decommission.sh`): each
   takes five alert policies and an uptime check.
-- The cost report issue on each app repository: spend against the budget, drift, proposals. An application with a
+- The cost report issue on each app repository: spend against the budget and against the period before, drift, proposals.
+  The budgets recorded under `monthly_budgets_usd` still match Cloud Billing's, and Google's Cost Anomaly Detection is on
+  (`docs/SETUP.md` 7q). An application with a
   production shows production's spend beside staging's once `add_production` has run for it with 1.18.8.
 - Any `lab-deploy-cap-lifted` label left from the previous month (`gcloud run services list --format="table(name,labels)"`).
 - The native spend cap still exists (`scripts/spend-cap.sh check PROJECT`) and the drift issue on the platform repository is closed.

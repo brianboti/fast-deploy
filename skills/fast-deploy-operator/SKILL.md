@@ -223,7 +223,9 @@ ready, say that `onboard_application` will deploy it. For "what do developers ne
   warm instance (`scaling.minimum: 1`) or a Postgres database costs money every month even with no visitors (the lab's
   standard says about 9 dollars a month each); the rest scales to zero. `estimate_cost` prices the committed
   `platform.yaml`, so for a change not yet merged, give the standard's rough figure and say the exact bound follows.
-- "What did we actually spend?": `get_cost_report` (measured weekly; nothing in it is estimated).
+- "What did we actually spend?": `get_cost_report` (measured weekly; nothing in it is estimated). It sets the period
+  before beside it and names what moved; quote both. "Are we on budget?": `get_digest`, whose cost line gives each
+  project's month so far, its forecast and its budget. A forecast is the month so far scaled to the month, not a bill.
 - "Make it cheaper": `propose_rightsizing` opens a pull request with the measured savings; a person merges it.
 - A plan refused for cost means the worst case is above the app's ceiling: lower the size in `platform.yaml`, or the
   operator raises the ceiling on purpose in the controller's configuration.

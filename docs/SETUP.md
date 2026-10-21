@@ -600,6 +600,21 @@ All activity or Custom: Issues) to get the digest by email. With `notify_webhook
 Discord. The App needs **Issues** read and write for the issue (section 4). The Controller watch workflow checks once a
 day that the issue still hears from the controller and fails, which GitHub emails, after two days of silence.
 
+## 7q. Cost between Mondays: budgets and Google's anomaly detection (1.27.0)
+
+1. **Record each budget.** The foundation creates a monthly budget per project (`monthly_budget_usd`). Write the same
+   amounts under `monthly_budgets_usd` in the controller's configuration (the settings page, Platform tab, "Budgets you
+   created"; one `project: USD` per line). The daily digest and the weekly cost report set each project's month so far and
+   its forecast against it.
+2. **Let the controller read the billing export.** Apply the foundation of the project that holds the export
+   (`scripts/apply-foundation.sh STAGING_PROJECT`): it gives the observer and the machine BigQuery's job user role there
+   and data viewer on the export's dataset, nothing else. `onboarding.billing_export_table` names the table, as for the
+   weekly report. Until then the digest's cost line says it cannot read it.
+3. **Turn on Google's Cost Anomaly Detection** (free, generally available since 2025-10-30): Cloud Billing, the billing
+   account, Cost management, **Anomalies**; choose the daily summary by email. One setting covers every project on the
+   billing account; Google sets the thresholds from your spending and suggests watching a month before changing them.
+   Then record it (`cost_anomaly_detection: true`, the settings page's switch) so the digest stops reminding.
+
 ## 7k. The weekly drift check
 
 `.github/workflows/infra-drift.yml` plans every application root against the live infrastructure on Mondays at 07:37 UTC
