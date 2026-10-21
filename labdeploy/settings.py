@@ -1,12 +1,15 @@
-"""The settings page (https://HOST/settings): the controller's own configuration file, changed in the browser.
+"""The settings page (https://HOST/settings): reports in its Monitor section, and the controller's own configuration file,
+changed in the browser, in its Configure section.
 
-Server-rendered HTML without JavaScript, behind the same headers as the OAuth sign-in page. The operator signs in with an
-operator token (the same lookup and failed-login budget as /login); only an identity with applications: ["*"] and
-can_deploy may open it. Every change goes the same way: the form becomes a candidate configuration, the candidate is
-validated exactly as the controller validates its file (the loader, Config, and the overlay of application_settings on
-the applications onboarding registered), the unified diff is shown, and only the confirm step writes the file: atomically,
-mode 0600, the previous version kept under history/, a copy in the backup bucket as the nightly backup makes, one audit
-event "configuration" naming the keys (never their values). LiveConfig then reloads the file by itself.
+Server-rendered HTML without JavaScript, behind the same headers as the OAuth sign-in page. A person signs in with an
+operator token (the same lookup and failed-login budget as /login). Any signed-in principal may open Monitor
+(labdeploy/monitor.py), scoped to the applications its token may see as Claude's tools are; only an identity with
+applications: ["*"] and can_deploy may open Configure. Every change goes the same way: the form becomes a candidate
+configuration, the candidate is validated exactly as the controller validates its file (the loader, Config, and the
+overlay of application_settings on the applications onboarding registered), the unified diff is shown, and only the confirm
+step writes the file: atomically, mode 0600, the previous version kept under history/, a copy in the backup bucket as the
+nightly backup makes, one audit event "configuration" naming the keys (never their values). LiveConfig then reloads the
+file by itself.
 
 What it deliberately does not change: contracts (platform.yaml) and infrastructure, which change only through pull requests
 (docs/ROADMAP.md D32), and secrets, which the operator sets with gcloud (D5). The page links to where those live.
@@ -35,13 +38,15 @@ from starlette.responses import RedirectResponse
 from starlette.routing import Route
 
 from . import __version__
+from . import monitor_page as pages
 from . import settings_page as view
 from .config import Application, Config, PlatformUpdates, ProductionSettings, with_settings
 from .controller import copy_to_bucket
 from .infra import DEFAULT_SETTINGS
 from .models import UniqueLoader
+from .monitor import Monitor
 from .oauth import find_principal, principal_for
-from .settings_page import KILL_SWITCH, PREFIX, TABS, effective, masked
+from .settings_page import KILL_SWITCH, MONITOR, PREFIX, TABS, effective, masked
 
 COOKIE = "__Host-fast-deploy-settings"  # __Host-: only over HTTPS, for this host and path / only
 PENDING_SECONDS = 600  # a reviewed change must be confirmed within ten minutes
@@ -443,9 +448,11 @@ def application_values(form, prefix, found):
 
 # ---- the routes
 
-def routes(config, store, failures):
-    """The settings page's routes. `config` is the controller's LiveConfig; `failures` the failed-login budget /login shares."""
+def routes(config, store, failures, controller=None, jobs=None):
+    """The settings page's routes. `config` is the controller's LiveConfig; `failures` the failed-login budget /login shares;
+    `controller` the controller whose records and observer the Monitor section reads; `jobs` the background jobs' state."""
     sessions, pending, write_lock = Sessions(store), Pending(), threading.Lock()
+    monitor = Monitor(controller, jobs) if controller is not None else None
 
     def registry():
         return {app_id: Application.model_validate(entry) for app_id, entry in store.registered_applications().items()}
@@ -478,8 +485,10 @@ def routes(config, store, failures):
     def clear_cookie():
         return f"{COOKIE}=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Strict"
 
-    def refusal(principal):
-        return view.refusal_page(principal.name, {"Set-Cookie": clear_cookie()})
+    def frame(visit):
+        """The frame of a Monitor view, or of a Configure screen refused: Configure shows only for an identity that may use it."""
+        allowed = qualifies(visit.principal)
+        return view.Frame(visit, __version__, allowed, len(config.applications) if allowed else None)
 
     def visitor(request):
         """(Visit, None) for a live sign-in, else (None, why it ended)."""
@@ -511,13 +520,40 @@ def routes(config, store, failures):
         visit, ended = visitor(request)
         if visit is None:
             return view.sign_in_page(minutes(), ended, headers={"Set-Cookie": clear_cookie()} if ended else None)
+        tab = request.query_params.get("tab") or "overview"
+        if tab not in TABS:
+            return await run_in_threadpool(monitor_view, visit, tab if tab in MONITOR else "overview", request.query_params)
         if not qualifies(visit.principal):
-            return refusal(visit.principal)
-        tab = request.query_params.get("tab", "applications")
-        tab = tab if tab in TABS else "applications"
+            return view.refusal(frame(visit), tab)
         app = request.query_params.get("app") or None if tab == "applications" else None
         state = await run_in_threadpool(read, config.path)
         return view.tab_page(context(visit, state), tab, app)
+
+    def monitor_view(visit, tab, params):
+        """One Monitor view, scoped to the applications the signed-in token may see."""
+        principal, shown = visit.principal, frame(visit)
+        if monitor is None:
+            return view.shell(shown, tab, view.head(MONITOR[tab], "") + view.callout("gray", "Monitor needs the controller itself.",
+                                                                                      "<p>This page was mounted without one.</p>"))
+        try:
+            if tab == "health" and params.get("app"):
+                data = monitor.health(principal, params["app"], params.get("env") or "staging", params.get("range") or "24h", params.get("logs") == "1")
+                return pages.health(shown, data)
+            if tab == "health":
+                return pages.health_list(shown, monitor.overview(principal))
+            if tab == "releases":
+                return pages.releases(shown, monitor.releases(principal))
+            if tab == "cost":
+                return pages.cost(shown, monitor.cost(principal))
+            if tab == "activity":
+                return pages.activity(shown, monitor.activity(principal, params.get("kind"), params.get("identity"), params.get("application"),
+                                                              limit=200 if params.get("more") else 50))
+            return pages.overview(shown, monitor.overview(principal))
+        except ValueError as exc:  # an application this token may not see, or one without a production
+            text = (f"There is no application named {params.get('app')} among those your token may see." if "not authorized" in str(exc)
+                    else str(exc))
+            return view.shell(shown, tab, view.head(MONITOR[tab], "") + view.callout("gray", text, f'<p><a href="{PREFIX}?tab=overview">Open the '
+                                                                                                    "overview</a>.</p>"), 404)
 
     async def sign_in(request):
         refused = guard(request)
@@ -536,9 +572,7 @@ def routes(config, store, failures):
                                          429, {"Retry-After": str(retry_after)})
             store.record_event("sign_in", name="settings page", client=host, outcome="rejected")
             return view.sign_in_page(minutes(), "That token was not accepted.", 401)
-        if not qualifies(principal):
-            store.record_event("sign_in", name="settings page", identity=principal.name, client=host, outcome="refused")
-            return refusal(principal)
+        # Every principal may open Monitor, scoped to what its token may see; Configure checks again on every request.
         store.record_event("sign_in", name="settings page", identity=principal.name, client=host, outcome="ok")
         value = sessions.open(principal, config.settings_session_seconds)
         return RedirectResponse(PREFIX, status_code=303, headers={"Cache-Control": "no-store", "Set-Cookie": cookie(value)})
@@ -557,7 +591,8 @@ def routes(config, store, failures):
         if not hmac.compare_digest(str(form.get("csrf", "")).encode(), visit.csrf.encode()):
             return None, view.message_page("This form is stale", f'Open <a href="{PREFIX}">the settings page</a> again and repeat the change.', 403)
         if not qualifies(visit.principal):
-            return None, refusal(visit.principal)
+            tab = str(form.get("tab", ""))
+            return None, view.refusal(frame(visit), tab if tab in TABS else "applications")
         return visit, form
 
     async def sign_out(request):

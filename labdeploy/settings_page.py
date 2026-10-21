@@ -20,6 +20,9 @@ from .infra import DEFAULT_SETTINGS, SETTING_RANGES
 from .oauth import PAGE_HEADERS
 
 PREFIX = "/settings"
+# The sidebar's two groups: Monitor (labdeploy/monitor_page.py), open to every signed-in principal for the applications it
+# may see, and Configure, the controller's own file, for an identity that sees every application and may deploy.
+MONITOR = {"overview": "Overview", "health": "Health", "releases": "Releases", "cost": "Cost", "activity": "Activity"}
 TABS = {"applications": "Applications", "platform": "Platform", "people": "People", "production": "Production", "advanced": "Advanced"}
 KILL_SWITCH = "all applications"  # what the operator types to turn the controller-wide pause on or off
 GITHUB = "https://github.com/"
@@ -89,6 +92,12 @@ PATHS = {
     "chevron": '<path d="m9 6 6 6-6 6"/>',
     "back": '<path d="m15 6-6 6 6 6"/>',
     "external": '<path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/>',
+    "overview": '<path d="M4.5 16a7.5 7.5 0 1 1 15 0"/><path d="m12 16 3.5-4.5"/><path d="M4 20h16"/>',
+    "health": '<path d="M3 12h4l2.5-6 5 12 2.5-6h4"/>',
+    "releases": '<circle cx="12" cy="12" r="3.5"/><path d="M3 12h5.5M15.5 12H21"/>',
+    "cost": '<circle cx="12" cy="12" r="9"/><path d="M14.8 9.4c-.5-.9-1.5-1.4-2.8-1.4-1.6 0-2.8.8-2.8 2 0 2.9 5.6 1.5 5.6 4.3 0 1.2-1.1 2.1-2.8 2.1-1.3 0-2.4-.5-2.9-1.4M12 6v2M12 16v2"/>',
+    "activity": '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01" stroke-width="2.6"/>',
+    "refresh": '<path d="M20 12a8 8 0 1 1-2.4-5.7M20 4v5h-5"/>',
 }
 MARK = ('<svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><rect width="24" height="24" rx="6" fill="#111"/>'
         '<path d="M13.2 5 7.5 13.2h4.1L10.8 19l5.7-8.2h-4.1L13.2 5z" fill="#fff"/></svg>')
@@ -120,7 +129,9 @@ p{margin:0}
 flex-direction:column;padding:20px 12px 16px}
 .mark{display:flex;align-items:center;gap:10px;padding:0 8px 20px;font-weight:600;font-size:15px;letter-spacing:-.01em;color:var(--text)}
 .mark:hover{text-decoration:none}.logo{width:24px;height:24px;flex:none}
-.nav{display:flex;flex-direction:column;gap:2px}
+.nav{display:flex;flex-direction:column;gap:18px}
+.nav-links{display:flex;flex-direction:column;gap:2px}
+.nav-group{margin:0 0 6px;padding:0 10px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#A3A3A3}
 .nav a{display:flex;align-items:center;gap:10px;height:34px;padding:0 10px;border-radius:8px;color:var(--secondary);font-weight:500;white-space:nowrap}
 .nav a:hover{background:#F0F0F0;color:var(--text);text-decoration:none}
 .nav a[aria-current=page]{background:#fff;color:var(--text);box-shadow:0 0 0 1px var(--border),0 1px 2px rgba(0,0,0,.05)}
@@ -258,8 +269,11 @@ align-items:center;padding:12px 16px 0;border-right:0;border-bottom:1px solid #E
 .mark{grid-area:mark;padding:0}
 .who{grid-area:who;margin:0;padding:0;border:0;flex-direction:row;align-items:center;gap:10px}
 .who .as,.who .version{display:none}.who form{margin:0}.who .btn{height:30px;padding:0 10px}
-.nav{grid-area:nav;flex-direction:row;overflow-x:auto;gap:4px;margin:12px -16px 0;padding:0 16px 10px;scrollbar-width:none}
-.nav::-webkit-scrollbar{display:none}.nav a{flex:none;height:32px}
+.nav{grid-area:nav;gap:2px;margin:10px -16px 0;padding:0 0 8px}
+.nav-section{display:flex;align-items:center;min-width:0}
+.nav-group{flex:none;width:84px;margin:0;padding:0 0 0 16px;font-size:10.5px}
+.nav-links{flex-direction:row;overflow-x:auto;gap:4px;padding:2px 16px 2px 0;scrollbar-width:none;min-width:0}
+.nav-links::-webkit-scrollbar{display:none}.nav a{flex:none;height:32px}
 .content{padding:24px 16px 56px}
 .page-head h1{font-size:21px}
 .row{grid-template-columns:minmax(0,1fr);gap:10px;padding:14px 0}
@@ -279,11 +293,106 @@ details.diff>summary{padding:14px 16px}details.diff>summary .muted{flex-basis:10
 .editor textarea{min-height:420px}
 }
 """
+# The Monitor section (labdeploy/monitor_page.py): toolbars, tiles, application cards and the charts of labdeploy/charts.py.
+MONITOR_STYLE = """
+.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;margin:-10px 0 22px}
+.seg{display:inline-flex;border:1px solid var(--field);border-radius:8px;overflow:hidden;background:#fff;flex:none}
+.seg a{display:inline-flex;align-items:center;height:30px;padding:0 11px;color:var(--secondary);font-size:13px;font-weight:500;border-left:1px solid var(--border);
+white-space:nowrap}
+.seg a:first-child{border-left:0}.seg a:hover{background:#FAFAFA;color:var(--text);text-decoration:none}
+.seg a[aria-current=page]{background:#111;color:#fff}
+.fresh{display:inline-flex;align-items:center;gap:7px;color:var(--muted);font-size:12.5px}
+.fresh .dot{width:7px;height:7px;border-radius:50%;background:var(--green);flex:none}.fresh .dot.off{background:#A3A3A3}
+.toolbar .refresh{margin-left:auto}
+.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.tile{background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 1px 2px rgba(0,0,0,.04);padding:14px 16px 12px;min-width:0;
+display:flex;flex-direction:column;gap:2px}
+.tile .label{color:var(--secondary);font-size:12.5px;font-weight:500}
+.tile .value{font-size:26px;font-weight:600;letter-spacing:-.02em;line-height:1.25;margin-top:2px}
+.tile .value small{font-size:14px;font-weight:500;color:var(--muted);letter-spacing:0}
+.tile .note{color:var(--muted);font-size:12.5px}
+.tile svg.chart{margin-top:8px}
+.tile .bullet-name{font-size:12px;color:var(--secondary);margin-top:8px;display:flex;justify-content:space-between;gap:8px}
+.attention{list-style:none;margin:0;padding:0}
+.attention li{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:4px 10px;align-items:start;padding:12px 0;border-top:1px solid var(--line)}
+.attention li:first-child{border-top:0}
+.attention .icon{width:18px;height:18px;margin-top:1px}.attention .bad .icon{color:var(--red)}.attention .warn .icon{color:var(--amber)}
+.attention a{white-space:nowrap;font-size:13px;font-weight:500}
+.apps{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px}
+.app{position:relative;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 1px 2px rgba(0,0,0,.04);padding:14px 16px 12px;min-width:0}
+.app:hover{border-color:#D4D4D4;box-shadow:0 2px 6px rgba(0,0,0,.06)}
+.app-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.app-head a{font-weight:600;color:var(--text);overflow-wrap:anywhere}.app-head a::after{content:"";position:absolute;inset:0;border-radius:12px}
+.app svg.chart{position:relative;z-index:1}
+.svc{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+.app-head+.svc{border-top:0;padding-top:0}
+.env{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:4px}
+.stats{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12.5px;color:var(--secondary);margin-top:6px}
+.stats strong{color:var(--text);font-weight:600}
+.release-line{font-size:12.5px;color:var(--secondary);margin-top:6px;overflow-wrap:anywhere}
+.reasons{margin:6px 0 0;padding-left:16px;font-size:12.5px;color:#92400E}
+.viz{margin:0;padding:6px 0 16px;min-width:0}
+.viz+.viz{border-top:1px solid var(--line);padding-top:16px}
+.viz-head{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 12px}
+.viz-head h3{font-size:14px}.viz-head .sub{color:var(--muted);font-size:12.5px}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;list-style:none;margin:6px 0 10px;padding:0;font-size:12.5px;color:var(--secondary)}
+.legend li{display:inline-flex;align-items:center;gap:6px}.legend svg{flex:none;overflow:visible}
+svg.chart{display:block;width:100%;overflow:visible}
+svg.chart .t{font-size:11px;fill:#737373;font-variant-numeric:tabular-nums;paint-order:stroke;stroke:#fff;stroke-width:3px;stroke-linejoin:round}
+svg.chart .tl{font-size:12px;fill:#404040;font-weight:500}svg.chart .tv{font-size:12px;fill:#0A0A0A}svg.chart .th{fill:#525252}
+svg.chart .hit{fill:transparent}svg.chart .hit:hover{fill:rgba(10,10,10,.05)}
+svg.chart .mk:hover,svg.chart .cell:hover{opacity:.75}svg.chart .row:hover rect{opacity:.85}
+.viz-note{color:var(--muted);font-size:12.5px;margin-top:8px}
+details.numbers{margin-top:10px}
+details.numbers>summary{display:inline-flex;align-items:center;gap:8px;cursor:pointer;color:var(--secondary);font-size:12.5px;font-weight:500;list-style:none}
+details.numbers>summary::-webkit-details-marker{display:none}
+details.numbers>summary::before{content:"";width:5px;height:5px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
+transform:rotate(-45deg);transition:transform .15s}
+details.numbers[open]>summary::before{transform:rotate(45deg)}
+details.numbers .table-scroll{margin-top:8px;border:1px solid var(--border);border-radius:8px}
+table.compact th,table.compact td{padding:7px 12px;font-size:12.5px}
+.list .r,.r{text-align:right}
+.pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 28px}
+.pair>.viz+.viz{border-top:0;padding-top:6px}
+.list tr.config td{background:#FFFBEB}
+.list a .icon,.links .icon{width:14px;height:14px;margin-left:4px;vertical-align:-2px}.list td.outcome{min-width:170px}
+.list td.outcome .chip{margin-top:4px}
+.list td.wrap{white-space:normal;min-width:200px;color:var(--secondary);font-size:13px;overflow-wrap:anywhere}
+.filters{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px 12px;padding:16px 20px}
+.filters label{display:flex;flex-direction:column;gap:5px;font-size:12.5px;font-weight:500;color:var(--secondary);min-width:150px;flex:1}
+.loglines{list-style:none;margin:0;padding:0}
+.loglines li{display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 12px;padding:9px 0;border-top:1px solid var(--line);font-size:12.5px}
+.loglines li:first-child{border-top:0}.loglines .msg{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow-wrap:anywhere}
+.links{display:flex;flex-wrap:wrap;gap:8px;padding:6px 0 14px}.links .btn{white-space:normal;height:auto;min-height:36px;padding:7px 14px}
+.section-head{margin:28px 0 12px}.section-head h2{font-size:15px}.section-head .sub{color:var(--secondary);font-size:13.5px;margin-top:3px}
+.strip{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1.2fr) minmax(0,1.3fr) minmax(0,1.3fr);gap:10px 24px;margin:0;padding:14px 0 12px}
+.strip dt{color:var(--muted);font-size:12px;font-weight:500}.strip dd{margin:3px 0 0;overflow-wrap:anywhere;font-size:13.5px}
+.strip .chip,.release-line .chip,.list td .chip{white-space:normal;height:auto;min-height:24px;padding:2px 10px;line-height:1.4}
+.empty{color:var(--muted);font-size:13.5px;padding:6px 0 16px}
+.facts.tight div{grid-template-columns:200px minmax(0,1fr)}
+@media (max-width:1100px){.tiles{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:767px){
+.toolbar{margin-top:-14px}.toolbar .refresh{margin-left:-8px}
+.tile .value{font-size:22px}.tile.wide{grid-column:1/-1}
+.apps{grid-template-columns:minmax(0,1fr)}
+.attention li{grid-template-columns:18px minmax(0,1fr)}.attention li>a{grid-column:2}
+.pair{grid-template-columns:minmax(0,1fr)}.pair>.viz+.viz{border-top:1px solid var(--line);padding-top:16px}
+.filters{padding:14px 16px}.filters label{min-width:0;flex-basis:100%}
+.facts.tight div{grid-template-columns:minmax(0,1fr)}
+.strip{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.stack thead{display:none}
+.stack tbody tr{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px 14px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.stack tbody tr:last-child{border-bottom:0}
+.list.stack td{display:block;padding:0;border:0;white-space:normal;text-align:left;min-width:0}
+.list.stack td::before{content:attr(data-label);display:block;color:var(--muted);font-size:11.5px;font-weight:500;margin-bottom:1px}
+.list.stack td.wide{grid-column:1/-1}.list.stack td.none{display:none}
+}
+"""
 
 
 def document(title, body, status=200, headers=None):
     page = (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
-            f'<meta name="color-scheme" content="light"><title>{esc(title)}</title><style>{STYLE}</style></head><body>{body}</body></html>')
+            f'<meta name="color-scheme" content="light"><title>{esc(title)}</title><style>{STYLE}{MONITOR_STYLE}</style></head><body>{body}</body></html>')
     return HTMLResponse(page, status_code=status, headers={**PAGE_HEADERS, **(headers or {})})
 
 
@@ -298,9 +407,15 @@ class Context:
     last: dict | None  # who last wrote the file, and when
     version: str
 
+    configure = True  # only an identity that may change the configuration gets a Context
+
     @property
     def config(self):
         return self.state.config
+
+    @property
+    def count(self):
+        return len(self.applications()) if self.config is not None else len(self.registry)
 
     def applications(self):
         """(id, application as the controller sees it, whether the file holds it) for every application."""
@@ -309,6 +424,16 @@ class Context:
         listed = [(app_id, app, True) for app_id, app in self.config.applications.items()]
         listed += [(app_id, effective(self.config, self.registry, app_id), False) for app_id in self.registry if app_id not in self.config.applications]
         return listed
+
+
+@dataclasses.dataclass
+class Frame:
+    """What the frame around a Monitor view needs: who is signed in, the version, whether Configure is theirs to open and
+    how many applications the Applications entry counts (None when it is not shown)."""
+    visit: object
+    version: str
+    configure: bool
+    count: int | None = None
 
 
 def effective(config, registry, app_id):
@@ -484,19 +609,25 @@ def danger_row(visit, tab, which, hidden, title, help_html, word, key, bag, butt
 # ---- the frame around every tab
 
 def shell(ctx, tab, inner, status=200, headers=None, title=None):
-    counts = {"applications": len(ctx.applications()) if ctx.config is not None else len(ctx.registry)}
-    links = []
-    for key, label in TABS.items():
-        count = f'<span class="count">{counts[key]}</span>' if key in counts else ""
-        current = ' aria-current="page"' if key == tab else ""
-        links.append(f'<a href="{PREFIX}?tab={key}"{current}>{icon(key)}<span>{label}</span>{count}</a>')
+    """The frame of every signed-in screen: the sidebar's Monitor group, its Configure group for an identity that may change
+    the configuration, who is signed in, and the screen itself."""
+    groups = [("monitor", "Monitor", MONITOR)] + ([("configure", "Configure", TABS)] if ctx.configure else [])
+    sections = []
+    for key, label, entries in groups:
+        links = []
+        for name, words in entries.items():
+            count = f'<span class="count">{ctx.count}</span>' if name == "applications" and ctx.count is not None else ""
+            current = ' aria-current="page"' if name == tab else ""
+            links.append(f'<a href="{PREFIX}?tab={name}"{current}>{icon(name)}<span>{words}</span>{count}</a>')
+        sections.append(f'<div class="nav-section"><p class="nav-group" id="nav-{key}">{label}</p>'
+                        f'<div class="nav-links" role="group" aria-labelledby="nav-{key}">{"".join(links)}</div></div>')
     side = (f'<aside class="side"><a class="mark" href="{PREFIX}">{MARK}<span>Fast Deploy</span></a>'
-            f'<nav class="nav" aria-label="Settings">{"".join(links)}</nav>'
+            f'<nav class="nav" aria-label="Fast Deploy">{"".join(sections)}</nav>'
             f'<div class="who"><span class="as">Signed in as</span><span class="name">{esc(ctx.visit.principal.name)}</span>'
             f'<span class="version">Fast Deploy {esc(ctx.version)}</span>'
             f'<form method="post" action="{PREFIX}/sign-out"><input type="hidden" name="csrf" value="{esc(ctx.visit.csrf)}">'
             f'<button class="btn secondary" type="submit">{icon("signout")}Sign out</button></form></div></aside>')
-    return document(title or f"{TABS.get(tab, 'Settings')} · Fast Deploy settings",
+    return document(title or f"{MONITOR.get(tab) or TABS.get(tab, 'Settings')} · Fast Deploy",
                     f'<div class="shell">{side}<main class="main"><div class="content">{inner}</div></main></div>', status, headers)
 
 
@@ -845,7 +976,7 @@ def tab_page(ctx, tab, app=None, submitted=None, found=None, status=200):
         inner = application_detail(ctx, app, submitted, found)
     else:
         inner = applications_list(ctx, missing=app)
-    return shell(ctx, tab, inner, status, title=f"{app} · Fast Deploy settings" if tab == "applications" and app else None)
+    return shell(ctx, tab, inner, status, title=f"{app} · Fast Deploy" if tab == "applications" and app else None)
 
 
 def notice(ctx, tab, kind, title, text, back, status):
@@ -1079,31 +1210,37 @@ def signed_out_result(outcome, headers):
     """After rotating or removing your own token: the outcome and the new token, outside the frame, and the cookie cleared."""
     body = (f'<div class="center"><div class="card wide">{MARK}<h1>Written</h1><p class="lede">Your own token changed, so this sign-in has ended.</p>'
             + outcome_body(outcome, framed=False) + f'<a class="btn primary block" href="{PREFIX}" style="margin-top:20px">Sign in again</a></div></div>')
-    return document("Written · Fast Deploy settings", body, headers=headers)
+    return document("Written · Fast Deploy", body, headers=headers)
 
 
 # ---- sign-in, refusals and plain messages
 
 def sign_in_page(minutes, error="", status=200, headers=None):
     problem = callout("red", error) if error else ""
-    body = (f'<div class="center"><div class="card">{MARK}<h1>Sign in to Fast Deploy settings</h1>'
-            '<p class="lede">This page changes the controller\'s own configuration file.</p>' + problem
+    body = (f'<div class="center"><div class="card">{MARK}<h1>Sign in to Fast Deploy</h1>'
+            '<p class="lede">Reports, live health and cost of the applications your token may see; for the operator, the controller\'s own '
+            'configuration too.</p>' + problem
             + f'<form method="post" action="{PREFIX}/sign-in"><label for="token">Operator token</label>'
             '<input id="token" name="token" type="password" autocomplete="off" required autofocus>'
             '<button class="btn primary block" type="submit">Sign in</button></form>'
-            '<p class="foot">Needs a token that may see every application and deploy. It is checked on this server only. A sign-in lasts at most '
+            '<p class="foot">Any token of this controller signs in, and Monitor shows the applications it may see. Configure needs a token that may '
+            'see every application and deploy. The token is checked on this server only. A sign-in lasts at most '
             f"{minutes} minutes, and a restart of the controller ends it.</p></div></div>")
-    return document("Sign in · Fast Deploy settings", body, status, headers)
+    return document("Sign in · Fast Deploy", body, status, headers)
 
 
 def message_page(title, text, status=200, headers=None, action=""):
     body = (f'<div class="center"><div class="card">{MARK}<h1>{esc(title)}</h1><p class="lede">{text}</p>{action}</div></div>')
-    return document(f"{title} · Fast Deploy settings", body, status, headers)
+    return document(f"{title} · Fast Deploy", body, status, headers)
 
 
-def refusal_page(name, headers):
-    return message_page("You cannot change this configuration",
-                        f"{esc(name)} may not change the controller's configuration: this page needs an identity with "
-                        "<code>applications: [\"*\"]</code> and <code>can_deploy</code>. Ask the operator, or use "
-                        "<code>scripts/machine.sh config-get</code> and <code>config-put</code>.", 403, headers,
-                        f'<form method="post" action="{PREFIX}/sign-out"><button class="btn secondary block" type="submit">Sign out</button></form>')
+def refusal(frame, tab):
+    """A Configure screen asked for by an identity that may not change the configuration: said inside the frame, whose sidebar
+    shows only Monitor, and the sign-in stays."""
+    name = frame.visit.principal.name
+    body = (head(TABS[tab], "") + callout("gray", "Configure is the operator's.",
+                                          f"<p>{esc(name)} may not change the controller's configuration: that needs an identity with "
+                                          "<code>applications: [\"*\"]</code> and <code>can_deploy</code>. Monitor shows what this token may see. Ask "
+                                          "the operator, or use <code>scripts/machine.sh config-get</code> and <code>config-put</code>.</p>")
+            + f'<div class="actions" style="justify-content:flex-start"><a class="btn secondary" href="{PREFIX}?tab=overview">Open the overview</a></div>')
+    return shell(frame, tab, body, 403)

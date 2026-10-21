@@ -796,6 +796,13 @@ class GitHub:
                         "created_at": run.get("created_at"), "report": files["drift-report.json"]}
         return None
 
+    def newest_run_id(self, app, workflow, status="success"):
+        """The id of a workflow's newest run on main with this status, or None: one call, so the settings page keeps a weekly
+        report until a newer run exists instead of downloading it again."""
+        runs = self.request("GET", f"/repos/{pipeline_of(app)}/actions/workflows/{workflow}/runs",
+                            params={"status": status, "branch": "main", "per_page": 1}).json()["workflow_runs"]
+        return runs[0]["id"] if runs else None
+
     def cost_report(self, app, workflow="rightsize-gcp.yml", name="cost-report", limit=1_048_576):
         """The newest cost-report artifact from a successful rightsizing run, or an explicit 'none yet'."""
         runs = self.request("GET", f"/repos/{pipeline_of(app)}/actions/workflows/{workflow}/runs",
