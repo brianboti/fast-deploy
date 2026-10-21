@@ -1,3 +1,47 @@
+# 1.25.2: a clearer, calmer settings page
+
+Brian opened the 1.25.0 page on the machine and found it unorganized, hard to read and plain: one long form per tab, every
+application's fields at once, and a notice block on every page. This version keeps what the page does and redraws how it
+looks. Nothing about the configuration file, the checks or the security changes: the signed session, the form token, the
+origin and host checks, the review before every write, the refusal when the file moved on, the lockout check, the typed
+names in the danger zone and the `configuration` event are the same code. Still no JavaScript, and the same
+Content-Security-Policy, so no web font and no image: the system font stack, `ui-monospace` for code, inline SVG icons.
+
+1. **A frame.** A sidebar with the mark, the five tabs with icons (Applications with its count) and, at the bottom, who is
+   signed in, the version and Sign out. Below 768 px it becomes a top bar whose tabs scroll sideways.
+2. **A header on every tab.** A title, one sentence on what the tab controls, and status chips: the kill switch, automatic
+   updates, how many applications are paused, and "Last written 5 min ago by brian" (the newest `configuration` event, else
+   the newest file in `history/`). While the kill switch is on, every tab says so in red.
+3. **Applications as a list.** A table: name, repository, Running or Paused, cost ceiling, auto-deploy and provenance. Each
+   row opens the application's own page (`?tab=applications&app=ID`), with one form for it alone in cards: Releases, Cost,
+   Access, and Alerts and infrastructure (folded, and opened by itself when one of its fields has a problem). "Where it
+   lives" links its contract, Terraform roots, GitHub environments and Secret Manager, replacing the notice that sat on top
+   of every page. Its danger zone comes last.
+4. **Platform, People, Production, Advanced in cards.** Automatic updates (its sub-settings dim while it is off, through
+   CSS alone), auto-deploy and backups, notifications (the webhook stays write-only; "Remove" appears only when one is
+   set), spend caps. People is a list with chips (All applications or the list, Can deploy, Self-merge); each person opens
+   in place with a form of their own, then "Add a person" and the danger zone. Advanced is an editor-style panel under an
+   amber note about the restart and the lost comments.
+5. **The review in plain words first.** One line per setting with its old and new values, such as "lab-notebook, cost
+   ceiling: 60 to 40 USD / month", secrets shortened as the diff already shortens them; a block that appears or goes is one
+   line ("Automatic updates: off to on (delay: 30 minutes)"), and so is a new person ("added: sophia, read-only"). Then the
+   file's diff, folded, with green and red lines, and Write the file next to Cancel. Warnings sit in an amber note.
+6. **The result.** A green note (or amber when a restart is needed), the settings by name and key, the previous file in
+   `history/`, the bucket copy and the audit event; a new token in a highlighted box that selects as a whole.
+7. **Problems where they are.** A red summary at the top links each problem to its field, and the field itself is
+   outlined in red with its message beneath (`aria-invalid`, `aria-describedby`). A validator's message that names a field
+   (a viewer, `infra.KEY`, `production.rollout`) now sits by that field.
+8. **The look.** A white page and a light grey sidebar, near-black primary buttons, blue only for links and the focus ring,
+   status colours used sparingly; settings rows with the label, its YAML key in small monospace and the help on the left and
+   the control on the right (stacked on a phone); 36 px fields, toggles for switches, a drawn arrow on selects, units beside
+   numbers ("USD / month", "seconds"). Checked at 1280 px and 390 px.
+
+The markup lives in its own module now, `labdeploy/settings_page.py`; `labdeploy/settings.py` keeps the sessions, the
+checks, the write and the routes. The tests that read markup follow the new pages, and one checks that no screen carries a
+script, a `url()` or an image.
+
+Tests: 976 pass; ruff clean.
+
 # 1.25.1: what a chat or search service is told before it runs
 
 Found on 2026-10-20 by putting the BetterCare chatbot (Sophia, read as text since 1.20.0) through the platform's own
