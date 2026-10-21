@@ -666,7 +666,14 @@ Cost effect: none at idle; a build stage adds a minute or two of free runner tim
 
 ## Phase 22: run it, then say what to fix (about three days) → version 1.24.0
 
-Status: planned on 2026-10-20 (research review sections 5 and 7.3). What the source builders do with nothing: try the
+Status: planned on 2026-10-20 (research review sections 5 and 7.3) and built the same day as 1.24.0, stacked on Phase 21
+(code, tests and documents, checked locally; four small images of the platform's own were built and run on the laptop: tini
+as PID 1 passing SIGTERM to a chained start, Caddy serving a site with its single-page fallback, Nginx's generated
+configuration forwarding to a loopback port; the live exercise below has not run). The survey reads 19 of the 33
+repositories as they are and refuses 18 things, from 13 and 28 at 1.23.0: five root Dockerfiles are wrapped, Fastify's
+demo gets the proxy; each of the 14 left needs a person (a real `.env`, a dead line in its own Dockerfile, a folder, a
+command, a lockfile to upgrade). The proxy's container is Nginx as Google's guide runs it, as root inside its own
+container (the image is the platform's, pinned by digest, and holds none of the application's code). What the source builders do with nothing: try the
 convention, and when the first revision fails, say exactly why. The platform reads the candidate's own logs into the
 release status already, so it can do the second half better than any of them.
 

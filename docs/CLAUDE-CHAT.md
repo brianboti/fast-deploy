@@ -165,6 +165,12 @@ assumes" and section 1b):
   `build` script, TypeScript) is built in a build stage of the platform's image and started by node on the built file;
   one package of a workspace installs from the root's lockfile; and the packages whose install script Cloud Run needs
   (`sharp` below 0.33, `canvas`, `better-sqlite3` and the like) are drafted into `build.scripts` for the merge to approve.
+  Since 1.24.0 (roadmap Phase 22): a service bound to `127.0.0.1` gets the proxy sidecar (`proxy: true`); a front-end site
+  is served by the platform behind IAP (`runtime: static`); a chain of node commands runs under the image's init; a
+  Dockerfile that runs as root is wrapped with `build.user: 65532`; a suite that needs a browser or a database is
+  `tests: report`. When a first revision fails, *"How is NAME's release going?"* says why from its own log and names the
+  line to change in the code and the contract key to change (`port`, `env.HOST`, `proxy`, `resources.memory_mib`,
+  `health_path`, `build.user`).
 - No package's install script runs, except those the contract lists under `build.scripts`. The pull request says why its
   list is what it is ("none run: onnxruntime-node@1.30.0: its postinstall only downloads the CUDA libraries..."), and a
   person who adds one is approving that package's code.

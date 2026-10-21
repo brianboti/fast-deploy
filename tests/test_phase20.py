@@ -101,7 +101,7 @@ def test_only_the_entry_file_and_its_imports_decide_the_host():
     helper = node_read(node_repo(files={"scripts/mock-server.mjs": "require('http').createServer().listen(9000, '127.0.0.1');\n"}))
     assert not helper["refusals"] and helper["spec"].port == 3000
     entry = node_read(node_repo(files={"server.js": "require('http').createServer().listen(process.env.PORT, '127.0.0.1');\n"}))
-    assert refused(entry, "listens on 127.0.0.1")
+    assert entry["spec"].proxy  # the entry file decides: since 1.24.0 its loopback bind gets the proxy sidecar (D51)
 
 
 # ---- 20.2 Python entries (D50)

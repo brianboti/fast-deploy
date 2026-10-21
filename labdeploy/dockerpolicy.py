@@ -117,9 +117,10 @@ def through_manager(arguments):
     return bool(words) and words[0].rsplit("/", 1)[-1] in MANAGERS
 
 
-def check(text, trust="unknown", native=None):
+def check(text, trust="unknown", native=None, wrapped=None):
     """Every finding in a Dockerfile, in line order; `refuses` says whether it stops the build for this trust level.
-    `native` says whether a Node.js service's dependencies hold native code (None when unknown)."""
+    `native` says whether a Node.js service's dependencies hold native code (None when unknown); `wrapped`, the contract's
+    build.user (D52), says the platform sets a user on top of the image, so a final image that runs as root is reported."""
     findings = []
 
     def add(line, rule, problem, fix, refuses=True):
@@ -165,8 +166,13 @@ def check(text, trust="unknown", native=None):
                         add(line, "copies-secrets", f"{keyword} copies {source[:80]} into the image",
                             "never copy .git, environment files or keys; give secrets at run time (the contract's secrets)")
     if final_stage_line is not None and (final_user is None or final_user.lower() in ROOT_USERS or final_user == ""):
-        add(final_stage_line, "runs-as-root", "the final image runs as root: it has no USER, or USER root",
-            "add USER 65532:65532 (a numeric user that is not root) near the end", refuses=trust == "unknown")
+        if wrapped:
+            add(final_stage_line, "runs-as-root", f"the final image runs as root; the platform's wrapper stage sets USER {wrapped} on top of it (build.user)",
+                "nothing to do unless the service writes where only root may (EACCES at start): then point it at /tmp, or remove build.user to accept root",
+                refuses=False)
+        else:
+            add(final_stage_line, "runs-as-root", "the final image runs as root: it has no USER, or USER root",
+                "add USER 65532:65532 (a numeric user that is not root) near the end", refuses=trust == "unknown")
     # The Node.js notes (docs/ROADMAP.md D45): they report and never stop a build.
     if final_start and through_manager(final_start[2]):
         add(final_start[0], "start-through-npm", f"the image starts through a package manager ({final_start[1]} {final_start[2][:60]}), which adds "
@@ -206,12 +212,13 @@ def main(argv=None):
     parser.add_argument("--json", help="write the findings here")
     parser.add_argument("--trivy", help="Trivy's `config --format json` report for the same Dockerfile")
     parser.add_argument("--lockfile", help="a Node.js service's npm lockfile, to say whether its dependencies hold native code")
+    parser.add_argument("--wrapped-user", type=int, help="the contract's build.user: the platform's wrapper stage runs the image as this user")
     args = parser.parse_args(argv)
     native = None
     if args.lockfile and Path(args.lockfile).is_file():
         from .node import has_native_code, read_lockfile
         native = has_native_code(read_lockfile(Path(args.lockfile).read_text())[0])
-    findings = check(Path(args.dockerfile).read_text(), args.trust, native)
+    findings = check(Path(args.dockerfile).read_text(), args.trust, native, args.wrapped_user)
     shown = args.shown or args.dockerfile
     extra = trivy_findings(Path(args.trivy).read_text()) if args.trivy and Path(args.trivy).is_file() else []
     for item in extra:

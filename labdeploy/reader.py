@@ -1488,6 +1488,55 @@ def start_file(words):
     return rest[0].removeprefix("./") if rest else None
 
 
+# What a test suite names when it needs what the platform's runner does not have (D54, 22.5): a browser, a database or a
+# seed, Docker. Such a suite is drafted as tests: report, counted and never a stop.
+NEEDS_MORE_TO_TEST = re.compile(r"(?i:playwright|cypress|selenium|webdriver|puppeteer|db:seed|docker|testcontainers)|\bDATABASE_URL\b|\bPOSTGRES_[A-Z]+|\bMONGO_URL\b|\bREDIS_URL\b")
+# The folder each site builder writes into (D55, 22.4), read in their documentation; Angular's depends on the project, so it is not guessed.
+SITE_OUTPUTS = (("@docusaurus/core", "build"), ("gatsby", "public"), ("@11ty/eleventy", "_site"), ("react-scripts", "build"), ("@vue/cli-service", "dist"),
+                ("astro", "dist"), ("parcel", "dist"), ("vite", "dist"))
+
+
+def scaffold_static_entrypoint():
+    from .scaffold import STATIC_ENTRYPOINT
+    return STATIC_ENTRYPOINT
+
+
+def wrapped_user(base, trust):
+    """build.user for a repository's own Dockerfile (D52): the contract's, else 65532 for code nobody has reviewed."""
+    user = (base.get("build") or {}).get("user")
+    return user if user else (65532 if trust == "unknown" else None)
+
+
+def static_site(package, dependencies):
+    """(output folder, why) for a front-end site with no server of its own (D55, 22.4), or (None, why not)."""
+    scripts = package.get("scripts") if isinstance(package.get("scripts"), dict) else {}
+    if not isinstance(scripts.get("build"), str) or not scripts["build"].strip():
+        return None, "it has no build script that makes the site"
+    if "@sveltejs/kit" in dependencies:
+        if "@sveltejs/adapter-static" in dependencies:
+            return "build", "SvelteKit with adapter-static"
+        return None, "SvelteKit builds a site only with @sveltejs/adapter-static (adapter-node makes a server); its adapter is another one"
+    if "@angular/core" in dependencies:
+        return None, "Angular writes the site into a folder its project names (dist/<project>/browser); say it in build.output"
+    for name, output in SITE_OUTPUTS:
+        if name in dependencies:
+            return output, f"{name} writes the site into {output}/"
+    return None, "no site builder the platform knows"
+
+
+def node_chain(script):
+    """`node a.js && node b.js` as an entrypoint when every part is node on a file with plain words, else None (D49)."""
+    if re.search(r"\|\||[;|`<>]|\$\(|(?<!&)&(?!&)", script):
+        return None
+    parts = []
+    for part in script.split("&&"):
+        found, problem = nodejs.start_words(part.strip())
+        if problem or found.get("rewritten") or found.get("env"):
+            return None
+        parts.append(" ".join(shlex.quote(word) for word in found["words"]))
+    return " && ".join(parts) if len(parts) > 1 else None
+
+
 def pnpm_members(text, paths):
     """The folders a pnpm-workspace.yaml names (packages: globs), each holding a package.json."""
     try:
@@ -1586,6 +1635,14 @@ def node_start(repo, ladder, base, compose, package, builds_itself, dockerfile, 
             entrypoint = " ".join(plan["start"])
             ladder.choose("Start command", entrypoint[:120], f"{repo.at('package.json')} (scripts.start runs {first}; after the build, {plan.get('why')})")
             return "platform", entrypoint, None, None, list(plan["start"])
+        chain = node_chain(start) if problem and "&&" in start else None
+        if chain:
+            # D49, 22.2: a chain of node commands runs as written under tini, the init of the platform's images, which passes
+            # SIGTERM on to the last one; a chain through npm or another manager stays refused (no manager stays in the image).
+            ladder.note("scripts.start chains node commands; the platform runs the chain as written under its image's init (tini), so the last "
+                        "command still gets SIGTERM; the commands before it run at every start of every instance")
+            ladder.choose("Start command", chain[:120], f"{repo.at('package.json')} (scripts.start, a chain of node commands)")
+            return "platform", chain, None, None, chain.split("&&")[-1].split()
         if problem and first in nodejs.BUILT_STARTS and plan and plan.get("problem"):
             return "platform", None, None, None, None  # the build plan's refusal already says what is missing
         if problem:
@@ -1624,13 +1681,16 @@ def node_listen(repo, ladder, sources, order, dependencies, base):
     """Where the code listens (D46): the first listen call of the entry file and what it imports; a helper script never
     decides (20.1). A literal port that never reads PORT goes into the contract as `port` (20.4: gcloud's --port sets the
     container port and PORT alike); a loopback host and Fastify without host: '0.0.0.0' are refused; a host read from a
-    variable whose default is loopback gets 0.0.0.0 in the draft's env. Returns (port literal or None, {variable: value},
-    whether the literal port is fixed in the code)."""
+    variable whose default is loopback gets 0.0.0.0 in the draft's env; a literal loopback host and Fastify without host get
+    the proxy sidecar (D51, 22.1) unless the contract says proxy: false. Returns (port literal or None, {variable: value},
+    whether the literal port is fixed in the code, why a proxy is drafted or None)."""
     facts = nodejs.listen_facts(sources, order, dependencies)
     if facts is None:
         ladder.note("No listen call was found in the code read: check that the service listens on PORT (Cloud Run sets it) on 0.0.0.0")
-        return None, {}, False
+        return None, {}, False, None
     where = repo.at(facts["file"])
+    proxy = None
+    allowed = base.get("proxy") is not False
     fixed = facts["port"] is not None and not facts["port_env"] and not nodejs.any_reads_port(sources)
     if fixed:
         ladder.note(f"{where} listens on port {facts['port']} and never reads PORT: the contract says port: {facts['port']}, and Cloud Run sends "
@@ -1642,12 +1702,22 @@ def node_listen(repo, ladder, sources, order, dependencies, base):
         elif facts["host_env"]:
             env[facts["host_env"]] = EVERY_INTERFACE  # noqa: S104 - Cloud Run's contract: listen on every interface
             ladder.choose("Host", f"0.0.0.0 through {facts['host_env']} (the code's default, {facts['host']}, cannot be reached on Cloud Run)", where)
+        elif allowed:
+            proxy = f"{where} listens on {facts['host']} and reads no variable for it"
         else:
             ladder.refuse(where, f"listens on {facts['host']}, which Cloud Run cannot reach", "listen on every interface: leave the host out, or give '0.0.0.0'")
     if facts["fastify_without_host"]:
-        ladder.refuse(where, "starts Fastify without host: '0.0.0.0', and Fastify listens on localhost unless told otherwise, which Cloud Run cannot reach",
-                      "pass host: '0.0.0.0' to fastify.listen()")
-    return facts["port"], env, fixed
+        if allowed:
+            proxy = f"{where} starts Fastify without host: '0.0.0.0', and Fastify listens on localhost unless told otherwise"
+        else:
+            ladder.refuse(where, "starts Fastify without host: '0.0.0.0', and Fastify listens on localhost unless told otherwise, which Cloud Run cannot reach",
+                          "pass host: '0.0.0.0' to fastify.listen()")
+    if proxy:
+        ladder.choose("Proxy", "an Nginx sidecar on the ingress port, forwarding to the service on the loopback the two containers share (proxy: true)", where)
+        ladder.note(f"{proxy}, which Cloud Run cannot reach from outside the instance: the contract adds the platform's proxy sidecar (proxy: true, "
+                    "D51). It bills as the app does, only while serving (about one more vCPU and 256 MiB per instance); the developer's one line, "
+                    "listening on 0.0.0.0, stays the better fix, and then the reviewer removes proxy")
+    return facts["port"], env, fixed, proxy
 
 
 def node_health(repo, ladder, base, compose, sources, order):
@@ -1753,16 +1823,20 @@ def node_read(repo, ladder, result, base, compose, name, paths):
     recipe = (base.get("build") or {}).get("recipe")
     builds_itself = recipe in (None, "repository") and bool(dockerfile)
     lock = node_lock(repo, ladder, package, member=member)
+    wrapper = None
     view = (lock or {}).get("view") or {}
     manager = (lock or {}).get("manager") or "npm"
     dependencies = nodejs.dependency_names(package, (lock or {}).get("data")) | set(nodejs.view_names(view))
     if builds_itself:
         native = nodejs.view_native(view, dependencies) if view else nodejs.has_native_code(None, dependencies)
-        for finding in dockerpolicy.check(repo.text(dockerfile), trust, native=native):
+        user = wrapped_user(base, trust)
+        for finding in dockerpolicy.check(repo.text(dockerfile), trust, native=native, wrapped=user):
             if finding["refuses"]:
                 ladder.refuse(f"{repo.at(dockerfile)}:{finding['line']}", finding["problem"], finding["fix"])
             else:
                 ladder.note(f"{repo.at(dockerfile)}:{finding['line']}: {finding['problem']} ({finding['fix']})")
+            if finding["rule"] == "runs-as-root" and user:
+                wrapper = user
     line = node_line(repo, ladder, base, dockerfile if builds_itself else None, package) or default_node()
     if line == "22":
         ladder.note(f"Node.js 22 is in maintenance and reaches its end of life on {NODE_END_OF_LIFE['22'].isoformat()}; releases are refused "
@@ -1770,6 +1844,7 @@ def node_read(repo, ladder, result, base, compose, name, paths):
     scripts = script_ladder(repo, ladder, package, lock)
     # 21.2 and 21.3: what the service needs before it starts, decided once here and again by the image at build time (node_facts).
     plan = None
+    site = None
     if not builds_itself:
         start_text = scripts_table.get("start") if isinstance(scripts_table.get("start"), str) else ""
         parsed, _ = nodejs.start_words(start_text) if start_text else (None, None)
@@ -1787,12 +1862,31 @@ def node_read(repo, ladder, result, base, compose, name, paths):
             candidate = ["node", fallback] if fallback else None
         configs = {name: repo.text(name) for name in NODE_CONFIG_FILES if repo.has(name)}
         plan = nodejs.build_plan(package, repo.has, configs, manager, line, candidate)
-        if plan.get("problem"):
+        if plan.get("problem") and "front-end site" in plan["problem"] and not base.get("proxy"):
+            output, why = static_site(package, dependencies)
+            if output:
+                site = (base.get("build") or {}).get("output") or output
+                plan = None
+            else:
+                plan["problem"] += f" ({why})"
+        if plan and plan.get("problem"):
             fix = STATIC_FIX if "front-end site" in plan["problem"] else ("give the build its values another way, or build with a Dockerfile of your own" if "secret" in plan["problem"]
                                                                             else "add typescript to the development dependencies, or commit the built output")
             ladder.refuse(repo.at("package.json"), plan["problem"], fix)
     before = len(ladder.refusals)
-    recipe, entrypoint, command, args, words = node_start(repo, ladder, base, compose, package, builds_itself, dockerfile, web, trust, plan)
+    if site is None and not builds_itself and not isinstance(scripts_table.get("start"), str) and base.get("runtime") != "node-http":
+        static = [item for item in nodejs.STATIC_TOOLS if item in dependencies]
+        if static and not any(item in dependencies for item in nodejs.SERVERS):
+            output, _ = static_site(package, dependencies)
+            site = output and ((base.get("build") or {}).get("output") or output)
+    if site:
+        ladder.choose("Build", f"the platform's static image: the build script writes the site into {site}/, and Caddy serves it behind IAP "
+                      "(runtime: static, exposure: lab-members)", f"{repo.at('package.json')} (scripts.build)")
+        ladder.note("A front-end site with no server of its own (D55): it is served to the lab's members through IAP, never publicly; a site "
+                    "whose build needs a secret is refused, and the review can correct build.output if the builder writes elsewhere")
+        recipe, entrypoint, command, args, words = "platform", scaffold_static_entrypoint(), None, None, None
+    else:
+        recipe, entrypoint, command, args, words = node_start(repo, ladder, base, compose, package, builds_itself, dockerfile, web, trust, plan)
     start_refused = len(ladder.refusals) > before or bool(plan and plan.get("problem"))
     file = start_file(words)
     build_script = scripts_table.get("build")
@@ -1804,7 +1898,7 @@ def node_read(repo, ladder, result, base, compose, name, paths):
     runtime_deps = nodejs.runtime_names(package)
     sources = {item[len(repo.prefix):]: text for item, text in repo.texts.items() if item.startswith(repo.prefix)
                and nodejs.CODE.search(item) and not nodejs.NOT_CODE.search(item) and not nodejs.NODE_TEST.search(item[len(repo.prefix):])}
-    if recipe != "repository":
+    if recipe != "repository" and not site:
         static = [item for item in nodejs.STATIC_TOOLS if item in dependencies]
         if words is None and not start_refused and static and not any(item in dependencies for item in nodejs.SERVERS) \
                 and not any(nodejs.SERVER_CODE.search(text) for text in sources.values()):
@@ -1837,7 +1931,7 @@ def node_read(repo, ladder, result, base, compose, name, paths):
     order = list(dict.fromkeys(modules + sorted(sources, key=_node_rank)))
     entries = modules or [item for item in order if item in NODE_ENTRIES or (file and item == file)]
     scanned = entries or [item for item in order if not re.match(r"(scripts?|tools?|bin|test|tests|examples?|docs?)/", item)]
-    listen_port, host_env, fixed_port = node_listen(repo, ladder, sources, scanned, dependencies, base) if sources and scanned else (None, {}, False)
+    listen_port, host_env, fixed_port, proxy = node_listen(repo, ladder, sources, scanned, dependencies, base) if sources and scanned and not site else (None, {}, False, None)
     for dependency, names in nodejs.HOST_READERS.items():
         if dependency in runtime_deps:
             for name_ in names:
@@ -1926,11 +2020,21 @@ def node_read(repo, ladder, result, base, compose, name, paths):
         ladder.choose("Tests", f"{what}, run with {how} before every build", f"{repo.at('package.json')} (scripts.test)" if how == "npm test" else where)
     else:
         ladder.choose("Tests", "none found: nothing checks the service's behaviour before a release (tests: none)", where)
+    tests_mode = "required" if how else "none"
+    test_text = f"{what or ''} " + " ".join(name for name in (package.get("devDependencies") or {}) if isinstance(package.get("devDependencies"), dict))
+    if how and NEEDS_MORE_TO_TEST.search(test_text) and "tests" not in base:
+        tests_mode = "report"
+        ladder.note("The tests need what the platform's runner does not have (a browser, a database, a seed or Docker): tests: report runs and "
+                    "counts them and never stops a release on them (D54); a reviewer who wants them to gate sets tests: required")
     if ladder.refusals or lock is None:
         name_services(ladder, paths, repo.texts, repo.path)
         return result
 
     build = dict(base.get("build") or {})
+    if wrapper and "user" not in build:
+        build["user"] = wrapper
+        ladder.choose("User", f"{wrapper}, set by the platform's wrapper stage on top of the repository's image, which runs as root (build.user, D52)",
+                      repo.at(dockerfile))
     if recipe != "repository":
         build["recipe"] = recipe
     if entrypoint and recipe in ("platform", "buildpacks"):
@@ -1940,7 +2044,14 @@ def node_read(repo, ladder, result, base, compose, name, paths):
     if member and recipe == "platform":
         build["context"] = "repository"  # 21.4: the workspace root is the build context; the image copies one package out of it
     draft = {**{key: value for key, value in base.items() if key != "python"}, "name": name, "runtime": "node-http", "node": line, "port": port,
-             "health_path": health, "tests": "required" if how else "none"}
+             "health_path": health, "tests": base.get("tests") or tests_mode}
+    if proxy and "proxy" not in base:
+        draft["proxy"] = True
+    if site:
+        build.update(recipe="platform", entrypoint=scaffold_static_entrypoint(), output=site)
+        build.pop("scripts", None)
+        draft.update(runtime="static", port=base.get("port") or DEFAULT_PORT, health_path=None, exposure="lab-members")
+        host_env = {}
     if build:
         draft["build"] = build
     if host_env:
@@ -2045,15 +2156,19 @@ def read(paths, texts, path="", name=None, fallback_name=None, sizes=None):
         if "/" not in other and re.fullmatch(r"(?i)(dockerfile\..+|.+\.dockerfile|containerfile)", other) and other != dockerfile:
             ladder.ignore(repo.at(other), "the platform builds the file named Dockerfile only")
     builds_itself = recipe == "repository" and bool(dockerfile)
+    wrapper = None
     if builds_itself:
         # 14.1: the Dockerfile a repository taken as it is brings meets the platform's policy before its contract is proposed;
         # unless the draft says the lab reviewed it, it is code nobody has reviewed (D35).
         trust = base.get("trust") if base.get("trust") in ("reviewed", "unknown") else "unknown"
-        for finding in dockerpolicy.check(repo.text(dockerfile), trust):
+        user = wrapped_user(base, trust)
+        for finding in dockerpolicy.check(repo.text(dockerfile), trust, wrapped=user):
             if finding["refuses"]:
                 ladder.refuse(f"{repo.at(dockerfile)}:{finding['line']}", finding["problem"], finding["fix"])
             else:
                 ladder.note(f"{repo.at(dockerfile)}:{finding['line']}: {finding['problem']} ({finding['fix']})")
+            if finding["rule"] == "runs-as-root" and user:
+                wrapper = user
 
     # Every ladder runs even after a refusal, so the answer lists everything to fix at once.
     python = python_ladder(repo, ladder, base, dockerfile if builds_itself else None) or DEFAULT_PYTHON
@@ -2228,7 +2343,17 @@ def read(paths, texts, path="", name=None, fallback_name=None, sizes=None):
         build["recipe"] = recipe
     if entrypoint and recipe in ("platform", "buildpacks"):
         build["entrypoint"] = entrypoint
-    draft = {**base, "name": name, "python": python, "port": port, "health_path": health, "tests": "required" if tests else "none"}
+    if wrapper and "user" not in build:
+        build["user"] = wrapper
+        ladder.choose("User", f"{wrapper}, set by the platform's wrapper stage on top of the repository's image, which runs as root (build.user, D52)",
+                      repo.at(dockerfile))
+    tests_mode = "required" if tests else "none"
+    suite = " ".join(repo.text(name) for name in (*PYTEST_CONFIG, *TEST_REQUIREMENTS, "pyproject.toml") if repo.has(name)) + " ".join(repo.text(item) for item in tests[:20])
+    if tests and "tests" not in base and NEEDS_MORE_TO_TEST.search(re.sub(r"(?m)^\s*#.*$", "", suite)):
+        tests_mode = "report"
+        ladder.note("The tests need what the platform's runner does not have (a browser, a database, a seed or Docker): tests: report runs and "
+                    "counts them and never stops a release on them (D54); a reviewer who wants them to gate sets tests: required")
+    draft = {**base, "name": name, "python": python, "port": port, "health_path": health, "tests": base.get("tests") or tests_mode}
     if build:
         draft["build"] = build
     if env:

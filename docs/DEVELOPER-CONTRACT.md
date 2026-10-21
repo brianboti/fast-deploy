@@ -22,7 +22,8 @@ turn into guessing, it refuses and names the file to fix. The contract it writes
 | System packages? | `apt.txt`, `Aptfile` or `packages.txt`, installed in the platform's image, with a compiler at hand in a build stage (since 1.22.0) | none |
 | Health check? | a Compose `healthcheck`; a `/health` route in the code | none: Cloud Run's TCP check, and the release says the HTTP check is off |
 | Settings and needs? | names read from the code, Compose and `.env.example`, a Postgres service in Compose | names are listed for a person to fill in; values are never read |
-| Tests? | pytest's configuration, a `tests/` folder, `test_*.py` files | none: said plainly, never invented |
+| Tests? | pytest's configuration, a `tests/` folder, `test_*.py` files; a suite that names a browser, a database URL or Docker (Playwright, Selenium, `DATABASE_URL`, testcontainers) is drafted `tests: report`: run and counted, never a stop (since 1.24.0, D54) | none: said plainly, never invented |
+| Runs as? | your Dockerfile's `USER`; for code nobody has reviewed whose image runs as root, `build.user: 65532`: the platform builds your Dockerfile, then a stage on top sets that user (since 1.24.0, D52) | the platform's images run as 65532 |
 
 The packages are locked by the platform when the repository has no lock: with uv, in a container of your Python, every
 package pinned with its hashes (`apps/<service>/requirements.lock`); the tests get a lock of their own with pytest. A
@@ -56,7 +57,9 @@ manifest. Its answers come from the same kind of ladder:
 | Which host? | the entry file's listen call and the modules it imports, never a helper script: a host read from a variable whose default is `127.0.0.1` gets `0.0.0.0` in the contract's `env`; `HOST`, `HOSTNAME` or `NITRO_HOST` are set to `0.0.0.0` for the frameworks that read them (Next.js, Astro, Nuxt, the serve commands of React Router and Remix) | every interface, Node's own default |
 | Health check? | a Compose `healthcheck`; a `/health` or `/healthcheck` route (Express, Fastify, Koa, Hono, Hapi, or `req.url === '/health'` in a plain server), prefixed paths like `/api/health` included | none: Cloud Run's TCP check, and the release says the HTTP check is off |
 | Install scripts? | the platform's own table of packages whose script is needed on Cloud Run (`sharp` below 0.33, `bcrypt` below 5.1, `canvas`, `sqlite3`, `better-sqlite3`, `argon2`, `re2`, `node-pty`, `@parcel/watcher`, `@tensorflow/tfjs-node`), drafted at the locked version for the merge to approve (since 1.23.0, D53); then what `package.json` approves for its manager (`allowScripts` by version; pnpm's `onlyBuiltDependencies`, Yarn's `dependenciesMeta` `built`, Bun's `trustedDependencies` by name, joined with the locked version), less those that ship their binary anyway | none run |
-| Tests? | `scripts.test` unless it is npm's placeholder; files `node --test` finds by its own patterns | none: said plainly, never invented |
+| Tests? | `scripts.test` unless it is npm's placeholder; files `node --test` finds by its own patterns; a suite that names Playwright, Cypress, `db:seed`, Docker or a database URL is drafted `tests: report` (since 1.24.0) | none: said plainly, never invented |
+| Bound to the loopback? | a listen call on `127.0.0.1` or `localhost` with no variable for it, or Fastify without `host`, gets the platform's proxy sidecar (`proxy: true`, since 1.24.0, D51): Nginx, pinned by digest, takes the requests on the ingress port and forwards them on the loopback the two containers share, billed as the app's while serving | no proxy |
+| A site with no server? | a Vite, Create React App, Vue CLI, Parcel, Astro, Gatsby, Docusaurus or Eleventy site, or SvelteKit with adapter-static, with a `build` script: `runtime: static`, built by the platform and served by Caddy behind IAP (`exposure: lab-members`; since 1.24.0, D55) | refused |
 
 The packages are locked by the platform when the repository has no lockfile: `npm install --package-lock-only
 --ignore-scripts --min-release-age=3` with npm 11.10 or later, in a container of your Node.js line on the controller's
@@ -64,13 +67,14 @@ machine (Node 22 bundles npm 10.9.9, which has no `min-release-age`, so npm 11.1
 and checked against its integrity hash), into `apps/<service>/package-lock.json`. Every entry must carry its integrity hash and come from the npm registry.
 
 For Node.js it also **refuses**: a start script that chains or watches (`node --watch`, a development server,
-`concurrently`, `&&` other than `build && node FILE`, `sh -c`; `nodemon`, `node-dev`, `pm2` and `forever` on a file are
+`concurrently`, a chain through npm or a shell; since 1.24.0 a chain of `node` commands, `node migrate.js && node server.js`,
+runs as written under the image's init, tini, which passes SIGTERM to the last one; `nodemon`, `node-dev`, `pm2` and `forever` on a file are
 rewritten to `node <file>` since 1.22.0, and refused only with `--exec` or an ecosystem file in JavaScript); a start file
 that is not in the repository when nothing builds it, and TypeScript without `typescript` among the dependencies (since
 1.23.0 a `build` script, the frameworks' builds and `tsc` run in the platform's image, section 1b); a build that needs a
-secret (Strapi, Payload); a listen call on `127.0.0.1` or `localhost`, or Fastify without `host: '0.0.0.0'` (a literal
-port is taken as `port` since 1.22.0); a front-end site with no server (SvelteKit without adapter-node, Astro without its
-Node adapter, Vite alone); two lockfiles, `bun.lockb` (Bun's old binary format), or `packageManager` and `engines` naming
+secret (Strapi, Payload); a loopback listen call only when the contract says `proxy: false` (a literal port is taken as
+`port` since 1.22.0); a front-end site the platform cannot build as one (SvelteKit with another adapter than
+adapter-static or adapter-node, Angular, no `build` script); two lockfiles, `bun.lockb` (Bun's old binary format), or `packageManager` and `engines` naming
 different managers; Yarn 2+ with Plug'n'Play (no `nodeLinker: node-modules`); a lockfile entry without an integrity hash
 or checksum, or from git, a tarball elsewhere, a `file:`, `link:` or `patch:` source, or `bundleDependencies`; a lockfile
 over 5 MB; a workspace root that starts nothing itself (give one package's folder: it installs from the root's lockfile,
@@ -528,7 +532,8 @@ state: stateless
 env:                      # plain configuration values
   LOG_LEVEL: info
 secrets: [API_KEY]        # names only; the value lives in Secret Manager as my-service-API_KEY and arrives as the env var API_KEY
-tests: required           # or none, knowingly: every release then carries a warning
+tests: required           # or none, knowingly: every release then carries a warning; or report: run and counted, never a stop
+# proxy: true              # an Nginx sidecar in front of a service that binds 127.0.0.1 (D51); billed as the app's while serving
 python: "3.12"            # the Python the tests and the audit run on: 3.11 to 3.15; match the Dockerfile's base image
 # node: "24"              # node-http only, instead of python: "22", "24" or "26", each refused from its end of life
 needs:
@@ -559,7 +564,7 @@ the platform treats it as follows; the lab's own code keeps everything but the f
 | | Code nobody has reviewed | The lab's own code |
 |---|---|---|
 | Dockerfile rules: no `curl \| sh`, no `sudo`, no `ADD` of a URL without `--checksum`, no disabled TLS or signature checks, no `RUN --security` or `--network=host`, no copied `.env`, keys or `.git` | refused, with the line and the fix | refused |
-| A final image running as root (no `USER`, or `USER root`) | refused | reported |
+| A final image running as root (no `USER`, or `USER root`) | wrapped: the contract's `build.user: 65532` adds a stage that sets that user (since 1.24.0, D52); refused only when `build.user` is removed and trust stays unknown | reported |
 | A key that works right now, found in the files or in the built image (TruffleHog checks each one with its provider) | stops the build | reported |
 | Fixable critical or high vulnerabilities, or a scan that did not finish | stop the release | reported (the operator's switch blocks critical ones) |
 | A known malicious package | stops the release | stops the release |
