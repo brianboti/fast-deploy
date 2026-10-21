@@ -167,6 +167,20 @@ def test_finish_records_an_outcome_once_under_concurrent_writers(tmp_path):
 WITHOUT_IP_CONFIGURATION = {"user_labels": {"lab-deploy-app": "demo"}, "deletion_protection_enabled": True, "backup_configuration": [{"enabled": True}]}
 
 
+def test_who_last_changed_an_alert_policy_is_a_record_not_a_reference_to_the_platform():
+    """Found on 2026-10-21: updating existing alert policies (1.26.0's words and severities) was refused, because Google's
+    creation_record names the apply identity that made them. A grant or a reference elsewhere is still refused."""
+    record = [{"mutate_time": "2026-10-16T18:00:00Z", "mutated_by": "lab-deploy-infra-apply@p.iam.gserviceaccount.com"}]
+    plan = {"resource_changes": [
+        change("ok", "google_monitoring_alert_policy", ["update"], {"display_name": "demo: server errors", "severity": "ERROR",
+                                                                     "creation_record": record, "mutation_record": record}),
+        change("bad", "google_monitoring_alert_policy", ["update"], {"display_name": "demo", "notification_channels": ["lab-deploy-observer@p"],
+                                                                      "creation_record": record}),
+    ]}
+    rules = {v["address"]: sorted({x["rule"] for x in check_plan(plan) if x["address"] == v["address"]}) for v in plan["resource_changes"]}
+    assert rules["ok"] == [] and rules["bad"] == ["platform_identities_untouched"]
+
+
 def test_policy_refuses_public_members_powerful_roles_platform_identities_and_unknown_values():
     plan = {"resource_changes": [
         change("a", "google_storage_bucket_iam_member", ["create"], {"bucket": "x", "role": "roles/storage.objectViewer", "member": "allUsers"}),

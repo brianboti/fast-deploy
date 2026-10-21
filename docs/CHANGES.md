@@ -89,6 +89,18 @@ release report). No application's workflows change.
 
 Tests: 1,004 pass (27 new, `tests/test_phase23.py`); ruff and zizmor clean; `terraform validate` passes for a staging
 root, a production root and the foundation with provider 7.46.1.
+# 1.25.3: who last changed a resource is a record, not a reference
+
+Found on 2026-10-21 by the first plans of #146 (1.26.0), which updates the words and severities of every application's
+existing alert policies: the plan policy refused all thirteen roots with `platform_identities_untouched`. Google writes,
+on every alert policy, who created and last changed it (`creation_record`, `mutation_record`), and that is the platform's
+own apply identity, `lab-deploy-infra-apply@…`. The identity rule reads every string of a planned resource, so the first
+update of any existing alert policy named the platform's identity. The rule now leaves out those two fields, which Google
+writes and a root cannot set; a grant to or a reference of a platform identity anywhere else is refused as before (a new
+test shows both). The plan workflow judges every pull request with the rules on `main`, so this goes first, then #146's
+plans are run again.
+
+Tests: one new; every other test unchanged.
 
 
 # 1.25.2: a clearer, calmer settings page
