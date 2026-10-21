@@ -1,5 +1,5 @@
 output "github_environment_variables" {
-  value = {
+  value = merge({
     GCP_PROJECT_ID         = var.project_id
     GCP_REGION             = var.region
     CLOUD_RUN_SERVICE      = var.service
@@ -9,7 +9,12 @@ output "github_environment_variables" {
     PROBE_SERVICE_ACCOUNT  = google_service_account.probe.email
     RECOVERY_BUCKET        = google_storage_bucket.recovery.name
     IAP_CLIENT_ID          = var.iap_client_id
-  }
+    }, var.binary_authorization != null ? {
+    # The release's Binary Authorization attestation (docs/ROADMAP.md 14.8); absent until the foundation has an attestor.
+    BINAUTHZ_ATTESTOR    = var.binary_authorization.attestor
+    BINAUTHZ_KEY_VERSION = var.binary_authorization.key_version
+    BINAUTHZ_MODE        = var.binary_authorization.mode
+  } : {})
 }
 output "service_url" { value = google_cloud_run_v2_service.app.uri }
 output "deployer_email" { value = google_service_account.deployer.email }

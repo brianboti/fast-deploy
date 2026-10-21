@@ -19,7 +19,7 @@ import tomllib
 
 import yaml
 
-from . import dockerpolicy
+from . import datafiles, dockerpolicy
 from . import node as nodejs
 from .analyzer import COMPOSE_FILES, IMAGE_KINDS, NEEDS_HINTS, TEST_PATH, UNPROVIDED, WORKERS, compose_names, compose_port
 from .analyzer import folder as compose_folder
@@ -2164,6 +2164,14 @@ def read(paths, texts, path="", name=None, fallback_name=None, sizes=None):
     for item, size in sorted((sizes or {}).items()):
         if item.startswith(repo.prefix) and isinstance(size, int) and size > LARGE_FILE:
             ladder.refuse(item, f"is {size // (1024 * 1024)} MiB", "keep files over 100 MiB in a bucket (needs.buckets) and read them at run time")
+    # 14.10: the data files a release will inspect for personal data before it pushes the image, named in the plan.
+    data = datafiles.candidates({item: size for item, size in (sizes or {}).items()
+                                 if item.startswith(repo.prefix) and isinstance(size, int) and size <= LARGE_FILE and not TEST_PATH.search(item)})
+    if data:
+        largest = ", ".join(f"{item} ({size // 1024} KiB)" for item, size in list(data.items())[:3])
+        ladder.note(f"{len(data)} data file{'s' if len(data) != 1 else ''} of {datafiles.THRESHOLD // 1024} KiB or more may go into the image ({largest}"
+                    f"{'' if len(data) <= 3 else ', ...'}): each release inspects the start of each text file for personal data before it pushes "
+                    "the image, and stops code nobody has reviewed that carries identifiers such as card or social security numbers")
 
     # The contract in the repository, when there is one, is imported once as the draft (D31).
     base = {}

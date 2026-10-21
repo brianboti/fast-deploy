@@ -141,3 +141,84 @@ resource "google_compute_global_forwarding_rule" "domain_http" {
   target                = google_compute_target_http_proxy.domain_redirect[0].id
   labels                = local.labels
 }
+
+# The domain's own uptime check (docs/ROADMAP.md 26.4): the service's check calls the run.app address, so a certificate
+# that failed to renew or a DNS record that moved would go unseen while run.app still answers. This one calls the domain
+# through the balancer and validates its certificate. Any HTTP answer passes, a sign-in redirect or a 403 included: the
+# service checks who calls behind the balancer, and what is proven here is the name, the certificate and the balancer.
+# Right after the domain is added it fails until the A record points at domain_address and Google has issued the
+# certificate, usually within an hour. Its executions count against the free allotment of a million a month.
+resource "google_monitoring_uptime_check_config" "domain" {
+  count            = local.domain_enabled && var.runtime_alerts ? 1 : 0
+  display_name     = "${var.service} domain ${var.domain}"
+  timeout          = "10s"
+  period           = var.uptime_period
+  selected_regions = length(var.uptime_regions) > 0 ? var.uptime_regions : null
+  http_check {
+    path           = var.health_path
+    port           = 443
+    use_ssl        = true
+    validate_ssl   = true
+    request_method = "GET"
+    accepted_response_status_codes {
+      status_class = "STATUS_CLASS_ANY"
+    }
+  }
+  monitored_resource {
+    type   = "uptime_url"
+    labels = { project_id = var.project_id, host = var.domain }
+  }
+}
+resource "google_monitoring_alert_policy" "domain" {
+  count        = local.domain_enabled && var.runtime_alerts ? 1 : 0
+  display_name = "${var.service}: ${var.domain} unreachable"
+  combiner     = "OR"
+  conditions {
+    display_name = "the domain failed its check from more than one region for ten minutes"
+    condition_threshold {
+      filter          = "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND resource.type=\"uptime_url\" AND metric.label.check_id=\"${google_monitoring_uptime_check_config.domain[0].uptime_check_id}\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 1
+      duration        = "600s"
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_NEXT_OLDER"
+        cross_series_reducer = "REDUCE_COUNT_FALSE"
+        group_by_fields      = ["resource.label.*"]
+      }
+      trigger {
+        count = 1
+      }
+    }
+  }
+  conditions {
+    # Google renews a managed certificate about 30 days before it expires; under 14 days left, renewal has failed.
+    display_name = "the domain's certificate expires in less than 14 days"
+    condition_threshold {
+      filter          = "metric.type=\"monitoring.googleapis.com/uptime_check/time_until_ssl_cert_expires\" AND resource.type=\"uptime_url\" AND metric.label.check_id=\"${google_monitoring_uptime_check_config.domain[0].uptime_check_id}\""
+      comparison      = "COMPARISON_LT"
+      threshold_value = 14
+      duration        = "600s"
+      aggregations {
+        alignment_period     = "3600s"
+        per_series_aligner   = "ALIGN_NEXT_OLDER"
+        cross_series_reducer = "REDUCE_MIN"
+        group_by_fields      = ["resource.label.*"]
+      }
+      trigger {
+        count = 1
+      }
+    }
+  }
+  notification_channels = var.alert_channels
+  severity              = "ERROR"
+  user_labels           = merge(local.labels, { lab-deploy-environment = local.environment_name })
+  documentation {
+    subject   = "[${local.environment_name}] ${var.service}: ${var.domain} unreachable"
+    content   = "${var.domain} did not answer through its load balancer, or its certificate is close to expiring, while ${var.service}'s run.app address may still answer. Check that the domain's A record still points at the root's output domain_address and the managed certificate's status (docs/RUNBOOK.md, \"A custom domain\"). Right after the domain is added this fires until the record points there and the certificate is issued."
+    mime_type = "text/markdown"
+  }
+  alert_strategy {
+    auto_close = "1800s"
+  }
+}

@@ -27,7 +27,7 @@
           "anyOf": [
             {
               "maxLength": 400,
-              "pattern": "^[A-Za-z0-9_./:=,+@%${}() -]+$",
+              "pattern": "^[A-Za-z0-9_./:=,+@%${}() &-]+$",
               "type": "string"
             },
             {
@@ -45,6 +45,41 @@
           ],
           "title": "Network",
           "type": "string"
+        },
+        "scripts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Scripts",
+          "type": "array"
+        },
+        "user": {
+          "anyOf": [
+            {
+              "maximum": 2147483647,
+              "minimum": 1000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "pattern": "^[A-Za-z0-9_][A-Za-z0-9_./-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output"
         }
       },
       "title": "Build",
@@ -93,6 +128,31 @@
           ],
           "title": "Database Auth",
           "type": "string"
+        },
+        "database_tier": {
+          "default": "standard",
+          "enum": [
+            "standard",
+            "ha",
+            "sla"
+          ],
+          "title": "Database Tier",
+          "type": "string"
+        },
+        "mounts": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Mounts",
+          "type": "object"
+        },
+        "models": {
+          "items": {
+            "const": "claude",
+            "type": "string"
+          },
+          "title": "Models",
+          "type": "array"
         }
       },
       "title": "Needs",
@@ -155,8 +215,12 @@
       "type": "string"
     },
     "runtime": {
-      "const": "python-http",
       "default": "python-http",
+      "enum": [
+        "python-http",
+        "node-http",
+        "static"
+      ],
       "title": "Runtime",
       "type": "string"
     },
@@ -232,6 +296,11 @@
       "title": "Exposure",
       "type": "string"
     },
+    "proxy": {
+      "default": false,
+      "title": "Proxy",
+      "type": "boolean"
+    },
     "state": {
       "const": "stateless",
       "default": "stateless",
@@ -268,7 +337,8 @@
       "default": "required",
       "enum": [
         "required",
-        "none"
+        "none",
+        "report"
       ],
       "title": "Tests",
       "type": "string"
@@ -285,9 +355,26 @@
       "title": "Python",
       "type": "string"
     },
+    "node": {
+      "anyOf": [
+        {
+          "enum": [
+            "22",
+            "24",
+            "26"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Node"
+    },
     "timeout_seconds": {
       "default": 60,
-      "maximum": 300,
+      "maximum": 3600,
       "minimum": 1,
       "title": "Timeout Seconds",
       "type": "integer"
@@ -329,6 +416,35 @@
       ],
       "default": null,
       "title": "Egress"
+    },
+    "domain": {
+      "anyOf": [
+        {
+          "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Domain"
+    },
+    "project": {
+      "anyOf": [
+        {
+          "enum": [
+            "shared",
+            "own"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Project"
     },
     "reviewed": {
       "default": false,

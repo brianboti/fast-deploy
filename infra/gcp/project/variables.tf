@@ -87,6 +87,11 @@ variable "access_change_quiet_members" {
   default     = []
   description = "Email addresses whose own IAM changes do not raise the access-change alert (docs/ROADMAP.md 25.6), such as the operator who applies the foundation."
 }
+variable "binary_authorization" {
+  type        = string
+  default     = "dryrun"
+  description = "Binary Authorization on Cloud Run (docs/ROADMAP.md 14.8): dryrun logs a deploy of an image no release attested, enforced refuses it, off allows every image. Enforce once a few releases have run clean in dryrun (docs/RUNBOOK.md, \"Binary Authorization\")."
+}
 variable "alert_webhook_url" {
   type        = string
   default     = ""

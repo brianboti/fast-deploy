@@ -156,6 +156,14 @@ def check_viewers(viewers):
     return viewers
 
 
+class OwnProject(StrictModel):
+    """A project of an application's own (docs/ROADMAP.md D35, 14.9), which the operator created, linked to the billing
+    account and gave its foundation (scripts/apply-foundation.sh PROJECT own): the application's staging lives there."""
+    project_id: str = Field(pattern=r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+    project_number: str = Field(pattern=r"^[0-9]{6,20}$")
+    region: str = Field(default="us-central1", pattern=r"^[a-z]+-[a-z]+[0-9]$")
+
+
 class Onboarding(StrictModel):
     """Where one-sentence onboarding puts a new application and what it may do for it (docs/CLAUDE-CHAT.md, "Deploy a repository")."""
 
@@ -173,10 +181,20 @@ class Onboarding(StrictModel):
     # IAP OAuth client id (not secret), which the release probes use as their token audience behind the proxy.
     default_viewers: list[str] = Field(default_factory=list)
     iap_client_id: str | None = Field(default=None, pattern=r"^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$")
+    # Projects of an application's own, by service name (docs/ROADMAP.md 14.9): a contract with `project: own` is placed in
+    # its entry here, and refused until there is one. The shared staging project is never one of them.
+    own_projects: dict[str, OwnProject] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def viewers_well_formed(self):
         check_viewers(self.default_viewers)
+        for service, own in self.own_projects.items():
+            if not re.fullmatch(r"[a-z][a-z0-9-]{0,40}", service):
+                raise ValueError(f"onboarding.own_projects is keyed by service name; {service!r} is not one")
+            if own.project_id == self.project_id:
+                raise ValueError(f"onboarding.own_projects.{service} names the shared staging project; a project of its own is another one")
+        if len({own.project_id for own in self.own_projects.values()}) != len(self.own_projects):
+            raise ValueError("onboarding.own_projects gives each application a project of its own: no project twice")
         return self
 
 

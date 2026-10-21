@@ -308,6 +308,10 @@ class AppSpec(StrictModel):
     # certificate and Cloud Armor answers at it, about $25 a month; staging keeps its run.app address. It is reached behind
     # the same sign-in as the run.app address (a Google identity token, or IAP for lab-members), which keeps answering.
     domain: str | None = Field(default=None, pattern=DOMAIN.pattern)
+    # Where the service lives (docs/ROADMAP.md D35, 14.9): shared, the staging project every application shares; own, a
+    # project of its own, for code nobody has reviewed or an application that holds people's data, so its identities,
+    # resources, quotas and bill stay apart. The operator creates the project and applies its foundation first.
+    project: Literal["shared", "own"] | None = None
     reviewed: bool = False
 
     @model_validator(mode="after")
@@ -430,7 +434,7 @@ def draft_dump(spec: AppSpec) -> dict:
     command or args, the repository's own recipe, no entrypoint), so drafts for repositories that follow the contract read
     as they always did."""
     data = spec.model_dump()
-    for key in ("command", "args", "trust", "egress", "node"):
+    for key in ("command", "args", "trust", "egress", "node", "project"):
         if data.get(key) is None:
             data.pop(key, None)
     if spec.runtime in ("node-http", "static"):

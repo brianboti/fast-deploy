@@ -43,6 +43,10 @@ PRICING = {
     "free_tier_monthly": {"vcpu_seconds": 180_000, "gib_seconds": 360_000, "requests": 2_000_000},
 }
 SECONDS_PER_MONTH = 730 * 3600  # Google's pricing calculator convention
+# No proposal to cut CPU or memory, raise concurrency or change the billing model on fewer user requests than this in the
+# window (docs/ROADMAP.md 26.1): AWS Compute Optimizer makes none for a Lambda function under 50 invocations in its window.
+# Below it the measurements are mostly the uptime check's, which say nothing about a person's request.
+MIN_SIZING_REQUESTS = 50
 EXCLUDED = [
     "network egress beyond the free allowance",
     "Cloud Logging beyond the free allotment",
@@ -284,6 +288,12 @@ def recommend(spec, metrics, pricing=PRICING):
                    + (requests or 0) / 1_000_000 * rates["million_requests"]) * scale
         observed = {"window_days": days, "requests": requests, "vcpu_seconds": vcpu_seconds, "gib_seconds": gib_seconds,
                     "billable_instance_seconds": metrics.get("billable_instance_seconds"), "usd_month_at_list_price": _usd(monthly)}
+    user_requests = metrics.get("user_requests")
+    if observed is not None and user_requests is not None:
+        observed["user_requests"] = user_requests
+    # Users' requests when the objective's counter knows them, else every request; unknown when neither was read.
+    counted = user_requests if user_requests is not None else requests
+    too_few = counted is not None and counted < MIN_SIZING_REQUESTS
     memory_gib = spec.resources.memory_mib / 1024
     instance_seconds = gib_seconds / memory_gib if gib_seconds else None
     monthly_instance_seconds = instance_seconds * scale if instance_seconds and scale else None
@@ -297,7 +307,7 @@ def recommend(spec, metrics, pricing=PRICING):
     if memory_p95 is not None:
         needed_mib = spec.resources.memory_mib * memory_p95 * 1.25
         target = max(512, min(spec.resources.memory_mib, math.ceil(needed_mib / 256) * 256))
-        if target < spec.resources.memory_mib:
+        if target < spec.resources.memory_mib and not too_few:
             saving = (spec.resources.memory_mib - target) / 1024 * rates["gib_second"] * monthly_instance_seconds if monthly_instance_seconds else None
             add("resources.memory_mib", spec.resources.memory_mib, target,
                 f"p95 memory utilization was {memory_p95:.0%} over {days} days; {target} MiB keeps 25% headroom", saving)
@@ -306,11 +316,11 @@ def recommend(spec, metrics, pricing=PRICING):
             add("resources.memory_mib", spec.resources.memory_mib, spec.resources.memory_mib + 256,
                 f"p95 memory utilization was {memory_p95:.0%}; add headroom to avoid out-of-memory restarts", None if extra is None else -extra)
     cpu_p95 = metrics.get("cpu_utilization_p95")
-    if cpu_p95 is not None and spec.resources.cpu > 1 and cpu_p95 < 0.4:
+    if cpu_p95 is not None and spec.resources.cpu > 1 and cpu_p95 < 0.4 and not too_few:
         saving = rates["vcpu_second"] * monthly_instance_seconds if monthly_instance_seconds else None
         add("resources.cpu", spec.resources.cpu, spec.resources.cpu - 1, f"p95 CPU utilization was {cpu_p95:.0%} over {days} days", saving)
     concurrency_p95 = metrics.get("max_concurrency_p95")
-    if concurrency_p95 is not None and cpu_p95 is not None and memory_p95 is not None and spec.concurrency < 1000:
+    if concurrency_p95 is not None and cpu_p95 is not None and memory_p95 is not None and spec.concurrency < 1000 and not too_few:
         if concurrency_p95 >= 0.8 * spec.concurrency and cpu_p95 < 0.6 and memory_p95 < 0.7:
             add("concurrency", spec.concurrency, min(1000, spec.concurrency * 2),
                 f"instances reached {concurrency_p95:.0f} concurrent requests (limit {spec.concurrency}) while CPU and memory had headroom; "
@@ -319,7 +329,7 @@ def recommend(spec, metrics, pricing=PRICING):
         idle = spec.scaling.minimum * instance_second_usd(spec, pricing, idle=True) * SECONDS_PER_MONTH
         add("scaling.minimum", spec.scaling.minimum, 0, f"only {requests} requests in {days} days do not justify warm instances", idle)
     billable, peak_instances = metrics.get("billable_instance_seconds"), metrics.get("max_active_instances")
-    if billable and peak_instances and days:
+    if billable and peak_instances and days and not too_few:
         busy = billable / (days * 86400 * peak_instances)
         if busy > 0.6:
             add("billing_model", "request-based", "instance-based (not offered by this platform yet)",
@@ -327,6 +337,10 @@ def recommend(spec, metrics, pricing=PRICING):
                 "Compare with the Cloud Run cost recommender output in this report", None, "heuristic")
     if requests == 0:
         add(None, None, None, "no requests in the window; a scaled-to-zero service costs nothing, but remove staging services nobody uses", None)
+    elif too_few and (memory_p95 is not None or cpu_p95 is not None):
+        whose = "user requests" if user_requests is not None else "requests"
+        add(None, None, None, f"only {counted} {whose} in {days} days, under the {MIN_SIZING_REQUESTS} a sizing proposal needs: CPU and memory "
+            "were measured mostly while the uptime check called, so no cut is proposed (more headroom still is, when memory runs short)", None)
     return {"observed": observed, "recommendations": recommendations,
             "note": "Proposals for the reviewed platform.yaml; nothing is applied automatically. Savings use list prices scaled to a 30-day month."}
 
@@ -438,7 +452,9 @@ def summary_lines(report):
         lines.append(f"Actual spend unavailable: {actual['warning']}")
     lines += comparison_lines(report)
     if observed:
-        lines.append(f"Observed usage priced at list rates: ${observed['usd_month_at_list_price']:.2f}/month ({observed['requests']} requests)")
+        users = observed.get("user_requests")
+        whose = "" if users is None else f", {users} of them from users; the rest were the uptime check and health probes"
+        lines.append(f"Observed usage priced at list rates: ${observed['usd_month_at_list_price']:.2f}/month ({observed['requests']} requests{whose})")
     else:
         lines.append("No usage metrics were returned for the window")
     tolls = report.get("release_tolls") or {}

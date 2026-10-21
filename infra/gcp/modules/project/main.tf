@@ -10,13 +10,15 @@ locals {
     "__REGION__", var.region),
     "__DETACH__", var.spending_cap.detach_billing ? "true" : "false"),
   "__DETACH_THRESHOLD__", tostring(var.spending_cap.detach_threshold))
-  # Viewer roles only; the last four let the health view confirm an app's declared needs exist (and that a database runs).
-  # The observer and the controller's machine (controller.tf) both hold exactly these.
-  observer_roles = ["roles/run.viewer", "roles/monitoring.viewer", "roles/logging.viewer", "roles/storage.bucketViewer", "roles/pubsub.viewer", "roles/datastore.viewer", "roles/cloudsql.viewer"]
+  # Viewer roles only; four let the health view confirm an app's declared needs exist (and that a database runs), and the
+  # last two let the Monday digest read what Artifact Analysis holds for each serving image and pull it, so that analysis
+  # goes on (docs/ROADMAP.md 26.3). The observer and the controller's machine (controller.tf) both hold exactly these.
+  observer_roles = ["roles/run.viewer", "roles/monitoring.viewer", "roles/logging.viewer", "roles/storage.bucketViewer", "roles/pubsub.viewer", "roles/datastore.viewer", "roles/cloudsql.viewer",
+  "roles/containeranalysis.occurrences.viewer", "roles/artifactregistry.reader"]
 }
 
 resource "google_project_service" "apis" {
-  for_each           = toset(["run.googleapis.com", "artifactregistry.googleapis.com", "iam.googleapis.com", "iamcredentials.googleapis.com", "sts.googleapis.com", "storage.googleapis.com", "monitoring.googleapis.com", "recommender.googleapis.com", "pubsub.googleapis.com", "firestore.googleapis.com", "iap.googleapis.com", "aiplatform.googleapis.com", "servicehealth.googleapis.com"])
+  for_each           = toset(["run.googleapis.com", "artifactregistry.googleapis.com", "iam.googleapis.com", "iamcredentials.googleapis.com", "sts.googleapis.com", "storage.googleapis.com", "monitoring.googleapis.com", "recommender.googleapis.com", "pubsub.googleapis.com", "firestore.googleapis.com", "iap.googleapis.com", "aiplatform.googleapis.com", "servicehealth.googleapis.com", "dlp.googleapis.com"])
   service            = each.value
   disable_on_destroy = false
 }

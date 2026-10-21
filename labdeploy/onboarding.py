@@ -348,6 +348,7 @@ class Onboarder:
             raise Blocked(missing_message(result["checklist"]))
         record["service"] = result["spec"].name
         record["needs"] = result["spec"].needs.model_dump()
+        record["project"] = result["spec"].project or "shared"
         record["state"] = "registering"
 
     def validate_as_is(self, record):
@@ -372,6 +373,7 @@ class Onboarder:
             raise Blocked("It cannot be taken as it is: " + "; ".join(f"{item['file']} {item['problem']} (fix: {item['fix']})" for item in read["refusals"][:6]))
         record["service"] = read["spec"].name
         record["needs"] = read["spec"].needs.model_dump()
+        record["project"] = read["spec"].project or "shared"
         existing = contracts.read(record["service"])
         if existing is None:
             record["state"] = "contract"
@@ -385,6 +387,7 @@ class Onboarder:
             raise Blocked(f"{found['path']} already holds {record['service']} for {source.repository}" + (f" ({source.path})" if source.path else "")
                           + "; give this service another application id")
         record["needs"] = found["spec"].needs.model_dump()
+        record["project"] = found["spec"].project or "shared"
         record["steps"]["contract_on_main"] = {"path": found["path"], "commit": found["commit"], "source_commit": source.commit}
         record["state"] = "registering"
 
@@ -439,7 +442,15 @@ class Onboarder:
             record["steps"]["registering"] = {"note": "already registered"}
         else:
             settings = self.settings
-            project, region = settings.project_id, settings.region
+            project, region, number = settings.project_id, settings.region, settings.project_number
+            if record.get("project") == "own":
+                # A project of its own (docs/ROADMAP.md 14.9): only one the operator created and recorded, never the shared one.
+                own = settings.own_projects.get(service)
+                if own is None:
+                    raise Blocked(f"The contract asks for a project of its own (project: own), and none is recorded for {service}. The operator "
+                                  "creates a project, links it to the billing account, applies its foundation (scripts/apply-foundation.sh "
+                                  f"PROJECT own, docs/SETUP.md 7s) and adds it under onboarding.own_projects.{service}; then ask again")
+                project, region, number = own.project_id, own.region, own.project_number
             # The first application of a repository keeps the plain names; a further one gets its own (D24), so the two never
             # share workflows, an environment's variables, a deploy identity's trust or a release queue.
             # GitHub's names ignore case, so lab/Mono and lab/mono are one repository with one set of workflow files.
@@ -459,7 +470,7 @@ class Onboarder:
                      "target": {"project_id": project, "region": region, "service": service, "registry": service,
                                 "deploy_service_account": f"{service}-deploy@{project}.iam.gserviceaccount.com",
                                 "probe_service_account": f"{service}-probe@{project}.iam.gserviceaccount.com",
-                                "wif_provider": f"projects/{settings.project_number}/locations/global/workloadIdentityPools/{service}-gh/providers/github",
+                                "wif_provider": f"projects/{number}/locations/global/workloadIdentityPools/{service}-gh/providers/github",
                                 "recovery_bucket": f"{project}-{service}-recovery"}}
             Application.model_validate(entry)
             self.c.store.register_application(app_id, entry)
@@ -472,7 +483,10 @@ class Onboarder:
         if platform is None:
             raise ValueError("Set platform.repository in the controller configuration before onboarding repositories")
         settings, app_id, service = self.settings, record["application"], record["service"]
-        render = {"state_bucket": settings.state_bucket or f"{settings.project_id}-tfstate", "bootstrap_image": settings.bootstrap_image}
+        project = self.c.config.applications[app_id].target.project_id
+        # The shared project's state bucket may be named in the settings; a project of its own keeps its state in its own.
+        bucket = (settings.state_bucket or f"{settings.project_id}-tfstate") if project == settings.project_id else f"{project}-tfstate"
+        render = {"state_bucket": bucket, "bootstrap_image": settings.bootstrap_image}
         rendered = self.c.render_infrastructure(self.principal(record), app_id, **render)
         existing = self.c.github.contents(platform.repository, platform.branch, f"infra/gcp/apps/{service}/main.tf")
         if existing is not None and existing["text"] == rendered["files"]["main.tf"]:

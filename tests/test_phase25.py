@@ -48,7 +48,7 @@ def test_the_saturation_alert_follows_the_contracts_maximum(tmp_path):
 # ---- 25.4 and 25.6: Google's incidents and access changes, in the foundation
 def test_the_foundation_alerts_on_googles_incidents_and_on_access_changed_by_hand():
     main = Path("infra/gcp/modules/project/main.tf").read_text()
-    assert '"servicehealth.googleapis.com"])' in main
+    assert '"servicehealth.googleapis.com", "dlp.googleapis.com"])' in main  # Sensitive Data Protection since 1.30.0 (14.10)
     google = main[main.index('resource "google_monitoring_alert_policy" "google_incident"'):]
     google = google[:google.index("\n}\n")]
     assert 'logs/servicehealth.googleapis.com%2Factivity' in google and 'labels.\\"servicehealth.googleapis.com/new_event\\"=\\"true\\"' in google

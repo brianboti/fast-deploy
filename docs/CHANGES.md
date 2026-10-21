@@ -1,3 +1,71 @@
+# 1.30.0: the rest of Phases 14 and 25 (Phase 26)
+
+Seven items the roadmap had left open: three controls of Phase 14 that waited for machinery (14.8 to 14.10) and four
+watches the scaling review of 2026-10-21 put aside (Phase 26). Each was checked against Google's documentation on
+2026-10-21 before it was built; what that check changed is said under each.
+
+**14.8, Binary Authorization.** A Cloud Run service that opts in runs only an image this project's release attestor
+signed. Cloud Run reads no Cosign signature or GitHub attestation itself, only attestations stored in Artifact Analysis
+under an attestor's note, and a project has one policy, so the foundation makes one attestor per project
+(`infra/gcp/modules/project/binauthz.tf`): a Cloud KMS key, the note, the attestor and the policy. Every application's
+service opts in from its root's next render, and its deployer may attest. The release attests the image once its
+provenance is verified (`labdeploy/attest.py`, through Google's REST APIs: gcloud's one command for it is beta only), and
+checks the attestation with the attestor before storing it, so a wrong key fails at the release, not at the deploy. A
+promotion attests again in production after checking staging's provenance. The policy starts in dry run
+(`binary_authorization = "dryrun"`): an unattested deploy goes ahead and is written to the audit log, and a release
+whose attestation fails warns and goes on. Set `enforced` once a few releases have run clean; `off` allows every image,
+while the key, the note and the attestor stay. Cloud Run checks each new revision, never one already serving, so a rollback is never
+refused. Free on Cloud Run; the key costs about $0.06 a month.
+
+**14.9, a project of its own.** A contract may say `project: own`: the application's staging then lives in a project of
+its own, with its own identities, resources, quotas, budget and spending cap. The operator creates the project, applies its
+foundation (`scripts/apply-foundation.sh PROJECT own`, settings in `own-PROJECT.tfvars`), adds the printed entry to the
+repository variable `INFRA_OWN_PROJECTS` and the project under `onboarding.own_projects`. Onboarding places the
+application there and refuses until it is recorded; a contract that asks for its own project is never rendered into the
+shared one. The plan, apply and drift jobs sign in with that project's identities. Its spend is in the digest and the
+reports like any project's, since the billing export covers the account.
+
+**14.10, personal data in data files.** Before the image is pushed, the deploy job, which holds the application's identity
+and never runs its code, reads the built image and sends the first 256 KiB of each data file of 64 KiB or more (at most 20
+files and 2 MiB a release) to Sensitive Data Protection (`labdeploy/datafiles.py`). Found values never leave Google's
+answer. For code nobody has reviewed, a likely social security, passport, driver's licence, card, bank or medical record
+number stops the release; for the lab's own code everything is reported. The plan names the data files a release will
+inspect. Until the foundation and the application's root are applied, a release goes on uninspected with a warning. The
+detectors are listed by name, since Google's default list may change; the first GiB a month is free, then $3 a GiB.
+
+**26.1, a floor under right-sizing.** No proposal to cut CPU or memory, raise concurrency or change the billing model on
+fewer than 50 user requests in the window, AWS Compute Optimizer's rule for Lambda. Below it the measurements are mostly
+the uptime check's. Users' requests come from the objective's log-based counter; more memory is still proposed when
+memory runs short. The report says how many of the requests were users'.
+
+**26.2, alerts for what an application declares.** A topic gets "messages waiting" when its subscription's oldest
+unacknowledged message is over an hour old. A Postgres database gets "near a limit" (disk over 90 percent, connections
+over 80 percent of Cloud SQL's default 25 or 100) and "backup failed", read from the audit log, since Cloud SQL has no
+metric for it.
+
+**26.3, the images that serve.** Artifact Analysis keeps analysing an image only while it was pulled within 30 days, and
+Cloud Run never pulls a serving image again after its deploy. On Mondays the digest reads what Artifact Analysis holds for
+each serving image, names fixable critical and high findings and what is new since last Monday, then pulls each image
+from the machine. The machine and the registry are in one region, so the pull costs nothing, where an on-demand scan
+would cost $0.26 an image. The observer gains two viewer roles for it.
+
+**26.4, a custom domain's own check.** An uptime check through the load balancer with the certificate validated, and an
+alert when it fails from more than one region or the certificate has under 14 days left.
+
+Upgrade steps:
+1. Merge, then update the machine.
+2. Apply the foundation in each project (`scripts/apply-foundation.sh STAGING_PROJECT`, then `... PROD_PROJECT production`):
+   Sensitive Data Protection's API, the observer's two roles, and Binary Authorization in dry run.
+3. Re-render each application's root (`propose_infrastructure`, and `add_production` for production roots) and merge: the
+   services opt in, the deployers may attest and inspect, the new alerts appear.
+4. Re-pin the applications with their own workflows: the inspection and the attestation run in the workflows.
+5. After a few releases, check the audit log for dry-run refusals (docs/RUNBOOK.md, "Binary Authorization"), then set
+   `binary_authorization = "enforced"` in each project's settings file and apply the foundation again.
+
+Tests: 1,070 pass, 20 of them new, in `tests/test_phase26.py`; `tests/test_telemetry.py`, `tests/test_domain.py`,
+`tests/test_phase16.py` and `tests/test_phase25.py` follow the changes. Ruff check is clean.
+
+
 # 1.29.4: the audit trail for limited identities
 
 Found on 2026-10-21 while the release before this one (cost and controller state for limited identities) was built.

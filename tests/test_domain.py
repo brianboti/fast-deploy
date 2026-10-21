@@ -48,7 +48,9 @@ def test_only_a_production_root_carries_the_domain_and_prints_its_address():
 def test_the_module_puts_a_certificate_and_cloud_armor_in_front_of_production_only():
     domain = (MODULE / "domain.tf").read_text()
     assert 'domain_enabled = var.domain != "" && local.environment_name == "production"' in domain
-    assert len(re.findall(r"count +=  ?local\.domain_enabled \? 1 : 0", domain)) == domain.count('resource "') == 12  # every resource is the opt-in's
+    gated = len(re.findall(r"count +=  ?local\.domain_enabled \? 1 : 0", domain))
+    checked = len(re.findall(r"count += local\.domain_enabled && var\.runtime_alerts \? 1 : 0", domain))  # the domain's check (26.4)
+    assert (gated, checked) == (12, 2) and gated + checked == domain.count('resource "')  # every resource is the opt-in's
     assert 'exceed_action  = "deny(429)"' in domain and 'enforce_on_key = "IP"' in domain and "domain_requests_per_minute = 600" in domain
     assert "security_policy       = google_compute_security_policy.domain[0].id" in domain and "sample_rate = 0.1" in domain
     assert 'profile         = "MODERN"' in domain and 'min_tls_version = "TLS_1_2"' in domain and "https_redirect = true" in domain

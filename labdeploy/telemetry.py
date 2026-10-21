@@ -169,6 +169,17 @@ class CloudMonitoring:
             values = self.query(metric, aligner, "REDUCE_MAX", start, end, alignment, " AND ".join(filter(None, (by_service, extra))))
             return max(values) if values else None
 
+        def user_requests():
+            # The objective's log-based counter (infra/gcp/modules/service/slo.tf): requests that are not the platform's uptime
+            # check or the health path. A counter with no points counted none; a service without an objective has no counter
+            # (Monitoring answers 404), which is unknown, not zero.
+            try:
+                values = self.query(f"logging.googleapis.com/user/lab-deploy/{service}/requests", "ALIGN_SUM", "REDUCE_SUM", start, end, whole,
+                                    by_service)
+            except httpx.HTTPStatusError:
+                return None
+            return sum(values)
+
         active = 'metric.labels.state="active"'
         instance_samples = self.query("run.googleapis.com/container/instance_count", "ALIGN_MAX", "REDUCE_SUM", start, end, 300,
                                       f"{by_service} AND {active}")
@@ -178,6 +189,7 @@ class CloudMonitoring:
             "gib_seconds": total("run.googleapis.com/container/memory/allocation_time"),
             "billable_instance_seconds": total("run.googleapis.com/container/billable_instance_time"),
             "requests": total("run.googleapis.com/request_count"),
+            "user_requests": user_requests(),
             "cpu_utilization_p95": peak("run.googleapis.com/container/cpu/utilizations", "ALIGN_PERCENTILE_95"),
             "memory_utilization_p95": peak("run.googleapis.com/container/memory/utilizations", "ALIGN_PERCENTILE_95"),
             "max_concurrency_p95": peak("run.googleapis.com/container/max_request_concurrencies", "ALIGN_PERCENTILE_95", active),

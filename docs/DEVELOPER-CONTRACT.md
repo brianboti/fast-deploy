@@ -575,6 +575,7 @@ build:
 trust: reviewed           # who has read the code: reviewed (the lab) or unknown (nobody); unset, reviewed here (section 5a)
 egress: internet          # where it may connect: internet, or private (Google's APIs and the lab's network only); unset, by trust
 domain: api.example.org   # production only: a name of the lab's own, through a load balancer with Cloud Armor, about $25 a month (section 6b)
+project: shared           # or own: a project of the application's own, for code nobody has reviewed or people's data (section 5a)
 reviewed: true            # set by the person who reviewed the file
 ```
 
@@ -597,6 +598,20 @@ the platform treats it as follows; the lab's own code keeps everything but the f
 Every image also gets a parts list (a CycloneDX SBOM), attested next to its provenance, and no release ever uses a build
 cache. A repository without a `.dockerignore` gets the platform's deny-list for its build (never committed), and a build
 context over 1 GiB is refused: data belongs in a bucket.
+
+Since 1.30.0 three more rules hold for every application:
+
+- **Data files are read before the image is pushed.** Each text data file of 64 KiB or more in the image (CSV, TSV, JSON,
+  text, XML, SQL, YAML, logs) has its first 256 KiB inspected for personal data by Google's Sensitive Data Protection.
+  In code nobody has reviewed, a likely social security, passport, driver's licence, card, bank or medical record number
+  stops the release; in the lab's own code it is reported. People's data belongs in a bucket (`needs.buckets`) or a
+  database, never in the image.
+- **Only attested images run.** The release attests each image it built and checked; Cloud Run in the lab's projects
+  refuses any other image once the operator enforces it. Nothing for the developer to do, except never deploying by hand.
+- **A project of its own** (`project: own`): the application's staging lives in a project of its own, so its identities,
+  resources and bill stay apart from the other applications'. Ask for it for code nobody has reviewed or an application
+  that will hold people's data; the operator creates the project first (docs/SETUP.md 7s), and onboarding waits until
+  then.
 
 Costs the developer controls: `scaling.minimum: 0` costs nothing idle, `1` about 9 dollars a month per warm
 instance; Cloud SQL about 9 a month; Firestore, buckets and topics nothing at rest within the free tiers. Every plan

@@ -626,6 +626,77 @@ The access alert also fires for your own foundation applies; to leave them out, 
 access_change_quiet_members = ["you@example.com"]
 ```
 
+## 7s. A project of an application's own (1.30.0)
+
+A contract may say `project: own` (docs/DEVELOPER-CONTRACT.md): code nobody has reviewed, or an application that holds
+people's data, then keeps its staging in a project of its own, with its own identities, quotas, budget and spending cap.
+Onboarding refuses such a contract until the project is ready. Once per application:
+
+1. **The project**, on the same billing account (production's steps 1 and 2 in section 7n, with the project's own name):
+   create it, link it to billing, create its state bucket `PROJECT-tfstate` with versioning. Creating a project is free.
+2. **Its settings**, `infra/gcp/project/own-PROJECT.tfvars`, like `production.tfvars` but for staging:
+
+   ```hcl
+   project_id = "PROJECT"
+   region     = "us-central1"
+
+   image_vulnerability_scanning = true
+   monthly_budget_usd           = 10
+   billing_account              = "XXXXXX-XXXXXX-XXXXXX"
+   spending_cap                 = { enabled = true, threshold = 1.0 }
+   alert_email                  = "lab-admin@example.edu"
+
+   pipeline = {
+     platform_repository    = "OWNER/fast-deploy"
+     platform_repository_id = "NUMERIC_ID"
+     platform_owner_id      = "NUMERIC_OWNER_ID"
+     environment            = "infra"
+   }
+
+   # The controller's machine stays in the shared staging project and reads this one with the observer's roles.
+   viewer_members = ["serviceAccount:lab-deploy-controller@STAGING_PROJECT.iam.gserviceaccount.com"]
+   ```
+
+3. **The foundation**: `scripts/apply-foundation.sh PROJECT own`, typing **yes**. At the end it prints one
+   `INFRA_OWN_PROJECTS` entry.
+4. **On the platform repository**: the repository variable `INFRA_OWN_PROJECTS` is one JSON object keyed by service name;
+   add the printed entry under the application's service name, for example
+   `{"newapp": {"plan_provider": "...", "apply_provider": "...", "plan_service_account": "...", "apply_service_account": "..."}}`.
+   The plan, apply and drift jobs sign in to that project with them; every other root keeps the shared identities.
+5. **The controller's configuration**: under `onboarding`, add
+
+   ```yaml
+   own_projects:
+     newapp:
+       project_id: PROJECT
+       project_number: "123456789012"
+   ```
+
+   and the project's budget under `monthly_budgets_usd`, so the digest's cost line knows it.
+6. Ask Claude to deploy the repository as usual: onboarding places it in its project.
+
+An application already registered in the shared project is not moved: unregister it, retire its resources there
+(section 7d), and onboard it again. Its idle cost is the foundation's, a few cents a month.
+
+## 7t. Binary Authorization, data files and serving images (1.30.0)
+
+Apply the foundation in each project after the merge (`scripts/apply-foundation.sh STAGING_PROJECT`, then
+`scripts/apply-foundation.sh PROD_PROJECT production`). It adds:
+
+- **Binary Authorization in dry run**: a Cloud KMS key `release-attestor`, the note and attestor `lab-deploy-releases`,
+  and the project's policy. The script makes sure Binary Authorization's service agent exists first.
+- **Sensitive Data Protection's API**, for the release's inspection of data files.
+- **Two viewer roles for the observer and the machine**: Artifact Analysis's findings and the registry's images, for the
+  Monday look at what serves.
+
+Then re-render every application root (`propose_infrastructure`; production roots through `add_production`) and merge,
+and re-pin the applications with their own workflows. Enforce Binary Authorization once the dry run is clean
+(docs/RUNBOOK.md, "Binary Authorization"):
+
+```hcl
+binary_authorization = "enforced"   # in staging.tfvars or production.tfvars; "off" allows every image
+```
+
 ## 7k. The weekly drift check
 
 `.github/workflows/infra-drift.yml` plans every application root against the live infrastructure on Mondays at 07:37 UTC

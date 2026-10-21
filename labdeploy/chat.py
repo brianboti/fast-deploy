@@ -551,6 +551,29 @@ def digest(record):
         facts.append("Google's own spend cap is not recorded for " + ", ".join(f"`{name}`" for name in missing))
     if record.get("alert_slots"):
         facts.append(alert_slots_line(record["alert_slots"]))
+    serving = record.get("serving_images") or {}
+    for item in serving.get("images") or []:
+        where = " in production" if item.get("environment") == "production" else ""
+        if item.get("malicious"):
+            facts.append(f"`{item['application']}`{where}: its serving image now carries a known malicious package: release a fixed build, or "
+                         "stop the service (docs/RUNBOOK.md, \"A serving image's findings\")")
+            looks += 1
+        elif item.get("critical_fixable") or item.get("high_fixable"):
+            new = item.get("new_critical_fixable")
+            news = f", {new} critical new since last Monday" if new else ""
+            facts.append(f"`{item['application']}`{where}: its serving image has {item['critical_fixable']} critical and {item['high_fixable']} high "
+                         f"findings with a fix{news}. A release with updated packages or base image clears them (docs/RUNBOOK.md, "
+                         "\"A serving image's findings\")")
+            looks += bool(new)
+        if item.get("analysis") == "INACTIVE":
+            facts.append(f"`{item['application']}`{where}: Google had stopped analysing its serving image (not pulled in 30 days); "
+                         "it was pulled today, so next Monday's line is current")
+    pulls = [item for item in serving.get("images") or [] if item.get("pull_error")]
+    if pulls:
+        facts.append("Not pulled, so Google may stop analysing them: " + ", ".join(f"`{item['application']}` ({clip(item['pull_error'], 80)})" for item in pulls[:3]))
+    if serving.get("images") is not None and not any(item.get("critical_fixable") or item.get("high_fixable") or item.get("malicious")
+                                                     for item in serving.get("images") or []):
+        facts.append(f"Serving images: {plural(len(serving.get('images') or []), 'image')} read, none with a critical or high finding that has a fix")
     if record.get("idle"):
         facts.append("No user request in 30 days: " + ", ".join(f"`{name}`" for name in record["idle"])
                      + ". Each keeps five alert policies and an uptime check; retire one with scripts/decommission.sh if nobody needs it")
