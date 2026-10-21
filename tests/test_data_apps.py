@@ -1,4 +1,4 @@
-"""1.22.6: what an application that calls Claude, loads a model or streams its answers asks of its contract, said by the
+"""1.25.1: what an application that calls Claude, loads a model or streams its answers asks of its contract, said by the
 reader for both runtimes (docs/ROADMAP.md D47, 19.4), and IAP_AUDIENCE for a lab-members app that verifies who is signed in.
 Found by putting the BetterCare chatbot's code through the platform's own image on 2026-10-20: its embedding model's first
 load stopped with EACCES, its chat streams for longer than the default timeout, and it calls Claude with an API key."""

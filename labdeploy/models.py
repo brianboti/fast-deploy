@@ -340,7 +340,7 @@ class AppSpec(StrictModel):
         if (self.command is not None or self.args is not None) and self.build.recipe == "buildpacks":
             raise ValueError("command and args replace the image's start command, which on a buildpacks image bypasses its launcher; use build.entrypoint")
         self.runtime_fits()
-        # IAP_AUDIENCE: what a lab-members app checks the proxy's signed header against, set by the release (1.22.6).
+        # IAP_AUDIENCE: what a lab-members app checks the proxy's signed header against, set by the release (1.25.1).
         derived = {**needs_env(self, "project"), **needs_secrets(self), **({"IAP_AUDIENCE": ""} if self.exposure == "lab-members" else {})}
         taken = set(self.env) | set(self.secrets)
         for name in derived:

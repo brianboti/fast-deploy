@@ -44,7 +44,7 @@ question was what still stands in the way once the code is ready, and what the r
 The release runner takes 4 from the platform's main at the next release of a kept contract, and at the next re-pin for an
 application with its own workflows; the notes reach the chat when the machine runs 1.25.1. Terraform apply: none.
 
-Tests: 923 pass (10 new); ruff clean.
+Tests: 975 pass (10 new); ruff clean.
 
 
 # 1.25.0: a settings page for the controller's configuration
