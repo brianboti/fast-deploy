@@ -92,7 +92,7 @@ def test_cloud_run_adapter_builds_label_and_log_commands():
     ])})
     adapter = CloudRun("test-project", "us-central1", "demo", "demo-probe@test-project.iam.gserviceaccount.com", runner=recorder)
     adapter.deploy(IMAGE, SPEC, "rabc", {"lab-deploy-plan": PLAN_ID, "lab-deploy-commit": "a" * 40})
-    deploy = recorder.commands[0]
+    deploy = next(command for command in recorder.commands if command[:3] == ["gcloud", "run", "deploy"])
     assert "--update-labels=lab-deploy-commit=" + "a" * 40 + ",lab-deploy-plan=" + PLAN_ID in deploy and "--startup-probe" in deploy
     with pytest.raises(ValueError, match="labels"):
         adapter.deploy(IMAGE, SPEC, "rabc", {"Bad Key": "x"})

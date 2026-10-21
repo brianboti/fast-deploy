@@ -11,7 +11,18 @@ Built and checked locally; the live exercise listed under Phase 22 has not run y
    containers: the platform's Nginx (the official image, pinned by its index digest and followed by the weekly refresh)
    as the ingress container on 8080 (8081 when the service itself uses 8080), started after the app's own startup
    probe passes, forwarding every request to the app's port on the loopback the containers share; its configuration is
-   made from two integers and nothing of the application's. The cost view counts its 1 vCPU and 256 MiB per instance,
+   made from two integers and nothing of the application's. **Containers by name** (the review of #141): Terraform and
+   every single-container release leave the service's one container without a name, and no gcloud flag can address it
+   (`--container=app` would add a second container beside it, `--remove-containers` matches names only; read in gcloud
+   539's `container_resource.py`). So the first proxied release reads the live template and, when its one container has
+   no name, writes the service back once with `gcloud run services replace`, that container named `app` and nothing
+   else changed (traffic is frozen beforehand, so the extra revision serves nothing); then the per-container flags edit
+   `app` and add `proxy`. Turning the proxy off uses `--remove-containers=proxy --container=app …`: gcloud applies plain
+   container flags before it removes containers, so plain flags would edit Nginx and then drop it, while per-container
+   flags come after the removal. Naming the container in Terraform was not chosen: it reaches only new services, and
+   every existing one would still need this path. A throwaway staging service from Google's public sample image is the
+   proof (the session's permission check did not allow creating it; the commands wait for the operator).
+   The cost view counts its 1 vCPU and 256 MiB per instance,
    billed as the app's, only while requests are served. A contract that says `proxy: false` keeps the old refusal, and
    the note says listening on 0.0.0.0 remains the better fix.
 2. **An init, and chained starts** (22.2, D49). Every image the platform builds (Python, Node.js, static) starts under

@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 from test_phase18 import build_steps, choice, refused
 from test_phase18 import read as node_read
 from test_phase18 import repo as node_repo
@@ -54,31 +55,74 @@ def test_the_new_keys_are_checked_and_leave_old_contracts_as_they_were():
 
 # ---- 22.1 the proxy sidecar (D51)
 class Runner:
-    def __init__(self):
-        self.calls = []
+    """gcloud as the release calls it: `describe --format=json` answers with the live containers, `--format=export` with the
+    service's YAML, and every deploy or replace is recorded."""
+
+    def __init__(self, containers=({"image": "bootstrap", "ports": [{"containerPort": 8080}]},)):
+        self.calls, self.containers = [], [dict(item) for item in containers]
 
     def __call__(self, args):
         self.calls.append(args)
+        if "--format=json" in args:
+            return json.dumps({"spec": {"template": {"spec": {"containers": self.containers}}}})
+        if "--format=export" in args:
+            return yaml.safe_dump({"apiVersion": "serving.knative.dev/v1", "kind": "Service", "metadata": {"name": "svc"},
+                                   "spec": {"template": {"metadata": {"name": "svc-old"}, "spec": {"containers": self.containers}},
+                                            "traffic": [{"revisionName": "svc-old", "percent": 100}]}})
         return ""
 
+    def deploys(self):
+        return [call for call in self.calls if call[:3] == ["gcloud", "run", "deploy"]]
 
-def test_a_proxy_contract_deploys_nginx_as_the_ingress_container_in_front_of_the_app():
-    runner = Runner()
-    adapter = release.CloudRun("p", "us-central1", "svc", "probe@p.iam.gserviceaccount.com", runner=runner)
-    adapter.deploy("us-docker.pkg.dev/p/r/svc@sha256:" + "a" * 64, spec(runtime="node-http", node="24", port=3000, proxy=True,
-                                                                         build={"recipe": "platform", "entrypoint": "node server.js"}), "r1")
-    args = runner.calls[-1]
+
+IMAGE = "us-docker.pkg.dev/p/r/svc@sha256:" + "a" * 64
+
+
+def adapter(runner):
+    return release.CloudRun("p", "us-central1", "svc", "probe@p.iam.gserviceaccount.com", runner=runner)
+
+
+def proxied(port=3000):
+    return spec(runtime="node-http", node="24", port=port, proxy=True, build={"recipe": "platform", "entrypoint": "node server.js"})
+
+
+def test_turning_the_proxy_on_first_names_the_unnamed_container_app_then_adds_nginx(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    runner = Runner()  # as Terraform and every single-container release leave it: one container, no name, port 8080
+    adapter(runner).deploy(IMAGE, proxied(), "r1")
+    replace = next(call for call in runner.calls if call[:4] == ["gcloud", "run", "services", "replace"])
+    written = yaml.safe_load((tmp_path / replace[4]).read_text())
+    assert [item["name"] for item in written["spec"]["template"]["spec"]["containers"]] == ["app"]
+    assert written["spec"]["template"]["metadata"]["name"] == "svc-r1n" and written["spec"]["traffic"] == [{"revisionName": "svc-old", "percent": 100}]
+    args = runner.deploys()[-1]
     proxy, app = args.index("--container=proxy"), args.index("--container=app")
+    assert runner.calls.index(replace) < runner.calls.index(args)  # named before the two-container deploy
     assert proxy < app and args[proxy + 1] == f"--image={release.NGINX_IMAGE}" and "--port=8080" in args[proxy:app] and "--depends-on=app" in args[proxy:app]
-    assert "--port" not in args[app:] and args[app + 1:app + 3] == ["--image", "us-docker.pkg.dev/p/r/svc@sha256:" + "a" * 64]
-    assert args.index("--revision-suffix") < proxy and "--min-instances" in args[:proxy]  # the service's own flags come first
-    assert any(flag.startswith("--clear-env-vars") or flag.startswith("--env-vars-file") for flag in args[app:])  # the app's settings stay the app's
+    assert "--port" not in args[app:] and args[app + 1:app + 3] == ["--image", IMAGE]
+    assert args.index("--revision-suffix") < proxy and "--min-instances" in args[:proxy]
+    assert any(flag.startswith("--clear-env-vars") or flag.startswith("--env-vars-file") for flag in args[app:])
     script = release.proxy_script(spec(port=3000, proxy=True))
     assert "proxy_pass http://127.0.0.1:3000;" in script and "listen 8080;" in script and "," not in script
     assert release.proxy_port(spec(port=8080, proxy=True)) == 8081 and "@sha256:" in release.NGINX_IMAGE
+
+
+def test_a_proxied_service_is_released_again_without_renaming_and_turned_off_by_removing_the_sidecar(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    both = ({"name": "proxy", "image": release.NGINX_IMAGE, "ports": [{"containerPort": 8080}]}, {"name": "app", "image": "old"})
+    again = Runner(both)
+    adapter(again).deploy(IMAGE, proxied(), "r2")
+    assert not any(call[:4] == ["gcloud", "run", "services", "replace"] for call in again.calls) and "--container=app" in again.deploys()[-1]
+    off = Runner(both)
+    adapter(off).deploy(IMAGE, spec(runtime="node-http", node="24", port=3000, build={"recipe": "platform", "entrypoint": "node server.js"}), "r3")
+    args = off.deploys()[-1]
+    assert "--remove-containers=proxy" in args and "--container=proxy" not in args and args[args.index("--port") + 1] == "3000"
+    assert args.index("--remove-containers=proxy") < args.index("--container=app") < args.index("--image")  # per-container flags, after the removal
     plain = Runner()
-    release.CloudRun("p", "us-central1", "svc", "probe@p.iam.gserviceaccount.com", runner=plain).deploy("img@sha256:" + "b" * 64, spec(port=3000), "r1")
-    assert "--container=proxy" not in plain.calls[-1] and plain.calls[-1][plain.calls[-1].index("--port") + 1] == "3000"
+    adapter(plain).deploy("img@sha256:" + "b" * 64, spec(port=3000), "r1")
+    assert "--remove-containers=proxy" not in plain.deploys()[-1] and "--container=proxy" not in plain.deploys()[-1]
+    crowded = Runner(({"name": "a"}, {"name": "b"}))
+    with pytest.raises(RuntimeError, match="the proxy can only be added to a service with one"):
+        adapter(crowded).name_app_container("r9")
 
 
 def test_the_reader_drafts_the_proxy_for_a_loopback_binder_and_the_cost_counts_it():

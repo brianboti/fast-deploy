@@ -110,6 +110,31 @@ class CloudRun:
     def describe(self):
         return json.loads(self.run(self.command("services", "describe", self.service, "--format=json")))
 
+    def container_names(self):
+        """The names of the live service's containers ("" for one without a name), in order."""
+        raw = self.run(self.command("services", "describe", self.service, "--format=json"))
+        try:
+            template = ((json.loads(raw).get("spec") or {}).get("template") or {}).get("spec") or {}
+        except (TypeError, ValueError):
+            return []  # a runner that answers nothing usable (a dry run): no live containers to account for
+        return [str(item.get("name") or "") for item in template.get("containers") or []]
+
+    def name_app_container(self, suffix):
+        """Name the live service's one unnamed container `app`, by exporting the service, naming it, and replacing the
+        service with that text (gcloud run services replace). The revision it makes carries no traffic."""
+        import yaml
+        exported = yaml.safe_load(self.run(self.command("services", "describe", self.service, "--format=export")))
+        template = exported["spec"]["template"]
+        containers = template["spec"]["containers"]
+        unnamed = [item for item in containers if not item.get("name")]
+        if len(containers) != 1 or len(unnamed) != 1:
+            raise RuntimeError(f"The service has {len(containers)} containers; the proxy can only be added to a service with one, the app's")
+        unnamed[0]["name"] = "app"
+        template.setdefault("metadata", {})["name"] = f"{self.service}-{suffix}n"[:63]
+        path = Path("service-named.yaml")
+        path.write_text(yaml.safe_dump(exported, sort_keys=False))
+        self.run(["gcloud", "run", "services", "replace", str(path), "--project", self.project, "--region", self.region, "--quiet"])
+
     def require_private_service(self):
         policy = json.loads(self.run(self.command("services", "get-iam-policy", self.service, "--format=json")))
         for binding in policy.get("bindings", []):
@@ -310,10 +335,24 @@ class CloudRun:
                          "--concurrency", str(spec.concurrency), f"--timeout={spec.timeout_seconds}", "--cpu-throttling",
                          *[flag for flag in extra if flag.startswith("--update-labels=")], *self.egress_flags(spec), *self.volume_flags(spec)]
         container_flags = [flag for flag in extra if not flag.startswith("--update-labels=")]
-        if not spec.proxy:
-            self.run(self.command("deploy", self.service, "--image", image, "--startup-probe", probe, "--port", str(spec.port),
-                "--cpu", str(spec.resources.cpu), "--memory", f"{spec.resources.memory_mib}Mi", *container_flags, *configuration, *service_flags))
+        names = self.container_names()
+        app_flags = ["--image", image, "--startup-probe", probe, "--cpu", str(spec.resources.cpu), "--memory", f"{spec.resources.memory_mib}Mi",
+                     *container_flags, *configuration]
+        if not spec.proxy and "proxy" in names:
+            # Turning the proxy off. gcloud applies plain container flags before it removes containers, so they would edit
+            # Nginx (the ingress container) and then drop it; per-container flags come after the removal, so the app's
+            # container is named, gets the port back and stays alone.
+            self.run(self.command("deploy", self.service, *service_flags, "--remove-containers=proxy", "--container=app",
+                                  *app_flags[:4], "--port", str(spec.port), *app_flags[4:]))
             return
+        if not spec.proxy:
+            self.run(self.command("deploy", self.service, *app_flags[:4], "--port", str(spec.port), *app_flags[4:], *service_flags))
+            return
+        if "app" not in names:
+            # Terraform and every single-container release leave one container without a name, which no gcloud flag can
+            # address (--container=app would add a second one beside it). So the live service is written back once with that
+            # container named app and nothing else changed; traffic was frozen before, so the extra revision serves nothing.
+            self.name_app_container(suffix)
         # D51, 22.1: two containers in one instance share its network. Nginx is the ingress container (the only one with a
         # port), started after the app's own startup probe passes; it forwards every request to the app on the loopback.
         listen = proxy_port(spec)

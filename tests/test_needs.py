@@ -70,7 +70,7 @@ def test_release_sets_the_derived_variables_and_checks_the_needs_exist(tmp_path,
                       "SUBSCRIPTION_EVENTS": "projects/test-project/subscriptions/demo-events", "FIRESTORE_DATABASE": "demo", "GREETING": "hi"}
     assert "--env-vars-file=revision-env.yaml" in recorder.commands[-1]
     adapter.require_needs(spec)
-    described = [c for c in recorder.commands if "describe" in c]
+    described = [c for c in recorder.commands if "describe" in c and c[:4] != ["gcloud", "run", "services", "describe"]]  # not the live-container read
     assert len(described) == 4 and ["gcloud", "storage", "buckets", "describe", "gs://test-project-demo-uploads", "--format=value(name)"] in described
     assert ["gcloud", "firestore", "databases", "describe", "--database=demo", "--project", "test-project", "--format=value(name)"] in described
     recorder.missing = {"gs://test-project-demo-uploads", "--database=demo"}
