@@ -168,3 +168,18 @@ def test_the_get_service_health_tool_takes_the_environment():
     assert "get_service_health" in tools
     source = Path("labdeploy/server.py").read_text()
     assert 'environment: Annotated[Literal["staging", "production"]' in source
+
+
+def test_the_apply_identity_may_create_the_objectives_log_based_metrics():
+    """Found on 2026-10-21: production's first apply of the objective on users' requests (1.26.0) was refused,
+    "Permission 'logging.logMetrics.create' denied"; the log role now carries the metric permissions, and nothing broader."""
+    import re
+    pipeline = Path("infra/gcp/modules/project/pipeline.tf").read_text()
+    role = pipeline[pipeline.index('resource "google_project_iam_custom_role" "log_alert_writer"'):]
+    role = role[:role.index("\n}\n")]
+    granted = set(re.findall(r'"(logging\.[a-zA-Z]+\.[a-z]+)"', role))
+    assert {f"logging.logMetrics.{verb}" for verb in ("create", "delete", "get", "list", "update")} <= granted
+    assert not any(name.startswith(("logging.sinks", "logging.exclusions", "logging.views", "logging.buckets")) for name in granted)
+    slo = Path("infra/gcp/modules/service/slo.tf").read_text()
+    assert 'resource "google_logging_metric" "user_requests"' in slo  # the resources the permissions are for
+
