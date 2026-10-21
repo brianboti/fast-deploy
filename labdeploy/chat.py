@@ -1444,8 +1444,9 @@ def event_words(item):
 def events(result, shown=8):
     """list_events: the audit trail as a short table with readable times."""
     items = [item for item in result.get("events") or [] if isinstance(item, dict)]
+    hidden = [clip(result["hidden"].rstrip("."), 240)] if result.get("hidden") else []  # a deployer of some applications
     if not items:
-        return compose("**No events recorded** for this question.", [], "nothing to do.")
+        return compose("**No events recorded** for this question.", hidden, "nothing to do.")
     errors = [item for item in items if item.get("outcome") in ("error", "throttled")]
     who = sorted({item.get("identity") or item.get("client") or "unknown" for item in items})
     rows = []
@@ -1458,7 +1459,7 @@ def events(result, shown=8):
     head = (f"**{plural(len(items), 'event')}**, {plural(len(errors), 'error')}, from {plural(len(who), 'identity')}"
             + (f"; the newest {len(rows)}:" if len(items) > len(rows) else ":"))
     next_line = "ask me what went wrong in the errors." if errors else "nothing to do; ask me for one app's events, or for more of them."
-    return compose(head, [], next_line, block=table)
+    return compose(head, hidden, next_line, block=table)
 
 
 def proposal_words(item):

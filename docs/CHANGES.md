@@ -1,3 +1,38 @@
+# 1.29.4: the audit trail for limited identities
+
+Found on 2026-10-21 while the release before this one (cost and controller state for limited identities) was built.
+`list_events` and `GET /events` gave a deployer whose token does not list `"*"` every event of every application, with
+its names and details. The settings page's Activity view gave the same identity only the events about its applications,
+and its own. Nobody was affected: today's only identity is the operator's, with `"*"`.
+
+Both now give each identity the events the Activity view gives it. The rule is decided in one place, `event_scope` in
+`labdeploy/controller.py` (moved there from the Monitor), and `events_for` beside it serves the tool and the endpoint:
+
+1. **A deployer of some applications** gets the events about them, whoever made them (another identity's release of
+   `demo`, the auto-deploy check of `demo`), and its own, even one about another application. It no longer gets other
+   applications' events, other identities' calls that name no application, or the events of no identity (a failed-login
+   burst, a client registration). The answer gains one line: "Events about the applications this token may see, and its
+   own: the rest of the audit trail is shown to an identity that may deploy every application." `GET /events` carries
+   the same sentence as `hidden`.
+2. **A deployer of every application** still gets every event, and **a read-only identity** its own, exactly as before.
+
+`list_events`' description now says this in one sentence, where it said "Deployers see every identity". So its line in
+`schema/tools.sha256.json` changes; no other tool's does.
+
+Compared before and after on one frozen trail of 620 events, with two steps back of the clock, empty application names
+and more rows than the cap of 500. Three identities got the same 16 answers from `list_events` and `GET /events`, byte
+for byte: a deployer with `"*"`, a read-only identity with `"*"`, and a read-only identity of one application. The
+Activity view's data was the same for all five identities tried. The two limited deployers' new answers match the
+Activity view's rule row for row.
+
+Upgrade steps: update the machine. No configuration change. The skill is unchanged.
+
+Tests: 1,049 pass, 2 of them new, in `tests/test_audit.py`. A deployer of `demo` alone gets the events about `demo` and
+its own, through both, and none about `other`. A deployer of every application and a read-only identity get the same
+events, summary and answer as before. The three tests there that read the whole trail now read it as a deployer of every
+application, the identity that sees all of it since this change. Ruff check and zizmor are clean.
+
+
 # 1.29.3: cost and controller state for limited identities
 
 Found on 2026-10-21 by a review of 1.28.0, before a second person is given a token (a student with a read-only token for

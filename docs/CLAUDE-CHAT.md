@@ -92,7 +92,9 @@ service, its totals, the month so far and its budget) and other applications' li
 every application, and the answer says so in one line. `get_controller_status` and the Activity view give each background
 job's last and next run, without its result or error, which can name any application; of the rest, only its own
 applications: their drift, re-pins and pauses, and the spend caps of their projects. `get_digest` already gave such a
-token a digest of its own applications, without the cost line.
+token a digest of its own applications, without the cost line. Since 1.29.4 `list_events` gives it the same events as
+the Activity view: the events about its applications and its own if it may deploy (the answer says so in one line), its
+own if it is read-only.
 
 **Acting** (Claude's client asks you to confirm; each one is bound to an exact commit and target):
 
