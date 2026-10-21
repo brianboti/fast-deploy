@@ -13,7 +13,7 @@ import time
 
 import httpx
 
-from .telemetry import CloudMonitoring
+from .telemetry import RESOURCE, CloudMonitoring, merge, percentile
 
 METADATA = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
 
@@ -290,6 +290,57 @@ class Observer:
                 "request_latency_ms_p95": peak("run.googleapis.com/request_latencies", "ALIGN_PERCENTILE_95"),
                 "max_active_instances": peak("run.googleapis.com/container/instance_count", "ALIGN_MAX", 'metric.labels.state="active"'),
                 "memory_utilization_p95": peak("run.googleapis.com/container/memory/utilizations", "ALIGN_PERCENTILE_95")}
+
+    # ---- the settings page's charts (labdeploy/monitor.py): one query per chart line, each line one time series
+    def service_filter(self, metric, target):
+        return f'metric.type="{metric}" AND {RESOURCE} AND resource.labels.service_name="{target.service}"'
+
+    def traffic(self, target, start, end, step):
+        """Requests per step by response class, and the 95th-percentile latency of each step and of the whole window, from one
+        query: Cloud Run's request-latency distribution summed per step and kept apart by response class (one call; one time
+        series per class). Each step is {"at": its end, "classes": {"2xx": requests, ...}, "p95_ms"}."""
+        monitoring = CloudMonitoring(target.project_id, self.token, self.client)
+        groups = monitoring.distributions(self.service_filter("run.googleapis.com/request_latencies", target), start, end, step,
+                                          "metric.label.response_code_class")
+        by_class = {name or "other": dict(points) for name, points in groups.items()}
+        steps = []
+        for at in sorted({at for points in by_class.values() for at in points}):
+            counted = {name: points[at] for name, points in by_class.items() if points.get(at)}
+            steps.append({"at": at, "classes": {name: sum(found.values()) for name, found in counted.items()},
+                          "p95_ms": percentile(merge(*counted.values()), 0.95)})
+        whole = merge(*(found for points in by_class.values() for found in points.values()))
+        return {"steps": steps, "p95_ms": percentile(whole, 0.95)}
+
+    def saturation(self, target, start, end, step):
+        """Per step, the most instances serving at once and the 95th-percentile memory use (a share of the limit): two calls."""
+        monitoring = CloudMonitoring(target.project_id, self.token, self.client)
+        instances = monitoring.points(self.service_filter("run.googleapis.com/container/instance_count", target) + ' AND metric.labels.state="active"',
+                                      "ALIGN_MAX", "REDUCE_SUM", start, end, step)
+        memory = monitoring.points(self.service_filter("run.googleapis.com/container/memory/utilizations", target), "ALIGN_PERCENTILE_95", "REDUCE_MAX",
+                                   start, end, step)
+        return {"instances": instances, "memory": memory}
+
+    def uptime_days(self, target, days=30, now=None):
+        """The share of Google's uptime checks that passed on each of the last `days` UTC days, today so far last; None for a
+        day without a measurement. One call of hourly points, averaged per day."""
+        end = now or datetime.datetime.now(datetime.UTC)
+        start = (end - datetime.timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        monitoring = CloudMonitoring(target.project_id, self.token, self.client)
+        hours = monitoring.points(self.service_filter("monitoring.googleapis.com/uptime_check/check_passed", target), "ALIGN_FRACTION_TRUE", "REDUCE_MEAN",
+                                  start, end, 3600)
+        found = {}
+        for at, value in hours:
+            try:
+                moment = datetime.datetime.fromisoformat(at.replace("Z", "+00:00")) - datetime.timedelta(minutes=30)  # the hour the point covers
+            except ValueError:
+                continue
+            found.setdefault(moment.date().isoformat(), []).append(float(value))
+        result = []
+        for offset in range(days):
+            day = (start + datetime.timedelta(days=offset)).date().isoformat()
+            values = found.get(day)
+            result.append({"day": day, "passed": round(sum(values) / len(values), 4) if values else None})
+        return result
 
     def uptime_pass_rate(self, target, start, end):
         """The share of Google's uptime checks that passed between two moments (every region together), or None without data."""

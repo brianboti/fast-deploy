@@ -78,6 +78,12 @@ the skill must be re-uploaded after every release that changes `skills/` (the re
 | "Did yesterday's release of demo go well?" | `get_deployment_status`, `get_service_health` | The release report a day after it: better, about the same, worse or too little traffic to compare, with the numbers against the week before |
 | "Show the history and the audit trail" | `list_plans`, `list_events` | Plan history and the audit trail of every call and sign-in; a `configuration` event is a change saved on the settings page (who, which tab, which keys, never their values) |
 
+The same reports are drawn in the browser too, at `https://YOUR_HOST/settings` (since 1.28.0): its Monitor section shows
+the overview with what needs you, each application's health over 1 hour to 30 days with its releases marked, the release
+history with its verdicts and the DORA numbers, the month's cost against the budgets, and the audit trail. Any operator
+token signs in and sees the applications Claude's tools would show it; nothing there changes anything. To act on what you
+see (a rollback, a right-sizing pull request), ask Claude: a right-sizing proposal on the Cost view links to that question.
+
 **Acting** (Claude's client asks you to confirm; each one is bound to an exact commit and target):
 
 | Ask | Tool | What happens |

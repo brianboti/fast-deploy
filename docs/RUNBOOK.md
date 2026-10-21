@@ -318,7 +318,7 @@ written by code from the controller's records and the observer's reads; neither 
 
 ## Requests refused
 
-Alert **"SERVICE: requests refused"** (ERROR, since 1.28.0), the digest's "requests refused (429)", or a health-view note.
+Alert **"SERVICE: requests refused"** (ERROR, since 1.29.0), the digest's "requests refused (429)", or a health-view note.
 A request was answered 429. When its log line says "The request was aborted because there was no available instance",
 every instance the service may run was busy for 30 seconds and a person or a program was turned away; Cloud Run's request
 metric leaves those requests out, so neither the server-errors alert nor the objective counts them. Otherwise the
@@ -334,7 +334,7 @@ application refused it itself (a rate limit of its own).
 
 ## Slow starts
 
-The digest names each application whose slowest start of the day passed 10 seconds. Since 1.28.0 the start-up probe tries
+The digest names each application whose slowest start of the day passed 10 seconds. Since 1.29.0 the start-up probe tries
 every second (it was every five, which added about four seconds to every start of every application) and startup CPU
 boost gives a starting instance twice its CPU. What remains is the application's own work at start. The developer
 shortens it: load heavy libraries lazily or once, one gunicorn worker with threads (`--workers 1 --threads 8 --timeout
@@ -344,7 +344,7 @@ about $9.72 a month) removes the first start for good; the uptime check already 
 
 ## Google's own incidents
 
-Alert **"[ENV] Google reports an incident in us-central1"** (WARNING, since 1.28.0) or the digest's "Google reports an
+Alert **"[ENV] Google reports an incident in us-central1"** (WARNING, since 1.29.0) or the digest's "Google reports an
 incident". Google's Personalized Service Health wrote an incident that may touch this project. Errors and slowness that
 start with it are likely Google's: a rollback will not help, and a release now may fail for Google's reasons.
 
@@ -378,10 +378,21 @@ is no open SSH port: `scripts/machine.sh` goes through Identity-Aware Proxy, and
 | Forget a retired application | `scripts/machine.sh unregister APP`, after `scripts/decommission.sh APP --yes` (section "Retire an application") |
 | Hold it while a laptop takes over | `scripts/machine.sh stop` (not even a reboot starts it); `scripts/machine.sh start` releases the hold |
 
+**Watch it.** `https://MACHINE/settings` opens on its Monitor section (since 1.28.0): Overview (what needs you first,
+then services healthy, releases this week, the change failure rate, this month's spend per project and one card per
+application), Health (one application's traffic, errors, latency and saturation over 1 h, 24 h, 7 or 30 days with its
+releases marked, 30 days of uptime, production's error budget, its newest error lines when you ask), Releases (the DORA
+numbers, a timeline, every release with its verdict and run), Cost (the month against budgets and caps, where the money
+goes, right-sizing proposals, each application's bounds) and Activity (the audit trail, events per day, the background
+jobs, backups, drift, the GitHub credential). Any operator token signs in, and Monitor shows the applications that token
+may see, as Claude's tools do. Live numbers are a few minutes behind, kept five minutes for everyone, and spend is as of
+the daily digest; nothing on these views changes anything, and they read only what the controller keeps and a few
+Monitoring queries of the observer identity (free: far below the million time series a month Google does not charge for).
+
 **Change its configuration.** Open `https://MACHINE/settings` (the machine's address or DNS name, as in Claude's
-connector) and sign in with an operator token whose principal has `applications: ["*"]` and `can_deploy`; anyone else is
-refused. The sign-in lasts an hour (`settings_session_seconds`), and a restart, a rotated token or a removed principal ends
-it. Five tabs: Applications (a list, and each application's own page with its cost ceiling, auto-deploy, auto-merge, bake,
+connector) and sign in with an operator token; its Configure section opens only for a principal with `applications: ["*"]`
+and `can_deploy`, and refuses anyone else. The sign-in lasts an hour (`settings_session_seconds`), and a restart, a rotated
+token or a removed principal ends it. Five tabs: Applications (a list, and each application's own page with its cost ceiling, auto-deploy, auto-merge, bake,
 viewers, infrastructure settings and links to where its contract, Terraform root and secrets live; for one onboarding
 registered the switches go under `application_settings`), Platform (the auto-deploy interval, the
 watchdog webhook, the spend caps you recorded, backups, `platform_updates`), People (principals, a new token shown once),

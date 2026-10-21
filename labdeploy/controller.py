@@ -141,6 +141,13 @@ class Store:
                    else db.execute("SELECT payload FROM digests ORDER BY day DESC LIMIT 1")).fetchone()
         return json.loads(row[0]) if row else None
 
+    def digests(self, since_day=""):
+        """Every digest kept (90 days), oldest first; from one UTC day (YYYY-MM-DD) on when given. The settings page draws
+        the month's spend from their cost lines."""
+        with self.connect() as db:
+            rows = db.execute("SELECT day, payload FROM digests WHERE day >= ? ORDER BY day", (since_day,)).fetchall()
+        return [{**json.loads(payload), "day": day} for day, payload in rows]
+
     def history(self, since=None):
         """Every plan and rollback record with its state, oldest first; with `since`, only those made after that moment.
         For the release reports and the trust numbers (docs/ROADMAP.md D57, D61)."""
@@ -318,6 +325,55 @@ class Store:
             rows = db.execute(query + " ORDER BY rowid DESC LIMIT ?", (*params, limit)).fetchall()
         keys = ("at", "identity", "client", "kind", "name", "application", "outcome", "duration_ms", "detail")
         return [dict(zip(keys, row, strict=True)) for row in rows]
+
+    # ---- the audit trail as the settings page's Activity view filters it
+    @staticmethod
+    def event_filter(kind=None, identity=None, application=None, scope=None, since=None):
+        """A WHERE clause and its values: one kind, identity or application, and `scope` (an identity, the applications it may
+        see, or None for every application): only events about those applications or made by that identity."""
+        clauses, params = [], []
+        for column, value in (("kind", kind), ("identity", identity), ("application", application)):
+            if value:
+                clauses.append(f"{column}=?")
+                params.append(value)
+        if since is not None:
+            clauses.append("at >= ?")
+            params.append(since)
+        if scope is not None:
+            who, visible = scope
+            if visible is not None:
+                marks = ",".join("?" for _ in visible) or "''"  # only placeholders are interpolated; every value is bound
+                clauses.append(f"(application IN ({marks}) OR identity=?)")
+                params += [*visible, who]
+            else:
+                clauses.append("identity=?")
+                params.append(who)
+        return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+    def find_events(self, limit=100, kind=None, identity=None, application=None, scope=None, since=None):
+        where, params = self.event_filter(kind, identity, application, scope, since)
+        with self.connect() as db:
+            rows = db.execute("SELECT at, identity, client, kind, name, application, outcome, duration_ms, detail FROM events"  # noqa: S608
+                              + where + " ORDER BY at DESC, rowid DESC LIMIT ?", (*params, limit)).fetchall()
+        keys = ("at", "identity", "client", "kind", "name", "application", "outcome", "duration_ms", "detail")
+        return [dict(zip(keys, row, strict=True)) for row in rows]
+
+    def event_days(self, since, kind=None, identity=None, application=None, scope=None):
+        """{UTC day: (events, configuration changes)} from `since` on, under the same filter."""
+        where, params = self.event_filter(kind, identity, application, scope, since)
+        with self.connect() as db:
+            rows = db.execute("SELECT strftime('%Y-%m-%d', at, 'unixepoch'), COUNT(*), SUM(kind='configuration') FROM events"  # noqa: S608
+                              + where + " GROUP BY 1", params).fetchall()
+        return {day: (count, configured or 0) for day, count, configured in rows}
+
+    def event_values(self, column, scope=None, since=None):
+        """The distinct kinds, identities or applications of the events a scope may see: the Activity view's filter choices."""
+        if column not in ("kind", "identity", "application"):
+            raise ValueError("column is kind, identity or application")
+        where, params = self.event_filter(scope=scope, since=since)
+        with self.connect() as db:
+            rows = db.execute(f"SELECT DISTINCT {column} FROM events" + where + f" ORDER BY {column} LIMIT 200", params).fetchall()  # noqa: S608
+        return [row[0] for row in rows if row[0]]
 
 
 def same_image_inputs(recorded, spec):

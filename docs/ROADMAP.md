@@ -758,7 +758,7 @@ Requires regeneration of app workflows: yes (the report template). Terraform app
 billing-export grants).
 Cost effect: none; the daily billing query reads megabytes of a free terabyte a month.
 
-## Phase 25: faster starts and the failures nobody saw (about two days) → version 1.28.0
+## Phase 25: faster starts and the failures nobody saw (about two days) → version 1.29.0
 
 Planned and built on 2026-10-21 from the review `docs/RESEARCH-2026-10-21-scaling.md`, which measured 30 days of container
 starts (nearly every application's typical start was 5.0 to 5.2 seconds because of the start-up probe's five-second
