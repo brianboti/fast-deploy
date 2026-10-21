@@ -436,6 +436,7 @@ def summary_lines(report):
             lines.append(f"Of which labelled {actual['app']['name']}: {usd(actual['app']['net_cost_usd'])}{split}")
     elif actual.get("warning"):
         lines.append(f"Actual spend unavailable: {actual['warning']}")
+    lines += comparison_lines(report)
     if observed:
         lines.append(f"Observed usage priced at list rates: ${observed['usd_month_at_list_price']:.2f}/month ({observed['requests']} requests)")
     else:
@@ -458,6 +459,33 @@ def summary_lines(report):
         saving = item["estimated_monthly_saving_usd"]
         money = "" if saving is None else f"; about ${saving:.2f}/month"
         lines.append(f"- {item['setting'] or 'note'}: {item['current']} to {item['recommended']} ({item['reason']}{money})")
+    return lines
+
+
+def comparison_lines(report):
+    """The window before beside the window, what moved, and the month so far (docs/ROADMAP.md D62), in plain lines."""
+    lines = []
+    actual = report.get("actual_spend") or {}
+    previous = actual.get("previous") or {}
+    if actual.get("total_net_cost_usd") is not None and previous.get("total_net_cost_usd") is not None:
+        lines.append(f"The {actual['window_days']} days before: {usd(previous['total_net_cost_usd'])}, against {usd(actual['total_net_cost_usd'])} now")
+        moved = ((actual.get("movers") or {}).get("by_service") or []) + ((actual.get("movers") or {}).get("by_app") or [])
+        if moved:
+            words = []
+            for item in moved[:4]:
+                name = item.get("service") or f"app {item.get('app')}"
+                share = f", {item['change_share']:+.0%}" if item.get("change_share") is not None else ", new"
+                words.append(f"{name} {usd(item['before_usd'])} to {usd(item['net_cost_usd'])}{share}")
+            lines.append("Moved most: " + "; ".join(words))
+        else:
+            lines.append("Nothing moved by more than a fifth and a dollar")
+    month = report.get("month") or {}
+    if month.get("projects"):
+        parts = [f"{item['project']} {usd(item['net_cost_usd'])} (on course for {usd(item['forecast_usd'])})" for item in month["projects"]]
+        lines.append(f"This month ({month['month']}, {month['days_elapsed']:g} of {month['days_in_month']} days): " + ", ".join(parts)
+                     + ("; early in the month, so the forecast is rough" if month.get("rough") else ""))
+    elif month.get("warning"):
+        lines.append(month["warning"])
     return lines
 
 
@@ -573,6 +601,7 @@ SELECT project.id AS project_id,
        ROUND(SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)), 4) AS net_cost_usd
 FROM `{table}`
 WHERE project.id IN UNNEST(@projects) AND usage_start_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)
+  AND usage_start_time < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @until_days DAY)
 GROUP BY project_id, service, app
 HAVING net_cost_usd <> 0
 ORDER BY net_cost_usd DESC
@@ -580,6 +609,65 @@ ORDER BY net_cost_usd DESC
 
 
 FRESHNESS_QUERY = "SELECT UNIX_SECONDS(MAX(usage_end_time)) AS latest FROM `{table}`"
+# The month so far, as the invoice will count it (docs/ROADMAP.md 24.2): net of credits, per project.
+MONTH_QUERY = """
+SELECT project.id AS project_id,
+       ROUND(SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)), 4) AS net_cost_usd
+FROM `{table}`
+WHERE project.id IN UNNEST(@projects) AND invoice.month = @month
+GROUP BY project_id
+"""
+MOVER_SHARE = 0.20  # a line that moved by more than a fifth ...
+MOVER_USD = 1.0  # ... and by more than a dollar is named first (docs/ROADMAP.md D62)
+
+
+def movers(now_rows, before_rows, key):
+    """What moved between two windows of the same length: every line that changed by more than MOVER_USD and by more than
+    MOVER_SHARE (or appeared from nothing), the largest change first."""
+    now = {row[key]: row["net_cost_usd"] for row in now_rows or []}
+    before = {row[key]: row["net_cost_usd"] for row in before_rows or []}
+    found = []
+    for name in sorted(set(now) | set(before)):
+        current, earlier = now.get(name, 0.0), before.get(name, 0.0)
+        change = round(current - earlier, 4)
+        if abs(change) > MOVER_USD and (abs(earlier) < 0.005 or abs(change) / abs(earlier) > MOVER_SHARE):
+            found.append({key: name, "net_cost_usd": current, "before_usd": earlier, "change_usd": change,
+                          "change_share": None if abs(earlier) < 0.005 else round(change / abs(earlier), 3)})
+    return sorted(found, key=lambda item: -abs(item["change_usd"]))
+
+
+def month_to_date(table, projects, token, client=None, now=None):
+    """Each project's net spend so far in this calendar month, from the billing export, with a forecast for the whole month
+    (the spend so far scaled to the month's length, the rule D62 names; the export runs up to a day behind, so early in a
+    month the forecast is rough and says so). The query runs in the export's own project."""
+    import calendar
+
+    import httpx
+    if not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+", table):
+        raise ValueError("The billing export table must be project.dataset.table")
+    moment = datetime.datetime.fromtimestamp(now or time.time(), datetime.UTC)
+    length = calendar.monthrange(moment.year, moment.month)[1]
+    elapsed = round((moment - moment.replace(day=1, hour=0, minute=0, second=0, microsecond=0)).total_seconds() / 86400, 2)
+    body = {"query": MONTH_QUERY.format(table=table), "useLegacySql": False, "parameterMode": "NAMED", "timeoutMs": 30000, "maxResults": 100,
+            "queryParameters": [{"name": "projects", "parameterType": {"type": "ARRAY", "arrayType": {"type": "STRING"}},
+                                 "parameterValue": {"arrayValues": [{"value": project} for project in projects]}},
+                                {"name": "month", "parameterType": {"type": "STRING"}, "parameterValue": {"value": f"{moment:%Y%m}"}}]}
+    response = (client or httpx).post(f"https://bigquery.googleapis.com/bigquery/v2/projects/{table.split('.', 1)[0]}/queries", json=body,
+                                      headers={"Authorization": "Bearer " + token}, timeout=45)
+    if response.status_code == 403:
+        raise ValueError("The observer may not read the billing export yet: apply the foundation of the export's project (it grants BigQuery's "
+                         "job user role and data viewer on the dataset, docs/ROADMAP.md 24.2)")
+    response.raise_for_status()
+    data = response.json()
+    if not data.get("jobComplete", True):
+        raise ValueError("BigQuery did not finish the month's query in time")
+    spent = {row["f"][0]["v"]: float(row["f"][1]["v"]) for row in data.get("rows", [])}
+    found = []
+    for project in projects:
+        value = round(spent.get(project, 0.0), 4)
+        found.append({"project": project, "net_cost_usd": value, "forecast_usd": round(value / max(elapsed, 1.0) * length, 2) if value > 0 else value})
+    return {"month": f"{moment:%Y-%m}", "days_elapsed": elapsed, "days_in_month": length, "projects": found, "rough": elapsed < 7,
+            "bigquery_bytes_processed": int(data["totalBytesProcessed"]) if str(data.get("totalBytesProcessed", "")).isdigit() else None}
 STALE_AFTER_SECONDS = 2 * 86400  # the export is up to a day behind; two days without data means it is not arriving
 
 
@@ -620,19 +708,31 @@ def billing_actuals(table, project_id, token, days=30, client=None, app=None, no
                   "Billing export in the console (the dataset and the standard usage cost export)."}
     projects = {"name": "projects", "parameterType": {"type": "ARRAY", "arrayType": {"type": "STRING"}},
                 "parameterValue": {"arrayValues": [{"value": project} for project in environments]}}
-    cells = [{"project": row["f"][0]["v"], "service": row["f"][1]["v"], "app": row["f"][2]["v"] or "", "net_cost_usd": float(row["f"][3]["v"])}
-             for row in query(BILLING_QUERY.format(table=table), [projects, {"name": "days", "parameterType": {"type": "INT64"},
-                                                                           "parameterValue": {"value": str(days)}}])]
-    by_service, by_app, by_project = {}, {}, dict.fromkeys(environments, 0.0)
-    for cell in cells:
-        by_service[cell["service"]] = round(by_service.get(cell["service"], 0.0) + cell["net_cost_usd"], 4)
-        label = cell["app"] or "(unlabelled)"
-        by_app[label] = round(by_app.get(label, 0.0) + cell["net_cost_usd"], 4)
-        by_project[cell["project"]] = round(by_project.get(cell["project"], 0.0) + cell["net_cost_usd"], 4)
-    result = {"window_days": days, "table": table, "data_through": data_through, "total_net_cost_usd": round(sum(c["net_cost_usd"] for c in cells), 4),
-              "by_service": [{"service": s, "net_cost_usd": v} for s, v in sorted(by_service.items(), key=lambda kv: -kv[1])],
-              "by_app": [{"app": a, "net_cost_usd": v} for a, v in sorted(by_app.items(), key=lambda kv: -kv[1])],
-              "by_project": [{"project": p, "environment": environments.get(p), "net_cost_usd": by_project[p]} for p in environments],
+    def window(since_days, until_days):
+        """The export's lines between since_days and until_days ago, summed by service, application label and project."""
+        cells = [{"project": row["f"][0]["v"], "service": row["f"][1]["v"], "app": row["f"][2]["v"] or "", "net_cost_usd": float(row["f"][3]["v"])}
+                 for row in query(BILLING_QUERY.format(table=table), [projects, {"name": "days", "parameterType": {"type": "INT64"},
+                                                                               "parameterValue": {"value": str(since_days)}},
+                                                                      {"name": "until_days", "parameterType": {"type": "INT64"},
+                                                                       "parameterValue": {"value": str(until_days)}}])]
+        by_service, by_app, by_project = {}, {}, dict.fromkeys(environments, 0.0)
+        for cell in cells:
+            by_service[cell["service"]] = round(by_service.get(cell["service"], 0.0) + cell["net_cost_usd"], 4)
+            label = cell["app"] or "(unlabelled)"
+            by_app[label] = round(by_app.get(label, 0.0) + cell["net_cost_usd"], 4)
+            by_project[cell["project"]] = round(by_project.get(cell["project"], 0.0) + cell["net_cost_usd"], 4)
+        return cells, {"total_net_cost_usd": round(sum(c["net_cost_usd"] for c in cells), 4),
+                       "by_service": [{"service": s, "net_cost_usd": v} for s, v in sorted(by_service.items(), key=lambda kv: -kv[1])],
+                       "by_app": [{"app": a, "net_cost_usd": v} for a, v in sorted(by_app.items(), key=lambda kv: -kv[1])],
+                       "by_project": [{"project": p, "environment": environments.get(p), "net_cost_usd": by_project[p]} for p in environments]}
+
+    cells, current = window(days, 0)
+    # The window before, of the same length (docs/ROADMAP.md D62): the weekly report compares, and names what moved.
+    _, previous = window(2 * days, days)
+    result = {"window_days": days, "table": table, "data_through": data_through, **current,
+              "previous": {"window_days": days, **previous},
+              "movers": {"by_service": movers(current["by_service"], previous["by_service"], "service"),
+                         "by_app": movers(current["by_app"], previous["by_app"], "app")},
               "bigquery_bytes_processed": sum(read) if read else None,
               "note": "Net of credits, from Google's billing export; up to a day behind. Resources carry the lab-deploy-app label; "
                       "Firestore and Cloud Run request fees are not labelled and show as unlabelled. Compare with usd_month_at_list_price above."
@@ -704,6 +804,12 @@ def report():
                                                      production=os.environ.get("PRODUCTION_PROJECT_ID") or None)
         except Exception as exc:  # noqa: BLE001 - the export is optional; the report says why it is missing
             result["actual_spend"] = {"warning": f"Could not read the billing export: {str(exc)[:200]}"}
+        try:
+            # The month so far and its forecast (docs/ROADMAP.md D62), the project's budget beside it in the controller's answer.
+            projects = [target.project_id] + ([os.environ["PRODUCTION_PROJECT_ID"]] if os.environ.get("PRODUCTION_PROJECT_ID") else [])
+            result["month"] = month_to_date(table, projects, run(["gcloud", "auth", "print-access-token"]))
+        except Exception as exc:  # noqa: BLE001 - informative only; the report says why it is missing
+            result["month"] = {"warning": f"The month so far could not be read: {str(exc)[:200]}"}
     repository = os.environ.get("GITHUB_REPOSITORY")
     if os.environ.get("SPEC_FILE"):
         # The platform repository's right-sizing (docs/ROADMAP.md D33): the reviewed contract is apps/<service>/platform.yaml

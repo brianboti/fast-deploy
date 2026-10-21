@@ -226,6 +226,30 @@ resource "google_bigquery_dataset" "billing" {
   depends_on                 = [google_project_service.bigquery]
 }
 
+# The daily digest's cost line (docs/ROADMAP.md 24.2): the observer and the controller's machine read the billing export
+# with BigQuery, the same rows the weekly cost report reads. Running a query needs the job user role in this project; the
+# rows need data viewer on the export's dataset only. The keys are fixed words, so a first apply plans before the
+# identities exist.
+locals {
+  billing_readers = var.billing_export_dataset == "" ? {} : merge(
+    { observer = "serviceAccount:${google_service_account.observer.email}" },
+    local.controller_enabled ? { machine = "serviceAccount:${google_service_account.controller[0].email}" } : {}
+  )
+}
+resource "google_project_iam_member" "billing_query" {
+  for_each = local.billing_readers
+  project  = var.project_id
+  role     = "roles/bigquery.jobUser"
+  member   = each.value
+}
+resource "google_bigquery_dataset_iam_member" "billing_reader" {
+  for_each   = local.billing_readers
+  project    = var.project_id
+  dataset_id = google_bigquery_dataset.billing[0].dataset_id
+  role       = "roles/bigquery.dataViewer"
+  member     = each.value
+}
+
 # The cap acts through this role on each managed service (granted per service by the service module) and on
 # instances through roles/cloudsql.editor: the narrowest set that can close ingress and stop an instance.
 resource "google_project_iam_custom_role" "cap_operator" {

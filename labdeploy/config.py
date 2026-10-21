@@ -348,6 +348,11 @@ class Config(StrictModel):
     # Google's native budget spend caps for Cloud Run that the operator has created (docs/SETUP.md 7i), by project id, in
     # USD a month. A record only: the cap lives in Cloud Billing; plans and the status name it, and warn where none exists.
     cloud_run_spend_caps: dict[str, float | int] = Field(default_factory=dict)
+    # Each project's monthly budget as created in Cloud Billing (docs/ROADMAP.md 24.2): the digest's cost line and the weekly
+    # report compare the month's spend and forecast with it. A record, like the spend caps: the budget lives in Cloud Billing.
+    monthly_budgets_usd: dict[str, float | int] = Field(default_factory=dict)
+    # Recorded by the operator once Google's Cost Anomaly Detection is on for the billing account (docs/SETUP.md 7q, 24.3).
+    cost_anomaly_detection: bool = False
     database: str = "deployments.db"
     allowed_hosts: list[str] = Field(default_factory=lambda: ["127.0.0.1:*", "localhost:*", "testserver"])
     # Per-identity request budget and per-client budget for failed logins; the MCP specification requires both kinds of limit.

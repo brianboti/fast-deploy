@@ -629,7 +629,9 @@ def test_billing_query_bytes_are_recorded():
             return Response({"jobComplete": True, "totalBytesProcessed": "2500000", "rows": [{"f": [{"v": "test-project"}, {"v": "Cloud Run"}, {"v": "demo"}, {"v": "1.5"}]}]})
 
     result = billing_actuals("test-project.billing_export.gcp_billing_export_v1_X", "test-project", "token", client=Client())
-    assert result["bigquery_bytes_processed"] == 3_500_000 and result["total_net_cost_usd"] == 1.5
+    # Three queries since 1.27.0: freshness, the window, and the window before it (docs/ROADMAP.md D62).
+    assert result["bigquery_bytes_processed"] == 6_000_000 and result["total_net_cost_usd"] == 1.5
+    assert result["previous"]["total_net_cost_usd"] == 1.5 and result["movers"] == {"by_service": [], "by_app": []}
 
 
 # ---- the templates

@@ -51,7 +51,8 @@ LABELS = {
     "can_deploy": "may deploy", "may_merge_own_requests": "self-merge", "token_sha256": "token", "name": "name", "machine": "the machine installs",
     "workflows": "re-pin pull requests", "delay_minutes": "delay", "quiet_minutes": "quiet time", "reviewers": "reviewers", "rollout": "rollout",
     "auto_deploy_interval_seconds": "auto-deploy check", "backup_keep_days": "backups kept", "notify_webhook_url": "webhook",
-    "cloud_run_spend_caps": "spend caps", "platform_updates": "automatic updates", "application_settings": "onboarded applications' switches",
+    "cloud_run_spend_caps": "spend caps", "monthly_budgets_usd": "budgets", "cost_anomaly_detection": "Cost Anomaly Detection",
+    "digest_hour_utc": "daily digest", "platform_updates": "automatic updates", "application_settings": "onboarded applications' switches",
     "confirm": "confirmation", "production": "production",
 }
 
@@ -683,10 +684,15 @@ def platform_tab(ctx, submitted=None, found=None):
     notifications = "".join([
         row("Watchdog webhook", f'<div>{hook_state}</div>' + text_control(Form(), "notify_webhook_url", "", bag.take("notify_webhook_url"), "password",
                                                                            'autocomplete="off" placeholder="https://hooks.slack.com/services/..."'),
-            "notify_webhook_url", "notify_webhook_url", "A Slack or Discord incoming webhook for the daily watchdog's findings. Write-only: type a new "
-            "address to replace it; the current one is never shown.", bag.take("notify_webhook_url")),
-        switch_row(form, bag, "notify_webhook_url.remove", "Remove the webhook", None, False, "The watchdog then reports only in the audit trail.")
+            "notify_webhook_url", "notify_webhook_url", "A Slack or Discord incoming webhook: the daily digest, a release that did worse a day "
+            "later, and the watchdog's findings when the digest is off. Write-only: type a new address to replace it; the current one is never shown.",
+            bag.take("notify_webhook_url")),
+        switch_row(form, bag, "notify_webhook_url.remove", "Remove the webhook", None, False,
+                   "The digest then goes only to its issue on the platform repository.")
         if config.notify_webhook_url else "",
+        number_row(form, bag, "digest_hour_utc", "Daily digest at", "digest_hour_utc", config.digest_hour_utc, "o'clock UTC",
+                   "Once a day, written by code: what shipped, how each release did a day later, what needs you, or all quiet. 13 UTC is 8 in the "
+                   "morning in Texas in winter. 0 to 23; empty turns it off.", low=0, high=23),
     ])
     caps = "\n".join(f"{project}: {amount:g}" for project, amount in config.cloud_run_spend_caps.items())
     platform = config.platform
@@ -695,9 +701,18 @@ def platform_tab(ctx, submitted=None, found=None):
     spend = area_row(form, bag, "cloud_run_spend_caps", "Caps you created", "cloud_run_spend_caps", caps,
                      f"One per line, <code>project: USD a month</code>. A record for plans and the status: the cap itself lives in Cloud Billing and "
                      f"is made with {script} (docs/SETUP.md 7i).", rows=3, mono=True, placeholder="my-staging-project: 20")
+    budgets = "\n".join(f"{project}: {amount:g}" for project, amount in config.monthly_budgets_usd.items())
+    spend += "".join([
+        area_row(form, bag, "monthly_budgets_usd", "Budgets you created", "monthly_budgets_usd", budgets,
+                 "One per line, <code>project: USD a month</code>, as the budget says in Cloud Billing. The daily digest and the weekly cost report "
+                 "compare the month's spend and its forecast with it.", rows=3, mono=True, placeholder="my-staging-project: 20"),
+        switch_row(form, bag, "cost_anomaly_detection", "Cost Anomaly Detection is on", "cost_anomaly_detection", config.cost_anomaly_detection,
+                   "Google's free detector of unusual daily spend, turned on in Cloud Billing (docs/SETUP.md 7q). A record: the digest stops reminding."),
+    ])
     main = (form_open(ctx.visit, "platform", "main")
             + card("Automatic updates", automatic, "What follows a platform release on main.") + card("Auto-deploy and backups", schedule)
-            + card("Notifications", notifications) + card("Spend caps", spend, "Google's native Cloud Run spend caps.") + submit_bar() + "</form>")
+            + card("Notifications", notifications) + card("Spend caps and budgets", spend, "Google's native Cloud Run spend caps, the budgets and the "
+                                                                     "anomaly detector, as you set them up in Cloud Billing.") + submit_bar() + "</form>")
     paused = config.paused
     kill = danger_row(ctx.visit, "platform", "kill", {"value": "false" if paused else "true"},
                       "Resume every application" if paused else "Pause every application",

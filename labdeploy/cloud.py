@@ -316,6 +316,24 @@ class Observer:
                 return {"requests": found, "truncated": truncated}
             body = {**body, "pageToken": token}
 
+    def month_spend(self, table, projects, now=None):
+        """Each project's spend this month and its forecast, from the billing export (docs/ROADMAP.md 24.2)."""
+        from .cost import month_to_date
+        return month_to_date(table, projects, self.token(), self.client, now)
+
+    def had_user_requests(self, target, days=30, health_path=None):
+        """Whether anyone but the health checks called the service in the last `days`: one log line is enough."""
+        end = datetime.datetime.now(datetime.UTC)
+        clauses = ['resource.type="cloud_run_revision"', f'resource.labels.service_name="{target.service}"',
+                   f'logName="projects/{target.project_id}/logs/run.googleapis.com%2Frequests"',
+                   f'timestamp>="{(end - datetime.timedelta(days=days)).isoformat(timespec="seconds").replace("+00:00", "Z")}"']
+        if health_path and re.fullmatch(r"/[A-Za-z0-9/_-]*", health_path):
+            clauses.append(f'NOT httpRequest.requestUrl=~"^https?://[^/]+{health_path}([?].*)?$"')
+        body = {"resourceNames": [f"projects/{target.project_id}"], "orderBy": "timestamp desc", "pageSize": 1, "filter": " AND ".join(clauses)}
+        response = self.client.post("https://logging.googleapis.com/v2/entries:list", json=body, headers={"Authorization": "Bearer " + self.token()})
+        response.raise_for_status()
+        return bool(response.json().get("entries"))
+
     def policies(self, project_id):
         """How many alert policies and uptime checks a project holds, and the uptime checks' executions a month: what Google's
         free allotments are measured against (docs/ROADMAP.md 24.4)."""

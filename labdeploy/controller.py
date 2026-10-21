@@ -965,11 +965,85 @@ class Controller:
             record["trust"] = aftercare.trust(plans, now, 30)
         record["guards"] = {"missing_native_caps": sorted({app.target.project_id for app_id, app in self.config.applications.items() if app_id in visible}
                                                           - set(getattr(self.config, "cloud_run_spend_caps", None) or {}))}
+        if applications is None:
+            record["cost"] = self.cost_position(now)
+            if moment.weekday() == 0 and self.observer is not None:
+                record["alert_slots"] = self.alert_slots()
+                record["idle"] = self.idle_services(plans)
         record["attention"] = bool(
-            any(item["result"] in ("restored", "stopped", "rolled_back") for item in record["releases"])
+            any(item.get("over_budget") for item in (record.get("cost") or {}).get("projects") or [])
+            or any(item["result"] in ("restored", "stopped", "rolled_back") for item in record["releases"])
             or any(item.get("verdict") == "worse" for item in record["reports"]) or record["troubled"]
             or (record["drift"].get("drifted") or record["drift"].get("failed")) or record["problems"])
         return record
+
+    def projects(self):
+        """Every project the platform releases into, staging first, each with its environment."""
+        found = {}
+        for app in self.config.applications.values():
+            found.setdefault(app.target.project_id, "staging")
+            if app.production:
+                found.setdefault(app.production.target.project_id, "production")
+        production = getattr(self.config, "production", None)
+        if production is not None:
+            found.setdefault(production.project_id, "production")
+        return found
+
+    def cost_position(self, now=None):
+        """The digest's cost line (docs/ROADMAP.md 24.2, D63): each project's spend this month from the billing export, its
+        forecast, its recorded budget and its native cap, and whether Google's anomaly detection is recorded as on."""
+        budgets = getattr(self.config, "monthly_budgets_usd", None) or {}
+        caps = getattr(self.config, "cloud_run_spend_caps", None) or {}
+        projects = self.projects()
+        position = {"anomaly_detection": bool(getattr(self.config, "cost_anomaly_detection", False)), "projects": []}
+        table = getattr(getattr(self.config, "onboarding", None), "billing_export_table", None)
+        spent = {}
+        if not table:
+            position["warning"] = "no billing export is recorded (onboarding.billing_export_table), so this month's spend is not read"
+        elif self.observer is None or not callable(getattr(self.observer, "month_spend", None)):
+            position["warning"] = "live views are off (no observer identity), so this month's spend is not read"
+        else:
+            try:
+                month = self.observer.month_spend(table, list(projects), now)
+                position.update(month=month["month"], days_elapsed=month["days_elapsed"], days_in_month=month["days_in_month"], rough=month["rough"])
+                spent = {item["project"]: item for item in month["projects"]}
+            except Exception as exc:  # noqa: BLE001 - the line says why it has no numbers; the digest goes on
+                position["warning"] = str(exc)[:240]
+        for project, environment in projects.items():
+            item = spent.get(project) or {}
+            budget = budgets.get(project)
+            forecast = item.get("forecast_usd")
+            position["projects"].append({"project": project, "environment": environment, "net_cost_usd": item.get("net_cost_usd"),
+                                         "forecast_usd": forecast, "budget_usd": budget, "native_cap_usd": caps.get(project),
+                                         "over_budget": bool(budget and forecast is not None and forecast > budget)})
+        return position
+
+    def alert_slots(self):
+        """Monday's count (docs/ROADMAP.md 24.4): each project's alert policies and uptime executions, against the free allotments."""
+        found = []
+        for project, environment in self.projects().items():
+            try:
+                found.append({"project": project, "environment": environment, **self.observer.policies(project)})
+            except Exception as exc:  # noqa: BLE001 - informative only
+                found.append({"project": project, "environment": environment, "warning": str(exc)[:160]})
+        return found
+
+    def idle_services(self, plans):
+        """Monday's list (docs/ROADMAP.md D63): staging services nobody but the health checks called in 30 days, candidates to
+        retire. Only services with a live release; a person decides."""
+        idle = []
+        for app_id, app in sorted(self.config.applications.items()):
+            live = next((plan for plan in reversed(plans) if plan.get("application") == app_id and plan.get("state") == "succeeded"
+                         and plan.get("kind") is None), None)
+            if live is None:
+                continue
+            try:
+                quiet = not self.observer.had_user_requests(app.target, 30, (live.get("spec") or {}).get("health_path"))
+            except Exception:  # noqa: BLE001 - informative only; an unread service is not called idle
+                quiet = False
+            if quiet:
+                idle.append(app_id)
+        return idle
 
     def digest_view(self, principal, fresh=False):
         """get_digest: the newest digest kept, or, with `fresh` or none kept today, one built now and not sent. An identity
@@ -1906,6 +1980,10 @@ class Controller:
         result = self.github.cost_report(app, workflow=app.workflows["rightsize"], **self.artifact_names(app, "cost-report"))
         if isinstance(result, dict):
             result["spending_guards"] = self.spending_guards(app)
+            budgets = getattr(self.config, "monthly_budgets_usd", None) or {}
+            projects = [app.target.project_id] + ([app.production.target.project_id] if app.production else [])
+            result["budgets"] = {project: budgets.get(project) for project in projects}
+            result["cost_anomaly_detection"] = bool(getattr(self.config, "cost_anomaly_detection", False))
         return result
 
     def propose_rightsizing(self, principal, app_id):

@@ -517,14 +517,61 @@ def digest(record):
         if suspects:
             facts.append("Possibly restored for nothing (the same commit passed its watch later): "
                          + ", ".join(f"`{item['application']}` plan `{item['plan']}`" for item in suspects[:3]))
+    cost = record.get("cost") or {}
+    line = cost_position_line(cost)
+    if line:
+        facts.append(line)
+    for item in cost.get("projects") or []:
+        if item.get("over_budget"):
+            facts.append(f"`{item['project']}` is on course for {money(item['forecast_usd'])} this month, above its {money(item['budget_usd'])} budget: "
+                         "ask me for the cost report; the spending cap closes it at the line")
+            looks += 1
     missing = (record.get("guards") or {}).get("missing_native_caps") or []
     if missing:
         facts.append("Google's own spend cap is not recorded for " + ", ".join(f"`{name}`" for name in missing))
+    if record.get("alert_slots"):
+        facts.append(alert_slots_line(record["alert_slots"]))
+    if record.get("idle"):
+        facts.append("No user request in 30 days: " + ", ".join(f"`{name}`" for name in record["idle"])
+                     + ". Each keeps five alert policies and an uptime check; retire one with scripts/decommission.sh if nobody needs it")
+    if cost and record.get("alert_slots") is not None and not cost.get("anomaly_detection"):
+        facts.append("Google's free Cost Anomaly Detection is not recorded as on (docs/SETUP.md 7q)")
     facts += [f"Note: {clip(note, 200)}" for note in (record.get("notes") or [])[:2]]
     attention = bool(record.get("attention"))
     head = (f"**{plural(max(looks, 1), 'thing')} to look at, {when_day}.**" if attention else f"**All quiet, {when_day}.**")
     return compose(head, facts, "ask me about any line above; nothing in it was changed by itself." if attention else "nothing to do.",
                    f"Fast Deploy's daily digest, written by code at {when(record.get('generated_at'))} UTC.")
+
+
+def cost_position_line(cost):
+    """The digest's cost line (docs/ROADMAP.md 24.2): each project's month so far, its forecast and its budget."""
+    if not cost:
+        return None
+    if cost.get("warning") and not any(item.get("net_cost_usd") is not None for item in cost.get("projects") or []):
+        return f"Spend this month: not read ({clip(cost['warning'], 160)})"
+    parts = []
+    for item in cost.get("projects") or []:
+        if item.get("net_cost_usd") is None:
+            continue
+        budget = f" of a {money(item['budget_usd'])} budget" if item.get("budget_usd") else " (budget not recorded)"
+        course = f", on course for {money(item['forecast_usd'])}" if item.get("forecast_usd") not in (None, item["net_cost_usd"]) else ""
+        parts.append(f"{item['environment']} {money(item['net_cost_usd'])}{budget}{course}")
+    if not parts:
+        return None
+    days = f" ({cost['days_elapsed']:g} of {cost['days_in_month']} days)" if cost.get("days_elapsed") is not None else ""
+    return f"Spend this month{days}: " + "; ".join(parts) + ("; early in the month, so the forecasts are rough" if cost.get("rough") else "")
+
+
+def alert_slots_line(slots):
+    """Monday's count of alert policies and uptime executions against Google's free allotments (docs/ROADMAP.md 24.4)."""
+    parts = []
+    for item in slots:
+        if item.get("warning"):
+            parts.append(f"`{item['project']}` not read")
+            continue
+        parts.append(f"`{item['project']}` {plural(item['alert_policies'], 'alert policy')}, {plural(item['uptime_checks'], 'uptime check')} "
+                     f"(about {item['uptime_executions_month']:,} of the free 1,000,000 executions a month)")
+    return ("Alert slots: " + "; ".join(parts) + ". Google charges for alert policies from 1 Sep 2027 at the earliest (docs/RUNBOOK.md, monthly checklist)")
 
 
 def digest_answer(result):
@@ -1422,6 +1469,23 @@ def cost_report(result, application=None):
         facts.append(line)
     elif actual.get("warning"):
         facts.append(f"Actual spend unknown: {sentence_clip(actual['warning'], 200)}")
+    previous = actual.get("previous") or {}
+    if actual.get("total_net_cost_usd") is not None and previous.get("total_net_cost_usd") is not None:
+        moved = ((actual.get("movers") or {}).get("by_service") or []) + ((actual.get("movers") or {}).get("by_app") or [])
+        line = f"The {previous.get('window_days') or window} days before: {money(previous['total_net_cost_usd'])}"
+        if moved:
+            first = moved[0]
+            name = first.get("service") or f"`{first.get('app')}`"
+            line += f"; {name} moved most, {money(first['before_usd'])} to {money(first['net_cost_usd'])}"
+        facts.append(line)
+    month = report.get("month") or {}
+    budgets = result.get("budgets") or {}
+    for item in month.get("projects") or []:
+        budget = budgets.get(item["project"])
+        over = budget and item["forecast_usd"] > budget
+        facts.append(f"This month in `{item['project']}`: {money(item['net_cost_usd'])} so far, on course for {money(item['forecast_usd'])}"
+                     + (f", {'above' if over else 'within'} its {money(budget)} budget" if budget else "")
+                     + ("; early in the month, so the forecast is rough" if month.get("rough") else ""))
     observed = (report.get("rightsizing") or {}).get("observed") or {}
     if observed:
         facts.append(f"Measured use: {plural(observed.get('requests') or 0, 'request')} in the window, worth "
@@ -1446,6 +1510,8 @@ def cost_report(result, application=None):
         facts.append(f"This month: {plural(tolls['fresh_images'], 'new image')} scanned, {about(tolls.get('image_scans_usd'))}")
     if ((result.get("spending_guards") or {}).get("cloud_run_spend_cap") or {}).get("status") == "not_recorded":
         facts.append("Google's own spend cap is not recorded for this project")
+    if result.get("cost_anomaly_detection") is False:
+        facts.append("Google's free Cost Anomaly Detection is not recorded as on (docs/SETUP.md 7q)")
     next_line = (f"say “make {app} cheaper” and I'll open a pull request with these proposals; a person merges it." if concrete
                  else "nothing to do; the report runs again next week.")
     return compose(head, facts, next_line, link("GitHub run", result.get("run_url")) if result.get("run_url") else None)
