@@ -30,6 +30,7 @@ from .scaffold import (
     DEV_PINS,
     ENTRY_FILES,
     FRAMEWORK_DEPENDENCIES,
+    NODE_CONFIG_FILES,
     NOT_APPLICATION,
     PYTHONS,
     RESERVED_HEALTH,
@@ -232,8 +233,10 @@ def files_to_read(paths, path="", limit=60):
         # A Node.js service: its manifest, lockfile, version files and npm settings (the root's too, for a service in a
         # folder), then its likeliest code, the entry files first. The file its start names, and its imports, follow in a
         # second read (more_files_to_read).
-        wanted += [repo.at(name) for name in NODE_FILES if repo.has(name) and repo.at(name) not in wanted]
-        wanted += [name for name in ("package.json", ".nvmrc", ".node-version", ".tool-versions", ".npmrc") if repo.path and name in repo.paths]
+        wanted += [repo.at(name) for name in (*NODE_FILES, *nodejs.MANAGER_LOCKFILES, *NODE_CONFIG_FILES, "ecosystem.config.json")
+                   if repo.has(name) and repo.at(name) not in wanted]
+        wanted += [name for name in ("package.json", ".nvmrc", ".node-version", ".tool-versions", ".npmrc", ".yarnrc.yml", "pnpm-workspace.yaml",
+                                     *nodejs.LOCKFILES, *nodejs.MANAGER_LOCKFILES) if repo.path and name in repo.paths]
         code = [repo.at(item) for item in sorted(repo.local_paths, key=_node_rank) if nodejs.CODE.search(item) and not nodejs.NOT_CODE.search(item)
                 and not nodejs.NODE_TEST.search(item) and repo.at(item) not in wanted]
         return list(dict.fromkeys(wanted + code[:max(limit - len(wanted), 0)]))
@@ -306,7 +309,7 @@ TEXT_LIMIT = 65_536
 
 def large_files(name):
     """Lock files can be far larger than the 64 KiB other inputs may be; they are read up to LOCK_LIMIT (5 MB)."""
-    return name.rsplit("/", 1)[-1] in LOCK_FILES + nodejs.LOCKFILES
+    return name.rsplit("/", 1)[-1] in LOCK_FILES + nodejs.LOCKFILES + tuple(nodejs.MANAGER_LOCKFILES)
 
 
 def size_limit(name):
@@ -1347,99 +1350,177 @@ def node_ended(ladder, where, line, fix, asks=None):
     return None
 
 
-def npm_lock(repo, ladder, package):
-    """How the packages are pinned (D42): {"action": "use", the repository's own npm lockfile, checked entry by entry} or
-    {"action": "lock", package.json locked once by the platform}; None after a refusal."""
-    others = [name for name in nodejs.OTHER_LOCKFILES if repo.has(name)]
-    own = [name for name in nodejs.LOCKFILES if repo.has(name)]
-    if len(others) + bool(own) > 1:
-        ladder.refuse(repo.at((own + others)[0]), "has more than one lockfile (" + ", ".join(own[:1] + others) + "), so two package managers disagree "
-                      "about the versions", "keep one: the platform installs with npm from package-lock.json, so remove the others")
+def node_lock(repo, ladder, package, member=False):
+    """How the packages are pinned (D42, 21.1): {"action": "use", the repository's own lockfile, installed frozen by the manager
+    that wrote it (npm, pnpm, Yarn or Bun) with every entry checked against the registry} or {"action": "lock", package.json
+    locked once by the platform with npm}; None after a refusal. A workspace member (`member`, 21.4) installs from the root's
+    lockfile, which must list it."""
+    own = [name for name in nodejs.LOCKFILES if repo.has(name)][:1] + [name for name in nodejs.OTHER_LOCKFILES if repo.has(name)]
+    at, text_of = repo.at, repo.text
+    if not own and member:
+        own = [name for name in (*nodejs.LOCKFILES, *nodejs.OTHER_LOCKFILES) if name in repo.paths][:1]
+        at, text_of = (lambda name: name), (lambda name: repo.texts.get(name, ""))
+    if len(own) > 1:
+        ladder.refuse(at(own[0]), "has more than one lockfile (" + ", ".join(own) + "), so two package managers disagree about the versions",
+                      "keep the one of the manager you use and remove the others")
         return None
-    if others:
-        manager = nodejs.OTHER_LOCKFILES[others[0]]
-        ladder.refuse(repo.at(others[0]), f"is {manager}'s lockfile, which this version of the platform does not install",
-                      "convert it to a package-lock.json (docs/DEVELOPER-CONTRACT.md lists the commands), commit that and remove "
-                      f"{others[0]}; {manager} lockfiles are a later roadmap item")
+    if own and own[0] == "bun.lockb":
+        ladder.refuse(at("bun.lockb"), "is Bun's old binary lockfile, which only Bun reads", "run bun install with Bun 1.2 or later, which writes bun.lock in "
+                      "text, commit that and remove bun.lockb")
         return None
     dependencies = {}
     for key in ("dependencies", "optionalDependencies", "devDependencies"):
         table = package.get(key)
         dependencies.update(table if isinstance(table, dict) else {})
+    in_workspace = bool(own) and (member or package.get("workspaces") is not None or repo.has("pnpm-workspace.yaml"))
     local = sorted(name for name, spec in dependencies.items() if isinstance(spec, str) and re.match(
-        r"^(file:|link:|workspace:|portal:|git\+|git:|github:|gitlab:|bitbucket:|https?:|[\w.-]+/[\w.-]+(#.*)?$)", spec.strip()))
+        r"^(file:|link:|portal:|git\+|git:|github:|gitlab:|bitbucket:|https?:|[\w.-]+/[\w.-]+(#.*)?$)", spec.strip()))
+    linked = sorted(name for name, spec in dependencies.items() if isinstance(spec, str) and spec.strip().startswith(("workspace:", "catalog:")))
     if local:
         ladder.refuse(repo.at("package.json"), "depends on " + ", ".join(local[:4]) + " through a local path, a git repository or a URL, which "
-                      "npm installs without a registry check", "publish those packages to the npm registry, or move their code into the service")
+                      "the manager installs without a registry check", "publish those packages to the npm registry, or move their code into the service")
+        return None
+    if linked and not in_workspace:
+        ladder.refuse(repo.at("package.json"), "depends on " + ", ".join(linked[:4]) + " through workspace: or catalog:, and no workspace lockfile resolves them",
+                      "commit the workspace's lockfile at its root, or publish those packages")
         return None
     if not own:
         ladder.choose("Dependencies", "package.json, locked once by the platform: npm 11.10 or later, every install script off, no version "
                       "younger than three days", repo.at("package.json"))
         return {"action": "lock", "runtime": "node-http", "from": repo.at("package.json"), "package": repo.text("package.json")}
     name = own[0]
-    text = repo.text(name)
+    text = text_of(name)
     if not text:
-        ladder.refuse(repo.at(name), f"is larger than the platform reads ({LOCK_LIMIT // 1_000_000} MB)", "tell the operator: reading larger lockfiles is a change to the platform")
+        ladder.refuse(at(name), f"is larger than the platform reads ({LOCK_LIMIT // 1_000_000} MB)", "tell the operator: reading larger lockfiles is a change to the platform")
         return None
-    data, problem = nodejs.read_lockfile(text)
-    if data is None:
-        ladder.refuse(repo.at(name), problem, "lock again with npm 9 or later (npm install --package-lock-only --ignore-scripts) and commit the file")
+    view, problem = nodejs.read_lock(name, text)
+    if view is None:
+        ladder.refuse(at(name), problem, "lock again with the manager that wrote it (npm 9 or later: npm install --package-lock-only --ignore-scripts) and commit the file")
         return None
-    problems = nodejs.lock_problems(data)
+    manager = view["manager"]
+    commands = nodejs.MANAGER_COMMANDS[manager]
+    problems = nodejs.view_problems(view)
     if problems:
         more = f"; and {len(problems) - 4} more" if len(problems) > 4 else ""
-        ladder.refuse(repo.at(name), "holds packages npm ci would install without checking them against the npm registry: "
+        ladder.refuse(at(name), f"holds packages {commands['title']} would install without checking them against the npm registry: "
                       + "; ".join(f"{package_name} {why}" for package_name, why in problems[:4]) + more,
                       "install every package from the npm registry (publish or vendor what is your own), then lock again")
         return None
-    declared = (data.get("packages") or {}).get("") or {}
-    stale = sorted(key for key, table in (("dependencies", package.get("dependencies")), ("devDependencies", package.get("devDependencies")),
-                                         ("optionalDependencies", package.get("optionalDependencies")))
-                   if (table or {}) != (declared.get(key) or {}))
-    if stale:
-        # 20.4: npm ci would stop on a lockfile that disagrees with package.json; the platform locks package.json again instead,
-        # as it does for a repository without a lockfile, and the lockfile is set aside.
-        ladder.ignore(repo.at(name), f"does not match package.json ({', '.join(stale)} differ), so npm ci would stop; the platform locks package.json again")
-        ladder.choose("Dependencies", f"package.json, locked again by the platform because {name} is stale: npm 11.10 or later, every install "
-                      "script off, no version younger than three days", repo.at("package.json"))
-        ladder.note(f"{repo.at(name)} is behind package.json ({', '.join(stale)} differ): the platform's lock replaces it for the build; run npm "
-                    "install and commit the two together to have your own lockfile used")
-        return {"action": "lock", "runtime": "node-http", "from": repo.at("package.json"), "package": repo.text("package.json")}
-    ladder.choose("Dependencies", f"{name}, installed with npm ci and every install script off", repo.at(name))
+    if manager == "yarn":
+        yarnrc = next((text for _, text in repo.nearest(".yarnrc.yml")), "")
+        if not nodejs.yarn_links_node_modules(yarnrc):
+            ladder.refuse(at(".yarnrc.yml") if yarnrc else at("yarn.lock"), "installs with Yarn's Plug'n'Play (no nodeLinker: node-modules in .yarnrc.yml), "
+                          "whose loader the platform's image does not carry", "set nodeLinker: node-modules in .yarnrc.yml, run yarn install and commit both")
+            return None
+    if member:
+        listed = {item.strip("./") for item in view.get("members", [])}
+        if repo.path not in listed:
+            ladder.refuse(at(name), f"does not list {repo.path} as a package of the workspace", "run the install at the workspace root so the lockfile lists it, and commit it")
+            return None
+    data = nodejs.read_lockfile(text)[0] if manager == "npm" else None
+    if manager == "npm" and not member:
+        declared = (data.get("packages") or {}).get("") or {}
+        stale = sorted(key for key, table in (("dependencies", package.get("dependencies")), ("devDependencies", package.get("devDependencies")),
+                                             ("optionalDependencies", package.get("optionalDependencies")))
+                       if (table or {}) != (declared.get(key) or {}))
+        if stale:
+            # 20.4: npm ci would stop on a lockfile that disagrees with package.json; the platform locks package.json again instead,
+            # as it does for a repository without a lockfile, and the lockfile is set aside.
+            ladder.ignore(repo.at(name), f"does not match package.json ({', '.join(stale)} differ), so npm ci would stop; the platform locks package.json again")
+            ladder.choose("Dependencies", f"package.json, locked again by the platform because {name} is stale: npm 11.10 or later, every install "
+                          "script off, no version younger than three days", repo.at("package.json"))
+            ladder.note(f"{repo.at(name)} is behind package.json ({', '.join(stale)} differ): the platform's lock replaces it for the build; run npm "
+                        "install and commit the two together to have your own lockfile used")
+            return {"action": "lock", "runtime": "node-http", "from": repo.at("package.json"), "package": repo.text("package.json")}
+    chosen = None
+    if manager != "npm":
+        from .scaffold import MANAGER_PINS
+        root_package = nodejs.package_data(repo.texts.get("package.json", "")) if member else None
+        spec = nodejs.manager_spec(package) or nodejs.manager_spec(root_package)
+        named = nodejs.manager_of(package) or nodejs.manager_of(root_package)
+        family = "yarn" if manager in ("yarn", "yarn1") else manager
+        if named and named != family and named != "npm":
+            ladder.refuse(repo.at("package.json"), f"names {named} in packageManager, but the lockfile is {name}, {commands['title']}'s",
+                          "keep one manager: remove the other's lockfile, or correct packageManager")
+            return None
+        if spec and spec["manager"] == manager:
+            # The repository's own release of its manager, as Corepack and Railpack honour it: a lockfile is written for it.
+            chosen = {"version": spec["version"], "integrity": spec["integrity"]}
+            held = "the sha512 packageManager carries" if spec["integrity"] else "the integrity the npm registry publishes"
+            how = f"{commands['title']} {spec['version']} from packageManager, installed by version and checked against {held}"
+        else:
+            if spec and spec["manager"] != manager:
+                ladder.note(f"packageManager names {spec['manager']} {spec['version']}, which does not write {name}: the platform's own "
+                            f"{commands['title']} is used")
+            formats = nodejs.PINNED_FORMATS.get(manager)
+            found_format = nodejs.lock_format(view)
+            if formats and found_format not in formats:
+                pinned = MANAGER_PINS[manager][0]
+                fix = (f"name the release that wrote it in package.json (\"packageManager\": \"{'pnpm' if manager == 'pnpm' else 'yarn'}@<version>\"), "
+                       f"or run the install with {commands['title']} {pinned.split('.')[0]} and commit the lockfile it writes")
+                ladder.refuse(at(name), f"is {'lockfile version' if manager == 'pnpm' else 'Yarn lockfile format'} {found_format or 'unknown'}, which the "
+                              f"platform's {commands['title']} {pinned} cannot install frozen, and package.json names no packageManager release", fix)
+                return None
+            how = f"{commands['title']} {MANAGER_PINS[manager][0]}, the platform's pin, installed by version and integrity"
+    if manager == "npm" and nodejs.manager_of(package) not in (None, "npm"):
+        ladder.note(f"packageManager names {nodejs.manager_of(package)}, but the lockfile is {name}, npm's: the platform installs it with npm ci")
+    if manager == "npm":
+        ladder.choose("Dependencies", f"{name}, installed with npm ci and every install script off" + (" (the workspace root's lockfile)" if member else ""), at(name))
+    else:
+        ladder.choose("Dependencies", f"{name}, installed with `{commands['frozen']}` ({how}; every install script off)"
+                      + (" from the workspace root" if member else ""), at(name))
+        ladder.note(f"{at(name)} is installed frozen by {commands['title']}: a lockfile behind package.json stops the build, so commit the two together")
     if name == "npm-shrinkwrap.json" and repo.has("package-lock.json"):
         ladder.ignore(repo.at("package-lock.json"), "npm-shrinkwrap.json comes first, as npm reads it")
-    return {"action": "use", "runtime": "node-http", "from": repo.at(name), "file": name, "data": data}
+    return {"action": "use", "runtime": "node-http", "from": at(name), "file": name, "data": data, "view": view, "manager": manager, "member": member,
+            "manager_release": chosen}
 
 
 def script_ladder(repo, ladder, package, lock):
-    """build.scripts (D43): the lockfile's packages with an install script that package.json's allowScripts pins by version,
-    less those a Cloud Run service never needs (nodejs.NOT_NEEDED); why the list may stay empty is said."""
+    """build.scripts (D43, D53): the packages the platform's own table says need their install script on Cloud Run (21.5),
+    drafted at their locked versions for the merge to approve, and those package.json approves for its manager (npm's
+    allowScripts by version; pnpm's onlyBuiltDependencies, Yarn's dependenciesMeta built, Bun's trustedDependencies by name,
+    joined with the locked version), less those a Cloud Run service never needs (nodejs.NOT_NEEDED). Why the list may stay
+    empty is said."""
     if lock is None or lock.get("action") != "use":
         ladder.choose("Install scripts", "none run: the platform's lock is made with every script off; approve one by version in "
                       "package.json's allowScripts if a package needs its own", repo.at("package.json"))
         return []
-    scripts = nodejs.install_scripts(lock["data"])
-    pinned, notes = nodejs.allowed_scripts(package)
+    manager, view = lock.get("manager", "npm"), lock.get("view") or {}
+    versions = nodejs.view_names(view)
+    names, pinned, notes = nodejs.approved_scripts(package, manager)
     for note in notes:
         ladder.note(note)
-    keep, needless = [], []
-    for entry in scripts:
-        if entry not in pinned:
+    approved = list(dict.fromkeys(pinned + [f"{name}@{versions[name]}" for name in names if versions.get(name)]))
+    scripted = nodejs.view_scripts(view)  # None: this lockfile's format does not say which packages run a script
+    keep, needless, drafted = [], [], []
+    for entry, why in nodejs.needed_scripts(versions):
+        if scripted is not None and entry not in scripted:
+            continue
+        keep.append(entry)
+        drafted.append(f"{entry} ({why})")
+    for entry in approved:
+        if entry in keep or (scripted is not None and entry not in scripted):
             continue
         reason = nodejs.NOT_NEEDED.get(entry.rsplit("@", 1)[0])
         (needless if reason else keep).append(f"{entry}: {reason}" if reason else entry)
-    unapproved = [entry for entry in scripts if entry not in pinned]
+    unapproved = [entry for entry in (scripted or []) if entry not in keep and entry not in approved]
+    approvals = {"npm": "allowScripts", "pnpm": "pnpm.onlyBuiltDependencies", "yarn": "dependenciesMeta", "yarn1": "dependenciesMeta", "bun": "trustedDependencies"}[manager]
     if keep:
-        ladder.choose("Install scripts", "run after the install, each by name and version: " + ", ".join(keep), f"{repo.at('package.json')} (allowScripts)")
+        ladder.choose("Install scripts", "run after the install, each by name and version: " + ", ".join(keep)
+                      + (f"; from the platform's table of packages that need theirs on Cloud Run, for the merge to approve: {'; '.join(drafted)}" if drafted else ""),
+                      f"{repo.at('package.json')} ({approvals})" if approved and not drafted else lock["from"])
     elif needless:
-        ladder.choose("Install scripts", "none run: " + "; ".join(needless), f"{lock['from']} and {repo.at('package.json')} (allowScripts)")
+        ladder.choose("Install scripts", "none run: " + "; ".join(needless), f"{lock['from']} and {repo.at('package.json')} ({approvals})")
     else:
-        ladder.choose("Install scripts", "none run" + (": no package has one" if not scripts else ": a package whose native binary ships in its "
-                      "tarball needs none"), lock["from"])
+        ladder.choose("Install scripts", "none run" + (": no package has one" if scripted == [] else ": no package the platform's table names, and a package "
+                      "whose native binary ships in its tarball needs none"), lock["from"])
     if unapproved:
-        ladder.note("These packages have install scripts the platform does not run, as package.json's allowScripts does not approve them by "
-                    "version: " + ", ".join(unapproved[:8]) + ". If one is needed (a native addon built at install), approve it "
-                    "(npm install-scripts approve) or list it under build.scripts in the review.")
+        ladder.note(f"These packages have install scripts the platform does not run, as neither its table nor package.json's {approvals} names them: "
+                    + ", ".join(unapproved[:8]) + ". If one is needed (a native addon built at install), list it under build.scripts in the review.")
+    if scripted is None and not keep:
+        ladder.note(f"{lock['file']} does not record which packages have install scripts, and the platform's table of packages that need theirs on Cloud Run "
+                    "names none of these: no script runs; list one under build.scripts in the review if a native addon needs its own")
     return keep
 
 
@@ -1455,6 +1536,65 @@ def start_file(words):
     return rest[0].removeprefix("./") if rest else None
 
 
+# What a test suite names when it needs what the platform's runner does not have (D54, 22.5): a browser, a database or a
+# seed, Docker. Such a suite is drafted as tests: report, counted and never a stop.
+NEEDS_MORE_TO_TEST = re.compile(r"(?i:playwright|cypress|selenium|webdriver|puppeteer|db:seed|docker|testcontainers)|\bDATABASE_URL\b|\bPOSTGRES_[A-Z]+|\bMONGO_URL\b|\bREDIS_URL\b")
+# The folder each site builder writes into (D55, 22.4), read in their documentation; Angular's depends on the project, so it is not guessed.
+SITE_OUTPUTS = (("@docusaurus/core", "build"), ("gatsby", "public"), ("@11ty/eleventy", "_site"), ("react-scripts", "build"), ("@vue/cli-service", "dist"),
+                ("astro", "dist"), ("parcel", "dist"), ("vite", "dist"))
+
+
+def scaffold_static_entrypoint():
+    from .scaffold import STATIC_ENTRYPOINT
+    return STATIC_ENTRYPOINT
+
+
+def wrapped_user(base, trust):
+    """build.user for a repository's own Dockerfile (D52): the contract's, else 65532 for code nobody has reviewed."""
+    user = (base.get("build") or {}).get("user")
+    return user if user else (65532 if trust == "unknown" else None)
+
+
+def static_site(package, dependencies):
+    """(output folder, why) for a front-end site with no server of its own (D55, 22.4), or (None, why not)."""
+    scripts = package.get("scripts") if isinstance(package.get("scripts"), dict) else {}
+    if not isinstance(scripts.get("build"), str) or not scripts["build"].strip():
+        return None, "it has no build script that makes the site"
+    if "@sveltejs/kit" in dependencies:
+        if "@sveltejs/adapter-static" in dependencies:
+            return "build", "SvelteKit with adapter-static"
+        return None, "SvelteKit builds a site only with @sveltejs/adapter-static (adapter-node makes a server); its adapter is another one"
+    if "@angular/core" in dependencies:
+        return None, "Angular writes the site into a folder its project names (dist/<project>/browser); say it in build.output"
+    for name, output in SITE_OUTPUTS:
+        if name in dependencies:
+            return output, f"{name} writes the site into {output}/"
+    return None, "no site builder the platform knows"
+
+
+def node_chain(script):
+    """`node a.js && node b.js` as an entrypoint when every part is node on a file with plain words, else None (D49)."""
+    if re.search(r"\|\||[;|`<>]|\$\(|(?<!&)&(?!&)", script):
+        return None
+    parts = []
+    for part in script.split("&&"):
+        found, problem = nodejs.start_words(part.strip())
+        if problem or found.get("rewritten") or found.get("env"):
+            return None
+        parts.append(" ".join(shlex.quote(word) for word in found["words"]))
+    return " && ".join(parts) if len(parts) > 1 else None
+
+
+def pnpm_members(text, paths):
+    """The folders a pnpm-workspace.yaml names (packages: globs), each holding a package.json."""
+    try:
+        data = yaml.safe_load(text or "") or {}
+    except yaml.YAMLError:
+        return []
+    globs = data.get("packages") if isinstance(data, dict) else None
+    return nodejs.workspace_packages({"workspaces": globs}, list(paths)) if isinstance(globs, list) else []
+
+
 def start_refusal(repo, ladder, package, what, problem):
     """Refuse a start command, with the fix that suits what it does."""
     first = what.split()[0].rsplit("/", 1)[-1] if what.split() else ""
@@ -1467,11 +1607,12 @@ def start_refusal(repo, ladder, package, what, problem):
     ladder.refuse(repo.at("package.json"), f"scripts.start {problem}: `{what[:120]}`", fix)
 
 
-def node_start(repo, ladder, base, compose, package, builds_itself, dockerfile, web, trust):
+def node_start(repo, ladder, base, compose, package, builds_itself, dockerfile, web, trust, plan=None):
     """(recipe, entrypoint, command, args, words): what builds and starts a Node.js service (D45, D46). The repository's own
     Dockerfile builds itself; a Procfile goes to Google's buildpacks for reviewed code only, since they run install scripts and
     fetch Node.js at build time, and otherwise its web command runs on the platform's image; then Compose's command, the
-    contract's build.entrypoint, scripts.start when it runs node, main, server.js and index.js."""
+    contract's build.entrypoint, scripts.start when it runs node (or a restarter on a file, or a tool the build plan replaces:
+    next start, nest start, tsx; 21.2 and 21.3), main, then the entry files by name; last, the build plan's own start."""
     scripts = package.get("scripts") if isinstance(package.get("scripts"), dict) else {}
     entrypoint, command, args, words = None, None, None, None
     recipe = (base.get("build") or {}).get("recipe")
@@ -1521,7 +1662,37 @@ def node_start(repo, ladder, base, compose, package, builds_itself, dockerfile, 
         return "platform", text, None, None, candidate
     start = scripts.get("start")
     if isinstance(start, str) and start.strip():
+        chain = re.fullmatch(r"\s*(?:npm|pnpm|yarn|bun)\s+run\s+build\s*&&\s*node\s+(\S+)\s*", start)
+        if chain and plan and plan.get("build"):
+            # "build, then node" (fastify's demo): the image's build stage runs the build (21.2), and node starts the file.
+            file = chain.group(1).removeprefix("./")
+            ladder.choose("Start command", f"node {file}", f"{repo.at('package.json')} (scripts.start builds first; the build runs in the image's build stage)")
+            return "platform", f"node {file}", None, None, ["node", file]
         found, problem = nodejs.start_words(start)
+        first = start.split()[0].rsplit("/", 1)[-1] if start.split() else ""
+        if problem and first in ("pm2", "pm2-runtime"):
+            ecosystem = next((word for word in start.split() if word.endswith(".json") and repo.has(word.removeprefix("./"))), None)
+            script = nodejs.ecosystem_script(repo.text(ecosystem.removeprefix("./"))) if ecosystem else None
+            if script and repo.has(script):
+                ladder.note(f"scripts.start runs pm2 on {ecosystem}, whose first app is {script}; Cloud Run restarts the service itself, so the "
+                            "platform starts node on that file (D49)")
+                ladder.choose("Start command", f"node {script}", f"{repo.at(ecosystem.removeprefix('./'))} (pm2's ecosystem file, rewritten to node)")
+                return "platform", f"node {script}", None, None, ["node", script]
+        if problem and first in nodejs.BUILT_STARTS and plan and plan.get("build") and plan.get("start"):
+            # next start, nest start, remix-serve, tsx: the build stage makes what node then starts (21.2, 21.3).
+            entrypoint = " ".join(plan["start"])
+            ladder.choose("Start command", entrypoint[:120], f"{repo.at('package.json')} (scripts.start runs {first}; after the build, {plan.get('why')})")
+            return "platform", entrypoint, None, None, list(plan["start"])
+        chain = node_chain(start) if problem and "&&" in start else None
+        if chain:
+            # D49, 22.2: a chain of node commands runs as written under tini, the init of the platform's images, which passes
+            # SIGTERM on to the last one; a chain through npm or another manager stays refused (no manager stays in the image).
+            ladder.note("scripts.start chains node commands; the platform runs the chain as written under its image's init (tini), so the last "
+                        "command still gets SIGTERM; the commands before it run at every start of every instance")
+            ladder.choose("Start command", chain[:120], f"{repo.at('package.json')} (scripts.start, a chain of node commands)")
+            return "platform", chain, None, None, chain.split("&&")[-1].split()
+        if problem and first in nodejs.BUILT_STARTS and plan and plan.get("problem"):
+            return "platform", None, None, None, None  # the build plan's refusal already says what is missing
         if problem:
             start_refusal(repo, ladder, package, start, problem)
             return "platform", None, None, None, None
@@ -1546,6 +1717,11 @@ def node_start(repo, ladder, base, compose, package, builds_itself, dockerfile, 
         if candidate and repo.has(candidate):
             ladder.choose("Start command", f"node {candidate}", where or f"{repo.at(candidate)} (an entry file by name)")
             return "platform", f"node {candidate}", None, None, ["node", candidate]
+    if plan and plan.get("framework") and plan.get("build") and plan.get("start"):
+        # No start script, but a framework that builds (a build script alone): its documented start after the build (21.2).
+        entrypoint = " ".join(plan["start"])
+        ladder.choose("Start command", entrypoint[:120], f"{repo.at('package.json')} ({plan.get('why')})")
+        return "platform", entrypoint, None, None, list(plan["start"])
     return "platform", None, None, None, None
 
 
@@ -1553,13 +1729,16 @@ def node_listen(repo, ladder, sources, order, dependencies, base):
     """Where the code listens (D46): the first listen call of the entry file and what it imports; a helper script never
     decides (20.1). A literal port that never reads PORT goes into the contract as `port` (20.4: gcloud's --port sets the
     container port and PORT alike); a loopback host and Fastify without host: '0.0.0.0' are refused; a host read from a
-    variable whose default is loopback gets 0.0.0.0 in the draft's env. Returns (port literal or None, {variable: value},
-    whether the literal port is fixed in the code)."""
+    variable whose default is loopback gets 0.0.0.0 in the draft's env; a literal loopback host and Fastify without host get
+    the proxy sidecar (D51, 22.1) unless the contract says proxy: false. Returns (port literal or None, {variable: value},
+    whether the literal port is fixed in the code, why a proxy is drafted or None)."""
     facts = nodejs.listen_facts(sources, order, dependencies)
     if facts is None:
         ladder.note("No listen call was found in the code read: check that the service listens on PORT (Cloud Run sets it) on 0.0.0.0")
-        return None, {}, False
+        return None, {}, False, None
     where = repo.at(facts["file"])
+    proxy = None
+    allowed = base.get("proxy") is not False
     fixed = facts["port"] is not None and not facts["port_env"] and not nodejs.any_reads_port(sources)
     if fixed:
         ladder.note(f"{where} listens on port {facts['port']} and never reads PORT: the contract says port: {facts['port']}, and Cloud Run sends "
@@ -1571,12 +1750,22 @@ def node_listen(repo, ladder, sources, order, dependencies, base):
         elif facts["host_env"]:
             env[facts["host_env"]] = EVERY_INTERFACE  # noqa: S104 - Cloud Run's contract: listen on every interface
             ladder.choose("Host", f"0.0.0.0 through {facts['host_env']} (the code's default, {facts['host']}, cannot be reached on Cloud Run)", where)
+        elif allowed:
+            proxy = f"{where} listens on {facts['host']} and reads no variable for it"
         else:
             ladder.refuse(where, f"listens on {facts['host']}, which Cloud Run cannot reach", "listen on every interface: leave the host out, or give '0.0.0.0'")
     if facts["fastify_without_host"]:
-        ladder.refuse(where, "starts Fastify without host: '0.0.0.0', and Fastify listens on localhost unless told otherwise, which Cloud Run cannot reach",
-                      "pass host: '0.0.0.0' to fastify.listen()")
-    return facts["port"], env, fixed
+        if allowed:
+            proxy = f"{where} starts Fastify without host: '0.0.0.0', and Fastify listens on localhost unless told otherwise"
+        else:
+            ladder.refuse(where, "starts Fastify without host: '0.0.0.0', and Fastify listens on localhost unless told otherwise, which Cloud Run cannot reach",
+                          "pass host: '0.0.0.0' to fastify.listen()")
+    if proxy:
+        ladder.choose("Proxy", "an Nginx sidecar on the ingress port, forwarding to the service on the loopback the two containers share (proxy: true)", where)
+        ladder.note(f"{proxy}, which Cloud Run cannot reach from outside the instance: the contract adds the platform's proxy sidecar (proxy: true, "
+                    "D51). It bills as the app does, only while serving (about one more vCPU and 256 MiB per instance); the developer's one line, "
+                    "listening on 0.0.0.0, stays the better fix, and then the reviewer removes proxy")
+    return facts["port"], env, fixed, proxy
 
 
 def node_health(repo, ladder, base, compose, sources, order):
@@ -1632,16 +1821,32 @@ def node_read(repo, ladder, result, base, compose, name, paths):
         if any(item.startswith(folder + "/") for item in repo.local_paths):
             ladder.ignore(repo.at(folder), "committed build output or installed packages: the platform installs the dependencies itself" if folder == "node_modules"
                           else "committed build output, which the platform neither builds nor needs unless the start command runs it")
-    members = nodejs.workspace_packages(package, [item for item in repo.local_paths])
+    scripts_table = package.get("scripts") if isinstance(package.get("scripts"), dict) else {}
+    members = nodejs.workspace_packages(package, [item for item in repo.local_paths]) + pnpm_members(repo.text("pnpm-workspace.yaml"), repo.local_paths)
     workspace = [repo.at(item) for item in NODE_WORKSPACE_FILES if repo.has(item)]
-    if package.get("workspaces") is not None or workspace:
-        ladder.refuse(repo.at("package.json") if package.get("workspaces") is not None else workspace[0],
-                      "is a workspace of several packages" + (f" ({', '.join(members[:6])})" if members else ""),
-                      "take one package as the service" + (f" (path {repo.at(members[0])})" if members else "") + " once it has a lockfile of its own; "
-                      "one service per package with the root lockfile is a later roadmap item")
-    elif root and root.get("workspaces") is not None and repo.path in nodejs.workspace_packages(root, sorted(repo.paths)):
-        ladder.refuse(repo.path, "is a package of the repository's workspace (the root package.json lists it), locked by the root's lockfile",
-                      "deploy it once workspaces are supported (a later roadmap item), or give it a lockfile of its own")
+    # 21.4: a root that is a workspace is the service only when it starts or builds something itself; else one of its packages
+    # is, installed from the root's lockfile (build.context: repository).
+    root_members = (nodejs.workspace_packages(root, sorted(repo.paths)) if root else []) + pnpm_members(repo.texts.get("pnpm-workspace.yaml", ""), sorted(repo.paths))
+    root_lock = any(name in repo.paths for name in (*nodejs.LOCKFILES, *nodejs.OTHER_LOCKFILES))
+    own_lock = any(repo.has(name) for name in (*nodejs.LOCKFILES, *nodejs.OTHER_LOCKFILES))
+    member = bool(repo.path) and repo.path in root_members and root_lock and not own_lock
+    own_start = isinstance(scripts_table.get("start"), str) or any(name in nodejs.runtime_names(package) | set(package.get("devDependencies") or {})
+                                                                      for name in nodejs.NODE_BUILDS)
+    if (package.get("workspaces") is not None or repo.has("pnpm-workspace.yaml")) and not own_start:
+        ladder.refuse(repo.at("package.json") if package.get("workspaces") is not None else repo.at("pnpm-workspace.yaml"),
+                      "is a workspace of several packages" + (f" ({', '.join(members[:6])})" if members else "") + " and starts nothing itself",
+                      "take one package as the service" + (f" (path {repo.at(members[0])})" if members else "") + ": it is installed from this root's lockfile")
+    elif package.get("workspaces") is not None or repo.has("pnpm-workspace.yaml"):
+        ladder.note("The root is a workspace of several packages" + (f" ({', '.join(members[:6])})" if members else "") + " and the service itself: the "
+                    "members install with it")
+    elif workspace and not member:
+        tool = workspace[0].rsplit("/", 1)[-1]
+        if tool in ("nx.json", "lerna.json", "rush.json") and package.get("workspaces") is None and not own_start:
+            ladder.refuse(workspace[0], f"is a repository managed by {tool.split('.')[0]}, whose packages the platform does not build or install one by one",
+                          "take one package as the service once it has a package.json and a lockfile of its own, or give the start command (build.entrypoint)")
+    if member:
+        ladder.note(f"{repo.path} is a package of the repository's workspace: it is installed from the root's lockfile with the whole workspace, "
+                    "built in its own folder and copied alone into the image (build.context: repository, 21.4)")
     if package.get("bundleDependencies") or package.get("bundledDependencies"):
         ladder.refuse(repo.at("package.json"), "bundles packages (bundleDependencies), which npm installs without checking them against the registry",
                       "list them as ordinary dependencies")
@@ -1653,8 +1858,6 @@ def node_read(repo, ladder, result, base, compose, name, paths):
     if manager and named:
         ladder.refuse(repo.at("package.json"), f"names {manager} in packageManager but {named[0]} in engines, two package managers",
                       "keep one: the platform installs with npm, so name npm in both, or remove one")
-    elif manager and manager != "npm":
-        ladder.note(f"packageManager names {manager}; the platform installs with npm from the lockfile, without Corepack")
     for rc, yarn in ((".npmrc", False), (".yarnrc.yml", True)):
         for location, text in repo.nearest(rc):
             if nodejs.literal_token(text, yarn):
@@ -1667,51 +1870,100 @@ def node_read(repo, ladder, result, base, compose, name, paths):
     trust = base.get("trust") if base.get("trust") in ("reviewed", "unknown") else "unknown"
     recipe = (base.get("build") or {}).get("recipe")
     builds_itself = recipe in (None, "repository") and bool(dockerfile)
-    lock = npm_lock(repo, ladder, package)
-    dependencies = nodejs.dependency_names(package, (lock or {}).get("data"))
+    lock = node_lock(repo, ladder, package, member=member)
+    wrapper = None
+    view = (lock or {}).get("view") or {}
+    manager = (lock or {}).get("manager") or "npm"
+    dependencies = nodejs.dependency_names(package, (lock or {}).get("data")) | set(nodejs.view_names(view))
     if builds_itself:
-        native = nodejs.has_native_code((lock or {}).get("data"), dependencies)
-        for finding in dockerpolicy.check(repo.text(dockerfile), trust, native=native):
+        native = nodejs.view_native(view, dependencies) if view else nodejs.has_native_code(None, dependencies)
+        user = wrapped_user(base, trust)
+        for finding in dockerpolicy.check(repo.text(dockerfile), trust, native=native, wrapped=user):
             if finding["refuses"]:
                 ladder.refuse(f"{repo.at(dockerfile)}:{finding['line']}", finding["problem"], finding["fix"])
             else:
                 ladder.note(f"{repo.at(dockerfile)}:{finding['line']}: {finding['problem']} ({finding['fix']})")
+            if finding["rule"] == "runs-as-root" and user:
+                wrapper = user
     line = node_line(repo, ladder, base, dockerfile if builds_itself else None, package) or default_node()
     if line == "22":
         ladder.note(f"Node.js 22 is in maintenance and reaches its end of life on {NODE_END_OF_LIFE['22'].isoformat()}; releases are refused "
                     f"from that day, so move to {default_node()} before then")
     scripts = script_ladder(repo, ladder, package, lock)
+    # 21.2 and 21.3: what the service needs before it starts, decided once here and again by the image at build time (node_facts).
+    plan = None
+    site = None
+    if not builds_itself:
+        start_text = scripts_table.get("start") if isinstance(scripts_table.get("start"), str) else ""
+        parsed, _ = nodejs.start_words(start_text) if start_text else (None, None)
+        candidate = parsed["words"] if parsed else None
+        tool = start_text.split()[0].rsplit("/", 1)[-1] if start_text.split() else ""
+        if candidate is None and tool in ("tsx", "ts-node", "ts-node-dev"):
+            rest = [word for word in start_text.split()[1:] if not word.startswith("-") and word not in ("watch",)]
+            candidate = ["node", rest[0].removeprefix("./")] if rest else None
+        chain = re.fullmatch(r"\s*(?:npm|pnpm|yarn|bun)\s+run\s+build\s*&&\s*node\s+(\S+)\s*", start_text)
+        if chain:
+            candidate = ["node", chain.group(1).removeprefix("./")]
+        if candidate is None:
+            main_file = str(package.get("main") or "").removeprefix("./")
+            fallback = next((name for name in ([main_file] if main_file else []) + list(NODE_ENTRIES) if name and repo.has(name)), None)
+            candidate = ["node", fallback] if fallback else None
+        configs = {name: repo.text(name) for name in NODE_CONFIG_FILES if repo.has(name)}
+        plan = nodejs.build_plan(package, repo.has, configs, manager, line, candidate)
+        if plan.get("problem") and "front-end site" in plan["problem"] and not base.get("proxy"):
+            output, why = static_site(package, dependencies)
+            if output:
+                site = (base.get("build") or {}).get("output") or output
+                plan = None
+            else:
+                plan["problem"] += f" ({why})"
+        if plan and plan.get("problem"):
+            fix = STATIC_FIX if "front-end site" in plan["problem"] else ("give the build its values another way, or build with a Dockerfile of your own" if "secret" in plan["problem"]
+                                                                            else "add typescript to the development dependencies, or commit the built output")
+            ladder.refuse(repo.at("package.json"), plan["problem"], fix)
     before = len(ladder.refusals)
-    recipe, entrypoint, command, args, words = node_start(repo, ladder, base, compose, package, builds_itself, dockerfile, web, trust)
-    start_refused = len(ladder.refusals) > before
+    if site is None and not builds_itself and not isinstance(scripts_table.get("start"), str) and base.get("runtime") != "node-http":
+        static = [item for item in nodejs.STATIC_TOOLS if item in dependencies]
+        if static and not any(item in dependencies for item in nodejs.SERVERS):
+            output, _ = static_site(package, dependencies)
+            site = output and ((base.get("build") or {}).get("output") or output)
+    if site:
+        ladder.choose("Build", f"the platform's static image: the build script writes the site into {site}/, and Caddy serves it behind IAP "
+                      "(runtime: static, exposure: lab-members)", f"{repo.at('package.json')} (scripts.build)")
+        ladder.note("A front-end site with no server of its own (D55): it is served to the lab's members through IAP, never publicly; a site "
+                    "whose build needs a secret is refused, and the review can correct build.output if the builder writes elsewhere")
+        recipe, entrypoint, command, args, words = "platform", scaffold_static_entrypoint(), None, None, None
+    else:
+        recipe, entrypoint, command, args, words = node_start(repo, ladder, base, compose, package, builds_itself, dockerfile, web, trust, plan)
+    start_refused = len(ladder.refusals) > before or bool(plan and plan.get("problem"))
     file = start_file(words)
-    build_script = (package.get("scripts") or {}).get("build") if isinstance(package.get("scripts"), dict) else None
+    build_script = scripts_table.get("build")
+    builds = bool(plan and plan.get("build")) and recipe == "platform"
+    if builds:
+        ladder.choices[:] = [item for item in ladder.choices if item["what"] != "Build"]
+        ladder.choose("Build", f"the platform's own Node.js image with a build stage ({plan['why']}; the development dependencies leave before the "
+                      "image is made); nothing is added to the repository", f"{repo.at('package.json')} ({nodejs.MANAGER_COMMANDS[manager]['title']})")
     runtime_deps = nodejs.runtime_names(package)
     sources = {item[len(repo.prefix):]: text for item, text in repo.texts.items() if item.startswith(repo.prefix)
                and nodejs.CODE.search(item) and not nodejs.NOT_CODE.search(item) and not nodejs.NODE_TEST.search(item[len(repo.prefix):])}
-    if recipe != "repository":
-        frameworks = sorted({nodejs.NEEDS_BUILD[item] for item in runtime_deps if item in nodejs.NEEDS_BUILD})
+    if recipe != "repository" and not site:
         static = [item for item in nodejs.STATIC_TOOLS if item in dependencies]
-        if frameworks:
-            ladder.refuse(repo.at("package.json"), f"uses {', '.join(frameworks)}, which needs a build before it can start", BUILD_FIX)
-        elif words is None and not start_refused and static and not any(item in dependencies for item in nodejs.SERVERS) \
+        if words is None and not start_refused and static and not any(item in dependencies for item in nodejs.SERVERS) \
                 and not any(nodejs.SERVER_CODE.search(text) for text in sources.values()):
             ladder.refuse(where, f"looks like a front-end site built with {static[0]}, not a web service", STATIC_FIX)
         elif words is None and not start_refused:
             ladder.refuse(repo.at("package.json"), "says nothing that starts the service: no start script, main, server.js or index.js",
                           "add \"start\": \"node server.js\" to package.json's scripts, or give the start command in the contract (build.entrypoint)")
-        if file and not repo.has(file):
+        if file and not repo.has(file) and not builds:
             if build_script or file.split("/")[0] in ("dist", "build", "out", "lib", ".next"):
-                ladder.refuse(repo.at("package.json"), f"starts {file}, which is not in the repository: the service needs a build first", BUILD_FIX)
+                ladder.refuse(repo.at("package.json"), f"starts {file}, which is not in the repository: the service needs a build first, and nothing says how",
+                              "add a build script that makes it, or commit it")
             else:
                 ladder.refuse(repo.at("package.json"), f"starts {file}, which is not in the repository", "commit it, or correct the start command")
-        elif file and re.search(r"\.[cm]?ts$", file):
-            if line == "22":
-                ladder.refuse(repo.at(file), "is TypeScript, which Node.js 22 cannot run without a build", BUILD_FIX)
-            else:
-                ladder.note(f"{repo.at(file)} runs under Node's type stripping: enums, namespaces and parameter properties need "
-                            "--experimental-transform-types in the start command")
-        elif file and build_script:
+        elif file and re.search(r"\.[cm]?ts$", file) and not builds:
+            ladder.note(f"{repo.at(file)} runs under Node's type stripping (tsconfig.json says erasableSyntaxOnly): enums, namespaces and parameter "
+                        "properties would need a build")
+        elif file and build_script and not builds and repo.has(file):
             ladder.note(f"package.json's build script (`{str(build_script)[:80]}`) is not run: the service starts from {file} as committed; if the "
                         "image needs what the build makes, commit it or build with a Dockerfile of your own")
     if file and repo.has(file) and repo.at(file) not in repo.texts:
@@ -1727,13 +1979,16 @@ def node_read(repo, ladder, result, base, compose, name, paths):
     order = list(dict.fromkeys(modules + sorted(sources, key=_node_rank)))
     entries = modules or [item for item in order if item in NODE_ENTRIES or (file and item == file)]
     scanned = entries or [item for item in order if not re.match(r"(scripts?|tools?|bin|test|tests|examples?|docs?)/", item)]
-    listen_port, host_env, fixed_port = node_listen(repo, ladder, sources, scanned, dependencies, base) if sources and scanned else (None, {}, False)
+    listen_port, host_env, fixed_port, proxy = node_listen(repo, ladder, sources, scanned, dependencies, base) if sources and scanned and not site else (None, {}, False, None)
     for dependency, names in nodejs.HOST_READERS.items():
         if dependency in runtime_deps:
             for name_ in names:
                 if name_ not in (base.get("env") or {}) and name_ not in host_env:
                     host_env[name_] = EVERY_INTERFACE  # noqa: S104 - Cloud Run's contract: listen on every interface
             ladder.choose("Host", f"0.0.0.0 through {', '.join(names)} ({dependency} reads it)", f"{repo.at('package.json')} ({dependency})")
+    for name_, value in ((plan or {}).get("env") or {}).items():
+        if name_ not in (base.get("env") or {}) and name_ not in host_env:
+            host_env[name_] = value  # the built start's host variable (21.2): Next.js standalone reads HOSTNAME, the serve commands HOST
     port = None
     if isinstance(base.get("port"), int):
         port = base["port"]
@@ -1813,19 +2068,38 @@ def node_read(repo, ladder, result, base, compose, name, paths):
         ladder.choose("Tests", f"{what}, run with {how} before every build", f"{repo.at('package.json')} (scripts.test)" if how == "npm test" else where)
     else:
         ladder.choose("Tests", "none found: nothing checks the service's behaviour before a release (tests: none)", where)
+    tests_mode = "required" if how else "none"
+    test_text = f"{what or ''} " + " ".join(name for name in (package.get("devDependencies") or {}) if isinstance(package.get("devDependencies"), dict))
+    if how and NEEDS_MORE_TO_TEST.search(test_text) and "tests" not in base:
+        tests_mode = "report"
+        ladder.note("The tests need what the platform's runner does not have (a browser, a database, a seed or Docker): tests: report runs and "
+                    "counts them and never stops a release on them (D54); a reviewer who wants them to gate sets tests: required")
     if ladder.refusals or lock is None:
         name_services(ladder, paths, repo.texts, repo.path)
         return result
 
     build = dict(base.get("build") or {})
+    if wrapper and "user" not in build:
+        build["user"] = wrapper
+        ladder.choose("User", f"{wrapper}, set by the platform's wrapper stage on top of the repository's image, which runs as root (build.user, D52)",
+                      repo.at(dockerfile))
     if recipe != "repository":
         build["recipe"] = recipe
     if entrypoint and recipe in ("platform", "buildpacks"):
         build["entrypoint"] = entrypoint
     if scripts and "scripts" not in build:
         build["scripts"] = scripts
+    if member and recipe == "platform":
+        build["context"] = "repository"  # 21.4: the workspace root is the build context; the image copies one package out of it
     draft = {**{key: value for key, value in base.items() if key != "python"}, "name": name, "runtime": "node-http", "node": line, "port": port,
-             "health_path": health, "tests": "required" if how else "none"}
+             "health_path": health, "tests": base.get("tests") or tests_mode}
+    if proxy and "proxy" not in base:
+        draft["proxy"] = True
+    if site:
+        build.update(recipe="platform", entrypoint=scaffold_static_entrypoint(), output=site)
+        build.pop("scripts", None)
+        draft.update(runtime="static", port=base.get("port") or DEFAULT_PORT, health_path=None, exposure="lab-members")
+        host_env = {}
     if build:
         draft["build"] = build
     if host_env:
@@ -1930,15 +2204,19 @@ def read(paths, texts, path="", name=None, fallback_name=None, sizes=None):
         if "/" not in other and re.fullmatch(r"(?i)(dockerfile\..+|.+\.dockerfile|containerfile)", other) and other != dockerfile:
             ladder.ignore(repo.at(other), "the platform builds the file named Dockerfile only")
     builds_itself = recipe == "repository" and bool(dockerfile)
+    wrapper = None
     if builds_itself:
         # 14.1: the Dockerfile a repository taken as it is brings meets the platform's policy before its contract is proposed;
         # unless the draft says the lab reviewed it, it is code nobody has reviewed (D35).
         trust = base.get("trust") if base.get("trust") in ("reviewed", "unknown") else "unknown"
-        for finding in dockerpolicy.check(repo.text(dockerfile), trust):
+        user = wrapped_user(base, trust)
+        for finding in dockerpolicy.check(repo.text(dockerfile), trust, wrapped=user):
             if finding["refuses"]:
                 ladder.refuse(f"{repo.at(dockerfile)}:{finding['line']}", finding["problem"], finding["fix"])
             else:
                 ladder.note(f"{repo.at(dockerfile)}:{finding['line']}: {finding['problem']} ({finding['fix']})")
+            if finding["rule"] == "runs-as-root" and user:
+                wrapper = user
 
     # Every ladder runs even after a refusal, so the answer lists everything to fix at once.
     python = python_ladder(repo, ladder, base, dockerfile if builds_itself else None) or DEFAULT_PYTHON
@@ -2111,7 +2389,17 @@ def read(paths, texts, path="", name=None, fallback_name=None, sizes=None):
         build["recipe"] = recipe
     if entrypoint and recipe in ("platform", "buildpacks"):
         build["entrypoint"] = entrypoint
-    draft = {**base, "name": name, "python": python, "port": port, "health_path": health, "tests": "required" if tests else "none"}
+    if wrapper and "user" not in build:
+        build["user"] = wrapper
+        ladder.choose("User", f"{wrapper}, set by the platform's wrapper stage on top of the repository's image, which runs as root (build.user, D52)",
+                      repo.at(dockerfile))
+    tests_mode = "required" if tests else "none"
+    suite = " ".join(repo.text(name) for name in (*PYTEST_CONFIG, *TEST_REQUIREMENTS, "pyproject.toml") if repo.has(name)) + " ".join(repo.text(item) for item in tests[:20])
+    if tests and "tests" not in base and NEEDS_MORE_TO_TEST.search(re.sub(r"(?m)^\s*#.*$", "", suite)):
+        tests_mode = "report"
+        ladder.note("The tests need what the platform's runner does not have (a browser, a database, a seed or Docker): tests: report runs and "
+                    "counts them and never stops a release on them (D54); a reviewer who wants them to gate sets tests: required")
+    draft = {**base, "name": name, "python": python, "port": port, "health_path": health, "tests": base.get("tests") or tests_mode}
     if build:
         draft["build"] = build
     if env:

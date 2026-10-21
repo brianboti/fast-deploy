@@ -15,8 +15,14 @@ NODES = tuple(NODE_END_OF_LIFE)
 REGISTRY = "https://registry.npmjs.org/"
 # npm reads npm-shrinkwrap.json before package-lock.json; the platform installs either with npm ci.
 LOCKFILES = ("npm-shrinkwrap.json", "package-lock.json")
+# The other managers' lockfiles (docs/ROADMAP.md 21.1): each installed by its own manager, frozen, with every install
+# script off. bun.lockb is Bun's old binary format, which only Bun reads: refused with the command that rewrites it.
 OTHER_LOCKFILES = {"yarn.lock": "Yarn", "pnpm-lock.yaml": "pnpm", "bun.lock": "Bun", "bun.lockb": "Bun"}
+MANAGER_LOCKFILES = {"pnpm-lock.yaml": "pnpm", "yarn.lock": "yarn", "bun.lock": "bun"}
 MANAGERS = ("npm", "yarn", "pnpm", "bun")
+# npm's registry and Yarn's name for it (yarn.lock v1 files written before 2024 resolve from registry.yarnpkg.com, which
+# serves the same packages): the only addresses a lockfile entry may come from.
+REGISTRIES = ("https://registry.npmjs.org/", "https://registry.yarnpkg.com/")
 # .nvmrc may name an LTS line by its codename (lts/krypton); the lines before 22 are named so the refusal can say which.
 CODENAMES = {"hydrogen": "18", "iron": "20", "jod": "22", "krypton": "24"}
 PLACEHOLDER_TEST = re.compile(r"""^\s*echo\s+["']?Error: no test specified["']?\s*&&\s*exit\s+1\s*$""")
@@ -316,6 +322,37 @@ def workspace_packages(package, paths):
     return [folder for folder in folders if any(fnmatch.fnmatch(folder, str(glob).rstrip("/")) for glob in globs)]
 
 
+def manager_spec(package):
+    """package.json's packageManager as {"manager", "version", "integrity"} when it names an exact release
+    ("pnpm@9.15.0+sha512.<hex>", "yarn@4.5.3"), as Corepack and Railpack read it; None when absent or not exact. The
+    manager is the platform's name: yarn1 for Yarn 1, yarn for 2 and later. A sha512 hash is Corepack's hex digest of the
+    npm tarball, given back as npm's integrity form (sha512-<base64>) so the install can be held to it."""
+    import base64
+    value = (package or {}).get("packageManager")
+    match = re.fullmatch(r"(npm|yarn|pnpm|bun)@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?:\+(sha\d+)\.([0-9a-f]+))?", value.strip()) if isinstance(value, str) else None
+    if not match:
+        return None
+    name, version, algorithm, digest = match.groups()
+    manager = "yarn1" if name == "yarn" and version.split(".")[0] == "1" else name
+    integrity = None
+    if algorithm == "sha512" and len(digest) == 128:
+        integrity = "sha512-" + base64.b64encode(bytes.fromhex(digest)).decode()
+    return {"manager": manager, "version": version, "integrity": integrity, "algorithm": algorithm}
+
+
+# What a manager at the platform's pinned major can install frozen, by lockfile format (checked in Docker on 2026-10-20):
+# pnpm 12 reads lockfile 9.0 only (pnpm 8's 6.0 is refused); Yarn 4.18 rewrites any other Yarn 2+ lockfile (metadata 4,
+# 6 and even Yarn 4.0 to 4.12's 8), which --immutable forbids. A repository that names its manager's exact release in
+# packageManager installs with that release instead, so these only decide when packageManager is absent.
+PINNED_FORMATS = {"pnpm": ("9",), "yarn": ("10",)}
+
+
+def lock_format(view):
+    """The format a lockfile names: pnpm's lockfileVersion major, Yarn 2+'s __metadata version."""
+    version = str(view.get("lockfileVersion") or "")
+    return version.split(".")[0] if view.get("manager") == "pnpm" else version
+
+
 def manager_of(package):
     """The package manager package.json's packageManager names (yarn for "yarn@4.5.0"), or None."""
     value = (package or {}).get("packageManager")
@@ -597,3 +634,502 @@ def tests_of(package, local_paths, node):
     notes = [f"A {label} configuration is there but package.json has no test script, so nothing would run it: add \"test\": \"{tool}\" "
              "to its scripts, and the platform runs npm test before every build" for label, tool in configs[:1]]
     return None, None, notes
+
+
+# ---- the other managers' lockfiles (docs/ROADMAP.md 21.1): each read into the same view as npm's
+def jsonc_loads(text):
+    """JSON with comments and trailing commas (tsconfig.json, bun.lock), as the tools that write them read them."""
+    out, index, quote = [], 0, None
+    while index < len(text):
+        char = text[index]
+        if quote:
+            out.append(char)
+            if char == "\\" and index + 1 < len(text):
+                out.append(text[index + 1])
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char == '"':
+            quote = char
+            out.append(char)
+        elif text.startswith("//", index):
+            end = text.find("\n", index)
+            index = len(text) if end < 0 else end
+            continue
+        elif text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            index = len(text) if end < 0 else end + 2
+            continue
+        else:
+            out.append(char)
+        index += 1
+    cleaned = re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+    return json.loads(cleaned)
+
+
+def _registry_source(resolved):
+    """registry, git, tarball, file or link, from where a lockfile entry says it comes."""
+    text = str(resolved or "")
+    if not text:
+        return "registry"
+    if text.startswith(("git", "github:", "gitlab:", "bitbucket:")) or "git+" in text or "codeload.github.com" in text:
+        return "git"
+    if text.startswith(("file:", "link:", "portal:")):
+        return "file"
+    if text.startswith(REGISTRIES):
+        return "registry"
+    if "://" in text:
+        return "tarball"
+    return "registry"
+
+
+def view_of_npm(data):
+    """An npm lockfile (version 2 or 3) as the view every manager's lockfile is read into: {"manager", "packages": {key:
+    {"name", "version", "source", "resolved", "integrity", "scripts", "native"}}, "members": workspace folders}."""
+    packages, members = {}, []
+    for path, entry in sorted((data.get("packages") or {}).items()):
+        if not path or not isinstance(entry, dict):
+            continue
+        name = entry.get("name") or path.rsplit("node_modules/", 1)[-1]
+        resolved = str(entry.get("resolved") or "")
+        if entry.get("link") or "node_modules/" not in f"/{path}":
+            source = "workspace" if not entry.get("link") and "node_modules/" not in f"/{path}" else "file"
+            if source == "workspace":
+                members.append(path)
+        elif entry.get("inBundle"):
+            source = "bundled"
+        else:
+            source = _registry_source(resolved) if resolved else "unresolved"
+        packages[path] = {"name": name, "version": entry.get("version"), "source": source, "resolved": resolved,
+                          "integrity": bool(entry.get("integrity")), "scripts": bool(entry.get("hasInstallScript")),
+                          "native": bool(entry.get("libc") or entry.get("cpu") or entry.get("os"))}
+    return {"manager": "npm", "packages": packages, "members": members}
+
+
+def read_pnpm_lock(text):
+    """(view, problem) for a pnpm-lock.yaml of lockfile version 6 or 9 (pnpm 8 to 12)."""
+    import yaml
+    try:
+        # pnpm 10 and later may write the lockfile as several YAML documents (a `---` line between its sections): one mapping.
+        data = {}
+        for document in yaml.safe_load_all(text):
+            if isinstance(document, dict):
+                data.update(document)
+    except yaml.YAMLError:
+        return None, "is not valid YAML"
+    if not isinstance(data, dict) or "lockfileVersion" not in data:
+        return None, "is not a pnpm lockfile"
+    version = str(data.get("lockfileVersion"))
+    if not version.startswith(("6", "9")):
+        return None, f"is pnpm lockfile version {version}, which the platform does not read (pnpm 8 and later write 6.0 or 9.0)"
+    packages = {}
+    for key, entry in (data.get("packages") or {}).items():
+        entry = entry if isinstance(entry, dict) else {}
+        resolution = entry.get("resolution") if isinstance(entry.get("resolution"), dict) else {}
+        key = str(key).lstrip("/")
+        match = re.match(r"^((?:@[^/@]+/)?[^@/]+)@(.+)$", key)
+        name, ver = (match.group(1), match.group(2)) if match else (key, None)
+        if (ver or "").startswith("runtime:"):
+            source = "runtime"  # pnpm 10's own Node.js download (executionEnv): the platform brings its own Node.js, so this entry is not installed
+        elif "directory" in resolution or key.startswith("file:"):
+            source = "file"
+        elif "commit" in resolution or "repo" in resolution or (ver or "").startswith(("git", "github:", "https://codeload")):
+            source = "git"
+        elif "tarball" in resolution:
+            source = _registry_source(resolution.get("tarball")) if str(resolution.get("tarball", "")).startswith(REGISTRIES) else "tarball"
+        else:
+            source = "registry"
+        packages[key] = {"name": name, "version": ver if ver and re.match(r"^\d", ver) else None, "source": source,
+                         "resolved": str(resolution.get("tarball") or ""), "integrity": bool(resolution.get("integrity")),
+                         "scripts": bool(entry.get("requiresBuild")) if "requiresBuild" in entry else None,
+                         "native": bool(entry.get("cpu") or entry.get("os") or entry.get("libc"))}
+    members = [str(key) for key in (data.get("importers") or {}) if str(key) != "."]
+    return {"manager": "pnpm", "packages": packages, "members": members, "lockfileVersion": version}, None
+
+
+def read_yarn_lock(text):
+    """(view, problem) for a yarn.lock: Yarn 1's own format, or Yarn 2 and later's YAML (the manager is "yarn1" or "yarn")."""
+    import yaml
+    if "__metadata:" in text:
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError:
+            return None, "is not valid YAML"
+        if not isinstance(data, dict):
+            return None, "is not a Yarn lockfile"
+        packages, members = {}, []
+        for key, entry in data.items():
+            if key == "__metadata" or not isinstance(entry, dict):
+                continue
+            resolution = str(entry.get("resolution") or "")
+            match = re.match(r"^((?:@[^/@]+/)?[^@/]+)@([a-z+]+):(.*)$", resolution)
+            name, protocol, rest = (match.group(1), match.group(2), match.group(3)) if match else (str(key).split("@npm:")[0], "", "")
+            if protocol == "workspace":
+                source = "workspace"
+                members.append(rest)
+            elif protocol == "npm":
+                source = "registry"
+            elif protocol in ("file", "link", "portal", "exec"):
+                source = "file"
+            elif protocol == "patch":
+                source = "patch"
+            elif protocol in ("git", "git+ssh", "git+https", "github") or "github.com" in rest:
+                source = "git"
+            elif protocol in ("http", "https"):
+                source = "tarball"
+            else:
+                source = "unknown"
+            packages[str(key)] = {"name": name, "version": str(entry.get("version") or "") or None, "source": source, "resolved": resolution,
+                                  "integrity": bool(entry.get("checksum")), "scripts": None, "native": bool(entry.get("conditions"))}
+        return {"manager": "yarn", "packages": packages, "members": members, "lockfileVersion": str((data.get("__metadata") or {}).get("version"))}, None
+    if "# yarn lockfile v1" not in text.splitlines()[:5] and not re.search(r"(?m)^\S.*:\n  version ", text):
+        return None, "is not a Yarn lockfile"
+    packages, current = {}, None
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line.startswith(" ") and line.rstrip().endswith(":"):
+            key = line.rstrip()[:-1].strip('"')
+            first = key.split(",")[0].strip().strip('"')
+            match = re.match(r"^((?:@[^/@]+/)?[^@/]+)@(.*)$", first)
+            current = {"name": match.group(1) if match else first, "spec": match.group(2) if match else "", "version": None, "resolved": "",
+                       "integrity": False}
+            packages[key] = current
+            continue
+        if current is None or not line.startswith("  ") or line.startswith("    "):
+            continue
+        field, _, value = line.strip().partition(" ")
+        value = value.strip().strip('"')
+        if field == "version":
+            current["version"] = value
+        elif field == "resolved":
+            current["resolved"] = value.split("#", 1)[0]
+        elif field == "integrity":
+            current["integrity"] = bool(value)
+    for entry in packages.values():
+        spec = entry.pop("spec", "")
+        if spec.startswith(("file:", "link:")):
+            entry["source"] = "file"
+        elif not entry["resolved"]:
+            entry["source"] = "unresolved"
+        else:
+            entry["source"] = _registry_source(entry["resolved"])
+        entry.update(scripts=None, native=False)
+    return {"manager": "yarn1", "packages": packages, "members": [], "lockfileVersion": "1"}, None
+
+
+def read_bun_lock(text):
+    """(view, problem) for a bun.lock (Bun 1.2 and later; JSON with comments)."""
+    try:
+        data = jsonc_loads(text)
+    except ValueError:
+        return None, "is not valid JSON (with comments) as bun.lock is written"
+    if not isinstance(data, dict) or "lockfileVersion" not in data or not isinstance(data.get("packages"), dict):
+        return None, "is not a Bun lockfile"
+    packages, members = {}, [key for key in (data.get("workspaces") or {}) if key]
+    for key, entry in data["packages"].items():
+        if not isinstance(entry, list) or not entry:
+            continue
+        spec = str(entry[0])
+        match = re.match(r"^((?:@[^/@]+/)?[^@/]+)@(.*)$", spec)
+        name, rest = (match.group(1), match.group(2)) if match else (spec, "")
+        if rest.startswith("workspace:"):
+            source, version = "workspace", None
+        elif rest.startswith(("github:", "git+", "git:", "gitlab:", "bitbucket:")):
+            source, version = "git", None
+        elif rest.startswith(("file:", "link:")):
+            source, version = "file", None
+        elif rest.startswith(("http://", "https://")):
+            source, version = "tarball", None
+        elif rest.startswith("npm:"):
+            source, version = "registry", rest.split("@")[-1] if "@" in rest else None
+        else:
+            source, version = "registry", rest
+        registry = entry[1] if len(entry) > 1 and isinstance(entry[1], str) else ""
+        if source == "registry" and registry and not registry.startswith(REGISTRIES):
+            source = "tarball"
+        meta = next((item for item in entry if isinstance(item, dict)), {})
+        packages[str(key)] = {"name": name, "version": version, "source": source, "resolved": registry,
+                              "integrity": any(isinstance(item, str) and item.startswith("sha512-") for item in entry[1:]) or source != "registry",
+                              "scripts": None, "native": bool(meta.get("os") or meta.get("cpu"))}
+    return {"manager": "bun", "packages": packages, "members": members, "lockfileVersion": str(data.get("lockfileVersion"))}, None
+
+
+def read_lock(name, text):
+    """(view, problem) for any lockfile the platform installs from, by its file name: npm's, pnpm's, Yarn's or Bun's."""
+    base = name.rsplit("/", 1)[-1]
+    if base in LOCKFILES:
+        data, problem = read_lockfile(text)
+        return (view_of_npm(data), None) if data is not None else (None, problem)
+    if base == "pnpm-lock.yaml":
+        return read_pnpm_lock(text)
+    if base == "yarn.lock":
+        return read_yarn_lock(text)
+    if base == "bun.lock":
+        return read_bun_lock(text)
+    if base == "bun.lockb":
+        return None, "is Bun's old binary lockfile, which only Bun reads"
+    return None, "is not a lockfile the platform reads"
+
+
+def view_problems(view):
+    """[(package, problem)] for any manager's view: entries the manager would install without checking them against the
+    npm registry (D42): a git repository, a tarball elsewhere, a file: or link: path, a patch, no integrity or checksum.
+    A workspace member is not a problem: it is the repository's own code (21.4)."""
+    problems = []
+    for key, entry in sorted(view.get("packages", {}).items()):
+        source, name = entry.get("source"), entry.get("name") or key
+        if source in ("workspace", "runtime"):
+            continue
+        if source == "file":
+            problems.append((name, "comes from a file: path" if str(entry.get("resolved") or "").startswith("file:")
+                             else "is a local folder or a link (a file:, link: or portal: dependency)"))
+        elif source == "bundled":
+            problems.append((name, "is bundled inside another package (bundleDependencies), so it is never checked on its own"))
+        elif source == "git":
+            problems.append((name, "comes from a git repository"))
+        elif source == "patch":
+            problems.append((name, "is patched in the repository (patch:), so what installs is not what the registry published"))
+        elif source == "tarball":
+            resolved = entry.get("resolved") or ""
+            problems.append((name, f"comes from {resolved.split('/')[2] if '://' in resolved else resolved[:60]}, outside the npm registry"))
+        elif source == "unresolved":
+            problems.append((name, "has no resolved address"))
+        elif source == "unknown":
+            problems.append((name, f"comes from a source the platform does not read ({(entry.get('resolved') or '')[:60]})"))
+        elif not entry.get("integrity"):
+            problems.append((name, "has no integrity hash"))
+    return problems
+
+
+def view_scripts(view):
+    """name@version of the entries the lockfile says run an install script; None when this manager's lockfile does not
+    record it (pnpm 9, Yarn, Bun), so the platform's own table (NEEDED_SCRIPTS) is the only guide."""
+    entries = view.get("packages", {}).values()
+    if all(entry.get("scripts") is None for entry in entries):
+        return None
+    return sorted({f"{entry['name']}@{entry['version']}" for entry in entries if entry.get("scripts") and entry.get("version")})
+
+
+def view_names(view):
+    return {str(entry.get("name") or key).lower(): entry.get("version") for key, entry in view.get("packages", {}).items()}
+
+
+def view_native(view, names=()):
+    return any(entry.get("scripts") or entry.get("native") for entry in view.get("packages", {}).values()) or bool(set(names) & NATIVE)
+
+
+# ---- the managers (21.1): how each installs, frozen and with every script off, how it prunes and how it rebuilds one package
+# Each command is run by the platform's pipeline and its image; the manager itself is installed by version and checksum
+# (labdeploy/scaffold.py MANAGER_PINS), never through Corepack, which Node.js 25 and later no longer ship.
+MANAGER_COMMANDS = {
+    "npm": {"frozen": "npm ci --ignore-scripts --no-audit --no-fund", "production": "npm ci --omit=dev --ignore-scripts --no-audit --no-fund",
+            "prune": "npm prune --omit=dev --ignore-scripts --no-audit --no-fund", "rebuild": "npm rebuild --ignore-scripts=false", "run": "npm run",
+            "lockfiles": LOCKFILES, "title": "npm"},
+    "pnpm": {"frozen": "pnpm install --frozen-lockfile --ignore-scripts", "production": "pnpm install --frozen-lockfile --ignore-scripts --prod",
+             "prune": "pnpm prune --prod --ignore-scripts", "rebuild": "pnpm rebuild", "run": "pnpm run", "lockfiles": ("pnpm-lock.yaml",), "title": "pnpm"},
+    "yarn": {"frozen": "yarn install --immutable", "production": "yarn workspaces focus --all --production", "prune": "yarn workspaces focus --all --production",
+             "rebuild": "yarn rebuild", "run": "yarn run", "lockfiles": ("yarn.lock",), "title": "Yarn"},
+    "yarn1": {"frozen": "yarn install --frozen-lockfile --ignore-scripts --non-interactive", "production": "yarn install --frozen-lockfile --ignore-scripts --non-interactive --production=true",
+              "prune": "yarn install --frozen-lockfile --ignore-scripts --non-interactive --production=true", "rebuild": "npm rebuild --ignore-scripts=false",
+              "run": "yarn run", "lockfiles": ("yarn.lock",), "title": "Yarn 1"},
+    "bun": {"frozen": "bun install --frozen-lockfile --ignore-scripts", "production": "bun install --frozen-lockfile --ignore-scripts --production",
+            "prune": "bun install --frozen-lockfile --ignore-scripts --production", "rebuild": "bun pm trust", "run": "bun run", "lockfiles": ("bun.lock",),
+            "title": "Bun"},
+}
+
+
+def yarn_links_node_modules(yarnrc_text):
+    """Whether a .yarnrc.yml makes Yarn 2+ write node_modules (nodeLinker: node-modules or pnpm); Plug'n'Play, its default,
+    needs its own loader at every start, which the platform's image does not carry."""
+    return re.search(r"(?m)^\s*nodeLinker\s*:\s*[\"']?(node-modules|pnpm)[\"']?\s*$", yarnrc_text or "") is not None
+
+
+# ---- builds (21.2): the frameworks whose service exists only after a build, with the output and the start each documents
+# (docs/RESEARCH-2026-10-20.md 6.3, read in the official pages on 2026-10-20). `start` runs node itself on the built file;
+# `env` is what the start reads for its host; `check` names a configuration the build needs, read as text.
+NODE_BUILDS = {
+    "next": {"label": "Next.js", "build": ["next", "build"], "standalone": ["node", "server.js"], "serve": ["node", "node_modules/next/dist/bin/next", "start", "-H", EVERYWHERE[0], "-p", "$PORT"],
+             "env": {"HOSTNAME": EVERYWHERE[0]}, "config": ("next.config.js", "next.config.mjs", "next.config.ts", "next.config.cjs")},
+    "@nestjs/core": {"label": "NestJS", "build": ["nest", "build"], "start": ["node", "dist/main.js"], "env": {}},
+    "@react-router/serve": {"label": "React Router", "build": ["react-router", "build"], "start": ["node", "node_modules/@react-router/serve/dist/cli.js", "./build/server/index.js"],
+                            "env": {"HOST": EVERYWHERE[0]}},
+    "@remix-run/serve": {"label": "Remix", "build": ["remix", "vite:build"], "start": ["node", "node_modules/@remix-run/serve/dist/cli.js", "./build/server/index.js"],
+                         "env": {"HOST": EVERYWHERE[0]}},
+    "@sveltejs/adapter-node": {"label": "SvelteKit", "build": ["vite", "build"], "start": ["node", "build"], "env": {"HOST": EVERYWHERE[0]}},
+    "nuxt": {"label": "Nuxt", "build": ["nuxt", "build"], "start": ["node", ".output/server/index.mjs"], "env": {"NITRO_HOST": EVERYWHERE[0], "HOST": EVERYWHERE[0]}},
+    "@astrojs/node": {"label": "Astro", "build": ["astro", "build"], "start": ["node", "./dist/server/entry.mjs"], "env": {"HOST": EVERYWHERE[0]}},
+    "@adonisjs/core": {"label": "AdonisJS", "build": ["node", "ace", "build"], "start": ["node", "build/bin/server.js"], "env": {"HOST": EVERYWHERE[0]}},
+}
+# Frameworks that are a front-end site unless a server adapter is among the dependencies (D55, Phase 22): SvelteKit without
+# adapter-node, Astro without @astrojs/node, and the site builders.
+SITE_ONLY = {"@sveltejs/kit": "@sveltejs/adapter-node", "astro": "@astrojs/node"}
+# A build that needs a secret (docs/RESEARCH-2026-10-20.md 6.3): Strapi and Payload read their keys when they build. Refused
+# with the name, because the platform's build has no secrets.
+SECRET_BUILDS = {"@strapi/strapi": "Strapi", "payload": "Payload"}
+# The start-script tools a build makes unnecessary (21.2, 21.3): each rewritten to node on the built file.
+BUILT_STARTS = {"next": "next", "nest": "@nestjs/core", "remix-serve": "@remix-run/serve", "react-router-serve": "@react-router/serve",
+                "tsx": None, "ts-node": None, "ts-node-dev": None}
+
+
+def tsconfig_options(texts, name="tsconfig.json", depth=0):
+    """compilerOptions of a tsconfig.json (comments allowed), with `extends` followed inside the folder; {} when unreadable."""
+    text = texts.get(name)
+    if not text or depth > 4:
+        return {}
+    try:
+        data = jsonc_loads(text)
+    except ValueError:
+        return {}
+    options = {}
+    parent = data.get("extends") if isinstance(data, dict) else None
+    if isinstance(parent, str) and parent.startswith("./"):
+        target = parent[2:] + ("" if parent.endswith(".json") else ".json")
+        options.update(tsconfig_options(texts, target, depth + 1))
+    options.update((data.get("compilerOptions") or {}) if isinstance(data, dict) else {})
+    return options
+
+
+def built_path(source, options):
+    """Where tsc writes a source file: outDir (dist by default) joined with the path relative to rootDir (the longest common
+    folder of the sources, which for src/index.ts is src, so dist/index.js)."""
+    out = str(options.get("outDir") or "dist").strip("./").rstrip("/") or "dist"
+    root = str(options.get("rootDir") or "").strip("./").rstrip("/")
+    relative = source
+    if root and source.startswith(root + "/"):
+        relative = source[len(root) + 1:]
+    elif options.get("rootDir") is None and source.startswith("src/"):
+        relative = source[4:]  # no rootDir: tsc's root is the common folder of the sources, src/ for the usual layout
+    return f"{out}/{re.sub(r'\.[cm]?ts$', lambda m: {'.ts': '.js', '.mts': '.mjs', '.cts': '.cjs'}[m.group(0)], relative)}"
+
+
+def strips_types(options):
+    """Whether tsc's options say the code uses only the syntax Node strips (TypeScript 5.8's erasableSyntaxOnly), so a .ts
+    entry runs on Node 24 and 26 without a build (21.3)."""
+    return bool(options.get("erasableSyntaxOnly")) and not options.get("emitDecoratorMetadata") and not options.get("experimentalDecorators")
+
+
+def build_plan(package, repo_has, texts, manager, line, start_words=None):
+    """What a service needs before it starts (21.2, 21.3): {"framework", "build": words or None, "start": words, "env", "copy":
+    the output paths the final image copies (None: everything), "why", "problem"}. `repo_has(path)` says whether a file is
+    in the service; `texts` holds the configuration files read; `start_words` is the start the reader found."""
+    scripts = package.get("scripts") if isinstance(package.get("scripts"), dict) else {}
+    deps = runtime_names(package) | {name.lower() for name in ((package.get("devDependencies") or {}) if isinstance(package.get("devDependencies"), dict) else {})}
+    run = MANAGER_COMMANDS[manager]["run"].split()
+    for name, label in SECRET_BUILDS.items():
+        if name in deps:
+            return {"framework": label, "build": None, "start": None, "env": {}, "copy": None, "why": None,
+                    "problem": f"uses {label}, whose build reads its secret keys; the platform's build has no secrets (a later roadmap item)"}
+    options = tsconfig_options(texts) if repo_has("tsconfig.json") else {}
+    for name, entry in NODE_BUILDS.items():
+        if name not in deps:
+            continue
+        # The repository's own build script, as every platform runs it; else the framework's command through its installed file.
+        if isinstance(scripts.get("build"), str) and scripts["build"].strip():
+            build = [*run, "build"]
+        elif entry["build"][0] == "node":
+            build = list(entry["build"])
+        else:
+            build = ["node", f"node_modules/.bin/{entry['build'][0]}", *entry["build"][1:]]
+        if name == "next":
+            config = next((texts.get(item, "") for item in entry["config"] if repo_has(item)), "")
+            standalone = re.search(r"""output\s*:\s*["']standalone["']""", config) is not None
+            start = entry["standalone"] if standalone else entry["serve"]
+            copy = [".next/standalone", ".next/static", "public"] if standalone else None
+            why = f"{entry['label']} ({'output: standalone, started by its server.js' if standalone else 'started by next start under node'})"
+            return {"framework": entry["label"], "build": build, "start": start, "env": dict(entry["env"]), "copy": copy, "why": why, "problem": None,
+                    "standalone": standalone}
+        return {"framework": entry["label"], "build": build, "start": list(entry["start"]), "env": dict(entry["env"]), "copy": None,
+                "why": f"{entry['label']}, built with {' '.join(build)} and started by {' '.join(entry['start'])}", "problem": None}
+    for name, adapter in SITE_ONLY.items():
+        if name in deps and adapter not in deps:
+            return {"framework": name, "build": None, "start": None, "env": {}, "copy": None, "why": None,
+                    "problem": f"uses {name} without {adapter}: it builds a front-end site with no server of its own"}
+    file = start_words[1] if start_words and len(start_words) > 1 and start_words[0] == "node" else None
+    if file and re.search(r"\.[cm]?ts$", file):
+        if strips_types(options) and line != "22":
+            return {"framework": None, "build": None, "start": list(start_words), "env": {}, "copy": None,
+                    "why": f"{file} runs under Node's type stripping: tsconfig.json says erasableSyntaxOnly", "problem": None}
+        if "typescript" not in deps:
+            return {"framework": None, "build": None, "start": None, "env": {}, "copy": None, "why": None,
+                    "problem": f"starts {file}, TypeScript that needs a build, and typescript is not among the dependencies"}
+        built = built_path(file, options)
+        build = [*run, "build"] if isinstance(scripts.get("build"), str) and "tsc" in scripts["build"] else ["node", "node_modules/.bin/tsc"]
+        return {"framework": "TypeScript", "build": build, "start": ["node", built], "env": {}, "copy": None, "problem": None,
+                "why": f"{file} is TypeScript{'' if line != '22' else ' on Node.js 22'}: built with tsc into {built}"}
+    if file and not repo_has(file) and isinstance(scripts.get("build"), str):
+        return {"framework": None, "build": [*run, "build"], "start": list(start_words), "env": {}, "copy": None, "problem": None,
+                "why": f"{file} is not in the repository: the build script makes it"}
+    return {"framework": None, "build": None, "start": list(start_words) if start_words else None, "env": {}, "copy": None, "why": None, "problem": None}
+
+
+# ---- install scripts the platform's table names (21.5, D53): packages whose script is needed on Cloud Run, read in each
+# package's own repository on 2026-10-20, with the versions it holds for. The reader drafts them into build.scripts at the
+# locked version for the merge to approve; name-only approvals stay refused.
+NEEDED_SCRIPTS = {
+    "sharp": ("below 0.33", lambda v: numbers_of(v) < (0, 33), "its install script downloaded or built libvips; 0.33 and later ship the binary as optional dependencies"),
+    "bcrypt": ("below 5.1", lambda v: numbers_of(v) < (5, 1), "node-pre-gyp fetched its binary at install; 5.1 and later ship prebuilt binaries"),
+    "canvas": ("every version", lambda v: True, "node-pre-gyp fetches or builds its binary at install"),
+    "sqlite3": ("every version", lambda v: True, "node-pre-gyp fetches or builds its binary at install"),
+    "better-sqlite3": ("every version", lambda v: True, "prebuild-install fetches or builds its binary at install"),
+    "argon2": ("every version", lambda v: True, "node-gyp-build fetches or builds its binary at install"),
+    "re2": ("every version", lambda v: True, "its install script builds the RE2 binding"),
+    "cpu-features": ("every version", lambda v: True, "its install script builds the binding"),
+    "node-pty": ("every version", lambda v: True, "node-gyp builds the binding at install"),
+    "@tensorflow/tfjs-node": ("every version", lambda v: True, "its install script downloads the TensorFlow binary"),
+    "@parcel/watcher": ("every version", lambda v: True, "node-gyp-build fetches or builds its binary at install"),
+    "puppeteer": ("every version", lambda v: True, "its install script downloads a browser, which Cloud Run cannot run anyway: use puppeteer-core"),
+}
+
+
+def numbers_of(version):
+    return tuple(int(part) for part in re.findall(r"\d+", str(version or ""))[:3])
+
+
+def needed_scripts(names):
+    """[(name@version, why)] from {name: version}: the packages the platform's table says need their install script on Cloud
+    Run at that version."""
+    found = []
+    for name, version in sorted(names.items()):
+        entry = NEEDED_SCRIPTS.get(name)
+        if entry and version and entry[1](version):
+            found.append((f"{name}@{version}", f"{entry[2]} ({entry[0]})"))
+    return found
+
+
+def approved_scripts(package, manager):
+    """The install scripts package.json approves for its own manager, as name@version entries where the file gives a version:
+    npm's allowScripts (versions required), pnpm's onlyBuiltDependencies, Yarn's dependenciesMeta built, Bun's
+    trustedDependencies (names only, so the locked version is joined on by the reader). Returns (names, name@version entries, notes)."""
+    if manager == "npm":
+        pinned, notes = allowed_scripts(package)
+        return [], pinned, notes
+    if manager == "pnpm":
+        table = (package.get("pnpm") or {}) if isinstance(package.get("pnpm"), dict) else {}
+        names = [str(item) for item in (table.get("onlyBuiltDependencies") or []) if isinstance(item, str)]
+        return names, [], []
+    if manager in ("yarn", "yarn1"):
+        meta = package.get("dependenciesMeta") if isinstance(package.get("dependenciesMeta"), dict) else {}
+        names, pinned = [], []
+        for key, value in meta.items():
+            if isinstance(value, dict) and value.get("built"):
+                (pinned if SCRIPT_PACKAGE.fullmatch(str(key)) else names).append(str(key))
+        return names, pinned, []
+    if manager == "bun":
+        return [str(item) for item in (package.get("trustedDependencies") or []) if isinstance(item, str)], [], []
+    return [], [], []
+
+
+def ecosystem_script(text):
+    """The script a pm2 ecosystem file in JSON starts (apps[0].script), or None (a .js ecosystem file is code, never read)."""
+    try:
+        data = json.loads(text or "")
+    except ValueError:
+        return None
+    apps = data.get("apps") if isinstance(data, dict) else None
+    first = apps[0] if isinstance(apps, list) and apps and isinstance(apps[0], dict) else {}
+    script = first.get("script")
+    return str(script).removeprefix("./") if isinstance(script, str) and CODE.search(script) and not first.get("interpreter") else None

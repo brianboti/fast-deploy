@@ -150,7 +150,8 @@ def needs_secrets(spec):
 
 # A start command the build can pass on as it is: one line of words, `$PORT` allowed, no quotes or shell operators other
 # than the parentheses of a WSGI factory (gunicorn's "module:create_app()"), which the buildpacks' shell would misread.
-ENTRYPOINT = r"^[A-Za-z0-9_./:=,+@%${}() -]+$"
+# Words, $PORT, and && between commands (a chain runs under the init of the platform's images, D49).
+ENTRYPOINT = r"^[A-Za-z0-9_./:=,+@%${}() &-]+$"
 
 # The Node.js lines a node-http service may run on (docs/ROADMAP.md D41): the Active LTS lines, each refused from its end of
 # life (Node's release schedule, read 2026-10-19; the dates are in docs/RUNBOOK.md). A drafted contract names the newest
@@ -200,6 +201,12 @@ class Build(StrictModel):
     # Node.js only (docs/ROADMAP.md D43): every package installs with its scripts off; afterwards only these run theirs
     # (npm rebuild), each named with its exact version (onnxruntime-node@1.30.0). Nothing else ever runs at install.
     scripts: list[str] = Field(default_factory=list)
+    # A repository's own Dockerfile whose final image runs as root (docs/ROADMAP.md D52, 22.3): the platform builds it, then
+    # adds a stage on top of it (FROM the built image, USER this number), so the service runs as a user that is not root.
+    # Drafted for code nobody has reviewed; a reviewer who accepts root removes it.
+    user: int | None = Field(default=None, ge=1000, le=2147483647)
+    # runtime: static (D55, 22.4): the folder the build script writes the site into, served by the platform's static image.
+    output: str | None = Field(default=None, max_length=120, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_./-]*$")
 
     @model_validator(mode="after")
     def coherent(self):
@@ -210,8 +217,11 @@ class Build(StrictModel):
             if not match or len(match.group(1)) > 214:
                 raise ValueError(f"'{entry}' in build.scripts is not a package with its exact version (onnxruntime-node@1.30.0): "
                                  "a name alone, a range or --all is never enough")
-        if self.context == "repository" and self.recipe != "repository":
-            raise ValueError("build.context: repository needs the service's own Dockerfile (build.recipe: repository)")
+        if self.context == "repository" and self.recipe == "buildpacks":
+            # repository: the service's own Dockerfile, or the platform's image for one package of a workspace (docs/ROADMAP.md 21.4).
+            raise ValueError("build.context: repository needs the service's own Dockerfile (build.recipe: repository) or the platform's image (platform)")
+        if self.user is not None and self.recipe != "repository":
+            raise ValueError("build.user wraps a repository's own Dockerfile (build.recipe: repository); the platform's images already run as 65532")
         if self.recipe == "platform" and not self.entrypoint:
             raise ValueError("build.recipe: platform needs build.entrypoint, the command that starts the service")
         if self.recipe == "repository" and self.entrypoint:
@@ -244,7 +254,7 @@ class AppSpec(StrictModel):
     api_version: Literal["lab/v1"] = "lab/v1"
     name: str = Field(pattern=r"^[a-z][a-z0-9-]{1,19}[a-z0-9]$")  # 3 to 21 characters: what Cloud Run, the registry and the root accept
     # python-http: tested and audited on `python`; node-http (docs/ROADMAP.md D41): tested and audited on `node`.
-    runtime: Literal["python-http", "node-http"] = "python-http"
+    runtime: Literal["python-http", "node-http", "static"] = "python-http"
     port: int = Field(default=8080, ge=1024, le=65535)
     # null: the service has no health route; Cloud Run's TCP startup probe gates it and the platform's own probes only check
     # that it answers HTTP at all (docs/ROADMAP.md 13.4). A path is probed for 200.
@@ -259,6 +269,10 @@ class AppSpec(StrictModel):
     # authenticated: programs with a Google identity token. lab-members: people through Identity-Aware Proxy, the listed
     # Google accounts only (the operator keeps the list). Public is never an option.
     exposure: Literal["authenticated", "lab-members"] = "authenticated"
+    # A service that listens on 127.0.0.1 or localhost and reads no variable for it (docs/ROADMAP.md D51, 22.1): an Nginx
+    # container, pinned by digest, takes the requests on an ingress port and forwards them to `port` on the loopback the
+    # two containers share. Its memory and CPU are billed as the app's, only while requests are served.
+    proxy: bool = False
     state: Literal["stateless"] = "stateless"
     dependencies: list[str] = Field(default_factory=list)
     gpu: bool = False
@@ -266,7 +280,9 @@ class AppSpec(StrictModel):
     env: dict[str, str] = Field(default_factory=dict)
     secrets: list[str] = Field(default_factory=list)
     # "none" declares that no automated tests run before a release; every plan then carries a warning.
-    tests: Literal["required", "none"] = "required"
+    # report (docs/ROADMAP.md D54, 22.5): the suite runs and is counted, and a failure is reported, never a stop: for tests
+    # that need what the platform's runner does not have (a browser, a database, a seed, Docker).
+    tests: Literal["required", "none", "report"] = "required"
     # The Python the tests and the dependency audit run on; match the Dockerfile's base image. A lock compiled for one
     # version can omit packages another needs (live: SQLAlchemy needs greenlet below 3.13, so a 3.13 lock failed on 3.12).
     python: Literal["3.11", "3.12", "3.13", "3.14", "3.15"] = "3.12"
@@ -336,6 +352,21 @@ class AppSpec(StrictModel):
 
     def runtime_fits(self):
         """Exactly one of python and node, as the runtime says, and the Node.js rules of docs/ROADMAP.md D43 and D45."""
+        if self.build.output is not None and self.runtime != "static":
+            raise ValueError("build.output applies to runtime: static, the folder the build writes the site into")
+        if self.proxy and self.runtime == "static":
+            raise ValueError("proxy applies to a web service that binds loopback; a static site is served by the platform's image")
+        if self.runtime == "static":
+            # D55: a front-end site with no server, built with its build script and served by the platform's image behind IAP.
+            if self.node is None:
+                raise ValueError('runtime: static needs node, the Node.js line its build runs on: "22", "24" or "26"')
+            if self.build.recipe != "platform" or not self.build.output:
+                raise ValueError("runtime: static is built by the platform (build.recipe: platform) and needs build.output, the folder the build writes")
+            if self.exposure != "lab-members":
+                raise ValueError("runtime: static is a site for people: exposure: lab-members (behind IAP); public stays refused")
+            if self.python != type(self).model_fields["python"].default or self.command is not None or self.args is not None:
+                raise ValueError("runtime: static takes no python, command or args")
+            return
         if self.runtime == "python-http":
             if self.node is not None:
                 raise ValueError("node applies to runtime: node-http; a Python service names its version in python")
@@ -402,8 +433,8 @@ def draft_dump(spec: AppSpec) -> dict:
     for key in ("command", "args", "trust", "egress", "node"):
         if data.get(key) is None:
             data.pop(key, None)
-    if spec.runtime == "node-http":
-        data.pop("python", None)  # a Node.js service names its line in node; python keeps its unused default
+    if spec.runtime in ("node-http", "static"):
+        data.pop("python", None)  # a Node.js service or a site names its line in node; python keeps its unused default
     build = data.get("build") or {}
     if build.get("entrypoint") is None:
         build.pop("entrypoint", None)
@@ -411,6 +442,11 @@ def draft_dump(spec: AppSpec) -> dict:
         build.pop("recipe", None)
     if build.get("network") == "default":
         build.pop("network", None)
+    for key in ("user", "output"):  # Phase 22's, shown only when set
+        if build.get(key) is None:
+            build.pop(key, None)
+    if not data.get("proxy"):
+        data.pop("proxy", None)
     if not build.get("scripts"):
         build.pop("scripts", None)
     needs = data.get("needs") or {}

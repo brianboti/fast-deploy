@@ -28,6 +28,21 @@ RECHECK_SECONDS = 6 * 3600
 WAIT_LIMIT = 45  # seconds; keeps a waiting status call inside the client's tool timeout
 
 
+def copy_to_bucket(config, files, run=None):
+    """Upload files to the backup bucket's folder (`backup_bucket`, `backup_prefix`: controller/ for a laptop, machine/ for the
+    machine) with this host's own gcloud sign-in, as the nightly backup and the settings page do. `files` pairs a local path
+    with its name in the bucket. Returns the gs:// targets written, or [] when no bucket is configured."""
+    import subprocess
+    bucket = getattr(config, "backup_bucket", None)
+    if not bucket:
+        return []
+    prefix = getattr(config, "backup_prefix", None) or "controller"
+    targets = [(str(path), f"gs://{bucket}/{prefix}/{name}") for path, name in files]
+    for source_path, target in targets:
+        (run or subprocess.run)(["gcloud", "storage", "cp", source_path, target], check=True, capture_output=True, text=True, timeout=120)
+    return [target for _, target in targets]
+
+
 class Store:
     def __init__(self, path):
         self.path = path
@@ -810,20 +825,13 @@ class Controller:
             if old != destination and old.stat().st_mtime < cutoff:
                 old.unlink()
                 removed.append(old.name)
-        uploaded = None
-        bucket = getattr(self.config, "backup_bucket", None)
-        if bucket:
-            # The copy and the configuration (principal hashes, targets, settings; never the raw operator token) go to a
-            # private, versioned bucket so a lost laptop loses nothing but its tunnel.
-            import subprocess
-            config_path = config_path or getattr(self.config, "path", None)
-            prefix = getattr(self.config, "backup_prefix", None) or "controller"
-            targets = [(str(destination), f"gs://{bucket}/{prefix}/{destination.name}")]
-            if config_path and Path(config_path).is_file():
-                targets.append((str(config_path), f"gs://{bucket}/{prefix}/config.yaml"))
-            for source_path, target in targets:
-                subprocess.run(["gcloud", "storage", "cp", source_path, target], check=True, capture_output=True, text=True, timeout=120)
-            uploaded = [target for _, target in targets]
+        # The copy and the configuration (principal hashes, targets, settings; never the raw operator token) go to a
+        # private, versioned bucket so a lost laptop loses nothing but its tunnel.
+        config_path = config_path or getattr(self.config, "path", None)
+        files = [(destination, destination.name)]
+        if config_path and Path(config_path).is_file():
+            files.append((config_path, "config.yaml"))
+        uploaded = copy_to_bucket(self.config, files) or None
         self.store.record_event("backup", outcome="ok", detail=str(destination) + (f" + {len(uploaded)} uploaded" if uploaded else ""))
         return {"backup": str(destination), "removed": removed, "kept_days": self.config.backup_keep_days, "uploaded": uploaded}
 
@@ -1087,6 +1095,9 @@ class Controller:
         if spec.tests == "none":
             plan["checks"]["tests"] = "skipped_by_config"
             plan["warnings"].append("platform.yaml declares tests: none, so nothing checks this app's behaviour before a release; only the health probe guards it.")
+        if spec.tests == "report":
+            plan["checks"]["tests"] = "reported_by_config"
+            plan["warnings"].append("The contract declares tests: report: the suite runs and is counted, and a failure is reported in the run, never a stop.")
         if spec.secrets:
             plan["warnings"].append("References secrets " + ", ".join(f"{app.service}-{name}" for name in spec.secrets) + "; each must exist in Secret Manager with an enabled version.")
         derived = needs_env(spec, app.target.project_id, app.target.region)
@@ -1167,6 +1178,9 @@ class Controller:
         if spec.tests == "none":
             plan["checks"]["tests"] = "skipped_by_config"
             plan["warnings"].append("The contract declares tests: none, so nothing checks this app's behaviour before a release; only the health probe guards it.")
+        if spec.tests == "report":
+            plan["checks"]["tests"] = "reported_by_config"
+            plan["warnings"].append("The contract declares tests: report: the suite runs and is counted, and a failure is reported in the run, never a stop.")
         if spec.health_path is None:
             plan["warnings"].append("No health route: Cloud Run's TCP startup probe gates the start, and the HTTP health probe is off.")
         if spec.secrets:

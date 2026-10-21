@@ -149,12 +149,20 @@ laptop).
    services in folders, the refusals name them: "deploy everything in REPO" is `onboard_application` with `all: true`,
    one contract pull request per folder. Such code runs contained: a working key in it or a fixable serious vulnerability
    stops its release, and it reaches no internet unless a person merges `egress: internet` into its contract. Say so
-   when its plan or status shows it.
-   A **Node.js** repository (a `package.json`, since 1.20.0) goes the same way. Its own refusals have fixes too: a start
-   script with `nodemon` or `tsx`, a server on `localhost`, a `yarn.lock` or `pnpm-lock.yaml` (convert to
-   `package-lock.json`), a project that must be built first, a Node.js line other than 22, 24 or 26. No package's install
-   script runs unless the contract names it under `build.scripts`: a person who adds one approves that package's code, so
-   never suggest adding one to make a build pass; say what the package needs and let the developer decide. A known
+   when its plan or status shows it. Since 1.24.0 a root Dockerfile is wrapped (`build.user: 65532`), a loopback binder
+   gets `proxy: true`, a front-end site becomes `runtime: static` behind IAP, and a suite that needs a browser or a
+   database is `tests: report`; tell the operator what each adds (the proxy bills as the app while serving). When a
+   release fails, `get_deployment_status`'s next action names the cause from the candidate's log, the developer's line and
+   the contract key: pass all three on, and never change the contract without a person's merge.
+   A **Node.js** repository (a `package.json`, since 1.20.0) goes the same way. Since 1.23.0 a `pnpm-lock.yaml`,
+   `yarn.lock` or `bun.lock` is installed by its own manager, a service that must be built first (Next.js, NestJS, a
+   `build` script, TypeScript) is built in the platform's image, and one package of a workspace installs from the root's
+   lockfile. Its own refusals have fixes too: a start script that chains or watches (`&&`, `concurrently`), a server on
+   `localhost`, a front-end site with no server, TypeScript without `typescript` among the dependencies, a build that
+   needs a secret (Strapi, Payload), a Node.js line newer than 26. The reader drafts `build.scripts` from the platform's
+   table of packages whose install script Cloud Run needs (`sharp` below 0.33, `canvas`, `better-sqlite3` and the like);
+   no other package's install script runs unless the contract names it: a person who adds one approves that package's
+   code, so never suggest adding one to make a build pass; say what the package needs and let the developer decide. A known
    malicious package in its lockfile stops every release.
 6. When it is blocked:
    - At the repository check: nothing was created. Turn the checklist into a message for the developer (template at the
@@ -267,7 +275,7 @@ The platform refuses these. Explain the rule; do not look for a way around it.
 - More than 2 CPUs, 2048 MiB of memory or 3 instances per app; requests longer than 300 seconds.
 - Anything other than a Python or Node.js web service, built from a Dockerfile (or from a Procfile with Google's
   buildpacks, for Node.js only once its code is reviewed) at the repository's root or in one of its folders; any branch
-  other than main. For Node.js not yet: pnpm, Yarn and Bun lockfiles, a build step, workspaces.
+  other than its default branch. Not yet: `turbo prune` for a pruned workspace install; public exposure of a static site.
 - Secret values in the chat. Never ask for, accept or repeat a password, key or token. The operator stores a secret with
   `gcloud` (named `<service>-NAME` in Secret Manager) and `platform.yaml` only names it. If someone pastes one anyway,
   tell the operator to replace (rotate) it.

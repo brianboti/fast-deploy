@@ -29,6 +29,32 @@ def run(args):
 LOG_ATTEMPTS, LOG_WAIT_SECONDS = 6, 5  # up to half a minute for a failed job's log lines to become searchable
 
 
+# The proxy sidecar's image (docs/ROADMAP.md D51, 22.1), pinned by its multi-architecture index digest; labdeploy/pins.py
+# refreshes it once Docker Hub's tag has pointed at a new index for seven days.
+NGINX_IMAGE = "nginx@sha256:bc4cad49969aaf95eb4eecec5572846f86e59f1e8332aba36ed64b91aff8b724"  # 1.31.7, Debian trixie
+PROXY_CPU, PROXY_MEMORY_MIB = 1, 256  # the sidecar's own allocation, billed as the app's, only while requests are served
+
+
+def proxy_port(spec):
+    """The ingress port the sidecar listens on: 8080, or 8081 when the service itself listens on 8080 on its loopback."""
+    return 8081 if spec.port == 8080 else 8080
+
+
+def proxy_script(spec):
+    """The sidecar's start: write its Nginx configuration to /tmp, made from two integers and nothing of the application's,
+    then run Nginx in the foreground. One script word without commas, as gcloud's --args splits on commas."""
+    listen, upstream = proxy_port(spec), int(spec.port)
+    config = (f"pid /tmp/nginx.pid; error_log stderr; events {{}} http {{ access_log off; client_body_temp_path /tmp/body; "
+              "proxy_temp_path /tmp/proxy; fastcgi_temp_path /tmp/fastcgi; uwsgi_temp_path /tmp/uwsgi; scgi_temp_path /tmp/scgi; "
+              f"client_max_body_size 32m; server {{ listen {listen}; location / {{ proxy_pass http://127.0.0.1:{upstream}; "
+              "proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; "
+              "proxy_set_header X-Forwarded-Proto https; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $http_connection; "
+              f"proxy_read_timeout {int(spec.timeout_seconds)}s; proxy_buffering off; }} }} }}")
+    if "," in config or "'" in config:
+        raise ValueError("The proxy's configuration cannot carry commas or quotes")
+    return f"printf '%s' '{config}' > /tmp/nginx.conf && exec nginx -c /tmp/nginx.conf -g 'daemon off;'"
+
+
 class MigrationFailed(RuntimeError):
     """The migration job failed before anything was deployed; `logs` holds the job's own last lines."""
 
@@ -84,6 +110,31 @@ class CloudRun:
 
     def describe(self):
         return json.loads(self.run(self.command("services", "describe", self.service, "--format=json")))
+
+    def container_names(self):
+        """The names of the live service's containers ("" for one without a name), in order."""
+        raw = self.run(self.command("services", "describe", self.service, "--format=json"))
+        try:
+            template = ((json.loads(raw).get("spec") or {}).get("template") or {}).get("spec") or {}
+        except (TypeError, ValueError):
+            return []  # a runner that answers nothing usable (a dry run): no live containers to account for
+        return [str(item.get("name") or "") for item in template.get("containers") or []]
+
+    def name_app_container(self, suffix):
+        """Name the live service's one unnamed container `app`, by exporting the service, naming it, and replacing the
+        service with that text (gcloud run services replace). The revision it makes carries no traffic."""
+        import yaml
+        exported = yaml.safe_load(self.run(self.command("services", "describe", self.service, "--format=export")))
+        template = exported["spec"]["template"]
+        containers = template["spec"]["containers"]
+        unnamed = [item for item in containers if not item.get("name")]
+        if len(containers) != 1 or len(unnamed) != 1:
+            raise RuntimeError(f"The service has {len(containers)} containers; the proxy can only be added to a service with one, the app's")
+        unnamed[0]["name"] = "app"
+        template.setdefault("metadata", {})["name"] = f"{self.service}-{suffix}n"[:63]
+        path = Path("service-named.yaml")
+        path.write_text(yaml.safe_dump(exported, sort_keys=False))
+        self.run(["gcloud", "run", "services", "replace", str(path), "--project", self.project, "--region", self.region, "--quiet"])
 
     def require_private_service(self):
         policy = json.loads(self.run(self.command("services", "get-iam-policy", self.service, "--format=json")))
@@ -292,15 +343,39 @@ class CloudRun:
                     raise ValueError("Revision labels must be lowercase letters, digits, dashes or underscores")
             # --update-labels merges, so the service keeps the labels Terraform set (lab-deploy-managed, lab-deploy-app)
             extra.append("--update-labels=" + ",".join(f"{key}={value}" for key, value in sorted(labels.items())))
-        extra += self.configuration(spec)
-        extra += self.egress_flags(spec)
-        extra += self.volume_flags(spec)
-        self.run(self.command("deploy", self.service, "--image", image,
-            "--revision-suffix", suffix, "--no-traffic", "--tag=candidate", "--startup-probe", probe,
-            "--ingress=all", "--port", str(spec.port),
-            "--cpu", str(spec.resources.cpu), "--memory", f"{spec.resources.memory_mib}Mi",
-            "--min-instances", str(spec.scaling.minimum), "--max-instances", str(spec.scaling.maximum),
-            "--concurrency", str(spec.concurrency), f"--timeout={spec.timeout_seconds}", "--cpu-throttling", *extra))
+        configuration = self.configuration(spec)
+        service_flags = ["--revision-suffix", suffix, "--no-traffic", "--tag=candidate", "--ingress=all",
+                         "--min-instances", str(spec.scaling.minimum), "--max-instances", str(spec.scaling.maximum),
+                         "--concurrency", str(spec.concurrency), f"--timeout={spec.timeout_seconds}", "--cpu-throttling",
+                         *[flag for flag in extra if flag.startswith("--update-labels=")], *self.egress_flags(spec), *self.volume_flags(spec)]
+        container_flags = [flag for flag in extra if not flag.startswith("--update-labels=")]
+        names = self.container_names()
+        app_flags = ["--image", image, "--startup-probe", probe, "--cpu", str(spec.resources.cpu), "--memory", f"{spec.resources.memory_mib}Mi",
+                     *container_flags, *configuration]
+        if not spec.proxy and "proxy" in names:
+            # Turning the proxy off. gcloud applies plain container flags before it removes containers, so they would edit
+            # Nginx (the ingress container) and then drop it; per-container flags come after the removal, so the app's
+            # container is named, gets the port back and stays alone.
+            self.run(self.command("deploy", self.service, *service_flags, "--remove-containers=proxy", "--container=app",
+                                  *app_flags[:4], "--port", str(spec.port), *app_flags[4:]))
+            return
+        if not spec.proxy:
+            self.run(self.command("deploy", self.service, *app_flags[:4], "--port", str(spec.port), *app_flags[4:], *service_flags))
+            return
+        if "app" not in names:
+            # Terraform and every single-container release leave one container without a name, which no gcloud flag can
+            # address (--container=app would add a second one beside it). So the live service is written back once with that
+            # container named app and nothing else changed; traffic was frozen before, so the extra revision serves nothing.
+            self.name_app_container(suffix)
+        # D51, 22.1: two containers in one instance share its network. Nginx is the ingress container (the only one with a
+        # port), started after the app's own startup probe passes; it forwards every request to the app on the loopback.
+        listen = proxy_port(spec)
+        proxy_probe = f"tcpSocket.port={listen},initialDelaySeconds=0,periodSeconds=5,timeoutSeconds=3,failureThreshold=12"
+        self.run(self.command("deploy", self.service, *service_flags,
+            "--container=proxy", f"--image={NGINX_IMAGE}", f"--port={listen}", "--command=sh", "--args=-c," + proxy_script(spec),
+            f"--cpu={PROXY_CPU}", f"--memory={PROXY_MEMORY_MIB}Mi", "--depends-on=app", "--startup-probe", proxy_probe,
+            "--container=app", "--image", image, "--startup-probe", probe,
+            "--cpu", str(spec.resources.cpu), "--memory", f"{spec.resources.memory_mib}Mi", *container_flags, *configuration))
 
     def volume_flags(self, spec):
         """The app's read-only bucket mounts (docs/ROADMAP.md D47, 19.1). The reviewed spec is the whole truth: every release

@@ -140,10 +140,21 @@ def _usd(value):
     return round(float(value), 4)
 
 
+def allocation(spec):
+    """(vCPU, MiB) one instance is billed for: the app's container, and the proxy sidecar's when the contract says proxy
+    (docs/ROADMAP.md D51, 22.1), billed as the app's, only while requests are served."""
+    from .release import PROXY_CPU, PROXY_MEMORY_MIB
+    cpu, memory = spec.resources.cpu, spec.resources.memory_mib
+    if getattr(spec, "proxy", False):
+        cpu, memory = cpu + PROXY_CPU, memory + PROXY_MEMORY_MIB
+    return cpu, memory
+
+
 def instance_second_usd(spec, pricing=PRICING, idle=False):
-    """Price of one instance-second at the spec's CPU and memory allocation."""
+    """Price of one instance-second at the spec's CPU and memory allocation (the proxy sidecar's included)."""
     rates = pricing["idle"] if idle else pricing["request_based"]
-    return spec.resources.cpu * rates["vcpu_second"] + spec.resources.memory_mib / 1024 * rates["gib_second"]
+    cpu, memory = allocation(spec)
+    return cpu * rates["vcpu_second"] + memory / 1024 * rates["gib_second"]
 
 
 def estimate(spec, requests_per_month=None, average_request_seconds=None, pricing=PRICING, today=None, environment="staging"):
@@ -173,6 +184,10 @@ def estimate(spec, requests_per_month=None, average_request_seconds=None, pricin
         "needs_floor_usd_month": _usd(sum(item["floor_usd_month"] for item in needs_costs(spec, environment=environment))),
         "warnings": [],
     }
+    if getattr(spec, "proxy", False):
+        from .release import PROXY_CPU, PROXY_MEMORY_MIB
+        result["assumptions"].append(f"proxy: true adds the Nginx sidecar's {PROXY_CPU} vCPU and {PROXY_MEMORY_MIB} MiB to every instance, billed as the "
+                                     "app's and only while requests are served; listening on 0.0.0.0 in the code removes it.")
     verified = datetime.date.fromisoformat(pricing["verified"])
     age = ((today or datetime.date.today()) - verified).days
     if age > PRICE_CHECK_DAYS:
@@ -188,8 +203,9 @@ def estimate(spec, requests_per_month=None, average_request_seconds=None, pricin
     bounds = {"best_case": request_seconds / spec.concurrency, "worst_case": request_seconds}
 
     def charge(instance_seconds, apply_free_tier):
-        vcpu_seconds = instance_seconds * spec.resources.cpu
-        gib_seconds = instance_seconds * spec.resources.memory_mib / 1024
+        cpu, memory = allocation(spec)
+        vcpu_seconds = instance_seconds * cpu
+        gib_seconds = instance_seconds * memory / 1024
         requests = requests_per_month
         if apply_free_tier:
             vcpu_seconds = max(0.0, vcpu_seconds - free["vcpu_seconds"])

@@ -350,6 +350,8 @@ class Config(StrictModel):
     # Per-identity request budget and per-client budget for failed logins; the MCP specification requires both kinds of limit.
     rate_limit_per_minute: int = Field(default=120, ge=1, le=100_000)
     auth_failures_per_minute: int = Field(default=20, ge=1, le=10_000)
+    # How long a browser sign-in to the settings page (https://HOST/settings) lasts; like oauth.access_token_seconds.
+    settings_session_seconds: int = Field(default=3600, ge=300, le=86_400)
 
     @model_validator(mode="after")
     def unique_identity(self):
@@ -376,6 +378,14 @@ class Config(StrictModel):
         return self
 
 
+def with_settings(application, settings):
+    """A registered application with the operator's `application_settings` entry laid over it, validated like a whole entry
+    (the settings page checks a change with the same call before writing it)."""
+    if settings is None:
+        return application
+    return Application.model_validate({**application.model_dump(), **settings.model_dump(exclude_none=True)})
+
+
 def load_config(path: str) -> Config:
     return Config.model_validate(yaml.load(Path(path).read_text(), Loader=UniqueLoader))  # noqa: S506 - SafeLoader subclass
 
@@ -384,7 +394,7 @@ class LiveConfig:
     """The configuration, re-read when its file changes, so pauses, principals and application entries apply without a restart.
 
     Rate limits, the observer identity, OAuth settings, allowed hosts, the log file and the database path are read once at
-    start; changing them needs a restart.
+    start; changing them needs a restart. The settings page (labdeploy/settings.py) writes this file and shows the notes.
 
     Attribute reads pass through to the current Config. An invalid new file is reported and ignored; the previous
     configuration stays in force. The database path and the OAuth block are read once at start and need a restart.
@@ -400,12 +410,7 @@ class LiveConfig:
     def applications(self):
         """The file's applications plus the registered ones; a registered id never hides one the operator wrote by hand.
         `application_settings` lays the operator's switches over a registered entry (validated like a whole entry)."""
-        registered = {}
-        for app_id, application in self.registry.items():
-            settings = self.current.application_settings.get(app_id)
-            if settings is not None:
-                application = Application.model_validate({**application.model_dump(), **settings.model_dump(exclude_none=True)})
-            registered[app_id] = application
+        registered = {app_id: with_settings(application, self.current.application_settings.get(app_id)) for app_id, application in self.registry.items()}
         merged = {**registered, **self.current.applications}
         for app_id, production in self.productions.items():
             if app_id in merged:
