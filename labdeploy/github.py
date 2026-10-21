@@ -231,6 +231,11 @@ def github_client():
     return httpx.Client(base_url="https://api.github.com", timeout=30, follow_redirects=False)
 
 
+# The platform's own workflow files: its templates, and the workflows it writes into a repository (contents()).
+WORKFLOW_PATHS = ("templates/", ".github/workflows/")
+WORKFLOW_LIMIT = 262_144
+
+
 class GitHub:
     def __init__(self, client=None, credentials=None):
         self.client = client or github_client()
@@ -429,7 +434,11 @@ class GitHub:
     def contents(self, repository, ref, path, limit=65_536):
         """A regular file from any repository the credential can read, at a ref; None when it does not exist. Lock files may be
         read up to `limit` (5 MB, docs/ROADMAP.md 20.4): past GitHub's 1 MB contents limit the file comes through the blobs
-        endpoint by its sha; every other input stays within 64 KiB."""
+        endpoint by its sha. The platform's workflow templates and the workflows it writes into a repository may be read up to
+        256 KiB: the release workflow passed 64 KiB in 1.31.0 (about 71 KiB with the jobs' steps), and onboarding, the pin check
+        and the re-pin read it. Every other input stays within 64 KiB."""
+        if limit == 65_536 and path.startswith(WORKFLOW_PATHS):
+            limit = WORKFLOW_LIMIT
         try:
             response = self.request("GET", f"/repos/{repository}/contents/{quote(path, safe='/')}", params={"ref": ref})
         except httpx.HTTPStatusError as exc:

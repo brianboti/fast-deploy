@@ -1,3 +1,10 @@
+# 1.31.1: the release workflow may be read past 64 KiB
+
+Found by Phase 27's live exercise on 2026-10-21: onboarding stopped at "add the release workflows" with "Repository input
+exceeds 64 KiB". The release workflow template grew to about 71 KiB with the jobs' steps, and the controller reads files
+from GitHub up to 64 KiB. The platform's own workflow files (`templates/` and `.github/workflows/`) may now be read up to
+256 KiB: onboarding, the pin check and the re-pin read them. Every other input keeps the 64 KiB limit.
+
 # 1.31.0: jobs an application starts itself (Phase 27)
 
 CodeSurgeon's developer asked for two images, a bucket and a permission to be set up by hand, so that its always-on part

@@ -1,4 +1,5 @@
 """Phase 27: jobs an application starts itself (docs/ROADMAP.md D64 to D70, docs/RESEARCH-2026-10-21-jobs.md)."""
+import base64
 import copy
 import datetime
 import hashlib
@@ -919,3 +920,34 @@ def test_a_dependant_whose_newest_plan_names_no_base_is_not_released_every_hour(
     release(c.store, "bettercare", "f" * 40, {**bettercare, "node": "26"})
     c.store.add("m", {"id": "9" * 32, "application": "codesurgeon", "sha": "a" * 40, "spec": {"name": "codesurgeon", "reviewed": True}, "target": TARGET}, "failed")
     assert "builds on no application's test image" in c.base_tick()["codesurgeon"]
+
+
+def test_the_platforms_workflow_files_may_be_read_past_64_kib_and_nothing_else_may():
+    # Found live on 2026-10-21: the release workflow reached about 71 KiB with the jobs' steps, and onboarding refused to read
+    # its own template ("Repository input exceeds 64 KiB"). Templates and written workflows may be read up to 256 KiB.
+    from labdeploy.github import WORKFLOW_LIMIT, GitHub
+
+    class Response:
+        def __init__(self, data):
+            self.data = data
+
+        def json(self):
+            return self.data
+
+    class Sized(GitHub):
+        def __init__(self, size):
+            self.size = size
+
+        def request(self, method, path, **kwargs):
+            return Response({"type": "file", "encoding": "base64", "size": self.size, "sha": "abc", "content": base64.b64encode(b"name: x").decode()})
+
+    big = Sized(80_000)
+    assert big.contents("o/r", "main", "templates/deploy-gcp.yml")["text"] == "name: x"
+    assert big.contents("o/r", "main", ".github/workflows/deploy-gcp.yml")["text"] == "name: x"
+    with pytest.raises(ValueError, match="exceeds 64 KiB"):
+        big.contents("o/r", "main", "platform.yaml")
+    with pytest.raises(ValueError, match="exceeds 256 KiB"):
+        Sized(WORKFLOW_LIMIT + 1).contents("o/r", "main", "templates/deploy-gcp.yml")
+    # The templates themselves stay well inside the limit.
+    for name in ("deploy-gcp.yml", "recover-gcp.yml", "rightsize-gcp.yml"):
+        assert (ROOT / "templates" / name).stat().st_size < WORKFLOW_LIMIT // 2
