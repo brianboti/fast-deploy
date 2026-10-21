@@ -49,6 +49,7 @@ STEP_WORDS = (
     ("Sign the promotion", "signing the promotion"),
 )
 PHASE_WORDS = {"preparing": "getting the new version ready", "migrating": "updating the database (the migration)",
+               "updating_jobs": "pointing the app's jobs at their new images",
                "deploying": "starting the new version beside the old one", "promoting": "moving visitors to the new version",
                "baking": "watching the new version with real traffic"}
 ONBOARDING_STEPS = (("validating", "check the repository"), ("registering", "register the app"),
@@ -702,6 +703,7 @@ def release(plan):
             reason, error = "it was cancelled", None
         else:
             reason = {"preparing": "it stopped before deploying anything", "migrating": "the database migration failed, so nothing new was deployed",
+                      "updating_jobs": "a job could not be pointed at its new image, so nothing new was deployed and the jobs went back",
                       "baking": "the new version took over, then failed its watch with real traffic"}.get(failed_phase, "the new version failed its health check")
         facts = [f"Why: {reason}", f"Error: `{clip(error, 240)}`" if error else None,
                  "The new version's last log lines are in the release details; ask me to show them" if phases.get("candidate_logs") else None]
@@ -794,6 +796,7 @@ def promotion(plan):
                   f"the new version failed its watch with {share}% of the traffic" if share and share < 100 and failed_phase == "baking" else
                   f"the new version failed its health check with {share}% of the traffic" if share and share < 100 and failed_phase == "promoting" else
                   {"preparing": "it stopped before deploying anything", "migrating": "the database migration failed, so nothing new was deployed",
+                      "updating_jobs": "a job could not be pointed at its new image, so nothing new was deployed and the jobs went back",
                    "baking": "the new version took over, then failed its watch with real traffic"}.get(failed_phase, "the new version failed its health check"))
         return compose(f"**Promotion stopped for `{app}`: production's previous version is serving.**",
                        [f"Why: {reason}", None if cancelled or not error else f"Error: `{clip(error, 240)}`"],

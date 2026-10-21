@@ -278,9 +278,17 @@ class CloudRun:
         return f"{self.service}-{name}"
 
     def job_image(self, name):
-        """The image a job runs now: the bootstrap image until its first release, then the last release's (27.5)."""
-        return self.run(["gcloud", "run", "jobs", "describe", self.job_name(name), "--project", self.project, "--region", self.region,
-                         "--format=value(template.template.containers[0].image)"]).strip()
+        """The image a job runs now: the bootstrap image until its first release, then the last release's (27.5). gcloud
+        describes a job in Cloud Run's v1 shape (spec.template.spec.template.spec.containers); the v2 shape is read too."""
+        found = json.loads(self.run(["gcloud", "run", "jobs", "describe", self.job_name(name), "--project", self.project, "--region", self.region,
+                                     "--format=json"]) or "{}")
+        for path in (("spec", "template", "spec", "template", "spec", "containers"), ("template", "template", "containers")):
+            node = found
+            for key in path:
+                node = node.get(key) if isinstance(node, dict) else None
+            if isinstance(node, list) and node and isinstance(node[0], dict) and node[0].get("image"):
+                return node[0]["image"]
+        return ""
 
     def update_job(self, name, image, spec, labels=None):
         """Point one of the service's jobs at this release's image with the contract's settings (docs/ROADMAP.md D64, 27.5): one
@@ -922,7 +930,11 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
             receipt["jobs"] = {}
             save()
             for name in sorted(job_images):
-                receipt["jobs"][name] = {"image": job_images[name], "previous": adapter.job_image(name)}
+                previous = adapter.job_image(name)
+                if not previous:
+                    # A job whose image cannot be read could not be put back after a failure: change nothing then.
+                    raise RuntimeError(f"The job {adapter.service}-{name} does not exist or its image cannot be read: apply the application's root, then release again")
+                receipt["jobs"][name] = {"image": job_images[name], "previous": previous}
                 save()
                 adapter.update_job(name, job_images[name], spec, labels)
                 receipt["jobs"][name]["updated"] = True

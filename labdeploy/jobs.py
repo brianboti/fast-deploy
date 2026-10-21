@@ -8,10 +8,13 @@ The clock: every `wake.every_minutes`, POST `wake.path` to the service as its <s
 controller may mint, for the run.app address or, behind IAP, for the project's IAP client), each call on its own thread
 so a slow application never holds the scheduler. A service whose ingress the spending cap closed is not woken.
 
-The guard: every minute, each declared job's executions; one that runs more than one task, has run past its
-`timeout_minutes`, or is beyond the day's `runs_per_day` (UTC) is cancelled, and each cancel lands in the audit trail.
+The guard: every minute, every job that carries the platform's labels in each application's project, whatever its
+release says; a run that has more than one task, has run past its `timeout_minutes`, or is beyond the day's
+`runs_per_day` (UTC) is cancelled, and so is any run of a job the released contract does not declare (a job its root
+created before a release named it, or after a rollback to one that does not). Each cancel lands in the audit trail.
 Cloud Run lets one permission start a job with any task count and timeout (docs/RESEARCH-2026-10-21-jobs.md, section 1),
-so the contract's limits hold because the guard holds them.
+so the contract's limits hold because the guard holds them. A run that ends within the minute between two looks cannot be
+cancelled: it still counts towards the day, and a day over its runs is recorded once (`job_over_limit`) for the digest.
 """
 import datetime
 import threading
@@ -37,8 +40,20 @@ def parse_time(value):
         return None
 
 
+def started_today(executions, now):
+    """The executions created on `now`'s UTC day, oldest first."""
+    today = datetime.datetime.fromtimestamp(now, datetime.UTC).date()
+    return sorted((e for e in executions if (parse_time(e.get("createTime")) or 0) and
+                   datetime.datetime.fromtimestamp(parse_time(e["createTime"]), datetime.UTC).date() == today),
+                  key=lambda e: (parse_time(e.get("createTime")) or 0, e.get("name", "")))
+
+
 def judge(executions, job, now):
-    """Which of a job's executions the guard cancels, each with its reason (D70). `executions` as the Cloud Run API lists them."""
+    """Which of a job's executions the guard cancels, each with its reason (D70). `executions` as the Cloud Run API lists them;
+    `job` the released contract's entry, or None for a job the released contract does not declare: every run of it goes."""
+    if job is None:
+        return [(e.get("name", ""), "the application's released contract declares no such job")
+                for e in executions if not e.get("completionTime") and not e.get("cancelledCount")]
     today = datetime.datetime.fromtimestamp(now, datetime.UTC).date()
     started_today = sorted((e for e in executions if (parse_time(e.get("createTime")) or 0) and
                             datetime.datetime.fromtimestamp(parse_time(e["createTime"]), datetime.UTC).date() == today),
@@ -70,26 +85,43 @@ class Keeper:
         self.spawn = spawn or (lambda work: threading.Thread(target=work, daemon=True, name="lab-deploy-wake").start())
         self.lock = threading.Lock()
         self.wakes = {}    # (application, environment) -> {"next": ..., "running": bool, "last_at", "last_status", "failures"}
+        self.over = set()  # (application, environment, job, day) already recorded as over its runs a day
         self.cancels = []  # the newest cancels, for the status and the digest
 
-    def released(self):
-        """(application, environment, target, spec, url) for each application whose release carries jobs or a clock."""
+    def targets(self):
+        """(application, environment, target, spec, url) for each application and environment, with the contract its newest
+        successful release recorded (None when there is none) and the address that release reported."""
         store = self.controller.store
         for app_id, app in self.config.applications.items():
             for environment, kind in (("staging", None), ("production", "promotion")):
                 if environment == "production" and app.production is None:
                     continue
-                plan = store.latest_success(app_id, kind=kind)
-                if not plan or not plan.get("spec"):
-                    continue
-                try:
-                    spec = AppSpec.model_validate(plan["spec"])
-                except ValueError:
-                    continue
-                if not spec.jobs and spec.wake is None:
-                    continue
+                plan = store.latest_success(app_id, kind=kind) or {}
+                spec = None
+                if plan.get("spec"):
+                    try:
+                        spec = AppSpec.model_validate(plan["spec"])
+                    except ValueError:
+                        spec = None
                 target = (app.production.target if environment == "production" else app.target)
                 yield app_id, environment, target, spec, (plan.get("receipt") or {}).get("url")
+
+    def released(self):
+        """The targets whose release carries jobs or a clock."""
+        for app_id, environment, target, spec, url in self.targets():
+            if spec is not None and (spec.jobs or spec.wake is not None):
+                yield app_id, environment, target, spec, url
+
+    def pages(self, url, key, limit=10):
+        """Every item of a Cloud Run list, page by page (at most `limit` pages: a job keeps its newest 1,000 executions)."""
+        items, token = [], None
+        for _ in range(limit):
+            found = self.observer.get(url, pageSize=100, **({"pageToken": token} if token else {}))
+            items += found.get(key) or []
+            token = found.get("nextPageToken")
+            if not token:
+                break
+        return items
 
     # ---- the clock (D66)
     def wake_tick(self):
@@ -150,18 +182,40 @@ class Keeper:
     def guard_tick(self):
         if self.observer is None:
             return {"checked": 0, "cancelled": 0, "note": "no observer identity: the controller cannot reach the cloud"}
-        now, checked, cancelled, problems = self.clock(), 0, [], []
-        for app_id, environment, target, spec, _ in self.released():
-            for name, job in spec.jobs.items():
-                parent = f"{RUN_API}/projects/{target.project_id}/locations/{target.region}/jobs/{target.service}-{name}"
+        now, checked, cancelled, problems, listed = self.clock(), 0, [], [], {}
+        day = datetime.datetime.fromtimestamp(now, datetime.UTC).date().isoformat()
+        for app_id, environment, target, spec, _ in self.targets():
+            where = (target.project_id, target.region)
+            if where not in listed:
                 try:
-                    executions = self.observer.get(f"{parent}/executions", pageSize=100).get("executions") or []
+                    listed[where] = self.pages(f"{RUN_API}/projects/{target.project_id}/locations/{target.region}/jobs", "jobs")
+                except (httpx.HTTPError, ValueError) as exc:
+                    problems.append(f"jobs of {target.project_id}: {str(exc)[:120]}")
+                    listed[where] = []
+            # Every job the platform made for this service, whether or not the released contract names it.
+            mine = [item for item in listed[where] if (item.get("labels") or {}).get("lab-deploy-app") == target.service
+                    and (item.get("labels") or {}).get("lab-deploy-job")]
+            for item in mine:
+                name = item["labels"]["lab-deploy-job"]
+                job = spec.jobs.get(name) if spec is not None else None
+                try:
+                    executions = self.pages(f"{RUN_API}/{item['name']}/executions", "executions")
                 except (httpx.HTTPError, ValueError) as exc:
                     problems.append(f"{app_id} {name} ({environment}): {str(exc)[:120]}")
                     continue
                 checked += 1
+                if job is not None and len(started_today(executions, now)) > job.runs_per_day:
+                    key = (app_id, environment, name, day)
+                    with self.lock:
+                        first = key not in self.over
+                        self.over.add(key)
+                    if first:
+                        self.controller.store.record_event("job_over_limit", name=f"{target.service}-{name}", application=app_id, outcome="over",
+                                                           detail=f"{environment}: more than {job.runs_per_day} runs started today")
                 for execution, reason in judge(executions, job, now):
                     outcome = self.cancel(execution)
+                    if outcome == "already finished":
+                        continue
                     item = {"at": now, "application": app_id, "environment": environment, "job": name, "execution": execution.rsplit("/", 1)[-1],
                             "reason": reason, "outcome": outcome}
                     cancelled.append(item)
@@ -180,6 +234,8 @@ class Keeper:
             return f"error: {type(exc).__name__}"
         if response.status_code == 403:
             return "refused: the guard's role is not granted on this job (apply the foundation, then the application's root)"
+        if response.status_code in (400, 409, 412):
+            return "already finished"  # it ended between the listing and the cancel
         return "cancelled" if response.status_code < 300 else f"HTTP {response.status_code}"
 
     def snapshot(self):

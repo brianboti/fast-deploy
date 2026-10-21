@@ -716,6 +716,9 @@ or `jobs_base` event for each (`get_events`).
   look at its code, or raise the limit in the contract through a reviewed pull request (`runs_per_day` at most 30,
   `timeout_minutes` at most 60, the lab's policy). A cancel that says "refused: the guard's role is not granted" means the
   foundation (the role `labDeployJobGuard`) or the application's root (its grant) has not been applied yet.
+- **A job over its runs a day** (`job_over_limit` in the audit trail and the digest): more runs started today than the
+  contract allows. The guard cancels the ones still running when it looks; runs that end within a minute can pass it. Ask
+  the developer why the application starts so many.
 - **The executions themselves**: `gcloud run jobs executions list --job SERVICE-JOB --region us-central1`, and one run's
   log: `gcloud run jobs executions describe EXECUTION --region us-central1` names its log URL. Cancel one by hand with
   `gcloud run jobs executions cancel EXECUTION --region us-central1`.

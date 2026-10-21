@@ -152,10 +152,21 @@ main:
           call: http.get
           args:
             url: '${"https://run.googleapis.com/v2/projects/__PROJECT__/locations/__REGION__/jobs"}'
+            query:
+              pageSize: 100
             auth:
               type: OAuth2
           result: jobs
         retry: ${http.default_retry}
+        # A listing that fails leaves the jobs alone and is counted, so the detach line below still runs.
+        except:
+          as: problem
+          steps:
+            - remember_jobs_failure:
+                assign:
+                  - failed: ${list.concat(failed, "the jobs of __PROJECT__")}
+                  - jobs:
+                      body: {}
     - no_jobs:
         switch:
           - condition: ${not ("jobs" in jobs.body)}
@@ -180,10 +191,20 @@ main:
                   call: http.get
                   args:
                     url: '${"https://run.googleapis.com/v2/" + job.name + "/executions"}'
+                    query:
+                      pageSize: 50
                     auth:
                       type: OAuth2
                   result: runs
                 retry: ${http.default_retry}
+                except:
+                  as: problem
+                  steps:
+                    - remember_runs_failure:
+                        assign:
+                          - failed: ${list.concat(failed, job.name)}
+                          - runs:
+                              body: {}
             - has_runs:
                 switch:
                   - condition: ${not ("executions" in runs.body)}
@@ -213,14 +234,19 @@ main:
                         except:
                           as: problem
                           steps:
-                            - remember_cancel_failure:
-                                assign:
-                                  - failed: ${list.concat(failed, execution.name)}
-                            - log_cancel_failure:
-                                call: sys.log
-                                args:
-                                  severity: ERROR
-                                  text: '${"Lab Deploy spending cap could not cancel " + execution.name + ": " + json.encode_to_string(problem)}'
+                            # A run that ended between the listing and the cancel (400 or 409) is no failure.
+                            - classify_cancel_failure:
+                                switch:
+                                  - condition: ${default(map.get(problem, "code"), 0) != 400 and default(map.get(problem, "code"), 0) != 409}
+                                    steps:
+                                      - remember_cancel_failure:
+                                          assign:
+                                            - failed: ${list.concat(failed, execution.name)}
+                                      - log_cancel_failure:
+                                          call: sys.log
+                                          args:
+                                            severity: ERROR
+                                            text: '${"Lab Deploy spending cap could not cancel " + execution.name + ": " + json.encode_to_string(problem)}'
     - compose:
         assign:
           - headline: '${"Lab Deploy spending cap: budget line crossed (" + string(cost) + " of " + string(budget) + ", ratio " + string(exceeded) + ")"}'

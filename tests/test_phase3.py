@@ -165,6 +165,6 @@ def test_cap_workflow_renders_to_valid_yaml_with_complete_expressions():
     # Review H6: every call retries, each resource is handled in its own try so one failure never leaves the others
     # open, failures end the execution (the alert policy watches), the ratio comes from the amounts rather than from
     # the budget's own alert lines, and a lifted resource stays open until the operator removes the label.
-    assert rendered.count("retry: ${http.default_retry}") >= 5 and rendered.count("except:") == 3  # services, databases, job runs (27.7)
+    assert rendered.count("retry: ${http.default_retry}") >= 5 and rendered.count("except:") == 5  # services, databases; the jobs' listing, each job's runs, each cancel (27.7)
     assert "costAmount" in rendered and "budgetAmount" in rendered and "cost / budget" in rendered
     assert "lab-deploy-cap-lifted" in rendered and "raise:" in rendered

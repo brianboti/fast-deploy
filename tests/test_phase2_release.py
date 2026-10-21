@@ -230,7 +230,8 @@ def test_drift_lists_live_settings_that_differ_from_the_reviewed_spec():
 def test_workflows_support_reuse_rollback_and_history_checks():
     deploy = yaml.safe_load(Path("templates/deploy-gcp.yml").read_text())
     assert deploy[True]["workflow_dispatch"]["inputs"]["image_digest"]["required"] is False  # PyYAML reads the `on` key as True
-    assert deploy["jobs"]["build"]["if"] == "inputs.image_digest == ''"
+    # 1.31.0: the build also waits for the job that makes a test image (docs/ROADMAP.md D69), and runs when it is skipped.
+    assert deploy["jobs"]["build"]["if"] == "${{ !cancelled() && inputs.image_digest == '' && needs.base.result != 'failure' && needs.base.result != 'cancelled' }}"
     assert "needs.build.result != 'failure'" in deploy["jobs"]["deploy"]["if"]
     names = [step.get("name") for step in deploy["jobs"]["deploy"]["steps"]]
     assert "Validate dispatch inputs for reuse" in names and names.index("Validate dispatch inputs for reuse") < names.index("Validate artifact and deployment configuration")

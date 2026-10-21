@@ -604,10 +604,12 @@ wake:
   contract's `timeout_seconds` (five minutes at most). Answer quickly and do the work inside the request: Cloud Run gives a
   service CPU only while it answers. Check that the caller is the wake identity (the signed header IAP adds names it) before
   acting. After three failed wakes in a row the clock waits half an hour. A service the spending cap closed is not woken.
-- **The guard.** Every minute the controller cancels a run that has more than one task, has run five minutes past its
-  `timeout_minutes`, or is beyond the day's `runs_per_day` (UTC), and records it in the audit trail. Cloud Run lets the one
+- **The guard.** Every minute the controller looks at every job the platform made for the service and cancels a run that
+  has more than one task, has run five minutes past its `timeout_minutes`, or is beyond the day's `runs_per_day` (UTC), and
+  any run of a job the released contract does not declare; each cancel is in the audit trail. Cloud Run lets the one
   permission that starts a job with arguments also set its task count and timeout, so the guard is what holds the
-  contract's limits.
+  contract's limits. A run that ends within the minute between two looks cannot be cancelled: it counts towards the day,
+  a day over its runs is recorded for the digest, and the spending cap is the backstop.
 - **The cap.** At the budget line the spending cap also cancels every running execution of a managed job. What already ran
   is billed.
 - **Cost.** A run bills instance-based for its whole life, at least a minute: about $0.16 an hour at 2 CPUs and 4 GiB, $0.06

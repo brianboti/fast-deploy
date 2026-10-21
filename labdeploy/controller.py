@@ -920,6 +920,9 @@ class Controller:
                 results[app_id] = f"up to date: {built_on['service']}'s packages are the same at {newest['sha'][:12]}"
                 continue
             attempted = self.store.latest_plan(app_id)
+            if attempted and attempted.get("id") != live.get("id") and not attempted.get("base"):
+                results[app_id] = f"its newest plan {attempted['id'][:8]} builds on no application's test image; nothing to follow"
+                continue
             if attempted and (attempted.get("base") or {}).get("commit") == newest["sha"] and not self.retryable(attempted):
                 results[app_id] = f"plan {attempted['id'][:8]} already builds on {newest['sha'][:12]} ({attempted['state']})"
                 continue

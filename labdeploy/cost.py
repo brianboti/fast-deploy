@@ -213,7 +213,8 @@ def estimate(spec, requests_per_month=None, average_request_seconds=None, pricin
         result["jobs"] = jobs_costs(spec, pricing)
         result["jobs_ceiling_usd_month"] = _usd(sum(item["worst_month_usd"] for item in result["jobs"]))
         result["assumptions"].append("Jobs: each run bills at instance-based rates for at least a minute; the worst case is every run of the day at its "
-                                     "full timeout, which the platform's guard enforces. A job's model tokens are extra and bill per use.")
+                                     "full timeout, the limits the platform's guard holds (it checks every minute, so a run shorter than that can "
+                                     "pass it; the spending cap is the backstop). A job's model tokens are extra and bill per use.")
     if getattr(spec, "proxy", False):
         from .release import PROXY_CPU, PROXY_MEMORY_MIB
         result["assumptions"].append(f"proxy: true adds the Nginx sidecar's {PROXY_CPU} vCPU and {PROXY_MEMORY_MIB} MiB to every instance, billed as the "

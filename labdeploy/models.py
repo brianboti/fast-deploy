@@ -465,8 +465,9 @@ class AppSpec(StrictModel):
         for name, job in self.jobs.items():
             if not JOB_NAME.fullmatch(name) or "--" in name:
                 raise ValueError(f"'{name}' is not a job name: 2 to 14 lowercase letters, digits and single dashes, starting with a letter")
-            if name in RESERVED_JOBS:
-                raise ValueError(f"'{name}' is a name the platform uses for its own identities or the migration job; call the job something else")
+            if name in RESERVED_JOBS or name.endswith(tuple(f"-{word}" for word in RESERVED_JOBS)):
+                # foo's job x-runtime would be the account foo-x-runtime: the runtime identity of an application named foo-x.
+                raise ValueError(f"'{name}' is or ends in a name the platform uses for its own identities or the migration job; call the job something else")
             if len(self.name) + 1 + len(name) > 30:
                 raise ValueError(f"The job's identity {self.name}-{name} would exceed the 30 characters of an account id: shorten the job's name "
                                  f"to {29 - len(self.name)} characters or fewer")

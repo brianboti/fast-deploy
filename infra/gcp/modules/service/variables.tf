@@ -251,8 +251,8 @@ variable "jobs" {
   default     = {}
   description = "The Cloud Run jobs the service starts itself (jobs.tf, docs/ROADMAP.md D64): their size and timeout, and what each was given; the release sets the rest."
   validation {
-    condition     = length(var.jobs) <= 4 && alltrue([for name, job in var.jobs : can(regex("^[a-z][a-z0-9-]{0,12}[a-z0-9]$", name)) && !contains(["runtime", "deploy", "probe", "wake", "migrate"], name)])
-    error_message = "At most four jobs, each named like a job: not runtime, deploy, probe, wake or migrate."
+    condition     = length(var.jobs) <= 4 && alltrue([for name, job in var.jobs : can(regex("^[a-z][a-z0-9-]{0,12}[a-z0-9]$", name)) && !can(regex("(^|-)(runtime|deploy|probe|wake|migrate)$", name))])
+    error_message = "At most four jobs, each named like a job: not runtime, deploy, probe, wake or migrate, nor ending in one of them after a dash."
   }
   validation {
     condition     = alltrue([for job in values(var.jobs) : contains([1, 2], job.cpu) && job.memory_mib >= 512 && job.memory_mib <= 4096 && job.memory_mib % 256 == 0 && job.memory_mib <= 4096 * job.cpu && job.timeout_minutes >= 1 && job.timeout_minutes <= 60])

@@ -416,7 +416,14 @@ def test_the_release_workflow_builds_signs_and_scans_the_jobs_images():
     assert template.count("- name: Read the jobs") == 2  # the build job and the deploy job
     assert "permission-contents: read" in template and "path: base" in template and "persist-credentials: false" in template
     # The jobs are built after the service's own image and before the bundle is uploaded; pushed after the service's provenance.
-    assert template.index("Build and check the jobs' images") < template.index("actions/upload-artifact")
+    assert template.index("Build and check the jobs' images") < template.index("name: release-bundle")
+    # The base application's repository is read, with the App's key, only in the job that runs none of this application's code.
+    import yaml as yaml_module
+    jobs = yaml_module.safe_load(template)["jobs"]
+    base_steps = " ".join(json.dumps(step) for step in jobs["base"]["steps"])
+    build_steps = " ".join(json.dumps(step) for step in jobs["build"]["steps"])
+    assert "APPS_APP_PRIVATE_KEY" in base_steps and "APPS_APP_PRIVATE_KEY" not in build_steps and "path\": \"base\"" in base_steps
+    assert jobs["build"]["needs"] == "base" and "needs.build.result == 'success'" in jobs["deploy"]["if"]
     assert template.index("Verify build provenance with Cloud KMS") < template.index("Push, sign and verify the jobs' images") < template.index("Deploy, probe, promote")
     assert "A release with jobs builds its images; it never reuses an earlier one" in template
     from labdeploy.workflows import central_deploy
@@ -637,8 +644,8 @@ def test_the_guard_cancels_runs_beyond_the_contracts_limits():
 
 
 class FakeObserver:
-    def __init__(self, ingress="INGRESS_TRAFFIC_ALL", executions=()):
-        self.ingress, self.executions, self.got = ingress, list(executions), []
+    def __init__(self, ingress="INGRESS_TRAFFIC_ALL", executions=(), jobs=("agent", "checker"), paged=False):
+        self.ingress, self.executions, self.got, self.jobs, self.paged = ingress, list(executions), [], list(jobs), paged
 
     def token(self):
         return "machine-token"
@@ -647,9 +654,17 @@ class FakeObserver:
         return {"ingress": self.ingress, "url": "https://x.a.run.app"}
 
     def get(self, url, **params):
-        self.got.append(url)
+        self.got.append((url, params.get("pageToken")))
         if "/services/" in url:
             return {"ingress": self.ingress}
+        if url.endswith("/jobs"):
+            labels = {"lab-deploy-managed": "true", "lab-deploy-app": "codesurgeon"}
+            return {"jobs": [{"name": f"projects/p/locations/us-central1/jobs/codesurgeon-{job}", "labels": {**labels, "lab-deploy-job": job}}
+                             for job in self.jobs] + [{"name": "projects/p/locations/us-central1/jobs/codesurgeon-migrate", "labels": labels},
+                                                      {"name": "projects/p/locations/us-central1/jobs/other-agent",
+                                                       "labels": {"lab-deploy-app": "other", "lab-deploy-job": "agent"}}]}
+        if self.paged and params.get("pageToken") is None:
+            return {"executions": [], "nextPageToken": "next"}
         return {"executions": self.executions}
 
 
@@ -709,6 +724,31 @@ def test_the_guard_cancels_and_records_each_cancel(tmp_path):
     _, refused = keeper(tmp_path / "refused", FakeObserver(executions=executions), lambda request: httpx.Response(403))
     assert refused.guard_tick()["cancelled"] == 2 and refused.snapshot()["cancels"][0]["outcome"].startswith("refused: the guard's role")
     assert k.cancel("not/a/name") == "refused: not an execution name"
+
+
+def test_the_guard_watches_every_labelled_job_reads_every_page_and_counts_a_day_over_its_runs(tmp_path):
+    # A job the released contract does not declare (its root made it first, or a rollback left it): every run goes.
+    executions = [{"name": "projects/p/locations/us-central1/jobs/codesurgeon-sweep/executions/s1", "createTime": iso(30), "startTime": iso(30), "taskCount": 1}]
+    observer = FakeObserver(executions=executions, jobs=("sweep",), paged=True)
+    posted = []
+    c, k = keeper(tmp_path, observer, lambda request: posted.append(str(request.url)) or httpx.Response(200, json={}))
+    result = k.guard_tick()
+    assert result["checked"] == 1 and result["cancelled"] == 1  # the migration job and another service's job are not this one's
+    assert k.snapshot()["cancels"][0]["reason"] == "the application's released contract declares no such job"
+    assert ("https://run.googleapis.com/v2/projects/p/locations/us-central1/jobs/codesurgeon-sweep/executions", "next") in observer.got
+    # A run that ended between the listing and the cancel is not reported as a cancel.
+    (tmp_path / "ended").mkdir()
+    _, ended = keeper(tmp_path / "ended", FakeObserver(executions=executions, jobs=("sweep",)), lambda request: httpx.Response(400))
+    assert ended.guard_tick()["cancelled"] == 0 and ended.snapshot()["cancels"] == []
+    # More runs started today than the contract allows, even finished ones: recorded once for the digest.
+    many = [{"name": f"projects/p/locations/us-central1/jobs/codesurgeon-checker/executions/m{i}", "createTime": iso(600 - i), "startTime": iso(600 - i),
+             "completionTime": iso(500 - i), "taskCount": 1} for i in range(31)]
+    (tmp_path / "many").mkdir()
+    c2, busy = keeper(tmp_path / "many", FakeObserver(executions=many, jobs=("checker",)), lambda request: httpx.Response(200, json={}))
+    busy.guard_tick()
+    busy.guard_tick()
+    over = c2.store.find_events(kind="job_over_limit")
+    assert len(over) == 1 and "more than 30 runs" in over[0]["detail"]
 
 
 def test_jobs_follow_the_application_they_build_on(tmp_path):
@@ -845,3 +885,37 @@ def test_the_digest_names_each_cancelled_run_and_each_application_the_clock_coul
     assert "the guard cancelled a run of `codesurgeon-agent`" in text and "the clock could not wake it" in text
     (tmp_path / "quiet").mkdir()
     assert "jobs" not in controller(tmp_path / "quiet")[0].build_digest()
+
+
+def test_the_previous_image_is_read_from_gclouds_json_and_a_job_without_one_is_never_changed(tmp_path):
+    v1 = {"spec": {"template": {"spec": {"template": {"spec": {"containers": [{"image": BOOTSTRAP}]}}}}}}
+    v2 = {"template": {"template": {"containers": [{"image": BOOTSTRAP}]}}}
+    for shape in (v1, v2):
+        adapter = CloudRun("lab-proj-123", "us-central1", "codesurgeon", "p@lab-proj-123.iam.gserviceaccount.com", runner=lambda args, s=shape: json.dumps(s))
+        assert adapter.job_image("agent") == BOOTSTRAP
+    assert CloudRun("lab-proj-123", "us-central1", "codesurgeon", "p@x.iam.gserviceaccount.com", runner=lambda args: "{}").job_image("agent") == ""
+    adapter = FakeRun()
+    adapter.images["agent"] = ""
+    image = "us-central1-docker.pkg.dev/lab-proj-123/codesurgeon/codesurgeon@sha256:" + "3" * 64
+    with pytest.raises(RuntimeError):
+        rollout(adapter, image, spec(), "d" * 32, tmp_path / "r.json", job_images=job_images())
+    receipt = json.loads((tmp_path / "r.json").read_text())
+    assert receipt["failed_phase"] == "updating_jobs" and "cannot be read" in receipt["error"] and adapter.images["checker"] == BOOTSTRAP
+
+
+@pytest.mark.parametrize("name", ["x-runtime", "x-deploy", "x-probe", "x-wake", "x-migrate"])
+def test_a_job_name_never_reads_as_another_applications_identity(name):
+    with pytest.raises(ValueError, match="ends in a name the platform uses"):
+        parse_spec(f"name: foo\nreviewed: true\njobs: {{{name}: {{dockerfile: D}}}}\n")
+    with pytest.raises(ValueError, match="Invalid job name"):
+        root(jobs={name: {"cpu": 1, "memory_mib": 512, "timeout_minutes": 1, "buckets": {}, "models": [], "secrets": []}})
+
+
+def test_a_dependant_whose_newest_plan_names_no_base_is_not_released_every_hour(tmp_path):
+    c, principal, github = controller(tmp_path)
+    bettercare = {"name": "bettercare", "runtime": "node-http", "node": "24", "reviewed": True}
+    release(c.store, "bettercare", "b" * 40, bettercare)
+    release(c.store, "codesurgeon", "a" * 40, yaml.safe_load(CODESURGEON), base={"service": "bettercare", "repository": "lab/bettercare", "path": "", "commit": "b" * 40})
+    release(c.store, "bettercare", "f" * 40, {**bettercare, "node": "26"})
+    c.store.add("m", {"id": "9" * 32, "application": "codesurgeon", "sha": "a" * 40, "spec": {"name": "codesurgeon", "reviewed": True}, "target": TARGET}, "failed")
+    assert "builds on no application's test image" in c.base_tick()["codesurgeon"]

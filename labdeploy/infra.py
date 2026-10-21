@@ -211,7 +211,9 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
     if len(jobs) > 4:
         raise ValueError("A service starts at most four jobs")
     for job, item in jobs.items():
-        if not isinstance(job, str) or not JOB.fullmatch(job) or job in ("runtime", "deploy", "probe", "wake", "migrate") or len(name) + 1 + len(job) > 30:
+        reserved = ("runtime", "deploy", "probe", "wake", "migrate")
+        if (not isinstance(job, str) or not JOB.fullmatch(job) or job in reserved or job.endswith(tuple(f"-{word}" for word in reserved))
+                or len(name) + 1 + len(job) > 30):
             raise ValueError(f"Invalid job name: {job!r}")
         if (not isinstance(item, dict) or set(item) != {"cpu", "memory_mib", "timeout_minutes", "buckets", "models", "secrets"}
                 or item["cpu"] not in (1, 2) or type(item["memory_mib"]) is not int or not 512 <= item["memory_mib"] <= 4096 or item["memory_mib"] % 256

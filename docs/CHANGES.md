@@ -28,7 +28,10 @@ trust. A release with jobs always builds its images again.
 **27.4, the test image of another application.** `base: <service>` names an onboarded Node.js application; the platform
 renders its test image from that application's contract (its Node line, its npm lockfile with every install script off,
 then its `build.scripts`, development dependencies in `/deps`, npm kept, a writable `/work`, user 65532, none of its code)
-at the commit its last staging release deployed, and passes it as the build argument `BASE`. Built locally on 2026-10-21
+at the commit its last staging release deployed, and passes it as the build argument `BASE`. That image is made in a job
+of its own (`base`), which runs none of the released application's code, so the platform's GitHub App key and the base
+application's source never share a machine with code nobody has reviewed; the build job loads it from an artifact. A job's
+Dockerfile on a base names its own `USER`. Built locally on 2026-10-21
 from BetterCare's own files: 27 seconds, 482 MB, and its 44 tests passed inside it with no network, the code read only,
 through Smart Dev's unchanged `run-tests.sh`.
 
@@ -37,8 +40,9 @@ previous image on any failure, on recovery and on a rollback; the receipt names 
 
 **27.6, the clock and the guard.** Every minute the controller wakes each released application whose interval has passed
 (an identity token as `<service>-wake`, a thread per call, no wake for a service the cap closed, half an hour between
-tries after three failures), and cancels any job run of more than one task, past its timeout or beyond the day's runs;
-each lands in the audit trail and the status. Hourly, an application whose jobs build on another application is released
+tries after three failures). The guard reads every job the platform labelled in each project, every page of its runs,
+and cancels a run of more than one task, past its timeout or beyond the day's runs, and any run of a job the released
+contract does not declare; each lands in the audit trail and the status, and a day over its runs once in the digest. Hourly, an application whose jobs build on another application is released
 again (with `auto_deploy`) when that application's lockfile, Node line or `build.scripts` changed.
 
 **27.7, the cap.** The spending cap also cancels every running execution of a job applications start.
