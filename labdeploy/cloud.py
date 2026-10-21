@@ -204,7 +204,9 @@ class Observer:
                  "budget_remaining": newest("select_slo_budget_fraction"), "name": name}
         # What the objective counts (docs/ROADMAP.md D58): its own filters, so the answer follows whatever it was rendered
         # with. The newest day with a server error says when a spent budget recovers at the latest, if no new one comes.
-        ratio = (slo.get("requestBasedSli") or {}).get("goodTotalRatio") or {}
+        # The API returns the rules under serviceLevelIndicator.requestBased (Terraform's request_based_sli is its own name for
+        # them); until 1.29.2 this read the Terraform name, found nothing, and the counts below never appeared.
+        ratio = ((slo.get("serviceLevelIndicator") or {}).get("requestBased") or {}).get("goodTotalRatio") or {}
         try:
             monitoring = CloudMonitoring(target.project_id, self.token, self.client)
             window_start = end - datetime.timedelta(days=days)
