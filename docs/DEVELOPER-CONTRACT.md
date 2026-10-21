@@ -378,12 +378,19 @@ Recommended:
 
 - **Config in the environment, only.** Values come from `platform.yaml` `env`, secrets arrive as environment variables
   of the same name, and every declared need arrives as `BUCKET_<NAME>`, `TOPIC_<NAME>`, `SUBSCRIPTION_<NAME>`,
-  `FIRESTORE_DATABASE` or `DATABASE_INSTANCE`, `DATABASE_NAME`, `DATABASE_USER`, `DATABASE_IP_TYPE`. Nothing is read
-  from committed files or baked into the image.
+  `FIRESTORE_DATABASE` or `DATABASE_INSTANCE`, `DATABASE_NAME`, `DATABASE_USER`, `DATABASE_IP_TYPE`, and
+  `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION` for `models: [claude]`; a `lab-members` app also gets
+  `IAP_AUDIENCE` (section 6a). Nothing is read from committed files or baked into the image. Firestore's clients read
+  no variable for the database, so pass it yourself: `new Firestore({ databaseId: process.env.FIRESTORE_DATABASE })`,
+  `firestore.Client(database=os.environ["FIRESTORE_DATABASE"])`.
 - **Backing services as attached resources.** Use Google's client libraries with default credentials: the service
   runs as its own least-privilege identity that may reach only its declared resources. No keys, no passwords;
   Postgres signs in with IAM (the identity is the user) over a private address, through the Cloud SQL Python connector
-  or psycopg.
+  or psycopg, or for Node.js `@google-cloud/cloud-sql-connector` with `authType: 'IAM'` and `ipType: 'PRIVATE'`.
+- **Write only under `/tmp`.** The image's files belong to root and the service runs as a user that is not, so a library
+  that writes a cache beside its own code (transformers.js keeps its models inside `node_modules`) stops with `EACCES`.
+  Point such caches at `/tmp`, which is memory on Cloud Run and counts toward `resources.memory_mib`, or better, put the
+  files in a mounted bucket (section 4b) so nothing is fetched or written at a cold start.
 - **The health endpoint is a readiness check.** `GET health_path` answers 200 only when the app can serve, cheaply, with
   no external call that could fail or cost; it is HTTP/1 and reachable from outside. The startup probe, the release
   probes and the uptime check (every minute) all use it.
@@ -504,6 +511,21 @@ needs (`/app` itself, `/tmp`, `/var`, the system folders); mount below the app's
 Fill the bucket once with `gcloud storage cp -r ./index gs://PROJECT-SERVICE-corpus/`; the code reads the files at the
 same paths as before.
 
+Work that takes minutes belongs before the release, not at every start: Cloud Run gives a new instance 60 seconds to
+answer its health path, and every visitor after an idle spell waits for that start. Compute embeddings, indexes and
+other derived files once, put them in the bucket beside their inputs, and have the code load them. A model's files go
+there too: transformers.js loads them from the mount with `env.localModelPath` set to its folder and
+`env.allowRemoteModels = false` (the layout is `<folder>/<model id>/config.json`, `tokenizer.json`,
+`tokenizer_config.json` and `onnx/` with the file the chosen `dtype` names), and Python's Hugging Face libraries load a
+folder path with `HF_HUB_OFFLINE=1`. Measured on 2026-10-20 in the platform's Node.js image on a laptop: a search
+service that embedded about 5,000 passages at start took 2 minutes 41 seconds with six CPUs, and the same service
+reading its precomputed vectors and its model from read-only folders, with one CPU and 512 MiB, answered in under a
+second and used about 190 MiB after its first search.
+
+**Answers that stream.** A response sent as server-sent events, as most chat front ends do, is one request to Cloud
+Run, and Cloud Run closes it when `timeout_seconds` runs out (60 seconds by default, 3600 at most), whatever is still
+streaming. Set it to the longest answer the service must carry.
+
 **Claude through Google Cloud.** `needs.models: [claude]` lets the service call Claude on Vertex AI with no internet and
 no API key. Its identity gets a role with one permission (calling a model), and the service gets
 `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION=global`, which the Anthropic SDK's Vertex client reads
@@ -601,7 +623,22 @@ through (the lab's list plus the app's own list; developers ask the operator to 
 
 - Never build your own login. The proxy has already authenticated the person; read who it is from the request header
   `X-Goog-Authenticated-User-Email` (the value looks like `accounts.google.com:name@example.edu`) and, when you need to
-  verify it, from the signed `X-Goog-IAP-JWT-Assertion` header.
+  verify it, from the signed `X-Goog-IAP-JWT-Assertion` header: an ES256 token from `https://cloud.google.com/iap`, signed
+  with the keys at `https://www.gstatic.com/iap/verify/public_key-jwk`, whose `aud` must equal the variable
+  `IAP_AUDIENCE` the platform sets (`/projects/NUMBER/locations/REGION/services/SERVICE`) and whose `email` claim names
+  the person. Google's auth libraries do it in a few lines (Node.js `google-auth-library`: `OAuth2Client`'s
+  `getIapPublicKeys`, then `verifySignedJwtWithCertsAsync(token, pubkeys, IAP_AUDIENCE, ['https://cloud.google.com/iap'])`;
+  Python `google-auth`: `id_token.verify_token(token, Request(), audience=IAP_AUDIENCE,
+  certs_url="https://www.gstatic.com/iap/verify/public_key")`). The proxy removes such headers when a visitor sends them,
+  so they come only from it. Leave the health path open: Cloud Run's own startup probe reaches the container without
+  passing the proxy.
+- Who can be listed: Google accounts and Google groups. A person whose work address is not Google's can create a Google
+  account on that same address and be listed by it. Signing in with another provider (Microsoft Entra ID, say) is not
+  offered (`docs/ROADMAP.md`, D47): Google does it for this proxy through Workforce Identity Federation, which needs the
+  project, the identity pool and the OAuth client in one organization (staging is in none) and a registration in the
+  other provider by its administrators.
+- Pages served by the app itself work as they are. A page or browser extension on another site that calls the app's API
+  sends a preflight request without the sign-in cookie, which the proxy refuses; such a client is not supported yet.
 - Programs calling the app's API need a Google identity token minted for the proxy's OAuth client, not for the service
   URL; the platform's own release probes do this. Ask the operator for the client id when a program must call the app.
 - Everything else (port, health path, logs, statelessness) is unchanged. The health path is reachable to the proxy's

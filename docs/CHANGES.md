@@ -1,3 +1,52 @@
+# 1.25.1: what a chat or search service is told before it runs
+
+Found on 2026-10-20 by putting the BetterCare chatbot (Sophia, read as text since 1.20.0) through the platform's own
+Node.js image on a laptop, the way Cloud Run runs it: the code folder owned by root, a user that is not, one CPU and
+512 MiB, its data on read-only folders and no internet. Its developer is preparing the repository for the platform, so the
+question was what still stands in the way once the code is ready, and what the reader tells whoever reviews the contract.
+
+- As it is, it stopped within a second: transformers.js fetches its embedding model into
+  `node_modules/@huggingface/transformers/.cache`, which the service's user cannot write (`EACCES`). The reader's only
+  word on it was "add egress: internet".
+- With that cache moved to `/tmp`, it took 94 seconds to start with 415 passages (the platform's startup probe allows 60)
+  and used 498 of its 512 MiB, because it embeds every passage at each start; 4,980 passages took 2 minutes 41 seconds on
+  six CPUs. Reading precomputed vectors and the model from read-only folders, it started in under a second, searched in
+  0.2 to 0.5 seconds offline and used 105 MiB idle, 189 MiB after a search: the platform's limits fit, the work at start
+  does not.
+- Its chat streams answers as server-sent events, which Cloud Run closes at `timeout_seconds` (60 in the draft).
+- It calls Claude with an API key; the reader said nothing of `needs.models: [claude]`.
+- The reader named 20 of its 30 settings and said nothing of the other ten, and its SQLite note still pointed at
+  `state: sqlite`, dropped before it was built (D47).
+- Its tests passed as the pipeline runs them (`npm ci --ignore-scripts`, then `npm test`, Node.js 24, no network): 44 of 44.
+
+1. **The reader's notes for a service that calls Claude, loads a model or streams**, for both runtimes: Anthropic's own
+   client (`@anthropic-ai/sdk`, `anthropic`) gets the way through Google Cloud (`needs.models: [claude]` with the Vertex
+   AI client: no API key, no internet, billed inside the budget and the cap); the Vertex AI client
+   (`@anthropic-ai/vertex-sdk`, `anthropic[vertex]`, or `AnthropicVertex` in the code) gets `models: [claude]` among the
+   suggested needs; transformers.js gets the mount (`env.localModelPath` with `env.allowRemoteModels = false`) or a cache
+   under `/tmp` with `egress: internet`, and leaves the generic egress note; Python's Hugging Face libraries
+   (`transformers`, `sentence-transformers`, `huggingface-hub`) get the mount with `HF_HUB_OFFLINE=1`, or egress; a
+   service that sends `text/event-stream` (or uses sse-starlette's `EventSourceResponse`) is told that the timeout ends
+   its streams, unless its contract already allows more than 60 seconds.
+2. **Every setting is named**, up to 40, and the rest counted, instead of the first 20 and silence.
+3. **The SQLite note** says why (restarts, instances, two versions side by side at every release) and names
+   `needs.database`.
+4. **`IAP_AUDIENCE` on every `lab-members` revision**: `/projects/NUMBER/locations/REGION/services/SERVICE`, the audience
+   of the proxy's signed header, which an app checks when it verifies who is signed in. The release reads the project's
+   number from the service's own description (its namespace), once per release, and stops before deploying when the
+   description has none. A `lab-members` contract may not set `IAP_AUDIENCE` under `env` or `secrets` itself.
+5. **The contract page**: write only under `/tmp`; Firestore's database id passed from `FIRESTORE_DATABASE` (its clients
+   read no variable for it); Postgres from Node.js through `@google-cloud/cloud-sql-connector`; derived files computed
+   before the release and mounted with the model's files; streamed answers and `timeout_seconds`; how to verify the
+   proxy's header against `IAP_AUDIENCE`; who can be listed (Google accounts, including one made on a work address) and
+   what is not offered (another identity provider, a page or extension on another site calling the API).
+
+The release runner takes 4 from the platform's main at the next release of a kept contract, and at the next re-pin for an
+application with its own workflows; the notes reach the chat when the machine runs 1.25.1. Terraform apply: none.
+
+Tests: 975 pass (10 new); ruff clean.
+
+
 # 1.25.0: a settings page for the controller's configuration
 
 Until now the controller's own configuration changed one way: `scripts/machine.sh config-get FILE`, YAML edited by hand,

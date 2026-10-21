@@ -20,6 +20,7 @@ NEEDS_HINTS = (
     ("buckets: [NAME] (arrives as BUCKET_NAME)", r"google-cloud-storage"),
     ("topics: [NAME] (arrives as TOPIC_NAME and SUBSCRIPTION_NAME)", r"google-cloud-pubsub"),
     ("migrate: [alembic, upgrade, head]", r"\balembic\b"),
+    ("models: [claude] (Claude on Vertex AI: no API key, no internet)", r"\banthropic\[[^\]]*\bvertex\b"),
 )
 UNPROVIDED = (("redis", r"\bredis\b"), ("mysql", r"pymysql|mysqlclient"))
 # The component rule (docs/DEVELOPER-CONTRACT.md, "One repository, several services"): where each part of an app goes.

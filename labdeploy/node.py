@@ -70,10 +70,17 @@ NEEDS_HINTS = (
     ("database: firestore", r"^(@google-cloud/firestore|firebase-admin)$"),
     ("buckets: [NAME] (arrives as BUCKET_NAME)", r"^@google-cloud/storage$"),
     ("topics: [NAME] (arrives as TOPIC_NAME and SUBSCRIPTION_NAME)", r"^@google-cloud/pubsub$"),
+    ("models: [claude] (Claude on Vertex AI: no API key, no internet)", r"^@anthropic-ai/vertex-sdk$"),
 )
 UNPROVIDED = (("redis", r"^(redis|ioredis)$"), ("mysql", r"^(mysql|mysql2)$"), ("mongodb", r"^(mongodb|mongoose)$"))
 WORKERS = r"^(bull|bullmq|bee-queue|agenda|node-cron|cron|node-schedule)$"
 SQLITE = re.compile(r"""["'](?:node:sqlite|better-sqlite3|sqlite3)["']""")
+# Anthropic's own client and its Vertex AI client (D47): the first needs an API key and the internet, the second neither.
+CLAUDE_CLIENT, CLAUDE_VERTEX_CLIENT = "@anthropic-ai/sdk", "@anthropic-ai/vertex-sdk"
+# transformers.js fetches each model from Hugging Face on first use and caches it inside its own package folder,
+# node_modules/@huggingface/transformers/.cache by default, which the platform's non-root user cannot write: the first
+# model load stops with EACCES (seen with 4.x in the platform's image on 2026-10-20).
+MODEL_DOWNLOADERS = ("@huggingface/transformers", "@xenova/transformers")
 # Packages with prebuilt or compiled native code: on an Alpine (musl) image their glibc binaries do not load (D45).
 NATIVE = {"onnxruntime-node", "sharp", "bcrypt", "better-sqlite3", "sqlite3", "canvas", "@tensorflow/tfjs-node", "argon2", "re2", "node-sass",
           "@napi-rs/canvas", "lightningcss", "@swc/core", "esbuild"}

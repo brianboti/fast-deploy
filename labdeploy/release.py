@@ -100,6 +100,7 @@ class CloudRun:
         # reaches it only through a release, split and watched like any other, never by an instance restarting.
         self.pin_secrets, self.pinned = pin_secrets, {}
         self.probe_account, self.run = probe_account, runner
+        self.audience = None  # IAP_AUDIENCE, read once per release (exposure_env)
         if iap_client_id is not None and not IAP_CLIENT_ID.fullmatch(iap_client_id):
             raise ValueError("IAP_CLIENT_ID must be an OAuth client id of the form NUMBER-ID.apps.googleusercontent.com")
         self.iap_client_id = iap_client_id
@@ -199,11 +200,24 @@ class CloudRun:
             raise ValueError(f"Secret {secret} has no enabled version to pin")
         return version
 
+    def exposure_env(self, spec):
+        """IAP_AUDIENCE for a lab-members app: the audience Identity-Aware Proxy writes into the signed header it adds to every
+        request (x-goog-iap-jwt-assertion), /projects/NUMBER/locations/REGION/services/SERVICE, which the app checks when it
+        verifies who is signed in. The project's number is the service's namespace in its own description."""
+        if spec.exposure != "lab-members":
+            return {}
+        if self.audience is None:
+            number = str(self.describe().get("metadata", {}).get("namespace", ""))
+            if not re.fullmatch(r"[0-9]{1,20}", number):
+                raise ValueError("The service's description names no project number, so IAP_AUDIENCE cannot be set")
+            self.audience = f"/projects/{number}/locations/{self.region}/services/{self.service}"
+        return {"IAP_AUDIENCE": self.audience}
+
     def configuration(self, spec, extra=None):
-        """The variable and secret flags a revision or job gets: the reviewed spec is the whole truth, needs add their derived
-        variables, and `extra` (the migration's lock timeout) gives way to anything the spec sets itself."""
+        """The variable and secret flags a revision or job gets: the reviewed spec is the whole truth, needs and the exposure add
+        their derived variables, and `extra` (the migration's lock timeout) gives way to anything the spec sets itself."""
         flags = []
-        values = {**needs_env(spec, self.project, self.region), **(extra or {}), **spec.env}
+        values = {**needs_env(spec, self.project, self.region), **self.exposure_env(spec), **(extra or {}), **spec.env}
         if values:
             env_file = Path("revision-env.yaml")
             env_file.write_text(json.dumps(values))  # JSON is valid YAML, and the values stay single-line strings
