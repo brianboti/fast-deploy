@@ -1176,7 +1176,11 @@ def excluded(relative):
 
 
 def start_command(entrypoint):
-    """build.entrypoint as an exec-form command: its words, or a shell running it when it reads a variable ($PORT)."""
+    """build.entrypoint as an exec-form command: its words, or a shell running it when it reads a variable ($PORT) or chains
+    commands (a && b, D49, 22.2): the platform's images start under tini, which passes SIGTERM to the shell's last command."""
+    if "&&" in entrypoint:
+        parts = [part.strip() for part in entrypoint.split("&&")]
+        return ["sh", "-c", " && ".join(parts[:-1] + [f"exec {parts[-1]}"])]
     return ["sh", "-c", f"exec {entrypoint}"] if "$" in entrypoint else shlex.split(entrypoint)
 
 
@@ -1417,14 +1421,6 @@ def node_platform_dockerfile(spec, facts):
     manager, plan, member = facts["manager"], facts.get("plan") or {}, facts.get("member") or ""
     commands = nodejs.MANAGER_COMMANDS[manager]
     build_words = plan.get("build")
-    if manager == "npm" and not build_words and not member:
-        text = node_dockerfile({"node": spec.node, "port": spec.port, "command": start_command(spec.build.entrypoint),
-                                "lockfile": facts.get("lockfile") or "package-lock.json", "scripts": spec.build.scripts})
-        image = f"node:{spec.node}-slim by its multi-architecture index digest, resolved {NODE_IMAGES_RESOLVED}"
-        body = text[re.search(r"(?m)^FROM ", text).start():].replace("# Only what .dockerignore lets in is copied.",
-                                                                      "# Only what passed the platform's deny-list was copied into this build context.")
-        return ("# Made by Fast Deploy at build time from the contract (build.recipe: platform, docs/ROADMAP.md 13.3); never committed.\n"
-                f"# {image}.\n" + body)
     run = lambda text: image_command(manager, text)  # noqa: E731 - a one-line rename for readability below
     manager_lines = ""
     if manager != "npm":
@@ -1441,13 +1437,14 @@ def node_platform_dockerfile(spec, facts):
     install = run(commands["frozen"] if build_words else commands["production"])
     if member and manager == "pnpm":
         install += f" --filter ./{member}..."
-    rebuild = ""
+    rebuild, joined = "", ""
     if spec.build.scripts:
-        rebuild = f"RUN {run(commands['rebuild'])} " + " ".join(spec.build.scripts) + "\n"
         if member:
-            rebuild = f"WORKDIR {workdir}\n{rebuild}WORKDIR /app\n"
+            rebuild = f"WORKDIR {workdir}\nRUN {run(commands['rebuild'])} " + " ".join(spec.build.scripts) + "\nWORKDIR /app\n"
+        else:
+            joined = f" \\\n && {run(commands['rebuild'])} " + " ".join(spec.build.scripts)
     install_lines = (f"# The lockfile installed frozen, with every install script off{'; only build.scripts runs its own afterwards' if spec.build.scripts else ''}.\n"
-                     f"RUN {install}\n{rebuild}")
+                     f"RUN {install}{joined}\n{rebuild}")
     build_lines = ""
     if build_words:
         words = run(" ".join(build_words)) if build_words[0] in ("npm", "pnpm", "yarn", "bun") else " ".join(build_words)
@@ -1481,10 +1478,42 @@ def platform_dockerfile(spec, locked, lockfile="package-lock.json", facts=None):
     `facts` (build_facts or node_facts) says what the build context lists and holds."""
     if spec.build.recipe != "platform" or not spec.build.entrypoint:
         raise ValueError("The platform makes a Dockerfile only for build.recipe: platform with build.entrypoint")
+    if spec.runtime == "static":
+        return static_dockerfile(spec, facts or {"manager": "npm", "lockfile": lockfile, "plan": {}, "member": ""})
     if spec.runtime != "node-http":
         return python_platform_dockerfile(spec, locked, facts)
     facts = facts or {"manager": "npm", "lockfile": lockfile, "plan": {}, "member": ""}
     return node_platform_dockerfile(spec, facts)
+
+
+def static_dockerfile(spec, facts):
+    """The platform's image for a front-end site (runtime: static, docs/ROADMAP.md D55, 22.4): the manager the lockfile names,
+    the full install with scripts off, the build script, then Caddy serving build.output from a final image with no source,
+    no node_modules and no package manager, under tini, as a user that is not root. Unknown paths fall back to index.html,
+    as a single-page application expects."""
+    from . import node as nodejs
+    manager = facts.get("manager") or "npm"
+    commands = nodejs.MANAGER_COMMANDS[manager]
+    run = lambda text: image_command(manager, text)  # noqa: E731
+    manager_lines = ""
+    if manager != "npm":
+        package, bin_path, runner = MANAGER_PACKAGES[manager]
+        version, integrity = manager_release(manager, facts.get("release"))
+        steps = ["echo '{\"private\": true}' > package.json",
+                 f"npm install --no-audit --no-fund --ignore-scripts --loglevel=error {package}@{version} >&2",
+                 f"node -e {shlex.quote(pinned_package_check(package, version, '/opt/manager'))} {shlex.quote(integrity)}"]
+        if not runner:
+            steps.append(f"chmod +x /opt/manager/node_modules/{package}/{bin_path}")
+        manager_lines = (f"# {commands['title']} {version}, the manager the lockfile names, installed by version and integrity with scripts off.\n"
+                         "WORKDIR /opt/manager\nRUN " + " \\\n && ".join(steps) + "\n")
+    install = ("# The lockfile installed frozen, with every install script off, then the site's build (its build script).\n"
+               f"RUN {run(commands['frozen'])} \\\n && {run(commands['run'] + ' build')}\n")
+    build = ""
+    return fill(template("Dockerfile.static"), NODE=spec.node, RESOLVED=NODE_IMAGES_RESOLVED, DIGEST=NODE_IMAGES[spec.node], MANAGER=manager_lines,
+                INSTALL=install, BUILD=build, OUTPUT=spec.build.output.strip("/"), PORT=spec.port, CMD=json.dumps(start_command(spec.build.entrypoint)))
+
+
+STATIC_ENTRYPOINT = "caddy run --config /etc/caddy/Caddyfile --adapter caddyfile"
 
 
 def node_lockfile(folder):
@@ -1511,7 +1540,7 @@ def render_build(app_dir, out_dir, spec, path=""):
         (target / relative).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(item, target / relative)
         copied.append(relative)
-    if spec.runtime == "node-http":
+    if spec.runtime in ("node-http", "static"):
         facts = node_facts(target, path)
         service = target / path if path else target
         if not (service / "package.json").is_file() or facts["lockfile"] is None:
@@ -1645,7 +1674,7 @@ def main(argv=None):
         if args.command == "render-build":
             copied = render_build(args.app_dir, args.out_dir, spec, args.path)
             print(f"Build context: {len(copied)} files copied through the platform's deny-list, and the platform's Dockerfile", file=sys.stderr)
-        elif spec.runtime == "node-http":
+        elif spec.runtime in ("node-http", "static"):
             path = clean_path(args.path)
             print(platform_dockerfile(spec, True, node_lockfile(args.app_dir) or "package-lock.json", node_facts(args.app_dir, path, spec.node)), end="")
         else:

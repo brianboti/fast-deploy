@@ -293,7 +293,7 @@ def test_scripts_a_cloud_run_service_never_needs_are_left_out_and_said_why():
     ("vite", "runs Vite's development server", "the platform serves web services"),
     ("next start", "runs Next.js, which needs a build", "commit the built output"),
     ("concurrently \"node api.js\" \"node worker.js\"", "starts several processes at once", "start the service with node itself"),
-    ("node migrate.js && node server.js", "chains commands through a shell", "start the service with node itself"),
+    ("npm run migrate && node server.js", "chains commands through a shell", "start the service with node itself"),  # node-only chains run since 1.24.0 (D49)
     ("sh -c 'node server.js'", "runs a shell", "start the service with node itself"),
     ("pm2-runtime ecosystem.config.js", "process manager", "start the service with node itself"),
     ("npm run serve", "runs npm, not node", "start the service with node itself"),
@@ -372,9 +372,13 @@ def test_a_server_must_read_port_and_listen_on_every_interface():
     literal = read(repo(files={"server.js": "const http = require('http');\nhttp.createServer(() => {}).listen(3000);\n"}))
     assert not literal["refusals"] and literal["spec"].port == 3000  # port: 3000 in the contract since 1.22.0 (20.4): --port sets PORT alike
     loopback = read(repo(files={"server.js": "require('http').createServer().listen(process.env.PORT, '127.0.0.1');\n"}))
-    assert refused(loopback, "listens on 127.0.0.1, which Cloud Run cannot reach")
+    # Since 1.24.0 (D51, 22.1) a loopback binder gets the proxy sidecar; a contract that says proxy: false keeps the refusal.
+    assert not loopback["refusals"] and loopback["spec"].proxy and choice(loopback, "Proxy")["from"] == "server.js"
+    refused_loopback = read(repo(files={"server.js": "require('http').createServer().listen(process.env.PORT, '127.0.0.1');\n",
+                                        "platform.yaml": "name: svc\nruntime: node-http\nnode: '24'\nproxy: false\n"}))
+    assert refused(refused_loopback, "listens on 127.0.0.1, which Cloud Run cannot reach")
     fastify = read(repo(deps={"fastify": "^5.0.0"}, files={"server.js": "const app = require('fastify')();\napp.listen({ port: process.env.PORT || 3000 });\n"}))
-    assert refused(fastify, "starts Fastify without host: '0.0.0.0'")
+    assert fastify["spec"].proxy and any("starts Fastify without host" in note for note in fastify["notes"])
     good = read(repo(deps={"fastify": "^5.0.0"}, files={"server.js": "const app = require('fastify')();\napp.listen({ port: process.env.PORT || 3000, host: '0.0.0.0' });\n"}))
     assert not good["refusals"] and good["spec"].port == 3000
     destructured = read(repo(files={"server.js": "const { PORT = 8081 } = process.env;\nrequire('http').createServer().listen(PORT);\n"}))
@@ -603,11 +607,11 @@ def test_the_node_steps_are_pinned_and_run_for_node_services_only():
         setup = next(step for step in steps if step.get("id") == "app-node")
         assert setup["uses"] == pins.mentions("actions/setup-node")[0].split(" # ")[0]  # by commit, as labdeploy/pins.py reads it
         assert setup["with"] == {"node-version": "${{ steps.policy.outputs.node }}", "package-manager-cache": False}
-        assert setup["if"] == "steps.policy.outputs.runtime == 'node-http'"
+        assert setup["if"] == "steps.policy.outputs.js == 'true'"  # node-http and static (since 1.24.0)
         for name in ("Run unit tests", "Audit Python dependencies"):
             assert "steps.policy.outputs.runtime == 'python-http'" in next(step for step in steps if step.get("name") == name)["if"]
         for name in ("Audit Node.js dependencies", "Install Node.js dependencies with their scripts off", "Run unit tests (Node.js)"):
-            assert "steps.policy.outputs.runtime == 'node-http'" in next(step for step in steps if step.get("name") == name)["if"]
+            assert "steps.policy.outputs.js == 'true'" in next(step for step in steps if step.get("name") == name)["if"]
         # The audit reads the lockfile before any package is installed or run; the build comes last.
         order = [names.index(name) for name in ("Scan the checkout for secrets", "app-node", "Audit Node.js dependencies",
                                                 "Install Node.js dependencies with their scripts off", "Run unit tests (Node.js)", "Build without cloud credentials")]
@@ -775,22 +779,24 @@ def node_spec(**build):
 
 
 def test_the_platforms_node_dockerfile():
+    # Since 1.24.0 (22.2) every platform image has an init stage (tini) and installs in a build stage, npm included.
     text = scaffold.platform_dockerfile(node_spec(scripts=["sharp@0.34.4"]), True, "package-lock.json")
     assert text.startswith("# Made by Fast Deploy at build time") and f"FROM {scaffold.node_base_image('24')}\n" in text
-    assert "ENV NODE_ENV=production HOME=/tmp\n" in text and "COPY package.json package-lock.json ./\n" in text
-    assert "RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm rebuild sharp@0.34.4 && npm cache clean --force \\\n" in text
+    assert "ENV NODE_ENV=production HOME=/tmp\n" in text and "COPY --from=init /tini /usr/local/bin/tini\n" in text
+    assert "RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \\\n && npm rebuild --ignore-scripts=false sharp@0.34.4\n" in text
+    assert 'ENTRYPOINT ["/usr/local/bin/tini", "-g", "--"]' in text
     # Live 2026-10-19: node:24-slim (Debian 12) carried perl's fixable critical findings and npm's bundled libraries three
     # fixable high ones, so the gate stopped every Node.js service nobody had reviewed. Debian 13, and no package manager left.
     assert "-trixie-slim@" in scaffold.node_base_image("24") and all("trixie" in comment for comment in Path("labdeploy/scaffold.py").read_text().split(
         "NODE_IMAGES = {", 1)[1].split("}", 1)[0].splitlines()[1:])
-    removed = text.split("npm cache clean --force", 1)[1].split("COPY . .", 1)[0]
+    removed = text.split("# No package manager stays in the image", 1)[1].split("USER", 1)[0]
     for path in ("/usr/local/lib/node_modules/npm", "/usr/local/lib/node_modules/corepack", "/usr/local/bin/npm", "/usr/local/bin/npx",
                  "/usr/local/bin/corepack", "/usr/local/bin/yarn", "/usr/local/bin/yarnpkg", "/opt/yarn-v*"):
         assert f" {path}" in removed
-    assert text.index("RUN npm ci") < text.index("COPY . .") < text.index("USER 65532:65532") and "EXPOSE 8787\n" in text
+    assert text.index("COPY . .") < text.index("RUN npm ci") < text.index("USER 65532:65532") and "EXPOSE 8787\n" in text
     assert text.rstrip().endswith('CMD ["node", "server/index.mjs"]') and "npm start" not in text.split("never npm start")[0]
     plain = scaffold.platform_dockerfile(node_spec(), True, "npm-shrinkwrap.json")
-    assert "COPY package.json npm-shrinkwrap.json ./" in plain and "npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm cache clean" in plain
+    assert "RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund\n" in plain
     assert not [finding for finding in dockerpolicy.check(plain, "unknown")]  # the platform's own image meets its own policy
 
 
@@ -988,7 +994,7 @@ def test_compose_hono_and_hapi_say_where_a_node_service_listens():
            "serve({ fetch: app.fetch, port: Number(process.env.PORT) || 8788 });\n"
     assert read(repo(deps={"hono": "^4", "@hono/node-server": "^1"}, files={"server.js": hono}))["spec"].port == 8788
     hapi = "const Hapi = require('@hapi/hapi');\nconst server = Hapi.server({ port: process.env.PORT || 3000, host: 'localhost' });\n"
-    assert refused(read(repo(deps={"@hapi/hapi": "^21"}, files={"server.js": hapi})), "listens on localhost")
+    assert read(repo(deps={"@hapi/hapi": "^21"}, files={"server.js": hapi}))["spec"].proxy  # the proxy sidecar since 1.24.0 (D51, 22.1)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed here")

@@ -149,7 +149,11 @@ laptop).
    services in folders, the refusals name them: "deploy everything in REPO" is `onboard_application` with `all: true`,
    one contract pull request per folder. Such code runs contained: a working key in it or a fixable serious vulnerability
    stops its release, and it reaches no internet unless a person merges `egress: internet` into its contract. Say so
-   when its plan or status shows it.
+   when its plan or status shows it. Since 1.24.0 a root Dockerfile is wrapped (`build.user: 65532`), a loopback binder
+   gets `proxy: true`, a front-end site becomes `runtime: static` behind IAP, and a suite that needs a browser or a
+   database is `tests: report`; tell the operator what each adds (the proxy bills as the app while serving). When a
+   release fails, `get_deployment_status`'s next action names the cause from the candidate's log, the developer's line and
+   the contract key: pass all three on, and never change the contract without a person's merge.
    A **Node.js** repository (a `package.json`, since 1.20.0) goes the same way. Since 1.23.0 a `pnpm-lock.yaml`,
    `yarn.lock` or `bun.lock` is installed by its own manager, a service that must be built first (Next.js, NestJS, a
    `build` script, TypeScript) is built in the platform's image, and one package of a workspace installs from the root's
@@ -271,8 +275,7 @@ The platform refuses these. Explain the rule; do not look for a way around it.
 - More than 2 CPUs, 2048 MiB of memory or 3 instances per app; requests longer than 300 seconds.
 - Anything other than a Python or Node.js web service, built from a Dockerfile (or from a Procfile with Google's
   buildpacks, for Node.js only once its code is reviewed) at the repository's root or in one of its folders; any branch
-  other than its default branch. For Node.js not yet: a front-end site with no server, a Dockerfile that runs as root
-  (both Phase 22), `turbo prune` for a pruned workspace install.
+  other than its default branch. Not yet: `turbo prune` for a pruned workspace install; public exposure of a static site.
 - Secret values in the chat. Never ask for, accept or repeat a password, key or token. The operator stores a secret with
   `gcloud` (named `<service>-NAME` in Secret Manager) and `platform.yaml` only names it. If someone pastes one anyway,
   tell the operator to replace (rotate) it.

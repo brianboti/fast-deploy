@@ -16,18 +16,19 @@ INDEX = json.loads((FIXTURES / "index.json").read_text())
 
 # What the reader makes of each repository: accepted with the start it chose, or refused with a fragment of each refusal's
 # problem. The research review counted 3 accepted and 60 refusals at 1.21.0; Phase 20 (1.22.0) read 8 and 42; Phase 21
-# (1.23.0, the Node.js builds and managers) reads 13 accepted and 28 refusals, and the rows below say which rung each one
-# stops at. Phase 22 (the root user, the proxy sidecar, static sites) moves more of them.
+# (1.23.0, the Node.js builds and managers) read 13 and 28; Phase 22 (1.24.0: the wrapper user, the proxy sidecar, static
+# sites, tests: report) reads 19 accepted and 18 refusals. Each of the 14 left needs one answer from a person: a real
+# environment file to rotate, a dead line in the repository's own Dockerfile, a folder, a command, a lockfile to upgrade.
 EXPECTED = {
     # Python
-    "fastapi/full-stack-fastapi-template:backend": ["the final image runs as root"],  # D52 (Phase 22): the platform's wrapper user
-    "miguelgrinberg/microblog": ["the final image runs as root"],
-    "wagtail/bakerydemo": ["the final image runs as root"],  # its `-r requirements/production.txt` is followed now (20.1)
+    "fastapi/full-stack-fastapi-template:backend": "its own Dockerfile",  # its root image wrapped with USER 65532 (D52, 1.24.0)
+    "miguelgrinberg/microblog": "its own Dockerfile",  # wrapped (D52)
+    "wagtail/bakerydemo": "its own Dockerfile",  # `-r requirements/production.txt` followed (20.1), its root image wrapped (D52)
     "streamlit/streamlit-example": "streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true",
     "oobabooga/text-generation-webui": ["holds several requirements files"],  # one file per hardware: a person's choice
-    "nsidnev/fastapi-realworld-example-app": ["the final image runs as root", "builds on Python 3.9"],  # the developer's line
+    "nsidnev/fastapi-realworld-example-app": ["builds on Python 3.9"],  # its own Dockerfile's dead line: the developer's (its root user is wrapped)
     "HackSoftware/Django-Styleguide-Example": "its own Dockerfile",  # `-r requirements/base.txt` followed (20.1)
-    "GoogleCloudPlatform/python-docs-samples:run/helloworld": ["the final image runs as root"],
+    "GoogleCloudPlatform/python-docs-samples:run/helloworld": "its own Dockerfile",  # Google's own sample, wrapped (D52)
     "litestar-org/litestar-fullstack": ["looks like a committed secret"],  # tools/deploy/docker/.env.docker; the example files pass now
     "aio-libs/aiohttp-demos": ["no dependency manifest", "says nothing that starts the service"],  # a root above the demos: named
     "langchain-ai/chat-langchain": ["says nothing that starts the service"],  # started by the LangGraph command line: a person's
@@ -41,16 +42,16 @@ EXPECTED = {
     # Node.js
     "heroku/node-js-getting-started": ["looks like a committed secret"],  # a real .env
     "nestjs/typescript-starter": "node dist/main.js",  # built with nest build in the platform's image (21.2, 1.23.0)
-    "fastify/demo": ["starts Fastify without host"],  # its "build && node" start is built now (21.2); the host stays D51 (Phase 22)
-    "remix-run/indie-stack": ["the final image runs as root", "builds on Node.js 18"],
+    "fastify/demo": "node dist/server.js",  # built (21.2); Fastify on localhost behind the proxy sidecar (D51); tests: report (db:seed, D54)
+    "remix-run/indie-stack": ["builds on Node.js 18"],  # its own Dockerfile's dead line (its root user is wrapped)
     "sveltejs/realworld": ["is a workspace of several packages and starts nothing itself", "without @sveltejs/adapter-node"],  # D55 (Phase 22)
     "mckaywrigley/chatbot-ui": "node node_modules/next/dist/bin/next start -H 0.0.0.0 -p $PORT",  # Next.js built and served under node (21.2)
-    "gothinkster/node-express-realworld-example-app": ["the final image runs as root"],  # its own Dockerfile; nx no longer refuses it
+    "gothinkster/node-express-realworld-example-app": "its own Dockerfile",  # nx no longer refuses it (21.4); its root image wrapped (D52)
     "hagopj13/node-express-boilerplate": "its own Dockerfile",  # its yarn.lock (Yarn 1) is read now (21.1)
     "socketio/chat-example": "node index.js",
     "vercel/ai-chatbot": "node node_modules/next/dist/bin/next start -H 0.0.0.0 -p $PORT",  # pnpm-lock.yaml installed by pnpm (21.1), Next.js built
-    "GoogleCloudPlatform/nodejs-docs-samples:run/helloworld": ["the final image runs as root", "builds on Node.js 20"],
-    "huggingface/chat-ui": ["looks like a committed secret", "looks like a committed secret", "copies .env into the image", "the final image runs as root"],
+    "GoogleCloudPlatform/nodejs-docs-samples:run/helloworld": ["builds on Node.js 20"],  # its own Dockerfile's dead line (its root user is wrapped)
+    "huggingface/chat-ui": ["looks like a committed secret", "looks like a committed secret", "copies .env into the image"],  # a real .env: rotate it
     "shadcn-ui/taxonomy": ["is lockfile version 6"],  # pnpm 8's lockfile and no packageManager: pnpm 12 cannot install it frozen
     "discord/discord-example-app": "node app.js",
     "langgenius/dify:web": "its own Dockerfile",  # its workspace: dependencies resolve in the root's pnpm-lock.yaml (21.4)
@@ -98,8 +99,8 @@ def test_the_sample_moves_from_three_accepted_toward_the_reviews_estimate():
         if result["spec"] is not None:
             accepted.add(item["entry"])
     assert ACCEPTED_AT_1_21 <= accepted  # nothing that was taken as it is at 1.21.0 is refused now
-    assert len(accepted) == sum(isinstance(value, str) for value in EXPECTED.values()) == 13
-    assert refusals == sum(len(value) for value in EXPECTED.values() if isinstance(value, list)) == 28
+    assert len(accepted) == sum(isinstance(value, str) for value in EXPECTED.values()) == 19
+    assert refusals == sum(len(value) for value in EXPECTED.values() if isinstance(value, list)) == 18
     assert len(INDEX) == 33 and all(item["paths"] > 0 for item in INDEX)
 
 
