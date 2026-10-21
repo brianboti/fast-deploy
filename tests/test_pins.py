@@ -103,7 +103,7 @@ def not_found(url):
 def test_every_pin_is_found_once_in_every_place_and_its_places_agree():
     current = pins.read()
     actions = [pin for pin in pins.PINS if pin.kind == "action"]
-    assert set(current) == set(pins.BY_KEY) and len(pins.PINS) == 37 and len(actions) == 10
+    assert set(current) == set(pins.BY_KEY) and len(pins.PINS) == 39 and len(actions) == 10
     for pin in pins.PINS:
         fields = {"commit", "version"} if pin.kind == "action" else {name for _, pattern in pin.places for name in pins.fields_of(pattern)}
         assert set(current[pin.key]) == fields, pin.key
@@ -516,7 +516,8 @@ def test_a_refresh_writes_every_place_dates_the_group_and_regenerates_the_deploy
                 pins.Finding(pins.BY_KEY["trivy"], current["trivy"])]
     changed = pins.apply(findings, tmp_path, "2026-10-26")
     assert changed == sorted({".github/workflows/ci.yml", ".github/workflows/deploy.yml", "Dockerfile", "docs/DEVELOPER-CONTRACT.md", "docs/SETUP.md", "PROJECT_HANDOFF.md",
-                              "examples/demo-app/Dockerfile", "infra/gcp/modules/project/controller-startup.sh", "labdeploy/scaffold.py", "templates/deploy-gcp.yml"})
+                              "examples/demo-app/Dockerfile", "infra/gcp/modules/project/controller-startup.sh", "labdeploy/scaffold.py", "templates/deploy-gcp.yml",
+                              "templates/repo/Dockerfile.static"})
     after = pins.read(tmp_path)
     for found in findings:
         assert after[found.pin.key] == {**current[found.pin.key], **found.new}, found.pin.key
@@ -534,8 +535,8 @@ def test_a_refresh_writes_every_place_dates_the_group_and_regenerates_the_deploy
         assert len(old) == len(new), path
         moved += sum(1 for a, b in zip(old, new, strict=True) if a != b)
     # TruffleHog 2; hadolint 8 (template 3, ci.yml 2, the contract 2, setup 1); python 3.12 3 and its date 1; Caddy 2; npm 3; uv 4;
-    # and deploy.yml, generated from the template, 5 (TruffleHog's 2 and hadolint's 3).
-    assert moved == 2 + 8 + 3 + 1 + 2 + 3 + 4 + 5
+    # and deploy.yml, generated from the template, 5 (TruffleHog's 2 and hadolint's 3); Caddy's static-site template 2 (since 1.24.0).
+    assert moved == 2 + 8 + 3 + 1 + 2 + 3 + 4 + 5 + 2
     assert pins.apply([pins.Finding(pin, current[pin.key]) for pin in pins.PINS], tmp_path, "2026-11-02") == []
 
 
@@ -600,7 +601,7 @@ def test_the_pull_request_names_each_change_its_source_what_waits_and_what_to_re
     assert "- **buildpacks builder (Ubuntu 22.04)**: its metadata could not be read: timed out (its pin stays as it is)" in text
     assert "1. The release notes of TruffleHog, linked above" in text and "2. CI runs the whole test suite" in text and "4. To undo" in text
     assert "CI does not run the new tools, images or actions on a real release" in text and "and the changes since each pinned commit" not in text
-    assert f"   - Caddy: {pins.MACHINE}." in text and "`scripts/machine.sh startup`" in pins.MACHINE
+    assert f"   - Caddy: {pins.MACHINE}; a static site at {pins.PIPELINE}." in text and "`scripts/machine.sh startup`" in pins.MACHINE
     assert "never hashed a download to make a pin" in text and "Nothing merges by itself" in text and "([this run](https://github.com/o/r/actions/runs/7))" in text
     assert "## What changes (2)" in text and text.index("## What changes") < text.index("## Waiting") < text.index("## Newer lines") < text.index("## Needs a look") < text.index("## What to review")
     planned, caddy = pins.plan(finding_set(), "2026-10-26"), pins.read()["caddy"]["version"]
@@ -649,7 +650,7 @@ def test_the_command_line_lists_checks_and_refreshes(tmp_path, capsys, monkeypat
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     report, planned = tmp_path / "pr.md", tmp_path / "plan.json"
     assert pins.main(["refresh", "--root", str(tmp_path), "--report", str(report), "--plan", str(planned)], web=FakeWeb(), now=NOW) == 0
-    assert "2 pin(s) to change in 3 file(s)" in capsys.readouterr().out and summary.read_text() == report.read_text()
+    assert "2 pin(s) to change in 4 file(s)" in capsys.readouterr().out and summary.read_text() == report.read_text()
     assert json.loads(planned.read_text())["date"] == "2026-10-26" and pins.read(tmp_path)["trufflehog"]["version"] == later(pins.read()["trufflehog"]["version"])
     (tmp_path / "templates/deploy-gcp.yml").write_text("reworded")
     assert pins.main(["refresh", "--root", str(tmp_path)], web=FakeWeb(), now=NOW) == 2

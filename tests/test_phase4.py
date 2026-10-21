@@ -111,6 +111,6 @@ def test_deploy_workflow_reads_the_test_policy_and_prefers_lock_files():
     workflow = yaml.safe_load(Path("templates/deploy-gcp.yml").read_text())
     steps = {s.get("name"): s for s in workflow["jobs"]["build"]["steps"]}
     assert steps["Read the application's test policy"]["id"] == "policy"
-    assert steps["Run unit tests"]["if"] == "steps.policy.outputs.tests == 'required' && steps.policy.outputs.runtime == 'python-http'" and "requirements.lock" in steps["Run unit tests"]["run"]
+    assert steps["Run unit tests"]["if"] == "steps.policy.outputs.tests != 'none' && steps.policy.outputs.runtime == 'python-http'" and "requirements.lock" in steps["Run unit tests"]["run"]
     names = [s.get("name") for s in workflow["jobs"]["build"]["steps"]]
     assert names.index("Install trusted platform dependencies") < names.index("Read the application's test policy") < names.index("Run unit tests")

@@ -271,7 +271,7 @@ def test_the_platforms_node_image_installs_the_manager_builds_in_a_stage_and_kee
     assert facts["frozen"] == "pnpm install --frozen-lockfile --ignore-scripts" and facts["test"] == "pnpm run test"
     text = scaffold.platform_dockerfile(node_spec("node server.js"), True, "pnpm-lock.yaml", facts)
     version, integrity = scaffold.MANAGER_PINS["pnpm"]
-    assert text.count("FROM node:24-trixie-slim@") == 2 and " AS build\n" in text and f"pnpm@{version}" in text and integrity in text
+    assert text.count("FROM node:24-trixie-slim@") == 3 and " AS build\n" in text and f"pnpm@{version}" in text and integrity in text
     assert "WORKDIR /opt/manager\nRUN echo '{\"private\": true}' > package.json \\\n && npm install --no-audit --no-fund --ignore-scripts --loglevel=error pnpm@" in text
     assert "RUN node /opt/manager/node_modules/pnpm/bin/pnpm.cjs install --frozen-lockfile --ignore-scripts\n" in text
     assert "RUN node /opt/manager/node_modules/pnpm/bin/pnpm.cjs run build\n" in text and "cd " not in text
@@ -280,7 +280,7 @@ def test_the_platforms_node_image_installs_the_manager_builds_in_a_stage_and_kee
     assert "ENV NODE_ENV=production HOME=/tmp" in text and text.index("NODE_ENV=production") > text.index("run build")
     # npm without a build: the single stage of 1.20.0; npm with a build: a stage that prunes the development dependencies.
     plain = scaffold.platform_dockerfile(node_spec(), True, "package-lock.json", {"manager": "npm", "lockfile": "package-lock.json", "plan": {}, "member": ""})
-    assert plain.count("FROM ") == 1 and "npm ci --omit=dev --ignore-scripts" in plain
+    assert plain.count("FROM ") == 3 and "RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund\n" in plain  # init, build, image (1.24.0)
     built = scaffold.platform_dockerfile(node_spec("node dist/main.js"), True, "package-lock.json",
                                          {"manager": "npm", "lockfile": "package-lock.json", "member": "", "plan": {"build": ["npm", "run", "build"], "why": "NestJS"}})
     assert "RUN npm ci --ignore-scripts --no-audit --no-fund\n" in built and "RUN npm run build\n" in built
@@ -294,7 +294,7 @@ def test_the_platforms_node_image_installs_the_manager_builds_in_a_stage_and_kee
     # build.scripts run through the manager that installed them (21.1), after the install.
     scripted = scaffold.platform_dockerfile(node_spec(scripts=["sharp@0.32.6"]), True, "bun.lock", {"manager": "bun", "lockfile": "bun.lock", "member": "", "plan": {}})
     bun = "/opt/manager/node_modules/@oven/bun-linux-x64/bin/bun"
-    assert f"RUN {bun} install --frozen-lockfile --ignore-scripts --production\nRUN {bun} pm trust sharp@0.32.6\n" in scripted and f"chmod +x {bun}" in scripted
+    assert f"RUN {bun} install --frozen-lockfile --ignore-scripts --production \\\n && {bun} pm trust sharp@0.32.6\n" in scripted and f"chmod +x {bun}" in scripted
 
 
 def test_render_build_copies_a_workspace_from_its_root_and_the_commands_print_the_facts(tmp_path, capsys):
@@ -332,7 +332,7 @@ def test_the_pipeline_installs_the_manager_and_audits_installs_and_tests_through
         assert 'python -m labdeploy.scaffold node-facts app --path "$APP_PATH" --node "$NODE_VERSION" > "$RUNNER_TEMP/node-facts.sh"' in audit
         assert 'cp "$LOCK" "$RUNNER_TEMP/osv/$LOCKFILE"' in audit and '--lockfile "$RUNNER_TEMP/osv/$LOCKFILE"' in audit and 'LOCK="app/$LOCK_DIR/$LOCKFILE"' in audit
         manager = next(step for step in steps if step.get("name") == "Install the package manager the lockfile names")
-        assert manager["if"] == "steps.policy.outputs.runtime == 'node-http'" and 'python -m labdeploy.scaffold manager-install "$MANAGER" "$RUNNER_TEMP/manager"' in manager["run"]
+        assert manager["if"] == "steps.policy.outputs.js == 'true'" and 'python -m labdeploy.scaffold manager-install "$MANAGER" "$RUNNER_TEMP/manager"' in manager["run"]
         assert 'echo "$RUNNER_TEMP/manager/bin" >> "$GITHUB_PATH"' in manager["run"] and "Corepack" in manager["run"] or "Corepack" in text
         install = next(step for step in steps if step.get("name") == "Install Node.js dependencies with their scripts off")["run"]
         for line in ("pnpm) pnpm install --frozen-lockfile --ignore-scripts --registry=https://registry.npmjs.org/ ;;",
@@ -341,7 +341,7 @@ def test_the_pipeline_installs_the_manager_and_audits_installs_and_tests_through
                      "bun) bun install --frozen-lockfile --ignore-scripts ;;", 'if [ -n "$MEMBER" ]; then cd "$GITHUB_WORKSPACE/app/$LOCK_DIR"; fi'):
             assert line in install, line
         tests = next(step for step in steps if step.get("name") == "Run unit tests (Node.js)")["run"]
-        assert 'pnpm) pnpm rebuild "${PACKAGES[@]}" ;;' in tests and 'bun) bun pm trust "${PACKAGES[@]}" ;;' in tests and 'else $RUN test; fi' in tests
+        assert 'pnpm) pnpm rebuild "${PACKAGES[@]}" ;;' in tests and 'bun) bun pm trust "${PACKAGES[@]}" ;;' in tests and 'else $RUN test || STATUS=$?; fi' in tests
         build = next(step for step in steps if step.get("name") == "Build without cloud credentials")["run"]
         assert 'render-build app "$RUNNER_TEMP/platform-build" --spec "$SPEC_SOURCE" --path "$APP_PATH"' in build
         lint = next(step for step in steps if step.get("name") == "Lint the Dockerfile")

@@ -146,7 +146,7 @@ def test_the_pipeline_runs_every_gate_with_pinned_scanners_and_no_cache():
             url, checksum = pins.mentions(key, "templates/deploy-gcp.yml")
             assert url in install and install.index(url) < install.index(checksum + " | sha256sum --check --strict") < install.index(f"tar -xzf \"$RUNNER_TEMP/{key}.tar.gz\"")
         build = steps[names.index("Build without cloud credentials")]["run"]
-        assert build.count("docker build --no-cache") == 3 and "deny-dockerignore" in build and "cap_context" in build
+        assert build.count("docker build --no-cache") == 4 and "deny-dockerignore" in build and "cap_context" in build
         assert '"${PACK_NETWORK[@]}"' in build and "--network=none" in build
         for forbidden in ("actions/cache", "--cache-from", "--cache-to", "--allow ", "--allow=", "cache: pip"):
             assert forbidden not in text, forbidden
@@ -260,7 +260,9 @@ def test_the_reader_refuses_a_dockerfile_that_breaks_the_policy_and_notes_intern
     result = reader.read(sorted(files), files, "")
     assert result["spec"] is None and any(item["file"] == "Dockerfile:2" for item in result["refusals"])
     rooted = {"Dockerfile": "FROM python:3.12\nCOPY . .\n", "main.py": FASTAPI, "requirements.txt": "fastapi\n"}
-    assert any("runs as root" in item["problem"] for item in reader.read(sorted(rooted), rooted, "")["refusals"])
+    # Since 1.24.0 (D52, 22.3) a root image of code nobody reviewed is wrapped with USER 65532 instead of refused.
+    wrapped = reader.read(sorted(rooted), rooted, "")
+    assert not wrapped["refusals"] and wrapped["spec"].build.user == 65532 and any("wrapper stage sets USER 65532" in note for note in wrapped["notes"])
     calling = {"main.py": FASTAPI, "requirements.txt": "fastapi\nopenai==1.0\n"}
     assert any("egress: internet" in note for note in reader.read(sorted(calling), calling, "")["notes"])
 
