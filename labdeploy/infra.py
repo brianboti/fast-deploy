@@ -59,6 +59,10 @@ LABELLED_TYPES = ("google_cloud_run_v2_service", "google_storage_bucket", "googl
                   "google_sql_database_instance", "google_bigquery_dataset", "google_pubsub_topic", "google_pubsub_subscription",
                   "google_kms_crypto_key")
 PLATFORM_IDENTITIES = ("lab-deploy-infra-", "lab-deploy-observer", "lab-deploy-spending-cap")
+# Fields Google writes itself to say who changed a resource and when (an alert policy's creation_record and
+# mutation_record name the apply identity that made it): a record, never a grant or a reference the root makes, so the
+# identity rule does not read them (found on 2026-10-21: the first update of existing alert policies was refused).
+RECORDED_BY_GOOGLE = ("creation_record", "mutation_record")
 BROAD_ROLES = ("roles/owner", "roles/editor")
 GITHUB_API = "https://api.github.com"
 
@@ -413,7 +417,7 @@ def check_plan(plan, allowed_locations=ALLOWED_LOCATIONS):
             add("no_service_account_keys", address, "service account keys are never created; use Workload Identity Federation")
         if deleting and kind in DATA_TYPES:
             add("no_data_loss", address, "the pipeline never destroys resources that hold data; retire them through `lab-deploy decommission`")
-        texts = list(_strings(after))
+        texts = list(_strings({key: value for key, value in after.items() if key not in RECORDED_BY_GOOGLE} if isinstance(after, dict) else after))
         cap_grant = (kind == "google_cloud_run_v2_service_iam_member" and CAP_OPERATOR_ROLE.fullmatch(after.get("role") or "") is not None
                      and (after.get("member") or "").startswith(CAP_IDENTITY))
         # The cap may act as an application's own runtime identity, which Cloud Run asks of whoever changes the service's
