@@ -589,7 +589,9 @@ wake:
 - **The test image of another application (`base`).** The platform makes it from that application's own contract at the
   commit its last staging release deployed: `node:<line>-trixie-slim` by digest, the npm lockfile installed with every
   install script off and then only its `build.scripts`, development dependencies included, in `/deps`, npm kept, a writable
-  `/work`, user 65532, tini as init, and none of its code. A job's Dockerfile starts `ARG BASE` then `FROM ${BASE}`. The
+  `/work`, user 65532, tini as init, and none of its code. A job's Dockerfile starts `ARG BASE` then `FROM ${BASE}`, and
+  ends with `USER 65532:65532` (the Dockerfile policy reads that file, not the base, so a job of code nobody has reviewed
+  without its own `USER` is refused as running as root; `/work` belongs to 65532, so another user cannot write it). The
   application named is not changed. When one of its releases changes its lockfile, its Node.js line or its
   `build.scripts`, the controller releases yours again (with `auto_deploy`), or says it is behind. Node.js applications
   with an npm lockfile only, for now.

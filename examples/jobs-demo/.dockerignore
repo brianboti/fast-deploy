@@ -1,0 +1,4 @@
+# Only what the image needs; the jobs' folders are their own build contexts.
+*
+!app.py
+!requirements.txt
