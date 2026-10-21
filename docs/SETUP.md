@@ -156,9 +156,12 @@ Check the page and click **Create GitHub App**. By hand it is:
 2. Webhook: clear **Active**. The controller asks GitHub; GitHub never calls it.
 3. Repository permissions, exactly what the controller uses and nothing else: **Actions** read and write,
    **Administration** read and write (environments are created through it), **Contents** read and write,
-   **Environments** read and write (its variables too), **Metadata** read-only, **Pull requests** read and write,
+   **Environments** read and write (its variables too), **Issues** read and write (since 1.26.0: the daily digest is a
+   comment on one issue of the platform repository), **Metadata** read-only, **Pull requests** read and write,
    **Workflows** read and write. No **Variables** (the controller never writes repository-level variables), and no
-   organization or account permissions.
+   organization or account permissions. An App made before 1.26.0: add **Issues** read and write in its settings
+   (Permissions & events), then accept the new permission on the installation (the account's Settings, Applications,
+   Configure); until then the digest is kept and sent to the webhook only, and the watchdog says so.
 4. Where can this GitHub App be installed: **Only on this account**. Its **App ID** is at the top of its General page.
 5. **Install App** on the account: all repositories, or the platform repository and every application repository.
 6. **The key**, once the foundation apply has created the secret: in the App's settings, **Credentials**, **Key pairs**,
@@ -265,7 +268,7 @@ An app has one `database`. Changing its type means retiring the old database fir
 - **Status in Claude** shows every workflow step with timing, the release phases from the receipt, the candidate's last log lines when it fails, the recovery run that followed, and a next action. Ask for `get_deployment_status` with `wait_seconds: 45` to wait for a change instead of asking repeatedly.
 - **Notifications**: add a repository secret `NOTIFY_WEBHOOK_URL` holding a Slack or Discord incoming webhook. The deploy, recovery and right-sizing workflows post their outcome; without the secret they stay silent. Turn on GitHub's own failed-workflow emails as well.
 - **GitHub Deployments**: every release appears on its commit and under the repository's Environments, with the service URL, from the record GitHub keeps for the deploy job's environment.
-- **Runtime alerts** (Terraform, `runtime_alerts = true` by default): an uptime check that signs in to the service, alerts for the health check, 5xx responses, p95 latency, instances at maximum, memory above 80% and error lines in the log, and a dashboard (`dashboard_url` output). Set `alert_email` and optionally `alert_webhook_url` in the foundation's `terraform.tfvars`; `runtime_alerts` and the thresholds (`error_alert_count`, `latency_alert_ms`, `instance_alert_count`) live under `applications.<app>.infra` in the controller configuration and reach the root at the next render; the health path is the one in `platform.yaml`. The uptime check runs as the Monitoring service agent `service-PROJECT_NUMBER@gcp-sa-monitoring-notification.iam.gserviceaccount.com`; in a project where it does not exist yet, run `gcloud beta services identity create --service=monitoring.googleapis.com` once before `terraform apply`.
+- **Runtime alerts** (Terraform, `runtime_alerts = true` by default): an uptime check that signs in to the service, alerts for the health check, 5xx responses, p95 latency, instances at maximum and memory above 80%, each with a severity (CRITICAL, ERROR or WARNING) and a subject that names the application and environment, and a dashboard (error lines in the log are a count in the daily digest since 1.26.0, no longer an alert) (`dashboard_url` output). Set `alert_email` and optionally `alert_webhook_url` in the foundation's `terraform.tfvars`; `runtime_alerts` and the thresholds (`error_alert_count`, `latency_alert_ms`, `instance_alert_count`) live under `applications.<app>.infra` in the controller configuration and reach the root at the next render; the health path is the one in `platform.yaml`. The uptime check runs as the Monitoring service agent `service-PROJECT_NUMBER@gcp-sa-monitoring-notification.iam.gserviceaccount.com`; in a project where it does not exist yet, run `gcloud beta services identity create --service=monitoring.googleapis.com` once before `terraform apply`.
 - **Audit trail**: `list_events` (or `GET /events`) lists every tool and REST call, sign-in, throttled burst, client registration, token reuse and revocation with identity, client address, outcome and duration. `log_file` in the configuration adds a rotating controller log.
 - **Serving images are protected**: the release job tags each serving revision's image `serving-<revision>` and the registry cleanup keeps those tags, so a rollback target never loses its image. The weekly right-sizing job reconciles the tags.
 
@@ -584,6 +587,18 @@ Logging viewer role, which every application root grants, is all it needs. Per a
 `bake_seconds` (0 to 900) under `applications.<id>` or `application_settings.<id>`; 0 turns it off, which every plan then
 says. A staging app with no users sees no traffic in five minutes, so its bake is `inconclusive` and passes; to judge a
 release, send it traffic during the bake.
+
+## 7p. After a release: the report and the daily digest (1.26.0)
+
+Nothing to switch on: both run inside the controller once it has its observer identity (section 7m). A day after each
+release or promotion that succeeded, the controller compares the new version's first day with the previous version's week
+before it, from Cloud Run's request log with the health path left out, and records "better", "about the same", "worse" or
+"too little traffic to compare" on the release (decision D57); "worse" is posted at once. Once a day from
+`digest_hour_utc` (13 by default, `null` turns it off) it writes the daily digest (D60) and posts it as a comment on the
+platform repository's issue **Fast Deploy: today**, which it opens the first time; **watch that issue** (its page, Watch,
+All activity or Custom: Issues) to get the digest by email. With `notify_webhook_url` set, the same text goes to Slack or
+Discord. The App needs **Issues** read and write for the issue (section 4). The Controller watch workflow checks once a
+day that the issue still hears from the controller and fails, which GitHub emails, after two days of silence.
 
 ## 7k. The weekly drift check
 

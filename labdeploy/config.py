@@ -327,7 +327,10 @@ class Config(StrictModel):
     production: ProductionSettings | None = None
     paused: bool = False  # the kill switch: no new plans or dispatches for any app; reads keep working
     auto_deploy_interval_seconds: int = Field(default=300, ge=60, le=3600)
-    notify_webhook_url: str | None = None  # Slack or Discord incoming webhook for the daily watchdog's findings
+    notify_webhook_url: str | None = None  # Slack or Discord incoming webhook: the daily digest, a release that did worse, the watchdog
+    # The daily digest (docs/ROADMAP.md D60): written once a UTC day from this hour (13 is 8 in the morning in Texas in winter),
+    # kept by the controller, posted to the platform repository's "Fast Deploy: today" issue and the webhook; null turns it off.
+    digest_hour_utc: int | None = Field(default=13, ge=0, le=23)
     backup_dir: str | None = None  # nightly SQLite backups; default: <database>.backups next to the database
     backup_keep_days: int = Field(default=14, ge=1, le=365)
     # A private, versioned bucket the nightly backup also uploads to (the database copy and this configuration).

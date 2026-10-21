@@ -15,17 +15,47 @@ from labdeploy.target import Target
 
 
 # ---- the module: one objective, two burn-rate alerts, the minute uptime check, production only
-def test_production_has_one_objective_with_a_fast_and_a_slow_burn_alert():
+def test_production_has_one_objective_on_user_requests_with_three_burn_alerts():
     slo = Path("infra/gcp/modules/service/slo.tf").read_text()
     assert 'resource "google_monitoring_custom_service" "slo"' in slo and 'resource "google_monitoring_slo" "availability"' in slo
     assert "rolling_period_days = 30" in slo and "request_based_sli" in slo
-    assert 'bad_service_filter   = "metric.type=\\"run.googleapis.com/request_count\\" AND ${local.service_filter} AND metric.label.response_code_class=\\"5xx\\""' in slo
-    assert 'fast = { lookback = "60m", threshold = 10' in slo and 'slow = { lookback = "1440m", threshold = 2' in slo  # Google's starting points
-    assert 'select_slo_burn_rate(\\"${google_monitoring_slo.availability[0].name}\\", \\"${each.value.lookback}\\")' in slo
+    # Since 1.26.0 (D58): two log-based counters of the users' requests, the health path left out, so the uptime check's
+    # calls neither dilute nor spend the objective.
+    assert 'resource "google_logging_metric" "user_requests"' in slo and 'resource "google_logging_metric" "user_errors"' in slo
+    assert 'var.health_probe ? "NOT httpRequest.requestUrl=~\\"^https?://[^/]+${var.health_path}([?].*)?$\\"" : ""' in slo
+    assert 'filter      = "${local.user_requests_filter} AND httpRequest.status>=500"' in slo
+    assert 'bad_service_filter   = "metric.type=\\"logging.googleapis.com/user/${google_logging_metric.user_errors[0].name}\\" AND resource.type=\\"cloud_run_revision\\""' in slo
+    assert "run.googleapis.com/request_count" not in slo
+    # Google's multiwindow pattern: a long and a short window (a twelfth), both burning, and at least 100 user requests.
+    for name, long, short, threshold, severity in (("fast", "60m", "5m", 10, "CRITICAL"), ("slow", "360m", "30m", 2, "ERROR"),
+                                                   ("steady", "1440m", "120m", 1, "WARNING")):
+        assert f'long = "{long}", short = "{short}"' in slo and f"threshold = {threshold}, severity = \"{severity}\"" in slo, name
+    assert 'combiner     = "AND"' in slo and "threshold_value = 99" in slo and 'alignment_period     = "${each.value.seconds}s"' in slo
+    assert 'select_slo_burn_rate(\\"${google_monitoring_slo.availability[0].name}\\", \\"${each.value.long}\\")' in slo
+    assert 'select_slo_burn_rate(\\"${google_monitoring_slo.availability[0].name}\\", \\"${each.value.short}\\")' in slo
+    assert 'subject   = "[${local.environment_name}] ${var.service}: ${each.value.title}"' in slo
     main = Path("infra/gcp/modules/service/main.tf").read_text()
     assert "period           = var.uptime_period" in main and "selected_regions = length(var.uptime_regions) > 0 ? var.uptime_regions : null" in main
     variables = Path("infra/gcp/modules/service/variables.tf").read_text()
     assert 'variable "slo_goal"' in variables and "var.slo_goal == 0 ||" in variables and 'default     = "300s"' in variables
+
+
+def test_every_alert_has_a_severity_labels_and_words_and_the_log_line_alert_is_gone():
+    """D59: a severity on every policy, labels that name the application and environment, a subject and a documentation
+    block that says what it means and what to ask; any ERROR log line is no longer an alert but a count in the digest."""
+    import re
+    main = Path("infra/gcp/modules/service/main.tf").read_text()
+    assert 'resource "google_monitoring_alert_policy" "log_errors"' not in main and "condition_matched_log" not in main
+    expected = {"health": "CRITICAL", "errors": "ERROR", "latency": "WARNING", "saturation": "WARNING", "memory": "WARNING"}
+    for name, severity in expected.items():
+        block = main[main.index(f'resource "google_monitoring_alert_policy" "{name}"'):]
+        block = block[:block.index("\n}\n")]
+        assert f'severity              = "{severity}"' in block and "lab-deploy-environment = local.environment_name" in block, name
+        assert 'subject   = "[${local.environment_name}] ${var.service}:' in block and "ask claude" in block.lower(), name
+    assert len(re.findall(r'resource "google_monitoring_alert_policy"', main)) == len(expected)
+    project = Path("infra/gcp/modules/project/main.tf").read_text() + Path("infra/gcp/modules/project/controller.tf").read_text()
+    assert project.count('severity              = "CRITICAL"') + project.count('severity    = "CRITICAL"') == 2
+    assert 'subject   = "[${var.environment}] the spending cap could not act"' in project and 'subject   = "Fast Deploy controller: not answering"' in project
 
 
 def test_only_a_production_root_renders_the_objective_and_the_minute_check():

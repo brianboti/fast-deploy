@@ -73,7 +73,9 @@ the skill must be re-uploaded after every release that changes `skills/` (the re
 | "What would demo cost?" | `estimate_cost` | Floor, compute ceiling, needs' floor, optional traffic scenario, findings |
 | "What did we actually spend?" | `get_cost_report` | The weekly right-sizing report with measured usage, proposals and billing export |
 | "Where is my release?" | `get_deployment_status` | Every workflow step, the release phases, candidate logs on failure, a next action |
-| "What happened today?" | `list_plans`, `list_events` | Plan history and the audit trail of every call and sign-in; a `configuration` event is a change saved on the settings page (who, which tab, which keys, never their values) |
+| "What happened today?", "How are things?" | `get_digest` | The daily digest: what shipped, how each release did a day later, apps with server errors, error lines or missed uptime checks, drift, what waits for you, or "all quiet" (since 1.26.0) |
+| "Did yesterday's release of demo go well?" | `get_deployment_status`, `get_service_health` | The release report a day after it: better, about the same, worse or too little traffic to compare, with the numbers against the week before |
+| "Show the history and the audit trail" | `list_plans`, `list_events` | Plan history and the audit trail of every call and sign-in; a `configuration` event is a change saved on the settings page (who, which tab, which keys, never their values) |
 
 **Acting** (Claude's client asks you to confirm; each one is bound to an exact commit and target):
 
@@ -222,6 +224,8 @@ bake's numbers and the revision's log lines are in the status. A bake with too l
 - The spending cap closes ingress and stops databases at the budget line, whatever anyone asks for; Google's own spend
   cap pauses Cloud Run in the project as a second, independent layer once the operator has created it.
 - Every release is watched for five minutes after it takes over; a crash or 5xx answers bring the previous version back.
+- A day after each release the platform compares it with the version before and says so; it never rolls back on that
+  report by itself. Once a day it writes a digest from the numbers, never from Claude's words (since 1.26.0).
 - A weekly drift check reports anything changed outside the pipeline; `get_controller_status` shows it.
 - After a platform release (since 1.20.4, once the operator turns `platform_updates` on), the machine installs the new
   code an hour after its checks pass and puts the old one back if it fails; then each app's workflows are re-pinned, and
@@ -244,6 +248,8 @@ bake's numbers and the revision's log lines are in the status. A bake with too l
 | Failed its bake after promotion | The new version crashed or answered too many 5xx once it served everyone; the previous version is back | Read the bake's numbers and the log lines in the status, fix, deploy again |
 | `no_native_spend_cap` in a plan or estimate | Google's spend cap for Cloud Run is not recorded for the project | `docs/SETUP.md` 7i: create it, then record it under `cloud_run_spend_caps` |
 | Infrastructure drift in the controller status | Something in an app's infrastructure differs from the code | `docs/RUNBOOK.md` "Drift reported" |
+| "Did worse than the version before" | A day after the release, its server errors or its latency were more than twice the week before (or the uptime check missed); nothing was changed | Ask for its errors; roll it back if the release caused them (`docs/RUNBOOK.md` "After a release") |
+| "The daily digest reached no one" | The GitHub App lacks the Issues permission and no webhook is set | `docs/SETUP.md` section 4 (Issues read and write), or set `notify_webhook_url` |
 
 ## Verified
 

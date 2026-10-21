@@ -178,7 +178,8 @@ def test_watchdog_reports_problems_and_posts_them(tmp_path):
 
         def schedule_health(self, app, workflow):
             return {"workflow": workflow, "state": "disabled_inactivity", "last_scheduled_run": None, "last_conclusion": None}
-    cfg = config(tmp_path, notify_webhook_url="https://hooks.example/abc")
+    # With the daily digest off the watchdog posts its own findings; with it on (the default), the digest carries them.
+    cfg = config(tmp_path, notify_webhook_url="https://hooks.example/abc", digest_hour_utc=None)
     c = Controller(cfg, Trouble(), Store(cfg.database))
     import labdeploy.controller as module
     original = module.__dict__.get("httpx")
@@ -231,7 +232,7 @@ def test_scheduler_runs_due_jobs_and_records_outcomes(tmp_path):
     cfg = config(tmp_path)
     c = Controller(cfg, FakeGitHub(), Store(cfg.database))
     scheduler = Scheduler(c, cfg)
-    assert set(scheduler.state) == {"auto_deploy", "watchdog", "backup", "onboarding", "follow", "contracts", "platform_updates"}
+    assert set(scheduler.state) == {"auto_deploy", "watchdog", "backup", "onboarding", "follow", "contracts", "platform_updates", "release_reports", "digest"}
     assert all(e["last_run"] is None for e in scheduler.state.values())
     entry = scheduler.run_job("auto_deploy")
     assert entry["last_result"] == {} and entry["last_error"] is None and entry["next_run"] > time.time() + 200
@@ -255,7 +256,8 @@ def test_status_and_tools_expose_the_laptop_jobs(tmp_path):
         assert health["metrics"]["window_minutes"] == 30 and health["console_url"].startswith("https://console.cloud.google.com/run/detail/")
         assert call("get_recent_logs", application="demo", minutes=10, severity="WARNING", limit=5)["structuredContent"]["count"] == 1
     workflow = yaml.safe_load(Path(".github/workflows/controller-watch.yml").read_text())
-    assert workflow["jobs"]["ping"]["if"] == "vars.CONTROLLER_HEALTH_URL != ''" and workflow[True]["schedule"][0]["cron"].startswith("13,43 ")  # off the hour and half-hour, which GitHub delays
+    assert workflow["jobs"]["ping"]["if"] == "vars.CONTROLLER_HEALTH_URL != '' && github.event.schedule != '17 16 * * *'"
+    assert workflow[True]["schedule"][0]["cron"].startswith("13,43 ")  # off the hour and half-hour, which GitHub delays
 
 
 def test_observer_reads_readiness_from_the_terminal_condition(tmp_path):

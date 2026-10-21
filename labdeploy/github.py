@@ -35,6 +35,9 @@ def needed_permission(request):
         return "Workflows: read and write"
     if "/pulls" in path and method != "GET":
         return "Pull requests: read and write"
+    if "/issues" in path and method != "GET":
+        # The daily digest's issue (docs/ROADMAP.md D60); a pull request's comment goes through the same path.
+        return "Issues: read and write (for a pull request's comment, Pull requests: read and write)"
     if method != "GET" and ("/contents/" in path or "/git/" in path):
         return "Contents: read and write"
     return "Contents: read and Actions: read"
@@ -506,6 +509,22 @@ class GitHub:
 
     def issue_comments(self, repository, number):
         return [item.get("body", "") for item in self.request("GET", f"/repos/{repository}/issues/{number}/comments", params={"per_page": 100}).json()]
+
+    def find_issue(self, repository, title):
+        """The newest open issue (not a pull request) with exactly this title: {number, url, updated_at}, or None."""
+        for item in self.request("GET", f"/repos/{repository}/issues", params={"state": "open", "per_page": 100, "sort": "created", "direction": "desc"}).json():
+            if item.get("title") == title and "pull_request" not in item:
+                return {"number": item["number"], "url": item.get("html_url"), "updated_at": item.get("updated_at")}
+        return None
+
+    def create_issue(self, repository, title, body):
+        item = self.request("POST", f"/repos/{repository}/issues", json={"title": title, "body": body}).json()
+        return {"number": item["number"], "url": item.get("html_url")}
+
+    def comment_issue(self, repository, number, body):
+        """A comment on an issue; GitHub tells the issue's watchers, which is how the digest reaches a person by email."""
+        item = self.request("POST", f"/repos/{repository}/issues/{int(number)}/comments", json={"body": body}).json()
+        return {"url": item.get("html_url")}
 
     def recent_runs(self, repository, workflow, limit=20):
         """The newest completed runs of a workflow, on any commit."""

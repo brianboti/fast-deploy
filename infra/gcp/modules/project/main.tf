@@ -257,6 +257,13 @@ resource "google_monitoring_alert_policy" "cap_failures" {
     }
   }
   notification_channels = concat(google_monitoring_notification_channel.alert_email[*].id, google_monitoring_notification_channel.alert_webhook[*].id)
+  severity              = "CRITICAL"
+  user_labels           = { lab-deploy-managed = "true", lab-deploy-environment = var.environment }
+  documentation {
+    subject   = "[${var.environment}] the spending cap could not act"
+    content   = "A run of the spending cap's workflow failed, so at the budget line some service or database may stay open and keep billing. Look at the execution in Cloud Workflows (lab-deploy-spending-cap) and docs/RUNBOOK.md, \"The spending cap fired\"; Google's native spend cap, where it exists, still stops Cloud Run."
+    mime_type = "text/markdown"
+  }
   alert_strategy {
     auto_close = "1800s"
   }

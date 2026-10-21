@@ -1,3 +1,62 @@
+# 1.26.0: the voice after a release (Phase 23)
+
+Roadmap Phase 23 (docs/ROADMAP.md 23.1 to 23.6, decisions D57 to D61 at their defaults), from the research review of
+2026-10-21 (`docs/RESEARCH-2026-10-21.md`), which found the platform strong in the ten minutes around a release and silent
+after it: every alert in one mailbox, no look at a release after its five-minute bake, an objective a handful of errors
+spent for a month, nothing the platform says unless asked. Nothing here acts on its own beyond what already did; nothing
+adds a monthly charge. Built and checked locally; the live exercise listed under Phase 23 has not run yet.
+
+1. **The release report** (23.1, D57, `labdeploy/aftercare.py`). A background job every fifteen minutes takes each release
+   and promotion that succeeded at least a day ago (or was replaced sooner) and reads, through the observer, the new
+   revision's requests besides the health path from Cloud Run's request log (server errors, 95th-percentile latency)
+   against the previous revisions' week before the switch, plus the uptime check and memory. The verdict is "better",
+   "same", "worse", "too little traffic to compare" (under 100 requests on a side), "first", "replaced" or "rolled back",
+   stored on the plan with its numbers; `get_deployment_status`, `list_applications` and `get_service_health` say it in a
+   line. "Worse" (server errors above 1 percent and twice the week before, latency above twice, or the uptime check under
+   99 percent) is posted at once. Reads that keep failing end, after three tries, as "could not be read".
+2. **An objective a quiet application can keep** (23.2, D58, `infra/gcp/modules/service/slo.tf`). Production's objective
+   now counts the users' requests from two log-based counters (requests, server errors) with the health path left out;
+   Cloud Run's request metric, which counted the uptime check's three calls a minute, is gone from it. Three burn-rate
+   alerts, each with a long and a short window and a third condition of at least 100 user requests in the long one: fast
+   (10 times over an hour and five minutes, CRITICAL), slowly (2 times over six hours and 30 minutes, ERROR) and steadily
+   (once over a day and two hours, WARNING). The burn windows were checked read-only against production's live objective,
+   and the log filter against its live request log, before the change. The health view says "no user requests" instead of
+   a perfect score, names the day a spent budget's errors leave the window at the latest, and shows production's uptime
+   check over 30 days on its own line.
+3. **Severity, labels and words on every alert** (23.3, D59). Each policy has a severity, labels naming its application
+   and environment, a subject line and a documentation block saying what it means, what to ask Claude and which runbook
+   section; the cap-failure and controller alerts too. "Errors in the application log" is no longer an alert: the digest
+   counts each application's error lines. The health view reads the newest warning lines against the diagnosis table of
+   1.24.0 when a service has errors, and the table gains Google's two messages for a running service (no available
+   instance, the request timeout). `promote.yml` posts how a promotion or a production rollback ended to
+   `NOTIFY_WEBHOOK_URL`.
+4. **The daily digest** (23.4, D60) and the tool `get_digest`. Once a UTC day from `digest_hour_utc` (13, `null` to turn
+   it off): what shipped, each release report, applications with server errors, error lines or missed uptime checks,
+   drift, re-pins and drills waiting, the watchdog's problems, the trust numbers on Mondays, and "all quiet" when there is
+   nothing. Written by `labdeploy/chat.py`, kept in the controller's database, posted as a comment on the platform
+   repository's issue **Fast Deploy: today** (opened the first time) and to `notify_webhook_url`. The watchdog no longer
+   posts its own findings while the digest is on. 28 tools.
+5. **The trust numbers** (23.5, D61) in `get_controller_status` and Monday's digest: releases that reached users, went
+   back on their own, were rolled back by a person; the change failure rate; the median hours back to a good release; the
+   share of inconclusive watches; restores that may have been for nothing. Shown, never used to change a threshold.
+6. **Watching the watchers** (23.6). The watchdog says when the digest stopped or reached no one, and reminds of each drill
+   when due: the alert proof monthly where there is a cloud, the rollback and cap-fire drills twice a year where there is a
+   production (a production rollback that succeeded counts). `scripts/alert-drill.sh PROJECT` runs the runbook's "Prove
+   the alerts work" and records it; `lab-deploy record-drill` and `scripts/machine.sh record-drill` record the others. The
+   Controller watch workflow checks once a day that the digest issue still hears from the controller.
+
+Upgrade steps: merge, then the Infrastructure apply that the module change starts updates every application root
+(staging: severities and words, the log-errors alert removed; production: the objective's new counting, the third burn
+alert); approve production's in `infra-production`. The foundation's change (the cap-failure and controller alerts' words)
+waits for the next `scripts/apply-foundation.sh` in each project. Give the GitHub App **Issues** read and write and accept
+it on the installation (`docs/SETUP.md` section 4); until then the digest is kept and sent to the webhook only. Update the
+machine (`scripts/machine.sh update`). Re-upload the skill (`skills/fast-deploy-operator`: `get_digest` and reading a
+release report). No application's workflows change.
+
+Tests: 1,004 pass (27 new, `tests/test_phase23.py`); ruff and zizmor clean; `terraform validate` passes for a staging
+root, a production root and the foundation with provider 7.46.1.
+
+
 # 1.25.2: a clearer, calmer settings page
 
 Brian opened the 1.25.0 page on the machine and found it unorganized, hard to read and plain: one long form per tab, every

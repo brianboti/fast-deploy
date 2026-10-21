@@ -6,6 +6,8 @@ locals {
   # Marks what the platform manages: the spending cap closes services with lab-deploy-managed, and the billing export
   # groups cost by lab-deploy-app.
   labels = { lab-deploy-managed = "true", lab-deploy-app = var.service }
+  # How an alert's documentation asks Claude about the right environment (docs/ROADMAP.md D59).
+  where = local.environment_name == "production" ? " in production" : ""
 }
 
 resource "google_service_account" "runtime" {
@@ -375,6 +377,13 @@ resource "google_monitoring_alert_policy" "health" {
     }
   }
   notification_channels = var.alert_channels
+  severity              = "CRITICAL"
+  user_labels           = merge(local.labels, { lab-deploy-environment = local.environment_name })
+  documentation {
+    subject   = "[${local.environment_name}] ${var.service}: health check failing"
+    content   = "Google's uptime check could not reach ${var.service}'s health path from more than one region for five minutes: people may not reach it either. Ask Claude for \"${var.service}'s health\"${local.where} and its errors. If every application fails at once, the spending cap or Google's native spend cap may have closed them (docs/RUNBOOK.md, \"The spending cap fired\" and \"The native spend cap tripped\")."
+    mime_type = "text/markdown"
+  }
   alert_strategy {
     auto_close = "1800s"
   }
@@ -402,6 +411,13 @@ resource "google_monitoring_alert_policy" "errors" {
     }
   }
   notification_channels = var.alert_channels
+  severity              = "ERROR"
+  user_labels           = merge(local.labels, { lab-deploy-environment = local.environment_name })
+  documentation {
+    subject   = "[${local.environment_name}] ${var.service}: server errors"
+    content   = "More than ${var.error_alert_count} requests to ${var.service} were answered with a server error (5xx) in five minutes. Ask Claude for \"${var.service}'s errors\"${local.where}; if the newest release caused them, roll it back (docs/RUNBOOK.md, \"An incident\")."
+    mime_type = "text/markdown"
+  }
   alert_strategy {
     auto_close = "1800s"
   }
@@ -429,6 +445,13 @@ resource "google_monitoring_alert_policy" "latency" {
     }
   }
   notification_channels = var.alert_channels
+  severity              = "WARNING"
+  user_labels           = merge(local.labels, { lab-deploy-environment = local.environment_name })
+  documentation {
+    subject   = "[${local.environment_name}] ${var.service}: slow responses"
+    content   = "For five minutes, 95 percent of ${var.service}'s requests took longer than ${var.latency_alert_ms} ms to answer. Nothing is down; ask Claude for \"${var.service}'s health\"${local.where} and compare with the newest release."
+    mime_type = "text/markdown"
+  }
   alert_strategy {
     auto_close = "1800s"
   }
@@ -456,6 +479,13 @@ resource "google_monitoring_alert_policy" "saturation" {
     }
   }
   notification_channels = var.alert_channels
+  severity              = "WARNING"
+  user_labels           = merge(local.labels, { lab-deploy-environment = local.environment_name })
+  documentation {
+    subject   = "[${local.environment_name}] ${var.service}: at maximum instances"
+    content   = "${var.service} ran ${var.instance_alert_count} or more instances for five minutes: it is at or near its limit, and requests beyond it wait or fail. Ask Claude for its health and cost; raising scaling.maximum raises the cost bound too."
+    mime_type = "text/markdown"
+  }
   alert_strategy {
     auto_close = "1800s"
   }
@@ -483,28 +513,19 @@ resource "google_monitoring_alert_policy" "memory" {
     }
   }
   notification_channels = var.alert_channels
+  severity              = "WARNING"
+  user_labels           = merge(local.labels, { lab-deploy-environment = local.environment_name })
+  documentation {
+    subject   = "[${local.environment_name}] ${var.service}: memory above 80%"
+    content   = "${var.service} used more than 80 percent of its memory for five minutes; past 100 percent Cloud Run stops the instance. Ask Claude for its health; the weekly cost report proposes a size from what it measured."
+    mime_type = "text/markdown"
+  }
   alert_strategy {
     auto_close = "1800s"
   }
 }
-resource "google_monitoring_alert_policy" "log_errors" {
-  count        = var.runtime_alerts ? 1 : 0
-  display_name = "${var.service}: errors in the application log"
-  combiner     = "OR"
-  conditions {
-    display_name = "a log line of severity ERROR or worse"
-    condition_matched_log {
-      filter = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"${var.service}\" AND severity>=ERROR"
-    }
-  }
-  notification_channels = var.alert_channels
-  alert_strategy {
-    notification_rate_limit {
-      period = "3600s"
-    }
-    auto_close = "1800s"
-  }
-}
+# "Errors in the application log" is no longer an alert (docs/ROADMAP.md D59): any ERROR line paged, at most once an hour,
+# and on a quiet service that was most of the mail. The daily digest counts each application's error lines instead.
 resource "google_monitoring_dashboard" "service" {
   count = var.runtime_alerts ? 1 : 0
   dashboard_json = jsonencode({

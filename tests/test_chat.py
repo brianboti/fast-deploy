@@ -419,7 +419,7 @@ def test_every_tool_tells_claude_to_answer_from_the_summary_and_every_parameter_
     from labdeploy import toolpin
     from labdeploy.server import SUMMARY_RULE
     tools = toolpin.listed_tools()
-    assert len(tools) == 27 and SUMMARY_RULE.startswith("Answer from `summary` as written")
+    assert len(tools) == 28 and SUMMARY_RULE.startswith("Answer from `summary` as written")
     for tool in tools:
         assert tool["description"].endswith(" " + SUMMARY_RULE), tool["name"]
         assert len(tool["description"]) <= 500, (tool["name"], len(tool["description"]))  # claude.ai shows the description, not the server's instructions

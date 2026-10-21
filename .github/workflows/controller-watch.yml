@@ -4,6 +4,7 @@ name: Controller watch
 on:
   schedule:
     - cron: '13,43 * * * *' # odd minutes: GitHub delays or drops schedules that land on the hour and half-hour
+    - cron: '17 16 * * *' # once a day, three hours after the digest's default hour: is the digest still coming?
   workflow_dispatch:
 permissions:
   contents: read
@@ -12,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   ping:
-    if: vars.CONTROLLER_HEALTH_URL != ''
+    if: vars.CONTROLLER_HEALTH_URL != '' && github.event.schedule != '17 16 * * *'
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     env:
@@ -25,3 +26,34 @@ jobs:
           [[ "$URL" =~ ^https://[A-Za-z0-9.-]+/healthz$ ]]
           curl --fail --silent --show-error --max-time 20 --retry 3 --retry-delay 20 "$URL"
           echo
+  # Watching the watcher (docs/ROADMAP.md 23.6): the controller writes its daily digest as a comment on the issue "Fast
+  # Deploy: today". When the issue exists and has heard nothing for two days, the controller's background jobs or its
+  # GitHub access stopped, and this run fails, which GitHub emails. Before the first digest there is nothing to check.
+  digest:
+    if: github.event.schedule == '17 16 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      issues: read
+    steps:
+      - name: Expect the daily digest to keep coming
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          FOUND=$(gh issue list --repo "$REPOSITORY" --state open --search '"Fast Deploy: today" in:title' --json number,title,updatedAt \
+            --jq '[.[] | select(.title == "Fast Deploy: today")][0] // empty | "\(.number) \(.updatedAt)"')
+          if [ -z "$FOUND" ]; then
+            echo "No digest issue yet: nothing to check"
+            exit 0
+          fi
+          NUMBER=${FOUND%% *}
+          UPDATED=${FOUND#* }
+          AGE=$(( $(date -u +%s) - $(date -u -d "$UPDATED" +%s) ))
+          echo "Issue #$NUMBER last heard from the controller $(( AGE / 3600 )) hours ago"
+          if [ "$AGE" -gt 180000 ]; then
+            echo "::error title=No daily digest::issue #$NUMBER has had no digest for over two days: check the controller (scripts/machine.sh status) and its GitHub App's Issues permission"
+            exit 1
+          fi

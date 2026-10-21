@@ -45,6 +45,12 @@ def build_parser():
     dr = commands.add_parser("restore-drill", help="restore the newest controller backup from the backup bucket into a temporary folder, read-only, "
                                                    "check and count it, and record the outcome (the quarterly drill)")
     dr.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
+    rd = commands.add_parser("record-drill", help="record a drill's outcome in the audit trail, so the watchdog stops reminding "
+                                                  "(alerts monthly; rollback and cap_fire twice a year where a production exists)")
+    rd.add_argument("drill", choices=("alerts", "rollback", "cap_fire"))
+    rd.add_argument("outcome", choices=("ok", "failed"))
+    rd.add_argument("--detail", default=None, help="one line: what was run and what it showed")
+    rd.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
     tc = commands.add_parser("tools-checksum", help="print the SHA-256 of every MCP tool's name, description and schemas; --write updates "
                                                     "schema/tools.sha256.json after a deliberate change")
     tc.add_argument("--write", action="store_true", help="write schema/tools.sha256.json (review and commit the diff)")
@@ -241,6 +247,22 @@ def run(parser, args):
         print("\n".join(lines(report)))
         if not report["ok"]:
             sys.exit(1)
+    elif args.command == "record-drill":
+        import getpass
+        import os
+
+        from .config import load_config
+        from .controller import Controller, Store
+        config = load_config(args.config or os.environ.get("LAB_CONFIG", "config.local.yaml"))
+        try:
+            who = getpass.getuser()
+        except (OSError, KeyError):
+            who = "unknown"
+        store = Store(config.database)
+        store.record_event("drill", name=args.drill, identity=f"operator-cli:{who}", outcome=args.outcome, detail=args.detail)
+        days = Controller.DRILLS[args.drill][0]
+        print(f"Recorded the {args.drill} drill as {args.outcome}." + (f" The next one is due in {days} days." if args.outcome == "ok"
+                                                                       else " The watchdog keeps reminding until one passes."))
     elif args.command == "tools-checksum":
         from .toolpin import PINS, checksums, compare, listed_tools, pinned, write
         found = checksums(listed_tools())

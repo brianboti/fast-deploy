@@ -481,6 +481,17 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
                 "missing": [project for project in projects if not caps.get(project)],
                 "note": "Native Cloud Run spend caps the operator recorded (docs/SETUP.md 7i); the platform's own cap workflow also stops databases."}
 
+    def newest_digest():
+        found = store.digest()
+        return {key: found.get(key) for key in ("day", "attention", "delivered", "generated_at")} if found else None
+
+    @tool(title="Get daily digest", annotations=READ_ONLY)
+    @plain_errors
+    def get_digest(fresh: Annotated[bool, described("true builds one now from the live views instead of showing the one kept today.")] = False) -> dict[str, Any]:
+        """Today's digest, written by code: what shipped, how each release did a day later, applications with server errors, error
+        log lines or missed uptime checks, drift, what waits for a person, and all quiet when nothing does. Reads only."""
+        return chat.attach(chat.digest_answer, controller.digest_view(identity.get(), fresh))
+
     @tool(title="Get controller status", annotations=READ_ONLY)
     @plain_errors
     def get_controller_status() -> dict[str, Any]:
@@ -495,6 +506,7 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
                 "configuration": {"path": getattr(config, "path", None), "reloaded_at": getattr(config, "reloaded_at", None), "error": getattr(config, "error", None)},
                 "applications": sorted(config.applications), "github_credential": credential,
                 "spending_guards": spending_guards(), "infrastructure_drift": controller.drift_status(), "platform_updates": controller.updates.status(),
+                "digest": newest_digest(), "trust": controller.trust_numbers(identity.get(), 30)["overall"],
                 "pricing_verified": PRICING["verified"], "started_at": datetime.datetime.fromtimestamp(started, datetime.UTC).isoformat(timespec="seconds"),
                 "uptime_seconds": int(time.time() - started)})
 
