@@ -254,6 +254,8 @@ jobs:
       WIF_PROVIDER: ${{ vars.WIF_PROVIDER }}
       RECOVERY_BUCKET: ${{ vars.RECOVERY_BUCKET }}
       IAP_CLIENT_ID: ${{ vars.IAP_CLIENT_ID }}
+      BINAUTHZ_ATTESTOR: ${{ vars.BINAUTHZ_ATTESTOR }}
+      BINAUTHZ_MODE: ${{ vars.BINAUTHZ_MODE }}
       ENVIRONMENT: production-${{ inputs.application }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -382,6 +384,25 @@ jobs:
             exit 1
           fi
           "$COSIGN" verify-attestation --key "$PROVENANCE_KEY" --type https://slsa.dev/verification_summary/v1 --insecure-ignore-tlog=true "$IMAGE_DIGEST" > /dev/null
+      # 14.8: production's own attestor, after the staging provenance was verified and a reviewer approved.
+      - name: Attest the image for Binary Authorization
+        if: inputs.operation == 'promote'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+          BINAUTHZ_KEY_VERSION: ${{ vars.BINAUTHZ_KEY_VERSION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$BINAUTHZ_ATTESTOR" ]; then
+            echo "Binary Authorization: no attestor in this environment (production's foundation has none yet, or this application's production root has not published it); the image is not attested"
+            exit 0
+          fi
+          TOKEN=$(gcloud auth print-access-token)
+          if ! GOOGLE_ACCESS_TOKEN="$TOKEN" python -m labdeploy.attest "$IMAGE_DIGEST" --attestor "$BINAUTHZ_ATTESTOR" --key-version "$BINAUTHZ_KEY_VERSION"; then
+            # In dry run Cloud Run deploys the image anyway and logs it; enforced, it would refuse it, so the release stops here.
+            [ "$BINAUTHZ_MODE" = "enforced" ] && exit 1
+            echo "::warning title=Binary Authorization::not attested; the policy is in dry run, so the release goes on and the audit log records it"
+          fi
       - name: Deploy, probe, promote; restore traffic on failure
         id: release
         if: inputs.operation == 'promote'

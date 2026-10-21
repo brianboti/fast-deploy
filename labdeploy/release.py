@@ -350,6 +350,9 @@ class CloudRun:
                          # after, billed for the start only; Google measured starts up to half shorter. gcloud turns it on only
                          # for services it creates, and Terraform creates these, so it is asked for at every release.
                          "--cpu-boost",
+                         # Binary Authorization (docs/ROADMAP.md 14.8): the setting belongs to the service and Terraform sets it
+                         # when the project's mode is dryrun or enforced; it is named here too, so no release can leave it behind.
+                         *(["--binary-authorization=default"] if os.environ.get("BINAUTHZ_MODE") in ("dryrun", "enforced") else []),
                          *[flag for flag in extra if flag.startswith("--update-labels=")], *self.egress_flags(spec), *self.volume_flags(spec)]
         container_flags = [flag for flag in extra if not flag.startswith("--update-labels=")]
         names = self.container_names()

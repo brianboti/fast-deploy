@@ -73,3 +73,12 @@ variable "access_change_quiet_members" {
     error_message = "access_change_quiet_members holds plain email addresses."
   }
 }
+variable "binary_authorization" {
+  type        = string
+  default     = "dryrun"
+  description = "Binary Authorization on Cloud Run (binauthz.tf, docs/ROADMAP.md 14.8): dryrun logs a deploy of an image no release attested, enforced refuses it, off allows every image."
+  validation {
+    condition     = contains(["off", "dryrun", "enforced"], var.binary_authorization)
+    error_message = "binary_authorization is off, dryrun or enforced."
+  }
+}

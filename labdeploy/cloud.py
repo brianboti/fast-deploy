@@ -483,6 +483,93 @@ class Observer:
                 pressed.append({"service": key[0], "quota": key[1], "usage": max(used), "limit": min(bounds), "share": round(share, 3)})
         return sorted(pressed, key=lambda item: -item["share"])
 
+    # ---- serving images (docs/ROADMAP.md 26.3)
+    MANIFESTS = ("application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, "
+                 "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json")
+    PULL_CAP = 4 * 1024 ** 3  # an image this large is listed, not pulled again
+
+    def serving_images(self, target):
+        """The images the service's serving revisions run, by digest, from its own project's registry."""
+        base = f"https://run.googleapis.com/v2/projects/{target.project_id}/locations/{target.region}/services/{target.service}"
+        data = self.get(base)
+        revisions = sorted({item.get("revision") for item in data.get("trafficStatuses") or data.get("traffic") or []
+                            if item.get("percent") and re.fullmatch(r"[a-z][a-z0-9-]{1,62}", item.get("revision") or "")})
+        prefix = f"{target.region}-docker.pkg.dev/{target.project_id}/"
+        images = []
+        for revision in revisions:
+            for container in self.get(f"{base}/revisions/{revision}").get("containers") or []:
+                image = container.get("image") or ""
+                if image.startswith(prefix) and re.search(r"@sha256:[a-f0-9]{64}$", image) and image not in images:
+                    images.append(image)
+        return images
+
+    def image_findings(self, project_id, image):
+        """What Artifact Analysis holds for one image now: findings by severity and with a fix, and whether it still
+        analyses the image (only while it was pulled within 30 days)."""
+        from .scan import fix_available, malicious
+        url = f"https://containeranalysis.googleapis.com/v1/projects/{project_id}/occurrences"
+        resource = f'resourceUrl="https://{image}"'
+        found, page = [], None
+        while True:
+            params = {"filter": f'kind="VULNERABILITY" AND {resource}', "pageSize": 1000, **({"pageToken": page} if page else {})}
+            data = self.get(url, **params)
+            found += data.get("occurrences") or []
+            page = data.get("nextPageToken")
+            if not page or len(found) >= 10_000:
+                break
+        discovery = ((self.get(url, filter=f'kind="DISCOVERY" AND {resource}', pageSize=1).get("occurrences") or [{}])[0].get("discovery") or {})
+        result = {"image": image, "findings": len(found), "critical": 0, "high": 0, "critical_fixable": 0, "high_fixable": 0,
+                  "malicious": 0, "analysis": discovery.get("continuousAnalysis"), "status": discovery.get("analysisStatus"),
+                  "last_scan": discovery.get("lastScanTime")}
+        for occurrence in found:
+            details = occurrence.get("vulnerability") or {}
+            severity = (details.get("effectiveSeverity") or details.get("severity") or "").upper()
+            if severity in ("CRITICAL", "HIGH"):
+                key = severity.lower()
+                result[key] += 1
+                result[key + "_fixable"] += 1 if fix_available(occurrence) else 0
+            result["malicious"] += 1 if malicious(occurrence) else 0
+        return result
+
+    def refresh_analysis(self, image):
+        """Pull the image, its manifest and every layer read and discarded, so Artifact Analysis keeps analysing it: it does
+        only for images pulled within 30 days, and Cloud Run never pulls a serving image again after its deploy. The machine
+        and the registry are in the same region, so the pull costs nothing. Returns the bytes read."""
+        found = re.fullmatch(r"(?P<host>[a-z0-9-]+-docker\.pkg\.dev)/(?P<path>[a-z0-9._/-]+)@(?P<digest>sha256:[a-f0-9]{64})", image)
+        if not found:
+            raise ValueError(f"{image} is not an Artifact Registry image by digest")
+        base = f"https://{found['host']}/v2/{found['path']}"
+        auth = {"Authorization": "Basic " + base64.b64encode(f"oauth2accesstoken:{self.token()}".encode()).decode()}
+
+        def manifest(reference):
+            response = self.client.get(f"{base}/manifests/{reference}", headers={**auth, "Accept": self.MANIFESTS})
+            response.raise_for_status()
+            return response.json()
+
+        document = manifest(found["digest"])
+        if document.get("manifests"):  # an index: the platform builds linux/amd64 only
+            chosen = next((item for item in document["manifests"] if (item.get("platform") or {}).get("architecture") == "amd64"), document["manifests"][0])
+            document = manifest(chosen["digest"])
+        blobs = [document.get("config") or {}, *(document.get("layers") or [])]
+        size = sum(int(blob.get("size") or 0) for blob in blobs)
+        if size > self.PULL_CAP:
+            raise ValueError(f"the image is {size // 1024 ** 2} MiB, over the {self.PULL_CAP // 1024 ** 3} GiB the weekly pull reads")
+        total = 0
+        for blob in blobs:
+            if not blob.get("digest"):
+                continue
+            url, headers = f"{base}/blobs/{blob['digest']}", auth
+            for _ in range(3):  # the registry may answer with a redirect to storage, which gets no credentials
+                with self.client.stream("GET", url, headers=headers) as response:
+                    if response.status_code in (301, 302, 303, 307, 308) and response.headers.get("location"):
+                        url, headers = str(httpx.URL(url).join(response.headers["location"])), {}
+                        continue
+                    response.raise_for_status()
+                    for chunk in response.iter_bytes(1024 * 1024):
+                        total += len(chunk)
+                    break
+        return total
+
     def month_spend(self, table, projects, now=None):
         """Each project's spend this month and its forecast, from the billing export (docs/ROADMAP.md 24.2)."""
         from .cost import month_to_date

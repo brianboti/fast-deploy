@@ -746,6 +746,8 @@ jobs:
       WIF_PROVIDER: ${{ vars.WIF_PROVIDER }}
       RECOVERY_BUCKET: ${{ vars.RECOVERY_BUCKET }}
       IAP_CLIENT_ID: ${{ vars.IAP_CLIENT_ID }}
+      BINAUTHZ_ATTESTOR: ${{ vars.BINAUTHZ_ATTESTOR }}
+      BINAUTHZ_MODE: ${{ vars.BINAUTHZ_MODE }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -870,6 +872,18 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/platform
           RECOVERY_ONLY: 'true'
         run: python -m labdeploy.release
+      # 14.10: the data files the image carries, inspected for personal data before the image reaches the registry. This
+      # job holds the application's identity and never runs its code; the build job, which does, holds no credentials.
+      - name: Inspect data files for personal data
+        if: inputs.image_digest == ''
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+          SPEC_FILE: bundle/platform.yaml
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN=$(gcloud auth print-access-token)
+          GOOGLE_ACCESS_TOKEN="$TOKEN" python -m labdeploy.datafiles bundle/image.tar --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --json bundle/datafiles.json
       - name: Push image and resolve immutable digest
         if: inputs.image_digest == ''
         shell: bash
@@ -955,6 +969,26 @@ jobs:
           set -euo pipefail
           "$COSIGN" verify-attestation --key "$PROVENANCE_KEY" --type slsaprovenance1 --insecure-ignore-tlog=true "$IMAGE_DIGEST" > "$RUNNER_TEMP/verified.jsonl"
           python -m labdeploy.provenance verify "$RUNNER_TEMP/verified.jsonl"
+      # 14.8: Binary Authorization. With the provenance above verified, the release attests the image with the project's
+      # attestor key; a service that opts in (every application's, once its root follows the foundation) runs nothing else
+      # when the policy is enforced. A reused image was attested by the run that built it.
+      - name: Attest the image for Binary Authorization
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+          BINAUTHZ_KEY_VERSION: ${{ vars.BINAUTHZ_KEY_VERSION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$BINAUTHZ_ATTESTOR" ]; then
+            echo "Binary Authorization: no attestor in this environment (the foundation has none yet, or this application's root has not published it); the image is not attested"
+            exit 0
+          fi
+          TOKEN=$(gcloud auth print-access-token)
+          if ! GOOGLE_ACCESS_TOKEN="$TOKEN" python -m labdeploy.attest "$IMAGE_DIGEST" --attestor "$BINAUTHZ_ATTESTOR" --key-version "$BINAUTHZ_KEY_VERSION"; then
+            # In dry run Cloud Run deploys the image anyway and logs it; enforced, it would refuse it, so the release stops here.
+            [ "$BINAUTHZ_MODE" = "enforced" ] && exit 1
+            echo "::warning title=Binary Authorization::not attested; the policy is in dry run, so the release goes on and the audit log records it"
+          fi
       - name: Summarize image vulnerabilities
         env:
           PYTHONPATH: ${{ github.workspace }}/platform

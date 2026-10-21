@@ -56,10 +56,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # A root in a project of its own (docs/ROADMAP.md 14.9) signs in with that project's identities, recorded by service
+      # in INFRA_OWN_PROJECTS (scripts/apply-foundation.sh PROJECT own prints its entry); every other root with the shared project's.
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
-          workload_identity_provider: ${{ vars.INFRA_PLAN_WIF_PROVIDER }}
-          service_account: ${{ vars.INFRA_PLAN_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ fromJSON(vars.INFRA_OWN_PROJECTS || '{}')[matrix.app].plan_provider || vars.INFRA_PLAN_WIF_PROVIDER }}
+          service_account: ${{ fromJSON(vars.INFRA_OWN_PROJECTS || '{}')[matrix.app].plan_service_account || vars.INFRA_PLAN_SERVICE_ACCOUNT }}
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: 1.13.5

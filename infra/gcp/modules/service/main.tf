@@ -169,6 +169,13 @@ resource "google_cloud_run_v2_service" "app" {
   # Callers may mint their identity token for the domain as well as for the run.app address (domain.tf).
   custom_audiences = local.domain_enabled ? ["https://${var.domain}"] : null
   labels           = local.labels # releases merge their own labels in (--update-labels), so these survive
+  # Binary Authorization (docs/ROADMAP.md 14.8): the project's policy decides, dry-run or enforced, once the foundation has it.
+  dynamic "binary_authorization" {
+    for_each = var.binary_authorization != null && try(var.binary_authorization.mode, "off") != "off" ? [1] : []
+    content {
+      use_default = true
+    }
+  }
   template {
     service_account = google_service_account.runtime.email
     scaling {

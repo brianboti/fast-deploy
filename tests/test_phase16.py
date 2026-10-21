@@ -222,7 +222,7 @@ def test_the_foundation_script_keeps_staging_values_out_of_production(tmp_path):
     # a new project's first apply: only Google's "API not ready yet" is waited out, once, then the rest is planned and applied
     assert 'grep -q "has not been used in project" "$LOG"' in script and script.count("sleep 60") == 1
     assert script.count("run apply -input=false -no-color project.tfplan") == 2
-    assert '-var-file="$VARS" -var="environment=$ENVIRONMENT"' in script and 'prefix = "INFRA_PRODUCTION_" if os.environ["ENVIRONMENT"] == "production"' in script
+    assert '-var-file="$VARS" -var="environment=$ENVIRONMENT"' in script and 'prefix = "INFRA_PRODUCTION_" if os.environ["MODE"] == "production"' in script
     if shutil.which("zsh"):
         work = tmp_path / "repo"
         (work / "scripts").mkdir(parents=True)

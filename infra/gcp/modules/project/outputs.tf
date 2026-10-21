@@ -31,3 +31,13 @@ output "controller" {
     github_app_key_secret = google_secret_manager_secret.github_app_key[0].id
   } : null
 }
+# Binary Authorization (binauthz.tf): what an application's root needs to opt its service in and let its deployer attest.
+output "binary_authorization" {
+  value = {
+    mode          = var.binary_authorization
+    attestor      = google_binary_authorization_attestor.release.id
+    key           = google_kms_crypto_key.release_attestor.id
+    key_version   = trimprefix(data.google_kms_crypto_key_version.release_attestor.id, "//cloudkms.googleapis.com/v1/")
+    attester_role = google_project_iam_custom_role.release_attester.name
+  }
+}

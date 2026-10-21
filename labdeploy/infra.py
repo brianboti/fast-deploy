@@ -263,6 +263,9 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
     # Added in 1.8.6, read the same way: until the foundation has its key ring the app has no signing key, and a private
     # repository's release says so when it tries to sign.
     lines.append(f"  {'kms_key_ring'.ljust(width)} = try(data.terraform_remote_state.project.outputs.kms_key_ring, \"\")")
+    # Added in 1.30.0, read the same way: until the foundation has an attestor the service stays out of Binary Authorization
+    # and its releases attest nothing (docs/ROADMAP.md 14.8).
+    lines.append(f"  {'binary_authorization'.ljust(width)} = try(data.terraform_remote_state.project.outputs.binary_authorization, null)")
     if needs["models"]:
         # Added in 1.21.0 and read the same way, by the roots that declare a model only: until the foundation has the model
         # role, the module's precondition stops the plan with the step that fixes it.
@@ -369,6 +372,8 @@ ALLOWED_ROLES = frozenset({
     "roles/cloudkms.signerVerifier", "roles/cloudkms.viewer",
     # The production deployer checks a staging image's provenance before promoting it: the key's public half only (D37).
     "roles/cloudkms.publicKeyViewer",
+    # The deployer inspects the data files an image carries before pushing it (14.10): content inspection, no jobs.
+    "roles/dlp.user",
 })
 CUSTOM_ROLE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/roles/labDeploy[A-Za-z]+$")
 # The one grant to a platform identity an application root makes by design: the spending cap may read and update the

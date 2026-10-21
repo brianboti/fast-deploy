@@ -1146,8 +1146,11 @@ class Controller:
             if moment.weekday() == 0 and self.observer is not None:
                 record["alert_slots"] = self.alert_slots()
                 record["idle"] = self.idle_services(plans)
+                if callable(getattr(self.observer, "serving_images", None)):
+                    record["serving_images"] = self.serving_image_check(now)
         record["attention"] = bool(
             record["google"] or record["quotas"]
+            or any(item.get("new_critical_fixable") or item.get("malicious") for item in (record.get("serving_images") or {}).get("images") or [])
             or any(item.get("over_budget") for item in (record.get("cost") or {}).get("projects") or [])
             or any(item["result"] in ("restored", "stopped", "rolled_back") for item in record["releases"])
             or any(item.get("verdict") == "worse" for item in record["reports"]) or record["troubled"]
@@ -1204,6 +1207,46 @@ class Controller:
             except Exception as exc:  # noqa: BLE001 - informative only
                 found.append({"project": project, "environment": environment, "warning": str(exc)[:160]})
         return found
+
+    def serving_image_check(self, now=None):
+        """Monday's look at the images that serve (docs/ROADMAP.md 26.3): what Artifact Analysis holds for each now, set
+        beside last Monday's for the same image, then a pull of each, so Google keeps analysing it. It analyses only images
+        pulled within 30 days, and Cloud Run never pulls a serving image again after its deploy: without the pull, a finding
+        published a month after a release would never reach an image that has served since. Reads and in-region pulls
+        cost nothing."""
+        now = now or time.time()
+        before = {}
+        for back in range(7, 14):
+            previous = self.store.digest(datetime.datetime.fromtimestamp(now - back * 86_400, datetime.UTC).date().isoformat())
+            if previous and previous.get("serving_images"):
+                before = {item["image"]: item for item in previous["serving_images"].get("images") or [] if item.get("image")}
+                break
+        images, notes = [], []
+        for app_id, app in sorted(self.config.applications.items()):
+            for environment, target in (("staging", app.target), ("production", app.production.target if app.production else None)):
+                if target is None:
+                    continue
+                try:
+                    serving = self.observer.serving_images(target)
+                except Exception as exc:  # noqa: BLE001 - one application not read is said, the rest still read
+                    notes.append(f"{app_id} ({environment}): its serving images were not read: {str(exc)[:120]}")
+                    continue
+                for image in serving:
+                    try:
+                        found = self.observer.image_findings(target.project_id, image)
+                    except Exception as exc:  # noqa: BLE001
+                        notes.append(f"{app_id} ({environment}): its image's findings were not read: {str(exc)[:120]}")
+                        continue
+                    last = before.get(image) or {}
+                    found["new_critical_fixable"] = max(0, found["critical_fixable"] - last["critical_fixable"]) if last else None
+                    found["new_high_fixable"] = max(0, found["high_fixable"] - last["high_fixable"]) if last else None
+                    images.append({"application": app_id, "environment": environment, **found})
+        for item in images:
+            try:
+                item["pulled_bytes"] = self.observer.refresh_analysis(item["image"])
+            except Exception as exc:  # noqa: BLE001 - the findings above stand; next Monday says whether analysis went on
+                item["pull_error"] = str(exc)[:160]
+        return {"images": images, "notes": notes}
 
     def idle_services(self, plans):
         """Monday's list (docs/ROADMAP.md D63): staging services nobody but the health checks called in 30 days, candidates to
@@ -1920,6 +1963,12 @@ class Controller:
             health_path, needs, exposure = spec.health_path, spec.needs.model_dump(), spec.exposure
             domain = spec.domain if environment == "production" else None  # staging keeps its run.app address (16.6)
             maximum = spec.scaling.maximum
+            onboarding = getattr(self.config, "onboarding", None)
+            if environment == "staging" and spec.project == "own" and onboarding is not None and target.project_id == onboarding.project_id:
+                # 14.9: a contract that asks for a project of its own is never rendered into the shared one.
+                raise PermissionError(f"{app_id}'s contract asks for a project of its own (project: own), and it is registered in the shared "
+                                      f"project {target.project_id}. Create its project and foundation (docs/SETUP.md 7s), then unregister "
+                                      "and onboard it again, or remove project: own from the contract")
         except ValueError as exc:
             health_path, note = "/health", f"Defaults used until the app has a reviewed platform.yaml: {exc}"
         settings = {**app.infra, **(settings or {})}

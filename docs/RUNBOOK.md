@@ -179,6 +179,12 @@ foundation does not change.
 4. **Check.** `curl -sI https://DOMAIN/` answers 403 without a token (a `lab-members` app shows the sign-in page), and
    `curl -sI http://DOMAIN/` redirects to HTTPS.
 
+Since 1.30.0 the domain has its own uptime check through the load balancer, with its certificate validated, and the alert
+**"SERVICE: DOMAIN unreachable"** (ERROR) when it fails from more than one region for ten minutes or the certificate has
+under 14 days left (Google renews it about 30 days before). It fires right after the domain is added, until step 3 is
+done. When it fires later: check that the A record still points at `domain_address`, then the certificate's status in
+`gcloud compute ssl-certificates list`; a certificate that is not ACTIVE says why in its `managed.domainStatus`.
+
 The `run.app` address keeps answering behind the same sign-in, since the release probes it there: the domain adds a name
 and a rate limit, not a new way in. To stop paying, remove `domain:` and ask for `add_production` again: the root's next
 apply removes the load balancer. When the spending cap fires it closes the service, so the domain stops answering too,
@@ -352,6 +358,90 @@ start with it are likely Google's: a rollback will not help, and a release now m
    update.
 2. Hold releases and promotions until it closes (`paused: true` in the configuration, or simply wait).
 3. Afterwards, look at the next day's release reports and the digest: anything still wrong is the application's.
+
+## A dependency's alert
+
+Since 1.30.0 a topic or a Postgres database the contract declares under `needs` has an alert of its own, under the same
+`runtime_alerts` switch as the service's.
+
+- **"SERVICE: messages waiting on TOPIC"** (WARNING): the oldest unacknowledged message on the subscription
+  `SERVICE-TOPIC` is over an hour old. The code that reads it stopped, fails before it acknowledges, or nothing reads it by
+  design. Ask Claude for the service's health and its error lines. When nothing is meant to read it yet, the alert tells
+  you once and stays open until the messages are taken or expire with the subscription's retention (seven days).
+- **"SERVICE: database near a limit"** (ERROR): the disk is over 90 percent full, or over 80 percent of the connections
+  are in use (25 on the smallest instance, 100 on the `sla` tier). A full disk stops writes; at the limit new connections
+  are refused. The disk grows by itself up to 20 GB; past that, raise the limit in the module or clean up. Too many
+  connections is nearly always a pool per request or a leak: one small pool per instance (`max_size` around 5) is enough
+  at the platform's three instances.
+- **"SERVICE: database backup failed"** (ERROR): Cloud SQL's automated backup failed, read from its audit log, since no
+  metric exists for it. Until one succeeds, a restore goes back to the last good backup. Look at the instance's Backups
+  tab; a backup on demand (`gcloud sql backups create --instance SERVICE --project PROJECT`) shows whether it fails again.
+  An instance the spending cap stopped takes no backup and raises nothing.
+
+## A serving image's findings
+
+The Monday digest (since 1.30.0) reads what Artifact Analysis holds for every image that serves, staging and production,
+and names the critical and high findings that have a fix, with what is new since last Monday. Google publishes new
+findings every day, so an image released clean collects them while it serves. The digest also pulls each image from the
+machine afterwards: Artifact Analysis keeps analysing an image only while it was pulled within 30 days, and Cloud Run
+never pulls a serving image again after its deploy. The pull stays in one region and costs nothing.
+
+1. Ask Claude for the application's health or its last release's scan to see the findings; the fix is nearly always a
+   newer base image or newer packages.
+2. Release the fix the usual way. The digest's line goes away the Monday after.
+3. "A known malicious package" in a serving image: release a fixed build at once. Until it is out, close the service as
+   the spending cap does, `gcloud run services update SERVICE --ingress internal --project PROJECT`, and open it again
+   with `--ingress all` after the release.
+4. "Not pulled": the machine could not read the image (its roles, or an image over 4 GiB). Apply the foundation again if
+   the observer's roles are missing; a very large image belongs in a bucket anyway.
+
+Staging's analysis exists only while `image_vulnerability_scanning` is on in its settings; with it off the lines say
+nothing was found, because nothing was looked at.
+
+## Personal data in a data file
+
+Since 1.30.0 each release reads the data files its image carries (64 KiB or more, outside the system's and the packages'
+folders) and sends the first 256 KiB of each text file to Sensitive Data Protection before the image is pushed. The
+summary of the run's "Inspect data files for personal data" step lists what it found, by kind and count, never the
+values.
+
+- **Code nobody has reviewed** with a likely social security, passport, driver's licence, card, bank or medical record
+  number stops before the push. Move the data to a bucket the lab controls (`needs.buckets`) or a database, or review the
+  code and set `trust: reviewed`. Made-up values that look real count too: Sensitive Data Protection cannot tell them
+  apart.
+- **The lab's own code** is reported with a warning and goes on. Read the summary: real people's data in an image is
+  readable by anyone with the registry's reader role.
+- **"not inspected: ... not set up for this deployer yet"**: the foundation (it enables the API) or the application's
+  root (the deployer's role) has not been applied since 1.30.0. The release goes on uninspected, with this warning, until
+  both are. Any other unanswered inspection stops code nobody has reviewed and lets the lab's own go on.
+
+Binary files (SQLite, Parquet, Excel, pickles) are listed in the summary, not inspected. The first GiB a month of the
+billing account is free, then $3 a GiB; a release sends at most 2 MiB.
+
+## Binary Authorization
+
+Since 1.30.0 every application's service opts in to its project's Binary Authorization policy, and every release and
+promotion attests its image with the project's attestor key once it has verified the image's provenance. The policy
+starts in dry run: Cloud Run deploys an unattested image and writes "would have refused" to the audit log.
+
+1. **Check the dry run** after a few releases of each application:
+
+   ```bash
+   gcloud logging read 'resource.type="cloud_run_revision" logName:"cloudaudit.googleapis.com%2Fsystem_event" "dry run"' --project PROJECT --freshness 14d --limit 20
+   ```
+
+   Nothing found: every release was attested. A line names the revision and the image that would have been refused. A
+   release without an attestation says so in its "Attest the image for Binary Authorization" step: the application's root
+   was not applied since 1.30.0, or its environment lacks `BINAUTHZ_ATTESTOR`. In dry run a failed attestation is a
+   warning and the release goes on; once enforced it stops the release, since Cloud Run would refuse the image.
+2. **Enforce**: set `binary_authorization = "enforced"` in the project's settings file and apply the foundation. From then
+   on Cloud Run refuses a new revision of an unattested image, whoever deploys it, with `ContainerImageUnauthorized`.
+3. **An emergency** (a fix must go out and the attestation fails): `gcloud run deploy SERVICE --image IMAGE
+   --breakglass "why"` deploys once and is logged; the next deploy clears it. Fix the cause, then release normally.
+
+Cloud Run checks each new revision, never one already serving, so a rollback is never refused and nothing that serves
+stops when the policy is enforced. The policy binds only services that opt in, and anyone with `run.admin` could take a
+service out; in this lab only the pipeline holds it. Free on Cloud Run; the key costs about $0.06 a month.
 
 ## The controller's machine
 

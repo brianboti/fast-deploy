@@ -228,3 +228,14 @@ variable "domain" {
     error_message = "domain is empty or a lowercase host name of the lab's own, not a run.app address."
   }
 }
+variable "binary_authorization" {
+  type = object({
+    mode          = string
+    attestor      = string
+    key           = string
+    key_version   = string
+    attester_role = string
+  })
+  default     = null
+  description = "The foundation's Binary Authorization output (docs/ROADMAP.md 14.8): the service opts in to the project's policy and its deployer attests its releases; null until the foundation has it."
+}

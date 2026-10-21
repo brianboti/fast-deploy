@@ -371,9 +371,11 @@ Cost effect: none at idle; the central runs bill the platform repository, which 
 ## Phase 14: safety for code nobody has reviewed (about four days) → version 1.16.0
 
 Status: planned on 2026-10-16 (research review section 4.5, controls 1 to 10); 14.1 to 14.7 built the same day as
-version 1.16.0 with the default of D35 (`docs/CHANGES.md`). Open: 14.8 (Binary Authorization reads only its own
-attestations under one project-wide rule on Cloud Run; settle the attestor in a dry run), 14.9 (built with Phase 16's
-second-project machinery) and 14.10 (needs credentials in a step that never runs application code).
+version 1.16.0 with the default of D35 (`docs/CHANGES.md`). 14.8 to 14.10 built on 2026-10-21 as 1.30.0, with Phase 26:
+one attestor per project, written by the release through Google's REST APIs and in dry run until the operator enforces
+it (14.8); a project of its own through `onboarding.own_projects` and the pipeline's `INFRA_OWN_PROJECTS` (14.9); the data
+files read from the built image in the deploy job, which never runs the application's code (14.10). Their live exercise
+has not run.
 
 | Item | Change | Where |
 |---|---|---|
@@ -784,9 +786,34 @@ refused alert); the foundation in each project (the two project alerts).
 Cost effect: about $0.0004 of extra CPU per 15-second start for the boost; the alerts and reads stay inside the free
 allotments.
 
-Not built from the review, for later if wanted: a floor of 50 user requests under the weekly right-sizing proposals,
-per-dependency alerts when a topic or a database is declared, a weekly scan of the images that serve, and an uptime check
-on a custom domain.
+Not built from the review then, and built since as Phase 26 (1.30.0): a floor of 50 user requests under the weekly
+right-sizing proposals, per-dependency alerts when a topic or a database is declared, a weekly look at the images that
+serve, and an uptime check on a custom domain.
+
+## Phase 26: the rest of Phases 14 and 25 (about three days) → version 1.30.0
+
+Built on 2026-10-21 at the operator's request, with Phase 14's open items 14.8 to 14.10 (above). Each fact was checked
+against Google's documentation that day; three findings changed the plan: gcloud's `sign-and-create` for attestations
+is beta only, so the release writes them through the REST APIs; Artifact Analysis keeps analysing an image only while it
+was pulled within 30 days, and Cloud Run never pulls a serving image again, so a pull from the machine (free in one
+region) replaces an on-demand scan ($0.26 an image); a failed Cloud SQL backup has no metric, only an audit log entry.
+
+| Item | Change | Where |
+|---|---|---|
+| 26.1 | No proposal to cut CPU or memory, raise concurrency or change the billing model on fewer than 50 user requests in the window (AWS Compute Optimizer's rule for Lambda); users' requests from the objective's counter; the report says how many of the requests were users' | labdeploy/cost.py, labdeploy/telemetry.py |
+| 26.2 | A declared topic: messages waiting over an hour. A declared Postgres database: disk over 90 percent or connections over 80 percent of Cloud SQL's default limit, and a failed automated backup from the audit log | infra/gcp/modules/service/needs_alerts.tf |
+| 26.3 | On Mondays the digest reads Artifact Analysis's findings for every serving image, names fixable critical and high ones and what is new since last Monday, then pulls each image so the analysis goes on; the observer gains the occurrence viewer and registry reader roles | labdeploy/cloud.py, labdeploy/controller.py, labdeploy/chat.py, infra/gcp/modules/project/main.tf |
+| 26.4 | A custom domain's own uptime check through the load balancer, certificate validated, with an alert on failures from more than one region or a certificate under 14 days from expiry | infra/gcp/modules/service/domain.tf |
+
+Live exercise: a release attested and its dry-run log clean, then an unattested image deployed by hand and seen in the
+log (then refused once enforced); a data file with test identifiers stopping an `unknown` release; one application in a
+project of its own, planned, applied and released; a Monday digest with its serving-image lines; a topic left unread for
+an hour raising its alert.
+Requires regeneration of app workflows: yes (the inspection and the attestation run in them). Terraform apply: the
+foundation in each project, then every application root.
+Cost effect: none at idle beyond the attestor key (about $0.06 a month a project); Sensitive Data Protection's first GiB a
+month is free and a release sends at most 2 MiB; the pulls stay in one region. Alert policies are free until 1 Sep 2027 at
+the earliest, then $0.35 a condition a month: a topic adds one, a database three.
 
 ## Later, unscheduled (research item 13 of 2026-10-14; reviews of 2026-10-16, 2026-10-19, 2026-10-20 and 2026-10-21)
 
@@ -824,5 +851,6 @@ Not planned, because the evidence is against it for this lab: a second cloud or 
 | 23 | about four days | no | by the pipeline |
 | 24 | about two days | yes | the foundation once |
 | 25 | about two days | yes | by the pipeline; the foundation once |
+| 26 | about three days, with 14.8 to 14.10 | yes | the foundation once per project, then by the pipeline |
 
-About nine and a half days of work for Phases 0 to 5, plus the live exercises, which take an hour or two per phase. Phase 6 adds about eleven days and a trial per resource type. Phases 9 to 12 add about fifteen and a half days, planned on 2026-10-14 from `docs/RESEARCH-2026-10-14.md`. Phases 13 to 17 add about twenty-three days, planned on 2026-10-16 from `docs/RESEARCH-2026-10-16.md`; their idle cost is about $4 a month for the controller's machine and about $0.06 for the production project, everything else being a per-app or per-tier choice shown on the approval block. Phases 18 and 19 add about eight days, planned on 2026-10-19 from `docs/RESEARCH-2026-10-19.md`; they add no idle cost, and model calls through Vertex are billed per token inside the project's budget. Phases 20 to 22 add about eleven days, planned on 2026-10-20 from `docs/RESEARCH-2026-10-20.md`; they add no idle cost, and widen what the platform takes as it is from 3 to about 20 of the 33 repositories the review measured. Phases 23 and 24 add about six days, planned on 2026-10-21 from `docs/RESEARCH-2026-10-21.md`; they add no idle cost, and give the platform a voice after a release: a report a day after each one, a daily digest, an objective a quiet application can keep, and the spend between Mondays. Phase 25 adds about two days, planned and built on 2026-10-21 from `docs/RESEARCH-2026-10-21-scaling.md`: starts about four seconds faster, and alerts for refused requests, Google's incidents and access changed by hand, at no idle cost.
+About nine and a half days of work for Phases 0 to 5, plus the live exercises, which take an hour or two per phase. Phase 6 adds about eleven days and a trial per resource type. Phases 9 to 12 add about fifteen and a half days, planned on 2026-10-14 from `docs/RESEARCH-2026-10-14.md`. Phases 13 to 17 add about twenty-three days, planned on 2026-10-16 from `docs/RESEARCH-2026-10-16.md`; their idle cost is about $4 a month for the controller's machine and about $0.06 for the production project, everything else being a per-app or per-tier choice shown on the approval block. Phases 18 and 19 add about eight days, planned on 2026-10-19 from `docs/RESEARCH-2026-10-19.md`; they add no idle cost, and model calls through Vertex are billed per token inside the project's budget. Phases 20 to 22 add about eleven days, planned on 2026-10-20 from `docs/RESEARCH-2026-10-20.md`; they add no idle cost, and widen what the platform takes as it is from 3 to about 20 of the 33 repositories the review measured. Phases 23 and 24 add about six days, planned on 2026-10-21 from `docs/RESEARCH-2026-10-21.md`; they add no idle cost, and give the platform a voice after a release: a report a day after each one, a daily digest, an objective a quiet application can keep, and the spend between Mondays. Phase 25 adds about two days, planned and built on 2026-10-21 from `docs/RESEARCH-2026-10-21-scaling.md`: starts about four seconds faster, and alerts for refused requests, Google's incidents and access changed by hand, at no idle cost. Phase 26 adds about three days with Phase 14's last three items, built on 2026-10-21: Binary Authorization, a project of its own, personal data in data files, and four watches the scaling review set aside, for about $0.06 a month a project.

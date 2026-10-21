@@ -23,6 +23,7 @@ module "project" {
   alert_email                  = var.alert_email
   alert_webhook_url            = var.alert_webhook_url
   access_change_quiet_members  = var.access_change_quiet_members
+  binary_authorization         = var.binary_authorization
   spending_cap                 = var.spending_cap
   billing_export_dataset       = var.billing_export_dataset
   observer_impersonators       = var.observer_impersonators
