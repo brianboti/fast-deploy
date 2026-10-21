@@ -5,8 +5,10 @@ import contextlib
 import datetime
 import hashlib
 import html
+import json
 import re
 import time
+import types
 
 import httpx
 import pytest
@@ -14,10 +16,10 @@ import yaml
 from conftest import TARGET, FakeGitHub
 from fastapi.testclient import TestClient
 
-from labdeploy import aftercare, charts, monitor, settings, telemetry
+from labdeploy import aftercare, charts, chat, monitor, server, settings, telemetry
 from labdeploy.cloud import Observer
 from labdeploy.config import load_config
-from labdeploy.controller import Controller, Store
+from labdeploy.controller import HIDDEN_COSTS, HIDDEN_STATUS, Controller, Store
 from labdeploy.oauth import PAGE_HEADERS
 from labdeploy.server import build_app
 
@@ -101,16 +103,28 @@ class Reports(FakeGitHub):
 
     def cost_report(self, app, workflow="rightsize-gcp.yml", name="cost-report", limit=1_048_576):
         self.downloads.append(app.service)
-        report = {"generated_at": "2026-10-19T06:31:02+00:00", "service": app.service, "project_id": "test-project",
-                  "rightsizing": {"recommendations": [{"setting": "resources.memory_mib", "current": 1024, "recommended": 512,
+        # The whole report as the workflow writes it: besides the application's own measurements, the project's bill (which
+        # holds the other application's line), the month so far, Google's recommender for every service of the project and a
+        # repository's Actions minutes.
+        report = {"generated_at": "2026-10-19T06:31:02+00:00", "service": app.service, "project_id": "test-project", "window_days": 14,
+                  "estimate": {"compute_ceiling_usd_month": 12.5, "idle_floor_usd_month": 0.0},
+                  "rightsizing": {"observed": {"usd_month_at_list_price": 0.5, "requests": 40},
+                                  "recommendations": [{"setting": "resources.memory_mib", "current": 1024, "recommended": 512,
                                                        "reason": "p95 memory 31% of the limit", "estimated_monthly_saving_usd": 1.42}]},
-                  "actual_spend": {"window_days": 30, "data_through": "2026-10-18T23:00", "total_net_cost_usd": 9.5,
+                  "cloud_run_cost_recommender": {"status": "ok", "count": 1, "recommendations": [{"description": "Switch other to instance-based billing"}]},
+                  "release_tolls": {"month": "2026-10", "fresh_images": 2, "image_scans_usd": 0.52, "actions": {"billable": True, "minutes": 91}},
+                  "month": {"month": "2026-10", "days_elapsed": 20.5, "days_in_month": 31, "projects": [{"project": "test-project", "net_cost_usd": 8.4,
+                                                                                                         "forecast_usd": 12.7}]},
+                  "actual_spend": {"window_days": 30, "data_through": "2026-10-18T23:00", "total_net_cost_usd": 9.5, "table": "billing-proj.billing.export",
                                    "by_service": [{"service": "Cloud Run", "net_cost_usd": 6.0}, {"service": "Artifact Registry", "net_cost_usd": 3.5}],
                                    "by_app": [{"app": "demo", "net_cost_usd": 7.0}, {"app": "other", "net_cost_usd": 2.5}],
                                    "by_project": [{"project": "test-project", "environment": "staging", "net_cost_usd": 9.5}],
-                                   "previous": {"total_net_cost_usd": 8.0, "by_service": [{"service": "Cloud Run", "net_cost_usd": 4.5},
-                                                                                         {"service": "Cloud Build", "net_cost_usd": 1.25}],
-                                                "by_app": [{"app": "demo", "net_cost_usd": 5.0}]}}}
+                                   "previous": {"window_days": 30, "total_net_cost_usd": 8.0, "by_service": [{"service": "Cloud Run", "net_cost_usd": 4.5},
+                                                                                                           {"service": "Cloud Build", "net_cost_usd": 1.25}],
+                                                "by_app": [{"app": "demo", "net_cost_usd": 5.0}]},
+                                   "movers": {"by_service": [{"service": "Cloud Build", "net_cost_usd": 0.0, "before_usd": 1.25, "change_usd": -1.25, "change_share": -1.0}],
+                                              "by_app": [{"app": "other", "net_cost_usd": 2.5, "before_usd": 0.0, "change_usd": 2.5, "change_share": None}]},
+                                   "app": {"name": app.service, "net_cost_usd": {"demo": 7.0, "other": 2.5}.get(app.service, 0.0)}}}
         return {"workflow_run_id": self.run, "run_url": "https://github.com/lab/demo/actions/runs/9001", "report": report}
 
     def newest_run_id(self, app, workflow, status="success"):
@@ -172,14 +186,15 @@ def site(tmp_path):
     stack = contextlib.ExitStack()
     made = {}
 
-    def make(observer=None, github=None, seeded=True, factory=None, **extra):
+    def make(observer=None, github=None, seeded=True, factory=None, background=False, **extra):
         path = tmp_path / "config.yaml"
         path.write_text(yaml.safe_dump(configuration(tmp_path, observer is not None or factory is not None, **extra), sort_keys=False))
         store = Store(str(tmp_path / "db"))
         if seeded:
             seed(store)
         made["github"] = github or Reports()
-        made["app"] = build_app(load_config(str(path)), made["github"], config_path=str(path), observer_factory=factory or (lambda config: observer))
+        made["app"] = build_app(load_config(str(path)), made["github"], config_path=str(path), observer_factory=factory or (lambda config: observer),
+                                background=background)
         return store
 
     def client(token="operator-token"):
@@ -200,6 +215,13 @@ def view(browser, tab, status=200, **params):
     page = browser.get("/settings", params={"tab": tab, **params})
     assert page.status_code == status, page.text[:400]
     return page
+
+
+def tool(browser, token, name, **arguments):
+    """One tool call as Claude makes it, with the identity's own token: the structured answer, summary first."""
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json, text/event-stream"}
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments}}
+    return browser.post("/mcp", headers=headers, json=body).json()["result"]["structuredContent"]
 
 
 # ---- the charts: pure functions from numbers to SVG
@@ -485,7 +507,7 @@ def test_monitor_is_open_to_every_principal_for_its_own_applications(site):
     said = words_of(overview)
     assert "demo" in said and "other" not in said and 'id="nav-configure"' not in overview.text and "Spend this month –" in said
     assert "There is no application named other among those your token may see" in words_of(view(viewer, "health", 404, app="other"))
-    assert "other" not in words_of(view(viewer, "releases")) and "Each project's spend is shown to an identity that sees every application" in words_of(view(viewer, "cost"))
+    assert "other" not in words_of(view(viewer, "releases")) and chat.WHOLE_BILL + "." in words_of(view(viewer, "cost"))
     refused = view(viewer, "platform", 403)
     assert "viewer may not change the controller's configuration" in words_of(refused) and "set-cookie" not in refused.headers
     assert 'id="nav-configure"' not in refused.text and 'href="/settings?tab=overview"' in refused.text  # the sidebar shows Monitor only
@@ -500,6 +522,111 @@ def test_monitor_is_open_to_every_principal_for_its_own_applications(site):
     assert "This token sees no application" in words_of(view(site.client("nobody-token"), "overview"))
     operator = site.client()
     assert 'id="nav-configure"' in view(operator, "overview").text and "deploy_latest" in words_of(view(operator, "activity", kind="tool"))
+
+
+ELSEWHERE = {**OTHER, "project_id": "lab-other", "deploy_service_account": "other-deploy@lab-other.iam.gserviceaccount.com",
+             "probe_service_account": "other-probe@lab-other.iam.gserviceaccount.com", "recovery_bucket": "lab-other-recovery"}
+
+
+class Jobs:
+    """The background jobs as a running controller reports them (Scheduler.snapshot): results and an error that name both
+    applications. Nothing runs."""
+
+    def __init__(self, controller=None, config=None):
+        pass
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+    def snapshot(self):
+        return {"auto_deploy": {"next_run": "2026-10-21T10:01:00+00:00", "last_run": "2026-10-21T10:00:00+00:00",
+                                "last_result": {"demo": "up to date", "other": "released 1234567"}, "last_error": None},
+                "watchdog": {"next_run": "2026-10-22T09:00:00+00:00", "last_run": "2026-10-21T09:00:00+00:00",
+                             "last_result": {"problems": ["other: no scheduled run recorded yet"]}, "last_error": None},
+                "backup": {"next_run": "2026-10-22T03:00:00+00:00", "last_run": "2026-10-21T03:00:00+00:00", "last_result": None,
+                           "last_error": "RuntimeError: other's disk is full"}}
+
+
+class Drifted(Reports):
+    """The weekly drift check found the other application's cloud setup changed by hand."""
+
+    def drift_report(self, repository, workflow="infra-drift.yml", name="drift-report"):
+        return {"run_url": "https://github.com/lab/fast-deploy/actions/runs/7", "report": {
+            "checked_at": iso(time.time() - DAY), "drifted": True, "applications": [{"app": "other", "drifted": True, "categories": ["iam"]}],
+            "serious": ["other"], "failed": []}}
+
+
+def test_cost_for_a_limited_identity_is_its_own_lines_of_the_bill_on_the_page_and_in_chat(site):
+    """An identity that does not see every application gets, on the Cost view and from get_cost_report alike, the bill's lines
+    of its own applications beside their window before, its proposals, floor and ceiling; never the bill by Google service,
+    the projects' totals or names, the month so far, or another application's line. A `*` identity gets all of it."""
+    site(Steady())
+    viewer, operator = site.client("viewer-token"), site.client()
+    said = words_of(view(viewer, "cost"))
+    assert said.count(chat.WHOLE_BILL) == 1  # one plain line where the projects' bill was
+    assert "demo $7.00 · ▲ $2.00" in said and "Application Last 30 days The 30 before demo $7.00 $5.00" in said
+    assert "resources.memory_mib 1024 512 p95 memory 31% of the limit $1.42" in said and "demo · production $0 to $12.50 · ceiling $40.00" in said
+    for hidden in ("This month", "By Google service", "Artifact Registry", "Gone since", "Cloud Build", "$9.50", "$8.00", "$6.00", "test-project",
+                   "prod-project", "other", "$2.50"):
+        assert hidden not in said, hidden
+    whole = words_of(view(operator, "cost"))
+    assert chat.WHOLE_BILL not in whole
+    for shown in ("This month", "test-project · staging", "By Google service", "Cloud Run $6.00", "Gone since the window before: Cloud Build ($1.25).",
+                  "$9.50 in the last 30 days against $8.00 in the 30 before, net of credits, in test-project.", "other $2.50 · new"):
+        assert shown in whole, shown
+    answer = tool(viewer, "viewer-token", "get_cost_report", application="demo")
+    report, spend = answer["report"], answer["report"]["actual_spend"]
+    assert spend["by_app"] == [{"app": "demo", "net_cost_usd": 7.0}] and spend["previous"] == {"window_days": 30, "by_app": [{"app": "demo", "net_cost_usd": 5.0}]}
+    assert spend["app"] == {"name": "demo", "net_cost_usd": 7.0} and spend["movers"] == {"by_app": []}
+    assert not {"total_net_cost_usd", "by_service", "by_project", "table"} & set(spend) and not {"month", "cloud_run_cost_recommender"} & set(report)
+    assert "actions" not in report["release_tolls"] and "budgets" not in answer and answer["hidden"] == HIDDEN_COSTS
+    assert report["rightsizing"]["recommendations"][0]["estimated_monthly_saving_usd"] == 1.42 and report["estimate"]["compute_ceiling_usd_month"] == 12.5
+    assert re.search(r"\bother\b", json.dumps({key: value for key, value in answer.items() if key != "hidden"})) is None
+    assert f"- Actual spend, last 30 days: $7.00 for `demo`'s own resources, net of credits; $5.00 in the 30 days before\n- {chat.WHOLE_BILL}\n" in answer["summary"]
+    assert "This month in" not in answer["summary"] and "moved most" not in answer["summary"]
+    everything = tool(operator, "operator-token", "get_cost_report", application="demo")
+    assert everything["report"] == Reports().cost_report(types.SimpleNamespace(service="demo"))["report"]  # as the workflow wrote it
+    assert "budgets" in everything and "hidden" not in everything and "$9.50 for the whole project" in everything["summary"]
+
+
+def test_controller_state_for_a_limited_identity_is_its_own_on_the_page_and_in_chat(site, tmp_path, monkeypatch):
+    """A background job's result or error can name any application: an identity that does not see every application gets each
+    job's last and next run, on the Activity view and from get_controller_status alike, and of the rest of the controller's
+    state (applications, drift, re-pins, spend caps, the digest's verdict) only its own. A `*` identity gets all of it."""
+    monkeypatch.setattr(server, "Scheduler", Jobs)
+    applications = configuration(tmp_path)["applications"]
+    applications["other"].update(paused=True, auto_deploy=True, target=ELSEWHERE)
+    store = site(Steady(), Drifted(), background=True, applications=applications, platform_updates={},
+                 cloud_run_spend_caps={"test-project": 20, "lab-other": 30})
+    store.save_platform_update("workflows:other", {"state": "open", "url": "https://github.com/lab/other/pull/20", "waiting": "a person to merge it"})
+    viewer, operator = site.client("viewer-token"), site.client()
+    said = words_of(view(viewer, "activity"))
+    assert ("Job Last run (UTC) Next run Auto-deploy check 21 Oct 10:00 21 Oct 10:01 Watchdog 21 Oct 09:00 22 Oct 09:00 Nightly backup 21 Oct 03:00 "
+            "22 Oct 03:00 A job's result can name any application, so the results and errors are shown to an identity that sees every application.") in said
+    assert "Infrastructure drift The cloud setup matches the code" in said
+    for hidden in ("up to date", "1234567", "no scheduled run recorded", "disk is full", "Drift in"):
+        assert hidden not in said, hidden
+    whole = words_of(view(operator, "activity"))
+    for shown in ("Job Last run (UTC) Result Next run", "demo: up to date; other: released 1234567", "problems: ['other: no scheduled run recorded yet']",
+                  "RuntimeError: other's disk is full", "Drift in other (iam)"):
+        assert shown in whole, shown
+    status = tool(viewer, "viewer-token", "get_controller_status")
+    assert status["background"] == {name: {"last_run": entry["last_run"], "next_run": entry["next_run"]} for name, entry in Jobs().snapshot().items()}
+    assert status["applications"] == ["demo"] and status["paused_applications"] == [] and status["auto_deploy"] == []
+    assert status["spending_guards"]["cloud_run_spend_caps"] == {"test-project": 20} and status["platform_updates"]["applications"] == {}
+    assert status["infrastructure_drift"]["status"] == "clean" and status["infrastructure_drift"]["drifted"] == {} and status["infrastructure_drift"]["serious"] == []
+    assert "attention" not in status["digest"] and status["hidden"] == HIDDEN_STATUS
+    assert re.search(r"\bother\b", json.dumps({key: value for key, value in status.items() if key not in ("summary", "hidden")})) is None
+    assert "`other`" not in status["summary"] and f"- {HIDDEN_STATUS.rstrip('.')}\n" in status["summary"]
+    everything = tool(operator, "operator-token", "get_controller_status")
+    assert everything["background"] == Jobs().snapshot() and everything["applications"] == ["demo", "other"] and "hidden" not in everything
+    assert everything["paused_applications"] == ["other"] and everything["auto_deploy"] == ["other"] and "attention" in everything["digest"]
+    assert everything["spending_guards"]["cloud_run_spend_caps"] == {"lab-other": 30, "test-project": 20}
+    assert everything["infrastructure_drift"]["drifted"] == {"other": ["iam"]} and "other" in everything["platform_updates"]["applications"]
+    assert "Weekly cost report not run yet for: `other`" in everything["summary"]
 
 
 def test_empty_states_say_why(site):

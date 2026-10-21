@@ -21,7 +21,7 @@ from starlette.responses import JSONResponse
 from . import __version__, chat, settings
 from .cloud import Observer
 from .config import LiveConfig, load_config
-from .controller import Controller, Store
+from .controller import HIDDEN_STATUS, Controller, Store
 from .cost import PRICING
 from .github import GitHub, explain
 from .oauth import PUBLIC_PATHS, Provider, find_principal, mount
@@ -474,16 +474,18 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
         return chat.attach(chat.events, {"events": store.recent_events(min(max(int(limit), 1), 500), identity=None if principal.can_deploy else principal.name,
                                                                         application=application)})
 
-    def spending_guards():
+    def spending_guards(app_ids):
         caps = getattr(config, "cloud_run_spend_caps", None) or {}
-        projects = sorted({application.target.project_id for application in config.applications.values()})
+        projects = sorted({config.applications[app_id].target.project_id for app_id in app_ids})
         return {"cloud_run_spend_caps": {project: caps.get(project) for project in projects},
                 "missing": [project for project in projects if not caps.get(project)],
                 "note": "Native Cloud Run spend caps the operator recorded (docs/SETUP.md 7i); the platform's own cap workflow also stops databases."}
 
-    def newest_digest():
+    def newest_digest(everything):
         found = store.digest()
-        return {key: found.get(key) for key in ("day", "attention", "delivered", "generated_at")} if found else None
+        # Whether it needs a look was judged across every application: an identity that sees only some asks get_digest for theirs.
+        keys = ("day", "attention", "delivered", "generated_at") if everything else ("day", "delivered", "generated_at")
+        return {key: found.get(key) for key in keys} if found else None
 
     @tool(title="Get daily digest", annotations=READ_ONLY)
     @plain_errors
@@ -496,19 +498,25 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
     @plain_errors
     def get_controller_status() -> dict[str, Any]:
         """Controller version, dispatch and sign-in switches, registered apps, GitHub credential expiry, and pricing freshness."""
+        principal = identity.get()
+        everything = "*" in principal.applications
+        visible = set(controller.visible_apps(principal))  # every application for a `*` identity; its own for any other
         status = getattr(adapter, "credential_status", None)
         credential = status() if callable(status) else {"kind": "unknown", "expires_at": None, "days_left": None, "warning": None}
-        return chat.attach(chat.controller, {"version": __version__, "live_dispatch": config.live_dispatch, "oauth_sign_in": config.oauth is not None, "paused": config.paused,
-                "observer": config.observer.service_account if config.observer else None,
-                "auto_deploy": sorted(k for k, a in config.applications.items() if a.auto_deploy),
-                "background": scheduler["thread"].snapshot() if scheduler["thread"] is not None else None,
-                "paused_applications": sorted(k for k, a in config.applications.items() if a.paused),
-                "configuration": {"path": getattr(config, "path", None), "reloaded_at": getattr(config, "reloaded_at", None), "error": getattr(config, "error", None)},
-                "applications": sorted(config.applications), "github_credential": credential,
-                "spending_guards": spending_guards(), "infrastructure_drift": controller.drift_status(), "platform_updates": controller.updates.status(),
-                "digest": newest_digest(), "trust": controller.trust_numbers(identity.get(), 30)["overall"],
-                "pricing_verified": PRICING["verified"], "started_at": datetime.datetime.fromtimestamp(started, datetime.UTC).isoformat(timespec="seconds"),
-                "uptime_seconds": int(time.time() - started)})
+        found = {"version": __version__, "live_dispatch": config.live_dispatch, "oauth_sign_in": config.oauth is not None, "paused": config.paused,
+                 "observer": config.observer.service_account if config.observer else None,
+                 "auto_deploy": sorted(k for k, a in config.applications.items() if a.auto_deploy and k in visible),
+                 "background": controller.background_for(principal, scheduler["thread"].snapshot() if scheduler["thread"] is not None else None),
+                 "paused_applications": sorted(k for k, a in config.applications.items() if a.paused and k in visible),
+                 "configuration": {"path": getattr(config, "path", None), "reloaded_at": getattr(config, "reloaded_at", None), "error": getattr(config, "error", None)},
+                 "applications": sorted(visible), "github_credential": credential,
+                 "spending_guards": spending_guards(visible), "infrastructure_drift": controller.drift_for(principal), "platform_updates": controller.updates_for(principal),
+                 "digest": newest_digest(everything), "trust": controller.trust_numbers(principal, 30)["overall"],
+                 "pricing_verified": PRICING["verified"], "started_at": datetime.datetime.fromtimestamp(started, datetime.UTC).isoformat(timespec="seconds"),
+                 "uptime_seconds": int(time.time() - started)}
+        if not everything:
+            found["hidden"] = HIDDEN_STATUS
+        return chat.attach(chat.controller, found)
 
     scheduler = {"thread": None}
 

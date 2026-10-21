@@ -10,7 +10,7 @@ import yaml
 from conftest import TARGET, FakeGitHub
 from fastapi.testclient import TestClient
 
-from labdeploy.config import Application, Config
+from labdeploy.config import Application, Config, Principal
 from labdeploy.github import GitHub
 from labdeploy.server import build_app
 
@@ -33,6 +33,39 @@ def test_cost_tool_and_ceiling_policy(setup):
         c.deploy(p, plan["id"])
     assert gh.calls == 0
     assert c.cost_report(p, "demo")["report"] is None
+
+
+def test_a_limited_identity_gets_its_own_lines_of_the_weekly_report_and_the_kept_report_stays_whole(setup):
+    """get_cost_report for an identity that sees only some applications (Controller.cost_report_for): what was measured on the
+    application and the bill's lines labelled with its own; a `*` identity gets the report as the workflow wrote it. The
+    whole report, which the settings page keeps for every viewer, is never changed by a limited view of it."""
+    c, limited, gh = setup  # limited sees demo only
+    c.config.monthly_budgets_usd["test-project"] = 20
+    report = {"service": "demo", "project_id": "test-project", "window_days": 14, "estimate": {"idle_floor_usd_month": 0.0},
+              "rightsizing": {"observed": None, "recommendations": []}, "cloud_run_cost_recommender": {"status": "ok", "recommendations": [{"description": "x"}]},
+              "month": {"projects": [{"project": "test-project", "net_cost_usd": 8.4, "forecast_usd": 12.7}]},
+              "release_tolls": {"month": "2026-10", "fresh_images": 1, "image_scans_usd": 0.26, "actions": {"billable": True, "minutes": 91}},
+              "actual_spend": {"window_days": 30, "data_through": "2026-10-18T23:00", "total_net_cost_usd": 9.5, "table": "billing-proj.billing.export",
+                               "by_service": [{"service": "Cloud Run", "net_cost_usd": 9.5}], "by_project": [{"project": "test-project", "net_cost_usd": 9.5}],
+                               "by_app": [{"app": "demo", "net_cost_usd": 7.0}, {"app": "lab-x", "net_cost_usd": 2.5}],
+                               "previous": {"window_days": 30, "total_net_cost_usd": 8.0, "by_app": [{"app": "lab-x", "net_cost_usd": 3.0}]},
+                               "movers": {"by_service": [], "by_app": [{"app": "lab-x", "net_cost_usd": 2.5, "before_usd": 3.0}]},
+                               "app": {"name": "demo", "net_cost_usd": 7.0}, "note": "Staging and production together"}}
+    gh.cost_report = lambda app, workflow="rightsize-gcp.yml": {"workflow_run_id": 1, "report": json.loads(json.dumps(report))}
+    own = c.cost_report(limited, "demo")
+    assert own["report"]["actual_spend"] == {"window_days": 30, "data_through": "2026-10-18T23:00", "by_app": [{"app": "demo", "net_cost_usd": 7.0}],
+                                             "previous": {"window_days": 30, "by_app": []}, "movers": {"by_app": []}, "app": {"name": "demo", "net_cost_usd": 7.0},
+                                             "note": own["report"]["actual_spend"]["note"]}
+    assert "carry no label" in own["report"]["actual_spend"]["note"] and own["report"]["release_tolls"] == {"month": "2026-10", "fresh_images": 1, "image_scans_usd": 0.26}
+    assert set(own["report"]) == {"service", "project_id", "window_days", "estimate", "rightsizing", "release_tolls", "actual_spend"}
+    assert "budgets" not in own and own["spending_guards"]["project_id"] == "test-project" and "every application" in own["hidden"]
+    everyone = Principal(name="operator", token_sha256="0" * 64, applications=["*"], can_deploy=True)
+    whole = c.read_cost_report(c.config.applications["demo"])
+    assert c.cost_report_for(everyone, whole) is whole and whole["report"] == report and whole["budgets"] == {"test-project": 20}
+    c.cost_report_for(limited, whole)
+    assert whole["report"] == report and "hidden" not in whole  # the limited view is a copy
+    assert c.cost_report(limited, "demo") == own and c.cost_report_for(limited, {"report": None, "note": "none yet", "budgets": {}}) == {
+        "report": None, "note": "none yet", "hidden": own["hidden"]}
 
 
 def test_cost_ceiling_configuration_validation():

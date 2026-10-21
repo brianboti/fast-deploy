@@ -11,7 +11,7 @@ import re
 from urllib.parse import quote, urlencode
 
 from . import charts
-from .chat import money, plural
+from .chat import WHOLE_BILL, money, plural
 from .monitor import LIVE_SECONDS, RANGES
 from .settings_page import PREFIX, ago, callout, card, chip, esc, head, icon, shell
 
@@ -731,14 +731,13 @@ def cost(frame, data):
     through = position.get("generated_at") if read else None  # "cost through" only where spend was read
     note = (f'<span class="fresh" title="The daily digest reads the billing export once a day; Google\'s export lands hours to a day late.">'
             f'<span class="dot off"></span>Cost through {esc(day_words(through))}</span>') if through else ""
-    parts = [head("Cost", "What the month costs so far against the budgets and caps you recorded, where the money goes, and what could cost less. "
-                          "Nothing here changes anything."), toolbar(note, records_note(data["as_of"]), refresh(href("cost")))]
-    if not data["everything"]:
-        parts.append(callout("gray", "Each project's spend is shown to an identity that sees every application.",
-                             "<p>Below: the weekly reports and the bounds of the applications this token may see.</p>"))
-    else:
-        parts.append(projects_section(data))
-    parts.append(breakdown_section(data))
+    lede = ("What the month costs so far against the budgets and caps you recorded, where the money goes, and what could cost less. "
+            if data["everything"] else "What your applications' own resources cost, and what could cost less. ")
+    parts = [head("Cost", lede + "Nothing here changes anything."), toolbar(note, records_note(data["as_of"]), refresh(href("cost")))]
+    if data["everything"]:
+        parts += [projects_section(data), breakdown_section(data)]
+    else:  # the projects' bill holds every application's spend (Controller.cost_report_for)
+        parts += [callout("gray", WHOLE_BILL + "."), own_breakdown_section(data)]
     parts.append(proposals_section(data))
     parts.append(bounds_section(data))
     return shell(frame, "cost", "".join(parts))
@@ -830,11 +829,10 @@ def breakdown_section(data):
         rows = [(row["service"], row["net_cost_usd"], f"{money(row['net_cost_usd'])} · {change_words(row['net_cost_usd'], earlier.get(row['service']))}",
                  f"{row['service']}: {money(row['net_cost_usd'])} in the last {days} days, {money(earlier.get(row['service'], 0))} in the {days} before")
                 for row in (actual.get("by_service") or [])[:8]]
-        visible = set(data["applications"]) if not data["everything"] else None
         earlier_apps = {row["app"]: row["net_cost_usd"] for row in before.get("by_app") or []}
         app_rows = [(row["app"], row["net_cost_usd"], f"{money(row['net_cost_usd'])} · {change_words(row['net_cost_usd'], earlier_apps.get(row['app']))}",
                      f"{row['app']}: {money(row['net_cost_usd'])} in the last {days} days, {money(earlier_apps.get(row['app'], 0))} in the {days} before")
-                    for row in (actual.get("by_app") or []) if visible is None or row["app"] in visible][:8]
+                    for row in actual.get("by_app") or []][:8]
         projects = ", ".join(row.get("project") for row in actual.get("by_project") or []) or report.get("project_id")
         through = actual.get("data_through")
         sub = (f"{money(actual.get('total_net_cost_usd'))} in the last {days} days against {money(before.get('total_net_cost_usd'))} in the {days} before, "
@@ -855,6 +853,40 @@ def breakdown_section(data):
                                    caption="Spend by application")
             parts.append(figure("By application", app_chart, "", "", "Firestore and Cloud Run request fees carry no label and count as unlabelled.", table))
     return section("Where the money goes", "".join(parts), "From the weekly right-sizing report's bill: ▲ more and ▼ less than the window before.")
+
+
+def own_breakdown_section(data):
+    """Where the money goes, for an identity that sees only some applications: each one's own line of the bill (labelled
+    with its service), from its own newest weekly report, against the same line of the window before."""
+    rows, read, reasons, days = [], False, [], 30
+    for item in data["reports"]:
+        report = ((item.get("result") or {}).get("report")) or {}
+        actual = report.get("actual_spend") or {}
+        reasons.append(item.get("error") or (item.get("result") or {}).get("note") or actual.get("warning"))
+        if actual.get("by_app") is None:
+            continue
+        read, days = True, actual.get("window_days", 30)
+        line = next((row for row in actual["by_app"] if row.get("app") == report.get("service")), None)
+        if line is None:
+            continue
+        before = next((row["net_cost_usd"] for row in (actual.get("previous") or {}).get("by_app") or [] if row.get("app") == report.get("service")), None)
+        name, spent = item["application"], line["net_cost_usd"]
+        rows.append((name, spent, f"{money(spent)} · {change_words(spent, before)}",
+                     f"{name}: {money(spent)} in the last {days} days, {money(before or 0)} in the {days} before (its weekly report of "
+                     f"{day_words(report.get('generated_at'))}, cost through {day_words(actual.get('data_through'))})", before))
+    if not read:
+        why = next((reason for reason in reasons if reason), "the right-sizing workflow runs on Mondays, or from GitHub Actions on demand")
+        return section("Where the money goes", empty(f"No weekly cost report with the bill yet: {esc(why)}."))
+    if not rows:
+        return section("Where the money goes", empty(f"No line of the bill carries your applications' labels: nothing of theirs was billed in the "
+                                                     f"last {days} days, net of credits."))
+    chart = charts.hbars("by-app-own", f"Spend by application, the last {days} days", "Each application's own resources, net of credits.",
+                         [row[:4] for row in rows])
+    table = charts.numbers(["Application", f"Last {days} days", f"The {days} before"], [(row[0], money(row[1]), money(row[4] or 0)) for row in rows],
+                           numeric={1, 2}, caption="Spend by application")
+    return section("Where the money goes", figure("By application", chart, "", "", "Firestore and Cloud Run request fees carry no label, so they are "
+                                                                                   "not in these lines.", table),
+                   "From each application's newest weekly report, the lines of the bill labelled with it: ▲ more and ▼ less than the window before.")
 
 
 def proposals_section(data):
@@ -995,6 +1027,7 @@ def result_words(result):
 def controller_section(data):
     parts = []
     jobs = data.get("jobs")
+    whole = data["everything"]  # a job's result or error may name any application (Controller.background_for)
     if jobs:
         rows = []
         for name, entry in jobs.items():
@@ -1004,11 +1037,15 @@ def controller_section(data):
                 result = esc(result_words(entry.get("last_result")))
             else:
                 result = '<span class="muted">not run yet</span>'
+            cell = f'<td class="wrap wide" data-label="Result">{result}</td>' if whole else ""
             rows.append(f'<tr><td data-label="Job"><strong>{esc(JOB_WORDS.get(name, name))}</strong></td><td class="nowrap" data-label="Last run (UTC)">'
-                        f'{esc(stamp(entry.get("last_run")) if entry.get("last_run") else "–")}</td><td class="wrap wide" data-label="Result">{result}</td>'
+                        f'{esc(stamp(entry.get("last_run")) if entry.get("last_run") else "–")}</td>{cell}'
                         f'<td class="nowrap" data-label="Next run">{esc(stamp(entry.get("next_run")))}</td></tr>')
-        parts.append('<div class="table-scroll"><table class="list compact stack"><thead><tr><th>Job</th><th>Last run (UTC)</th><th>Result</th><th>Next run</th></tr></thead>'
-                     f'<tbody>{"".join(rows)}</tbody></table></div>')
+        parts.append(f'<div class="table-scroll"><table class="list compact stack"><thead><tr><th>Job</th><th>Last run (UTC)</th>{"<th>Result</th>" if whole else ""}'
+                     f'<th>Next run</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+        if not whole:
+            parts.append('<p class="viz-note">A job\'s result can name any application, so the results and errors are shown to an identity that sees '
+                         "every application.</p>")
     else:
         parts.append(empty("The background jobs do not run in this process (a controller started without them, such as a test)."))
     facts = []

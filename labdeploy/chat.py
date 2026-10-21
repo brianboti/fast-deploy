@@ -120,6 +120,8 @@ PLAIN_STEP_ADVICE = (
     ("Sign the promotion", "signing the promotion with production's key failed; the operator checks that production's cloud setup was applied."),
 )
 CANCELLED_ERRORS = ("the run was cancelled", "KeyboardInterrupt", "SystemExit")  # a cancel's exception text is not an error to show
+# What an identity that sees only some applications is told in place of the bill's other lines, here and on the Cost view.
+WHOLE_BILL = "The whole project's bill is shown to an identity that sees every application"
 
 
 # ---- small pieces
@@ -1359,10 +1361,13 @@ def controller(status):
     newest = status.get("digest") or {}
     if newest.get("day"):
         sent = [item.get("channel") for item in newest.get("delivered") or [] if item.get("ok")]
-        facts.append(f"Daily digest of {day(newest['day'])}: {'something to look at' if newest.get('attention') else 'all quiet'}, "
-                     + (("sent by " + " and ".join(sent)) if sent else "kept here but sent nowhere (ask me for it)"))
+        # The verdict is judged across every application: an identity that sees only some is given the day without it.
+        verdict = f"{'something to look at' if newest.get('attention') else 'all quiet'}, " if "attention" in newest else ""
+        facts.append(f"Daily digest of {day(newest['day'])}: {verdict}" + (("sent by " + " and ".join(sent)) if sent else "kept here but sent nowhere (ask me for it)"))
     if status.get("trust"):
         facts.append(trust_line(status["trust"]))
+    if status.get("hidden"):
+        facts.append(clip(status["hidden"].rstrip("."), 240))
     attention = bool(others or credential.get("warning") or drift.get("drifted") or (status.get("configuration") or {}).get("error") or update_attention)
     next_line = ("ask me about any item above." if attention
                  else "nothing to do; the weekly cost report runs on its own. Tell the operator only if it is still missing after a week." if reports
@@ -1467,6 +1472,8 @@ def cost_report(result, application=None):
             per = own.get("by_environment") or {}
             line += f"; `{app}`'s share {money(own['net_cost_usd'])}" + (" (" + ", ".join(f"{name} {money(value)}" for name, value in per.items()) + ")" if per else "")
         facts.append(line)
+    elif result.get("hidden") and actual.get("by_app") is not None:  # an identity that sees only some applications: their own lines
+        facts += [own_spend_line(actual, report.get("service"), app, window), WHOLE_BILL]
     elif actual.get("warning"):
         facts.append(f"Actual spend unknown: {sentence_clip(actual['warning'], 200)}")
     previous = actual.get("previous") or {}
@@ -1515,6 +1522,23 @@ def cost_report(result, application=None):
     next_line = (f"say “make {app} cheaper” and I'll open a pull request with these proposals; a person merges it." if concrete
                  else "nothing to do; the report runs again next week.")
     return compose(head, facts, next_line, link("GitHub run", result.get("run_url")) if result.get("run_url") else None)
+
+
+def own_spend_line(actual, label, app, window):
+    """The bill's line labelled with the application (its service's name), beside the same line of the window before: what an
+    identity that sees only some applications is given of the spend."""
+    own = actual.get("app") or {}
+    spent = own.get("net_cost_usd")
+    if spent is None:  # an older report without the application's share: its labelled line, or nothing billed
+        spent = sum(row["net_cost_usd"] for row in actual["by_app"] if row.get("app") == label)
+    days = actual.get("window_days") or window
+    per = own.get("by_environment") or {}
+    line = (f"Actual spend, last {days} days: {money(spent)} for `{app}`'s own resources, net of credits"
+            + (" (" + ", ".join(f"{name} {money(value)}" for name, value in per.items()) + ")" if per else ""))
+    before = (actual.get("previous") or {}).get("by_app")
+    if before is not None:
+        line += f"; {money(sum(row['net_cost_usd'] for row in before if row.get('app') == label))} in the {days} days before"
+    return line
 
 
 def analysis(result, application=None):

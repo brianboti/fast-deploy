@@ -27,6 +27,37 @@ DISPATCHED = {"dispatched", "dispatch_unknown", "dispatching"}
 # promotion's run completed while its job and steps still read in progress, and the promotion stayed unverified).
 RECHECK_SECONDS = 6 * 3600
 WAIT_LIMIT = 45  # seconds; keeps a waiting status call inside the client's tool timeout
+# What a weekly cost report says about the application itself: its service's settings, usage and bounds, the proposals and
+# the drift from its contract. An identity that sees only some applications is given these; the rest of the report (the
+# projects' bill, Google's recommender for every service of the project) is shown to an identity that sees every application.
+OWN_REPORT = ("generated_at", "service", "project_id", "window_days", "live_settings", "estimate", "findings", "metrics", "rightsizing",
+              "drift", "onboarding", "serving_tags")
+HIDDEN_COSTS = ("Of the bill, only the lines labelled with this token's applications: the whole project's bill (by Google service, its "
+                "totals, the month so far and its budget) and other applications' spend are shown to an identity that sees every application.")
+HIDDEN_STATUS = ("Other applications, and the background jobs' results and errors (which can name any application), are shown to an "
+                 "identity that sees every application.")
+
+
+def own_spend(actual, labels):
+    """A report's actual spend reduced to the lines labelled with these applications (the lab-deploy-app label is the
+    service's name), each with its line of the window before, and the application's own share. The bill by Google service,
+    the projects' totals and names, and every other label's line go; a warning that says why there is no bill stays."""
+    def own(rows):
+        return [row for row in rows if row.get("app") in labels]
+    found = {key: actual[key] for key in ("window_days", "data_through", "warning") if key in actual}
+    if actual.get("by_app") is not None:
+        found["by_app"] = own(actual["by_app"])
+        found["note"] = ("Net of credits, from Google's billing export; up to a day behind. Firestore and Cloud Run request fees carry no "
+                         "label, so they are not in these lines.")
+    previous = actual.get("previous")
+    if isinstance(previous, dict) and previous.get("by_app") is not None:
+        found["previous"] = {"window_days": previous.get("window_days"), "by_app": own(previous["by_app"])}
+    movers = (actual.get("movers") or {}).get("by_app")
+    if movers is not None:
+        found["movers"] = {"by_app": own(movers)}
+    if isinstance(actual.get("app"), dict) and actual["app"].get("name") in labels:
+        found["app"] = actual["app"]
+    return found
 
 
 def copy_to_bucket(config, files, run=None):
@@ -505,6 +536,53 @@ class Controller:
         if "*" in principal.applications:
             return list(self.config.applications)
         return [app_id for app_id in principal.applications if app_id in self.config.applications]
+
+    # ---- the controller's shared state as an identity may see it: a `*` identity everything, as it is; one that sees only
+    # some applications the numbers and names of its own, never the whole project's or another application's.
+    def cost_report_for(self, principal, result):
+        """A weekly cost report (read_cost_report) as this identity may see it: what was measured on the application itself
+        and, of the bill, the lines labelled with its own applications (own_spend)."""
+        if "*" in principal.applications or not isinstance(result, dict):
+            return result
+        found = {key: value for key, value in result.items() if key != "budgets"}  # a project's budget goes with its month so far
+        if isinstance(result.get("report"), dict):
+            whole = result["report"]
+            report = {key: value for key, value in whole.items() if key in OWN_REPORT}
+            if isinstance(whole.get("release_tolls"), dict):  # the image scans are its own; a repository's Actions minutes may be other services'
+                report["release_tolls"] = {key: value for key, value in whole["release_tolls"].items() if key != "actions"}
+            if isinstance(whole.get("actual_spend"), dict):
+                report["actual_spend"] = own_spend(whole["actual_spend"], {self.config.applications[app_id].service for app_id in self.visible_apps(principal)})
+            found["report"] = report
+        found["hidden"] = HIDDEN_COSTS
+        return found
+
+    def background_for(self, principal, jobs):
+        """The background jobs' state (Scheduler.snapshot) as this identity may see it: for one that sees only some
+        applications, each job's last and next run, never its result or error, which may name any application."""
+        if not isinstance(jobs, dict) or "*" in principal.applications:
+            return jobs
+        return {name: {"last_run": entry.get("last_run"), "next_run": entry.get("next_run")} for name, entry in jobs.items()}
+
+    def drift_for(self, principal):
+        """The weekly drift check's result (drift_status) as this identity may see it: for one that sees only some
+        applications, theirs alone, and drift or clean by theirs."""
+        drift = self.drift_status()
+        if "*" in principal.applications or drift.get("status") not in ("drift", "clean"):
+            return drift
+        visible = set(self.visible_apps(principal))
+        drifted = {key: value for key, value in (drift.get("drifted") or {}).items() if key in visible}
+        return {**drift, "status": "drift" if drifted else "clean", "drifted": drifted,
+                "serious": [key for key in drift.get("serious") or [] if key in visible], "failed": [key for key in drift.get("failed") or [] if key in visible]}
+
+    def updates_for(self, principal):
+        """What follows a platform release (PlatformUpdates.status) as this identity may see it: for one that sees only some
+        applications, the re-pins of theirs alone, without the re-pin step's own error, which may name any application."""
+        view = self.updates.status()
+        if "*" in principal.applications or "applications" not in view:
+            return view
+        visible = set(self.visible_apps(principal))
+        return {**view, "applications": {key: value for key, value in view["applications"].items() if key in visible},
+                "errors": {part: message for part, message in (view.get("errors") or {}).items() if part != "workflows"}}
 
     # ---- one sentence: a repository that follows the contract becomes a running service
     def onboard(self, principal, repository, app_id=None, auto_deploy=False, path=None, as_is=False):
@@ -2032,7 +2110,12 @@ class Controller:
         return {"name": cls.artifact_name(app, name)} if app.central else {}
 
     def cost_report(self, principal, app_id):
-        app = self.app(principal, app_id)
+        """get_cost_report: the application's newest weekly report, as this identity may see it (cost_report_for)."""
+        return self.cost_report_for(principal, self.read_cost_report(self.app(principal, app_id)))
+
+    def read_cost_report(self, app):
+        """The newest weekly cost report as the workflow wrote it, with the guards and budgets recorded for its projects: the
+        whole projects' bill, which reaches an identity only through cost_report_for."""
         result = self.github.cost_report(app, workflow=app.workflows["rightsize"], **self.artifact_names(app, "cost-report"))
         if isinstance(result, dict):
             result["spending_guards"] = self.spending_guards(app)
