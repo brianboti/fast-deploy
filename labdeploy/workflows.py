@@ -193,13 +193,13 @@ def central_deploy(template_text):
           persist-credentials: false
           path: app
 """.replace("@APP_READER@", APP_READER))
-    # The platform checkout is this repository at this run's commit, twice (build and deploy jobs).
+    # The platform checkout is this repository at this run's commit, in the base, build and deploy jobs.
     if t.count("""          repository: PLATFORM_REPOSITORY
           ref: PLATFORM_COMMIT
           persist-credentials: false
           path: platform
-""") != 2:
-        raise ValueError("The deploy template no longer checks the platform out twice")
+""") != 3:
+        raise ValueError("The deploy template no longer checks the platform out three times (base, build and deploy jobs)")
     t = t.replace("""          repository: PLATFORM_REPOSITORY
           ref: PLATFORM_COMMIT
           persist-credentials: false

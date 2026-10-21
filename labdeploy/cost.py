@@ -135,6 +135,27 @@ def needs_costs(spec, pricing=NEEDS_PRICING, environment="staging"):
     return items
 
 
+# A job bills instance-based for its instance's whole life, at least a minute a run (docs/RESEARCH-2026-10-21-jobs.md,
+# section 4); the guard keeps each run within its timeout and the day within its runs (docs/ROADMAP.md D70).
+JOB_MINIMUM_SECONDS = 60
+DAYS_PER_MONTH = 30
+
+
+def jobs_costs(spec, pricing=PRICING):
+    """Each declared job with its price a minute at its size and its worst case: every run of the day at its full timeout.
+    Nothing while no run is going; the model's tokens bill separately (needs_costs prices them under the service's models)."""
+    rates = pricing["instance_based"]
+    items = []
+    for name, job in spec.jobs.items():
+        second = job.resources.cpu * rates["vcpu_second"] + job.resources.memory_mib / 1024 * rates["gib_second"]
+        run = max(JOB_MINIMUM_SECONDS, job.timeout_minutes * 60) * second
+        items.append({"job": name, "cpu": job.resources.cpu, "memory_mib": job.resources.memory_mib, "timeout_minutes": job.timeout_minutes,
+                      "runs_per_day": job.runs_per_day, "per_minute_usd": _usd(second * 60), "per_run_max_usd": _usd(run),
+                      "worst_day_usd": _usd(run * job.runs_per_day), "worst_month_usd": _usd(run * job.runs_per_day * DAYS_PER_MONTH),
+                      "models": list(job.models)})
+    return items
+
+
 def domain_floor(pricing=DOMAIN_PRICING):
     """What a custom domain bills every month whether or not anyone visits (docs/ROADMAP.md 16.6)."""
     return _usd(pricing["forwarding_rules_usd_month"] + pricing["armor_policy_usd_month"] + pricing["armor_rule_usd_month"] * pricing["armor_rules"])
@@ -188,6 +209,12 @@ def estimate(spec, requests_per_month=None, average_request_seconds=None, pricin
         "needs_floor_usd_month": _usd(sum(item["floor_usd_month"] for item in needs_costs(spec, environment=environment))),
         "warnings": [],
     }
+    if spec.jobs:  # only a service with jobs carries them, so other estimates read as before
+        result["jobs"] = jobs_costs(spec, pricing)
+        result["jobs_ceiling_usd_month"] = _usd(sum(item["worst_month_usd"] for item in result["jobs"]))
+        result["assumptions"].append("Jobs: each run bills at instance-based rates for at least a minute; the worst case is every run of the day at its "
+                                     "full timeout, the limits the platform's guard holds (it checks every minute, so a run shorter than that can "
+                                     "pass it; the spending cap is the backstop). A job's model tokens are extra and bill per use.")
     if getattr(spec, "proxy", False):
         from .release import PROXY_CPU, PROXY_MEMORY_MIB
         result["assumptions"].append(f"proxy: true adds the Nginx sidecar's {PROXY_CPU} vCPU and {PROXY_MEMORY_MIB} MiB to every instance, billed as the "

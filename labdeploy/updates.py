@@ -45,7 +45,7 @@ CONTROLLER_PATHS = ("labdeploy/", "templates/", "schema/", "requirements.lock")
 # at that commit, installs its locks and runs these modules, which import nothing else of the platform's. The test suite
 # works this list out again from the templates, so a module that starts to import another one fails a test until it is
 # named here. A change to the controller's own modules alone (server, chat, onboarding, this one) re-pins nothing.
-RUNNER_MODULES = ("analyzer", "attest", "bake", "cost", "datafiles", "dockerpolicy", "journal", "leaks", "models", "node", "provenance", "reader",
+RUNNER_MODULES = ("analyzer", "attest", "bake", "cost", "datafiles", "dockerpolicy", "jobimages", "journal", "leaks", "models", "node", "provenance", "reader",
                   "release", "sbom", "scaffold", "scan", "target", "telemetry")
 RUNNER_PATHS = ("templates/", "requirements.lock", "tests.lock", "audit.lock", *(f"labdeploy/{name}.py" for name in RUNNER_MODULES))
 REQUEST = "update-request"  # next to the controller's database, the one folder the controller may write

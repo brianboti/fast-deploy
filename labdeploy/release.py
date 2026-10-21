@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .bake import DEFAULT_BAKE_SECONDS, MAX_BAKE_SECONDS, BakeFailed, bake
 from .bake import iso as bake_iso
-from .models import CONTAINED_TAG, PLATFORM_NETWORK, PLATFORM_SUBNET, containment, enforce, needs_env, needs_secrets, parse_spec, spec_hash
+from .models import CONTAINED_TAG, PLATFORM_NETWORK, PLATFORM_SUBNET, containment, enforce, job_egress, job_env, needs_env, needs_secrets, parse_spec, spec_hash
 from .provenance import MODES as PROVENANCE_MODES
 
 COMMAND_TIMEOUT = 600  # seconds for any one gcloud call; the migration job is given less, so its wait always ends first
@@ -274,6 +274,61 @@ class CloudRun:
                                "when it has ended") from None
         return {"job": job, "execution": (execution or "").strip().rsplit("/", 1)[-1] or None}
 
+    def job_name(self, name):
+        return f"{self.service}-{name}"
+
+    def job_image(self, name):
+        """The image a job runs now: the bootstrap image until its first release, then the last release's (27.5). gcloud
+        describes a job in Cloud Run's v1 shape (spec.template.spec.template.spec.containers); the v2 shape is read too."""
+        found = json.loads(self.run(["gcloud", "run", "jobs", "describe", self.job_name(name), "--project", self.project, "--region", self.region,
+                                     "--format=json"]) or "{}")
+        for path in (("spec", "template", "spec", "template", "spec", "containers"), ("template", "template", "containers")):
+            node = found
+            for key in path:
+                node = node.get(key) if isinstance(node, dict) else None
+            if isinstance(node, list) and node and isinstance(node[0], dict) and node[0].get("image"):
+                return node[0]["image"]
+        return ""
+
+    def update_job(self, name, image, spec, labels=None):
+        """Point one of the service's jobs at this release's image with the contract's settings (docs/ROADMAP.md D64, 27.5): one
+        task, never retried, its timeout and size, the variables of what it was given and nothing else of the service's, its
+        secrets, and its egress (private unless the contract says internet). The reviewed spec is the whole truth."""
+        job = spec.jobs[name]
+        flags = ["--image", image, "--tasks=1", "--parallelism=1", "--max-retries=0", f"--task-timeout={job.timeout_minutes * 60}s",
+                 f"--cpu={job.resources.cpu}", f"--memory={job.resources.memory_mib}Mi",
+                 # gcloud has no --clear-command or --clear-args; the documented reset is an empty value.
+                 "--command=" + ",".join(job.command or []), "--args=" + ",".join(job.args or [])]
+        values = job_env(spec, name, self.project, self.region)
+        if values:
+            env_file = Path(f"job-env-{name}.yaml")
+            env_file.write_text(json.dumps(values))  # JSON is valid YAML, and the values stay single-line strings
+            flags.append(f"--env-vars-file={env_file}")
+        else:
+            flags.append("--clear-env-vars")
+        if job.secrets:
+            if self.pin_secrets:
+                for secret in job.secrets:
+                    if secret not in self.pinned:
+                        self.pinned[secret] = {"secret": self.secret_name(secret), "version": self.secret_version(self.secret_name(secret))}
+            chosen = {secret: self.pinned[secret]["version"] if self.pin_secrets else "latest" for secret in job.secrets}
+            flags.append("--set-secrets=" + ",".join(f"{secret}={self.secret_name(secret)}:{chosen[secret]}" for secret in job.secrets))
+        else:
+            flags.append("--clear-secrets")
+        if job_egress(spec, name) == "private":
+            # The lab's network has Private Google Access and no Cloud NAT: Google's APIs (its buckets, Claude on Vertex AI's
+            # global endpoint) are reachable, the internet is not (docs/ROADMAP.md 14.5).
+            flags += [f"--network={PLATFORM_NETWORK}", f"--subnet={PLATFORM_SUBNET}", "--vpc-egress=all-traffic", f"--network-tags={CONTAINED_TAG}"]
+        else:
+            flags.append("--clear-network")
+        if labels:
+            flags.append("--update-labels=" + ",".join(f"{key}={value}" for key, value in sorted(labels.items())))
+        self.run(["gcloud", "run", "jobs", "update", self.job_name(name), *flags, "--project", self.project, "--region", self.region, "--quiet"])
+
+    def restore_job(self, name, image):
+        """A failed release puts each job back on the image it ran before (27.5); its other settings stay this release's."""
+        self.run(["gcloud", "run", "jobs", "update", self.job_name(name), "--image", image, "--project", self.project, "--region", self.region, "--quiet"])
+
     def require_needs(self, spec):
         """Every bucket, topic and database the spec declares must exist before anything is deployed (the pipeline creates them)."""
         checks = []
@@ -531,7 +586,7 @@ class CloudRun:
 STARTUP_PROBE_TIMING = "initialDelaySeconds=0,periodSeconds=1,timeoutSeconds=1,failureThreshold=60"
 TERMINAL = {"succeeded", "traffic_restored", "recovered", "rolled_back"}
 # A runner lost while baking leaves the new revision serving without its verdict: recovery restores the previous split.
-RECOVERABLE = {"preparing", "migrating", "deploying", "promoting", "baking", "rolling_back", "rollback_failed_manual_recovery_required"}
+RECOVERABLE = {"preparing", "migrating", "updating_jobs", "deploying", "promoting", "baking", "rolling_back", "rollback_failed_manual_recovery_required"}
 IMAGE_DIGEST = re.compile(r"[a-z0-9-]+-docker\.pkg\.dev/[a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+@sha256:[a-f0-9]{64}")
 
 
@@ -643,6 +698,7 @@ def recover(adapter, journal, target):
     if set(current) - (set(verified) | {candidate}):
         raise ValueError("Traffic changed outside this release; automatic recovery refused")
     adapter.traffic(verified)
+    restore_jobs(adapter, saved)
     saved["state"] = "recovered"
     journal.write(saved)
     retire_candidate(adapter, saved)
@@ -675,6 +731,7 @@ def rollback(adapter, journal, plan_id, image_path=None):
         if set(current) != {saved.get("revision")}:
             raise ValueError("Traffic is no longer only on this release's revision; refusing an automatic rollback")
         adapter.traffic(previous)
+    restore_jobs(adapter, saved)
     saved.update(state="rolled_back", rolled_back_from=saved.get("revision"), rolled_back_at=now_iso(), restored_traffic=previous)
     journal.write(saved)
     try:
@@ -687,6 +744,26 @@ def rollback(adapter, journal, plan_id, image_path=None):
         except Exception as tag_error:
             saved["tag_warning"] = f"Serving-tag update failed: {describe_error(tag_error)}"
     return saved
+
+
+def restore_jobs(adapter, record):
+    """Each job the release pointed at its new image goes back to the image it ran before (docs/ROADMAP.md 27.5), so the
+    previous service runs with the jobs it was released with. Best effort: a job that cannot be put back is named."""
+    restored, failed = [], {}
+    for name, entry in sorted((record.get("jobs") or {}).items()):
+        if not entry.get("updated") or not entry.get("previous") or entry.get("restored"):
+            continue
+        try:
+            adapter.restore_job(name, entry["previous"])
+            entry["restored"] = True
+            restored.append(name)
+        except Exception as error:  # noqa: BLE001 - one job that cannot be put back must not stop the others
+            failed[name] = describe_error(error)
+    if restored:
+        record["jobs_restored"] = restored
+    if failed:
+        record["jobs_restore_errors"] = failed
+    return restored
 
 
 def retire_candidate(adapter, record):
@@ -771,12 +848,20 @@ def build_checks(folder="bundle"):
 
 
 def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=None, labels=None, image_path=None, attempt=1, provenance=None,
-            bake_seconds=0, lint=None, sleep=time.sleep, clock=time.time, origin=None, checks=None, promotion=None, steps=None):
+            bake_seconds=0, lint=None, sleep=time.sleep, clock=time.time, origin=None, checks=None, promotion=None, steps=None, job_images=None):
     if not re.fullmatch(r"[a-f0-9]{32}", plan_id):
         raise ValueError("Invalid plan ID")
     if not IMAGE_DIGEST.fullmatch(image):
         raise ValueError("An immutable Artifact Registry image digest is required")
     enforce(spec)
+    job_images = dict(job_images or {})
+    if set(job_images) != set(spec.jobs):
+        # 27.5: every job the contract declares gets this release's image, and nothing else does.
+        raise ValueError(f"The release carries images for {', '.join(sorted(job_images)) or 'no job'}, and the contract declares "
+                         f"{', '.join(sorted(spec.jobs)) or 'none'}")
+    for name, reference in job_images.items():
+        if not IMAGE_DIGEST.fullmatch(reference or "") or not reference.split("@", 1)[0].endswith(f"/{adapter.service}-{name}"):
+            raise ValueError(f"The job {name}'s image must be {adapter.service}-{name} by digest in Artifact Registry")
     previous = adapter.describe()
     status = previous["status"]
     allocations = traffic_snapshot(status)
@@ -838,6 +923,22 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
             receipt["state"] = "migrating"
             save()
             receipt["migration"] = adapter.migrate(image, spec)
+        if job_images:
+            # 27.5: the jobs get this release's images before any new code serves, and go back on any failure below; as for a
+            # migration, a job's interface stays compatible with the previous service for one release.
+            receipt["state"] = "updating_jobs"
+            receipt["jobs"] = {}
+            save()
+            for name in sorted(job_images):
+                previous = adapter.job_image(name)
+                if not previous:
+                    # A job whose image cannot be read could not be put back after a failure: change nothing then.
+                    raise RuntimeError(f"The job {adapter.service}-{name} does not exist or its image cannot be read: apply the application's root, then release again")
+                receipt["jobs"][name] = {"image": job_images[name], "previous": previous}
+                save()
+                adapter.update_job(name, job_images[name], spec, labels)
+                receipt["jobs"][name]["updated"] = True
+                save()
         receipt["state"] = "deploying"
         save()
         adapter.deploy(image, spec, suffix, labels)
@@ -901,6 +1002,7 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
             print(f"Traffic restoration failed: {receipt['restore_error']}", file=sys.stderr)
         if receipt["state"] == "traffic_restored":
             retire_candidate(adapter, receipt)
+        restore_jobs(adapter, receipt)
         if failed_phase in ("deploying", "promoting", "baking"):  # before deploying (a pre-check, the migration) no candidate exists
             try:
                 # Best effort: the candidate's own last lines explain most startup failures.
@@ -986,7 +1088,20 @@ def main():
     rollout(adapter, os.environ["IMAGE_DIGEST"], spec, os.environ["PLAN_ID"], "release-receipt.json", journal, target.model_dump(), labels, image_path,
             attempt=int(attempt) if attempt.isdigit() else 1, provenance=os.environ["PROVENANCE_MODE"], bake_seconds=int(bake_seconds),
             lint=lint_summary(Path(os.environ.get("LINT_FILE", "bundle/hadolint.json"))), origin=origin_from(os.environ), checks=build_checks(),
-            promotion=promotion_from(os.environ), steps=parse_steps(os.environ.get("ROLLOUT_STEPS", "")))
+            promotion=promotion_from(os.environ), steps=parse_steps(os.environ.get("ROLLOUT_STEPS", "")), job_images=job_images_from(os.environ, target))
+
+
+def job_images_from(env, target):
+    """The images the deploy job pushed and verified for the service's jobs (job-images.json, labdeploy/jobimages.py), each
+    <service>-<job> in this application's registry by digest; none for a service without jobs."""
+    name = env.get("JOB_IMAGES_FILE")
+    if not name:
+        return {}
+    images = json.loads(Path(name).read_text())
+    prefix = f"{target.region}-docker.pkg.dev/{target.project_id}/{target.registry}/{target.service}-"
+    if not isinstance(images, dict) or any(not isinstance(value, str) or not value.startswith(prefix + key + "@sha256:") for key, value in images.items()):
+        raise ValueError("A job's image does not belong to the reviewed artifact destination")
+    return images
 
 
 if __name__ == "__main__":

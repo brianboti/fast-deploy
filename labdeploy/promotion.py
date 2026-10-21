@@ -16,7 +16,9 @@ import datetime
 import json
 import os
 import re
+import subprocess
 import sys
+from pathlib import Path
 
 from .provenance import COMMIT, DEPLOY_WORKFLOW, PLAN, REPOSITORY, SPEC_HASH, ProvenanceError, verify, workflow_path
 
@@ -188,6 +190,85 @@ def predicate(env, now=None):
     }
 
 
+def job_sources(env, facts=None):
+    """The staging images of the service's jobs a promotion copies (docs/ROADMAP.md 27.8), from SOURCE_JOBS (JSON, job name to
+    image by digest): each <service>-<job> in the same staging registry as the service's image."""
+    facts = facts or check(env)
+    text = env.get("SOURCE_JOBS") or ""
+    if not text:
+        return {}
+    try:
+        jobs = json.loads(text)
+    except ValueError:
+        raise PromotionError("source_jobs is JSON: each job's name and its staging image by digest") from None
+    if not isinstance(jobs, dict) or len(jobs) > 4:
+        raise PromotionError("source_jobs names at most four jobs")
+    for name, image in jobs.items():
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,12}[a-z0-9]", name) or not isinstance(image, str):
+            raise PromotionError(f"Invalid job in source_jobs: {name!r}")
+        prefix = f"us-central1-docker.pkg.dev/{facts['staging_project']}/{facts['staging_registry']}/{facts['service']}-{name}@sha256:"
+        if not image.startswith(prefix) or not re.fullmatch(r"[a-f0-9]{64}", image[len(prefix):]):
+            raise PromotionError(f"The job {name}'s staging image must be {facts['service']}-{name} by digest beside the service's image")
+    return jobs
+
+
+def verify_job(output, env, image):
+    """A job's staging image (27.8): always signed with the application's Cloud KMS key in staging (labdeploy/jobimages.py),
+    from this commit by the workflow that released it."""
+    facts = check(env)
+    name, digest = image.split("@", 1)
+    server = env.get("GITHUB_SERVER_URL", "https://github.com")
+    if facts["contract"]:
+        return verify(output, image_name=name, digest=digest, repository=env.get("GITHUB_REPOSITORY"), commit=facts["commit"], server=server,
+                      path=workflow_path(facts["workflow"]), source_repository=facts["repository"], contract_commit=facts["contract"])
+    return verify(output, image_name=name, digest=digest, repository=facts["repository"], commit=facts["commit"], server=server, path=workflow_path(facts["workflow"]))
+
+
+def job_predicate(env, image, now=None):
+    """What production's key signs for a job's copied image: the service's verification summary, about this image."""
+    statement = predicate(env, now)
+    statement["resourceUri"] = f"oci://{image}"
+    statement["lab_deploy"]["source"] = {**statement["lab_deploy"]["source"], "image": image, "provenance": "cosign-kms"}
+    statement["lab_deploy"]["job"] = image.split("@", 1)[0].rsplit("/", 1)[-1]
+    return statement
+
+
+def promote_jobs(prefix, runner=None, env=None):
+    """Production's part (27.8): each job's staging image, verified against its staging signature, copied by digest into
+    production's registry (the same manifest, so the same digest), signed with production's key and written to
+    job-images.json for the release. Nothing is rebuilt."""
+    from .jobimages import IMAGES_FILE, run, summary_line
+    runner = runner or run
+    env = dict(os.environ if env is None else env)
+    if not re.fullmatch(r"[a-z0-9-]+-docker\.pkg\.dev/[a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+", prefix):
+        raise PromotionError("The image prefix is REGION-docker.pkg.dev/PROJECT/REGISTRY/SERVICE")
+    facts = check(env)
+    sources = job_sources(env, facts)
+    cosign, staging, production = env.get("COSIGN", "cosign"), env.get("STAGING_KEY", ""), env.get("PROVENANCE_KEY", "")
+    if sources and (not staging or not production):
+        raise PromotionError("The staging and production keys are needed to promote the jobs' images")
+    images = {}
+    for name, source in sorted(sources.items()):
+        verified = runner([cosign, "verify-attestation", "--key", staging, "--type", "slsaprovenance1", "--insecure-ignore-tlog=true", source])
+        verify_job(verified, env, source)
+        digest = source.rsplit("@", 1)[1]
+        image = f"{prefix}-{name}"
+        runner(["docker", "buildx", "imagetools", "create", "--prefer-index=false", "--tag", f"{image}:release-{facts['plan']}", source])
+        copied = runner(["gcloud", "artifacts", "docker", "images", "describe", f"{image}:release-{facts['plan']}", "--format=value(image_summary.digest)"]).strip()
+        if copied != digest:
+            raise PromotionError(f"The copy of the job {name}'s image in production has the digest {copied}, not {digest}: nothing was deployed")
+        reference = f"{image}@{digest}"
+        statement = Path(f"promotion-{name}.json")
+        statement.write_text(json.dumps(job_predicate(env, source), indent=2, sort_keys=True))
+        flags = ["--yes", "--key", production, "--new-bundle-format=false", "--use-signing-config=false", "--tlog-upload=false"]
+        runner([cosign, "attest", *flags, "--type", "https://slsa.dev/verification_summary/v1", "--predicate", str(statement), reference])
+        runner([cosign, "verify-attestation", "--key", production, "--type", "https://slsa.dev/verification_summary/v1", "--insecure-ignore-tlog=true", reference])
+        summary_line(f"Job {name}: {source} verified, copied to {reference} and signed with production's key")
+        images[name] = reference
+    Path(IMAGES_FILE).write_text(json.dumps(images, indent=2, sort_keys=True) + "\n")
+    return images
+
+
 def summary(env, spec=None, cost=None):
     """The approval block a reviewer reads on the run before approving, written by code from the checked inputs."""
     facts = check(env)
@@ -258,6 +339,11 @@ def main(argv=None):
             print(f"Staging provenance verified: {env['SOURCE_IMAGE']} was built from {env['SOURCE_REPOSITORY']} at {env['COMMIT_SHA'][:12]} ({run})")
         elif args == ["predicate"]:
             print(json.dumps(predicate(env), indent=2, sort_keys=True))
+        elif len(args) == 3 and args[:2] == ["jobs", "--image-prefix"]:
+            try:
+                promote_jobs(args[2])
+            except subprocess.CalledProcessError as exc:
+                raise PromotionError(f"{exc.cmd[0]} failed: {(exc.stderr or '').strip()[:300]}") from None
         else:
             print(__doc__, file=sys.stderr)
             return 2

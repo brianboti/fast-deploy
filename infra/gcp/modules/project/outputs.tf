@@ -41,3 +41,8 @@ output "binary_authorization" {
     attester_role = google_project_iam_custom_role.release_attester.name
   }
 }
+# Who the controller is in this project (docs/ROADMAP.md D66, D70): the machine's own identity where it lives, else the
+# identities of another project that view this one (viewer_members: in production, the staging machine). Applications
+# with jobs or a clock let these mint their wake token and cancel a run beyond its limits.
+output "controller_members" { value = local.controller_enabled ? ["serviceAccount:${google_service_account.controller[0].email}"] : var.viewer_members }
+output "job_guard_role" { value = google_project_iam_custom_role.job_guard.name }

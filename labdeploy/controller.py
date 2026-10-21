@@ -15,8 +15,10 @@ from .config import Application, Principal, Production
 from .contract import Contracts, contract_path
 from .cost import domain_floor, estimate, findings
 from .github import explain
-from .infra import BOOTSTRAP_IMAGE, PRODUCTION_ROOTS, PRODUCTION_WORKFLOWS, app_root
-from .models import AppSpec, containment, enforce, needs_env, parse_contract, parse_spec, spec_hash
+from .infra import BOOTSTRAP_IMAGE, PRODUCTION_ROOTS, PRODUCTION_WORKFLOWS, app_root, root_jobs
+from .jobimages import base_of
+from .jobs import Keeper
+from .models import AppSpec, containment, enforce, job_egress, needs_env, parse_contract, parse_spec, spec_hash
 from .rightsize import SETTINGS, apply_settings
 from .status import TERMINAL, advice, diagnose, release_phases, summarize
 from .updates import PlatformUpdates
@@ -472,6 +474,12 @@ def release_approval(plan, requested_by=None):
     if plan.get("containment"):
         held = plan["containment"]
         block["containment"] = {key: held.get(key) for key in ("trust", "egress", "execution_environment", "vulnerability_gate")}
+    if plan.get("jobs"):
+        # The jobs the service starts (docs/ROADMAP.md D64): their limits and worst case, and the test image they build on.
+        block["jobs"] = plan["jobs"]
+        block["cost"]["jobs_ceiling_usd_month"] = cost.get("jobs_ceiling_usd_month")
+        if plan.get("base"):
+            block["base"] = plan["base"]
     if plan.get("contract"):
         # An application taken as it is (docs/ROADMAP.md 13.1) also names its source and the platform commit whose contract describes it.
         contract = plan["contract"]
@@ -532,6 +540,7 @@ class Controller:
         self.started = time.time()
         self.contracts = Contracts(self)
         self.updates = PlatformUpdates(self)
+        self.jobs = Keeper(self, observer, config)  # the clock and the guard of the jobs applications start (docs/ROADMAP.md D66, D70)
         self.refresh_registry()
 
     def refresh_registry(self):
@@ -572,6 +581,23 @@ class Controller:
         if not isinstance(jobs, dict) or "*" in principal.applications:
             return jobs
         return {name: {"last_run": entry.get("last_run"), "next_run": entry.get("next_run")} for name, entry in jobs.items()}
+
+    def jobs_for(self, principal):
+        """The clock's wakes and the guard's newest cancels (docs/ROADMAP.md D66, D70) for the applications this identity may see."""
+        snapshot = self.jobs.snapshot()
+        if "*" not in principal.applications:
+            visible = set(self.visible_apps(principal))
+            snapshot = {"wakes": {key: value for key, value in snapshot["wakes"].items() if key.split(" (", 1)[0] in visible},
+                        "cancels": [item for item in snapshot["cancels"] if item.get("application") in visible]}
+        return snapshot if snapshot["wakes"] or snapshot["cancels"] else None
+
+    def wake_tick(self):
+        """The platform's clock (D66): POST wake.path to each released application whose interval has passed."""
+        return self.jobs.wake_tick()
+
+    def job_guard_tick(self):
+        """The guard (D70): cancel any job run beyond its contract's limits."""
+        return self.jobs.guard_tick()
 
     def drift_for(self, principal):
         """The weekly drift check's result (drift_status) as this identity may see it: for one that sees only some
@@ -869,6 +895,71 @@ class Controller:
                 results[app_id] = f"error: {message}"
         return results
 
+    def base_tick(self):
+        """Jobs built on another application's test image follow it (docs/ROADMAP.md D69): when that application's newest staging
+        release changed its npm lockfile, its Node.js line or its build.scripts since the release the jobs were built on, the
+        application is released again at the commit it runs (with auto_deploy), else the trail and the status say it is behind."""
+        if self.config.paused:
+            return {"paused": True}
+        results = {}
+        for app_id, app in self.config.applications.items():
+            live = self.store.latest_success(app_id)
+            built_on = (live or {}).get("base")
+            if not live or not built_on:
+                continue
+            found = next(((other_id, other) for other_id, other in self.config.applications.items() if other.service == built_on["service"]), None)
+            newest = self.store.latest_success(found[0]) if found else None
+            if newest is None or newest["sha"] == built_on["commit"]:
+                results[app_id] = "up to date"
+                continue
+            try:
+                changed = self.packages_changed(found[1], built_on["commit"], newest)
+            except Exception as exc:  # noqa: BLE001 - unreadable means changed: building the test image again is the safe side
+                changed = f"could not compare ({explain(exc) or type(exc).__name__})"
+            if not changed:
+                results[app_id] = f"up to date: {built_on['service']}'s packages are the same at {newest['sha'][:12]}"
+                continue
+            attempted = self.store.latest_plan(app_id)
+            if attempted and attempted.get("id") != live.get("id") and not attempted.get("base"):
+                results[app_id] = f"its newest plan {attempted['id'][:8]} builds on no application's test image; nothing to follow"
+                continue
+            if attempted and (attempted.get("base") or {}).get("commit") == newest["sha"] and not self.retryable(attempted):
+                results[app_id] = f"plan {attempted['id'][:8]} already builds on {newest['sha'][:12]} ({attempted['state']})"
+                continue
+            if not app.auto_deploy or app.paused:
+                results[app_id] = f"behind: {built_on['service']} {changed} at {newest['sha'][:12]}; release {app_id} again to rebuild its jobs"
+                self.store.record_event("jobs_base", name=app_id, application=app_id, outcome="behind", detail=results[app_id])
+                continue
+            try:
+                principal = Principal(name=self.AUTO_DEPLOY_IDENTITY, token_sha256="0" * 64, applications=[app_id], can_deploy=True)
+                plan = self.plan(principal, app_id, commit_sha=None if app.central else live["sha"])
+                outcome = self.deploy(principal, plan["id"])
+                state = "dispatch disabled" if outcome.get("dispatch") == "disabled" else outcome.get("state")
+                results[app_id] = f"{state}: plan {plan['id'][:8]} rebuilds its jobs on {built_on['service']} {newest['sha'][:12]} ({changed})"
+                self.store.record_event("jobs_base", name=app_id, identity=self.AUTO_DEPLOY_IDENTITY, application=app_id, outcome=state, detail=results[app_id])
+            except Exception as exc:  # noqa: BLE001 - one app's trouble must not stop the others
+                results[app_id] = f"error: {explain(exc) or exc}"
+                self.store.record_event("jobs_base", name=app_id, application=app_id, outcome="error", detail=results[app_id])
+        return results
+
+    def packages_changed(self, base_app, old_sha, newest):
+        """What changed in a base application's packages between two of its commits: its lockfile, its Node.js line or its
+        build.scripts (the spec its newest release recorded against the one at the old commit); an empty string for nothing."""
+        old = self.store.latest_success(next(app_id for app_id, app in self.config.applications.items() if app is base_app), old_sha)
+        before, after = (old or {}).get("spec") or {}, newest.get("spec") or {}
+        if before.get("node") != after.get("node"):
+            return f"moved Node.js from {before.get('node')} to {after.get('node')}"
+        if (before.get("build") or {}).get("scripts") != (after.get("build") or {}).get("scripts"):
+            return "changed its build.scripts"
+        for name in ("npm-shrinkwrap.json", "package-lock.json"):
+            path = base_app.repo_path(name)
+            try:
+                then, now = self.github.file(base_app, old_sha, path), self.github.file(base_app, newest["sha"], path)
+            except Exception:  # noqa: BLE001, S112 - a lockfile the repository does not have at both commits is compared by the next name
+                continue
+            return "" if then == now else f"changed {name}"
+        return "changed (no lockfile of its own to compare)"
+
     def watchdog_problems(self, now=None):
         """The daily look around: configuration, credential, each app's schedules, pin and newest attempt, drift, drills, the
         database's live copy and the daily digest itself. Shared by the watchdog and the digest (docs/ROADMAP.md D60)."""
@@ -1139,6 +1230,16 @@ class Controller:
         record["problems"] = self.watchdog_problems(now) if applications is None else []
         if moment.weekday() == 0 or applications is not None:
             record["trust"] = aftercare.trust(plans, now, 30)
+        # The jobs applications start (docs/ROADMAP.md D66, D70): each run the guard cancelled in the last day, and each
+        # application the clock could not wake there.
+        cancels = [event for event in self.store.find_events(limit=50, kind="job_guard", since=now - 86_400) if event.get("application") in visible]
+        failed = {}
+        for event in self.store.find_events(limit=500, kind="wake", since=now - 86_400):
+            if event.get("application") in visible and not str(event.get("outcome") or "").startswith("2"):
+                failed.setdefault(event["application"], event)
+        if cancels or failed:
+            record["jobs"] = {"cancels": [{"application": e["application"], "job": e.get("name"), "detail": e.get("detail")} for e in cancels],
+                              "wake_failures": [{"application": app, "detail": e.get("detail")} for app, e in sorted(failed.items())]}
         record["guards"] = {"missing_native_caps": sorted({app.target.project_id for app_id, app in self.config.applications.items() if app_id in visible}
                                                           - set(getattr(self.config, "cloud_run_spend_caps", None) or {}))}
         if applications is None:
@@ -1154,7 +1255,7 @@ class Controller:
             or any(item.get("over_budget") for item in (record.get("cost") or {}).get("projects") or [])
             or any(item["result"] in ("restored", "stopped", "rolled_back") for item in record["releases"])
             or any(item.get("verdict") == "worse" for item in record["reports"]) or record["troubled"]
-            or (record["drift"].get("drifted") or record["drift"].get("failed")) or record["problems"])
+            or (record["drift"].get("drifted") or record["drift"].get("failed")) or record["problems"] or (record.get("jobs") or {}).get("cancels"))
         return record
 
     def projects(self):
@@ -1696,9 +1797,41 @@ class Controller:
         if image and image.startswith(prefix) and not recent(prior):
             plan["stale_image"] = True
         self.contain(plan, spec, app)
+        self.plan_jobs(plan, spec)
         plan["approval"] = release_approval(plan, principal.name)
         self.store.add(principal.name, plan)
         return {**plan, "state": "planned", "live_dispatch_enabled": self.config.live_dispatch, "next_action": advice({"state": "planned"})}
+
+    def plan_jobs(self, plan, spec):
+        """The jobs a release points at their images (docs/ROADMAP.md D64, 27.3): built every time, never an earlier run's, and
+        built on the test image of the application they name at the commit its last staging release deployed (D69)."""
+        if not spec.jobs:
+            return
+        if plan.pop("reuse_image", None):
+            plan.pop("reused_from_plan", None)
+            plan["checks"].update(tests="pending_in_ci", dependency_scan="pending_in_ci")
+        costs = {item["job"]: item for item in (plan.get("cost") or {}).get("jobs") or []}
+        plan["jobs"] = {name: {"cpu": job.resources.cpu, "memory_mib": job.resources.memory_mib, "timeout_minutes": job.timeout_minutes,
+                               "runs_per_day": job.runs_per_day, "egress": job_egress(spec, name), "base": job.base,
+                               "worst_month_usd": (costs.get(name) or {}).get("worst_month_usd")} for name, job in spec.jobs.items()}
+        worst = (plan.get("cost") or {}).get("jobs_ceiling_usd_month")
+        plan["warnings"].append(f"Starts its own jobs ({', '.join(sorted(spec.jobs))}): one task each, never retried; the guard cancels a run past its "
+                                f"timeout or beyond its runs a day. If every run of every day ran to its timeout: ${worst:,.2f} a month of compute, "
+                                "plus any model tokens.")
+        base = base_of(spec)
+        if base is None:
+            return
+        found = next(((app_id, item) for app_id, item in self.config.applications.items() if item.service == base and app_id != plan["application"]), None)
+        if found is None:
+            raise ValueError(f"The jobs build on {base}'s test image, and no application with the service {base} is registered: onboard it first")
+        base_id, base_app = found
+        release = self.store.latest_success(base_id)
+        if release is None:
+            raise ValueError(f"The jobs build on {base}'s test image, and {base} has no successful staging release yet: release it first, then this")
+        if (release.get("spec") or {}).get("runtime") != "node-http":
+            raise ValueError(f"The jobs build on {base}'s test image, and {base} is not a Node.js web service: a test image is made for node-http only")
+        plan["base"] = {"service": base, "repository": base_app.repository, "path": base_app.path or "", "commit": release["sha"]}
+        plan["warnings"].append(f"The jobs build on the test image of {base} at {release['sha'][:12]}, the commit its last staging release deployed.")
 
     @staticmethod
     def contain(plan, spec, app):
@@ -1792,6 +1925,7 @@ class Controller:
         if image and image.startswith(prefix) and not recent(prior):
             plan["stale_image"] = True
         self.contain(plan, spec, app)
+        self.plan_jobs(plan, spec)
         plan["approval"] = release_approval(plan, principal.name)
         self.store.add(principal.name, plan)
         return {**plan, "state": "planned", "live_dispatch_enabled": self.config.live_dispatch, "next_action": advice({"state": "planned"})}
@@ -1957,10 +2091,11 @@ class Controller:
             state_bucket = state_bucket or production.state_bucket
         ids = self.github.repository_ids(trusted)
         note, needs, exposure = None, None, "authenticated"
-        domain, maximum = None, None
+        domain, maximum, jobs, wake = None, None, {}, False
         try:
             spec = self.spec_at(app, self.github.head(app))
             health_path, needs, exposure = spec.health_path, spec.needs.model_dump(), spec.exposure
+            jobs, wake = root_jobs(spec), spec.wake is not None  # docs/ROADMAP.md D64, D66
             domain = spec.domain if environment == "production" else None  # staging keeps its run.app address (16.6)
             maximum = spec.scaling.maximum
             onboarding = getattr(self.config, "onboarding", None)
@@ -1982,7 +2117,8 @@ class Controller:
         files = app_root(target.service, project_id=target.project_id, region=target.region, state_bucket=state_bucket or f"{target.project_id}-tfstate",
                          github_repository=trusted, github_repository_id=ids["repository_id"], github_owner_id=ids["owner_id"],
                          bootstrap_image=bootstrap_image or BOOTSTRAP_IMAGE, health_path=health_path, settings=settings, needs=needs,
-                         exposure=exposure, viewers=self.viewers(app), environment=environment, promotion_readers=readers, domain=domain, **layout)
+                         exposure=exposure, viewers=self.viewers(app), environment=environment, promotion_readers=readers, domain=domain,
+                         jobs=jobs, wake=wake, **layout)
         return {"application": app_id, "service": target.service, "environment": environment, "directory": directory, "files": files, "note": note}
 
     def add_production(self, principal, app_id):
@@ -2185,12 +2321,12 @@ class Controller:
             summary["findings"].insert(0, {"id": "no_native_spend_cap", "severity": "warning", "setting": "cloud_run_spend_caps (controller configuration)",
                                            "current": None, "message": summary["spending_guards"]["cloud_run_spend_cap"]["advice"]})
         limit = app.cost_ceiling_usd
-        compared = round(summary["compute_ceiling_usd_month"] + summary["needs_floor_usd_month"], 2)
+        compared = round(summary["compute_ceiling_usd_month"] + summary["needs_floor_usd_month"] + summary.get("jobs_ceiling_usd_month", 0), 2)
         over = limit is not None and compared > limit
         summary["ceiling_policy"] = {"limit_usd_month": limit, "compared_usd_month": compared,
                                      "status": "not_configured" if limit is None else ("exceeds_limit" if over else "within_limit")}
         summary["note"] = ("Bounds from list prices and the reviewed configuration, not a bill forecast: the ceiling policy compares the compute bound "
-                           "plus the needs' floor with the operator's limit; request fees, egress and the per-image scan are extra and unbounded by it. "
+                           "plus the needs' floor (and the jobs' worst case) with the operator's limit; request fees, egress and the per-image scan are extra and unbounded by it. "
                            "Measured right-sizing comes from the rightsizing workflow report (get_cost_report).")
         return summary
 
@@ -2444,6 +2580,15 @@ class Controller:
         }
         if source.get("contract"):
             plan["contract"] = source["contract"]
+        if spec.jobs:
+            # 27.8: the jobs' images the staging release ran, copied with the service's (D68).
+            jobs = {name: (entry or {}).get("image") for name, entry in (receipt.get("jobs") or {}).items()}
+            if set(jobs) != set(spec.jobs) or not all(jobs.values()):
+                raise ValueError("The staging release carries no image for every job its contract declares: release staging again, then promote that release")
+            plan["source"]["jobs"] = jobs
+            plan["jobs"] = source.get("jobs") or {}
+            plan["warnings"].append(f"Copies the images of its jobs ({', '.join(sorted(jobs))}) as well, each verified against its staging signature and "
+                                    "signed again with production's key; production's guard holds them to the same limits.")
         if spec.needs.migrate:
             plan["warnings"].append("Runs its migration against production's database before the switch; a rollback restores traffic, not data.")
         if spec.secrets:

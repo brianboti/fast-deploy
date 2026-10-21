@@ -268,7 +268,9 @@ def main(argv=None):
     status, description = wait_for_scan(image, run, timeout=300 if trust == "unknown" else 180)
     summary = {"image": image, "analysis_status": status, "blocking": blocking or trust == "unknown", "trust": trust,
                **summarize(description.get("package_vulnerability_summary") or {})}
-    Path("vulnerability-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    # A job's image (docs/ROADMAP.md 27.3) writes its own summary beside the service's.
+    output = Path(os.environ.get("SUMMARY_FILE") or "vulnerability-summary.json")
+    output.write_text(json.dumps(summary, indent=2) + "\n")
     lines = report_lines(summary)
     print("\n".join(lines))
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -277,7 +279,7 @@ def main(argv=None):
             handle.write("## " + lines[0] + "\n\n" + "\n".join(lines[1:]) + "\n")
     reason = verdict(summary, trust, blocking)
     summary["blocked"] = reason is not None
-    Path("vulnerability-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    output.write_text(json.dumps(summary, indent=2) + "\n")
     if reason:
         sys.exit(reason[0].upper() + reason[1:])
 

@@ -280,7 +280,7 @@ def test_nothing_known_means_no_guess():
 def test_tini_nginx_and_caddy_are_followed_by_the_weekly_refresh():
     current = pins.read()
     assert current["tini"]["version"] == "0.19.0" and current["nginx"]["digest"] in release.NGINX_IMAGE
-    assert {path for path, _ in pins.BY_KEY["tini"].places} == {"templates/repo/Dockerfile.platform", "templates/repo/Dockerfile.node.platform",
+    assert {path for path, _ in pins.BY_KEY["tini"].places} == {"templates/repo/Dockerfile.platform", "templates/repo/Dockerfile.node.platform", "templates/repo/Dockerfile.node.base",
                                                                   "templates/repo/Dockerfile.static"}
     assert {path for path, _ in pins.BY_KEY["caddy"].places} == {pins.STARTUP, "templates/repo/Dockerfile.static"}
     assert Path(pins.STARTUP).read_text().count(current["caddy"]["sha512"]) == 1 and current["caddy"]["sha512"] in Path("templates/repo/Dockerfile.static").read_text()

@@ -243,7 +243,7 @@ def promotion_advice(plan):
     if state in {"failed", "cancelled", "timed_out"} and not step and not receipt:
         return ("Nothing ran in production: a reviewer rejected the promotion, it was cancelled while it waited, or it waited too long for approval. "
                 "Promote again when ready.")
-    if receipt.get("state") in {"preparing", "migrating", "deploying", "promoting", "baking"} and state in {"failed", "cancelled", "timed_out"}:
+    if receipt.get("state") in {"preparing", "migrating", "updating_jobs", "deploying", "promoting", "baking"} and state in {"failed", "cancelled", "timed_out"}:
         return (f"The runner stopped mid-release at '{receipt['state']}'. The next promotion restores production's traffic from the checkpoint before "
                 "anything else; to restore it now, follow docs/RUNBOOK.md, Production.")
     step_share = receipt.get("step")
@@ -355,7 +355,7 @@ def advice(plan):
         if receipt.get("state") == "rollback_failed_manual_recovery_required":
             return (f"Traffic restoration failed ({receipt.get('restore_error', 'see the receipt')}). Run the recovery workflow now and inspect Cloud Run; "
                     f"the previous split was {receipt.get('previous_traffic')}.{recovered}")
-        if receipt.get("state") in {"preparing", "migrating", "deploying", "promoting", "baking"}:
+        if receipt.get("state") in {"preparing", "migrating", "updating_jobs", "deploying", "promoting", "baking"}:
             note = " The migration job may have run; check its log before releasing again." if receipt.get("state") == "migrating" else ""
             return f"The runner stopped mid-release at '{receipt['state']}'; the recovery workflow restores traffic from the checkpoint.{note}{recovered}"
         if receipt.get("state") == "succeeded":

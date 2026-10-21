@@ -85,6 +85,154 @@
       "title": "Build",
       "type": "object"
     },
+    "Job": {
+      "additionalProperties": false,
+      "description": "A Cloud Run job the service starts itself (docs/ROADMAP.md D64): its own image, identity and limits.\n\ndockerfile: the job's Dockerfile, relative to the service's folder; the folder holding it is the build context.\nbase: an onboarded Node.js application whose test image the platform builds and passes as the build argument BASE (D69).\nOne task, never retried, stopped after timeout_minutes; the controller's guard cancels a run beyond runs_per_day (D70).\nbuckets: the service's declared buckets this job may read or write; models, secrets and env are its own; egress is\nprivate (Google's APIs and the lab's network only) unless the contract says internet.",
+      "properties": {
+        "dockerfile": {
+          "maxLength": 200,
+          "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*){0,7}$",
+          "title": "Dockerfile",
+          "type": "string"
+        },
+        "base": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9-]{1,19}[a-z0-9]$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base"
+        },
+        "command": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Command"
+        },
+        "args": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Args"
+        },
+        "resources": {
+          "$ref": "#/$defs/JobResources"
+        },
+        "timeout_minutes": {
+          "default": 10,
+          "maximum": 60,
+          "minimum": 1,
+          "title": "Timeout Minutes",
+          "type": "integer"
+        },
+        "runs_per_day": {
+          "default": 30,
+          "maximum": 30,
+          "minimum": 1,
+          "title": "Runs Per Day",
+          "type": "integer"
+        },
+        "buckets": {
+          "additionalProperties": {
+            "enum": [
+              "read",
+              "write"
+            ],
+            "type": "string"
+          },
+          "title": "Buckets",
+          "type": "object"
+        },
+        "models": {
+          "items": {
+            "const": "claude",
+            "type": "string"
+          },
+          "title": "Models",
+          "type": "array"
+        },
+        "secrets": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Secrets",
+          "type": "array"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Env",
+          "type": "object"
+        },
+        "egress": {
+          "anyOf": [
+            {
+              "enum": [
+                "private",
+                "internet"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Egress"
+        }
+      },
+      "required": [
+        "dockerfile"
+      ],
+      "title": "Job",
+      "type": "object"
+    },
+    "JobResources": {
+      "additionalProperties": false,
+      "description": "A job's size (docs/ROADMAP.md D67). Cloud Run lets 1 vCPU have up to 4 GiB and 2 vCPUs up to 8 GiB; the lab's policy\nstops at 2 CPUs and 4096 MiB (enforce).",
+      "properties": {
+        "cpu": {
+          "default": 1,
+          "maximum": 4,
+          "minimum": 1,
+          "title": "Cpu",
+          "type": "integer"
+        },
+        "memory_mib": {
+          "default": 512,
+          "maximum": 8192,
+          "minimum": 512,
+          "title": "Memory Mib",
+          "type": "integer"
+        }
+      },
+      "title": "JobResources",
+      "type": "object"
+    },
     "Needs": {
       "additionalProperties": false,
       "description": "What the application needs besides its container. Names are short; the platform derives the real resource names.",
@@ -198,6 +346,30 @@
         }
       },
       "title": "Scaling",
+      "type": "object"
+    },
+    "Wake": {
+      "additionalProperties": false,
+      "description": "The platform's clock (docs/ROADMAP.md D66): the controller sends POST `path` every `every_minutes` as the\napplication's <service>-wake identity, so an application that must look for work runs without an instance kept on.",
+      "properties": {
+        "path": {
+          "maxLength": 200,
+          "pattern": "^/[A-Za-z0-9/_-]*$",
+          "title": "Path",
+          "type": "string"
+        },
+        "every_minutes": {
+          "default": 5,
+          "maximum": 60,
+          "minimum": 1,
+          "title": "Every Minutes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "Wake",
       "type": "object"
     }
   },
@@ -405,8 +577,8 @@
       "anyOf": [
         {
           "enum": [
-            "internet",
-            "private"
+            "private",
+            "internet"
           ],
           "type": "string"
         },
@@ -445,6 +617,24 @@
       ],
       "default": null,
       "title": "Project"
+    },
+    "jobs": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Job"
+      },
+      "title": "Jobs",
+      "type": "object"
+    },
+    "wake": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Wake"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "reviewed": {
       "default": false,

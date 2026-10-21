@@ -475,7 +475,8 @@ between requests. Each part has one place:
 | A small database kept in a file (SQLite) | Firestore or Postgres under `needs`, never a file on the instance's disk | The disk is wiped when the instance stops, and during a release the old and new versions run side by side, each with its own copy, so one side's writes would be lost |
 | Calls to Claude | `needs.models: [claude]`: Claude through Vertex AI | No internet and no API key: the global endpoint is reached through Private Google Access, billed to the project inside its cap |
 | Cache or session store (Redis, memcached) | None by default: keep it in the process's memory or in Firestore. A managed cache never scales to zero (tens of dollars a month), so it is the operator's decision, not the contract's | Postgres with Redis is the most common pairing in real apps; the answer must be explicit |
-| Background worker or queue consumer (Celery, RQ, Dramatiq) | A topic need with a push subscription to a request-billed service, or a Cloud Run job for batches | Pull workers need an always-on instance, which the platform does not run |
+| Background worker or queue consumer (Celery, RQ, Dramatiq) | A topic need with a push subscription to a request-billed service, or a job the service starts (section 4c) | Pull workers need an always-on instance, which the platform does not run |
+| A loop that polls for work, or containers it starts itself (Podman, Docker) | The clock (`wake`) calling a path of the service, and the service starting its own jobs (section 4c) | A container cannot start containers on Cloud Run, and a loop gets no CPU between requests |
 | Front end for lab members | Build it and serve the built files from the API's own container (for example FastAPI's `StaticFiles`) with `exposure: lab-members` | No extra service and the same sign-in; a separate public site is not offered |
 | Proxy, telemetry agent | Not needed: Cloud Run terminates TLS and collects logs and metrics | Sidecars may come later for these only |
 
@@ -538,6 +539,83 @@ prompt caching, adaptive thinking and `output_config.effort` are. On 2026-10-19 
 calls bill to the project, inside its budget and spending cap, and nothing while idle. The operator enables each model once
 per project in Model Garden (`docs/RUNBOOK.md`).
 
+## 4c. Jobs the service starts itself, and the clock that wakes it
+
+Since 1.31.0 (docs/ROADMAP.md Phase 27, D64 to D70). A service may start short Cloud Run jobs of its own, each run doing
+one piece of work and stopping, and the platform may wake the service on a schedule, so an application that looks for work
+needs no instance kept on. Both are declared in the contract and built, checked, released and capped by the platform;
+nothing is set up by hand.
+
+```yaml
+jobs:
+  agent:
+    dockerfile: sandbox/agent.Dockerfile    # in the service's folder; the folder holding it is the build context
+    base: bettercare                        # optional: the test image of an onboarded Node.js application, as build argument BASE
+    command: [python, -m, smartdev.sandbox_agent]
+    resources: { cpu: 2, memory_mib: 4096 } # 1 or 2 CPUs, 512 to 4096 MiB (at most 4 GiB a CPU)
+    timeout_minutes: 60                     # 1 to 60; one try, never retried
+    runs_per_day: 30                        # 1 to 30, the default; the guard cancels a run beyond it
+    buckets: { runs: write }                # declared buckets only, read or write
+    models: [claude]
+  checker:
+    dockerfile: sandbox/checker.Dockerfile
+    base: bettercare
+    resources: { cpu: 2, memory_mib: 2048 }
+    timeout_minutes: 15
+    buckets: { runs: read }
+wake:
+  path: /tick                               # the clock sends POST here
+  every_minutes: 5                          # 1 to 60
+```
+
+- **Names.** At most four jobs. Each is the Cloud Run job `<service>-<name>` with its own identity `<service>-<name>`, so
+  the service's name, a dash and the job's name fit an account id's 30 characters. `runtime`, `deploy`, `probe`, `wake` and
+  `migrate` are the platform's own.
+- **What a job gets.** Only what its entry names: `BUCKET_<NAME>` for its buckets (read is object viewer, write object
+  user), the Vertex variables for `models`, its own `env`, and the secrets it lists (each one of the service's `secrets`).
+  Nothing else of the service's. A job reads and writes its bucket through the Cloud Storage API and copies its work into
+  its own memory: Google advises against keeping a Git repository on a bucket mount, and the in-memory filesystem counts
+  against the job's memory.
+- **Where a job may connect.** `egress: private`, the default, reaches Google's APIs (its buckets, Claude on Vertex AI's
+  global endpoint) and the lab's network, never the internet; `egress: internet` opens it, through a reviewed pull request.
+  Jobs always run in Cloud Run's second-generation environment.
+- **What the service gets.** `JOB_<NAME>`, the job's full resource name. Its identity may start its own jobs (with
+  per-run arguments and environment: the Cloud Run API's `run` with `overrides`), cancel them and read their executions and
+  tasks, including each task's exit code; nothing on any other job. Read a run's verdict from its execution, never from a file the
+  code it ran could have written.
+- **Images.** Each job's Dockerfile is held to the same policy, lint, secret scans and parts list as the service's, built
+  with no build cache and no cloud credentials, pushed as `<service>-<name>`, signed with the application's Cloud KMS key
+  and verified, and its vulnerabilities summarised under the contract's trust. A release with jobs always builds again.
+- **The test image of another application (`base`).** The platform makes it from that application's own contract at the
+  commit its last staging release deployed: `node:<line>-trixie-slim` by digest, the npm lockfile installed with every
+  install script off and then only its `build.scripts`, development dependencies included, in `/deps`, npm kept, a writable
+  `/work`, user 65532, tini as init, and none of its code. A job's Dockerfile starts `ARG BASE` then `FROM ${BASE}`, and
+  ends with `USER 65532:65532` (the Dockerfile policy reads that file, not the base, so a job of code nobody has reviewed
+  without its own `USER` is refused as running as root; `/work` belongs to 65532, so another user cannot write it). The
+  application named is not changed. When one of its releases changes its lockfile, its Node.js line or its
+  `build.scripts`, the controller releases yours again (with `auto_deploy`), or says it is behind. Node.js applications
+  with an npm lockfile only, for now.
+- **Releases.** Each job is pointed at its new image, size, timeout and variables before the new revision is deployed,
+  and back to its previous image on any failure, recovery or rollback. As for a migration, keep a job's arguments and
+  outputs compatible with the previous release of the service for one release. Production takes exactly the staging
+  images through the promotion, each verified against its staging signature and signed again with production's key.
+- **The clock.** The controller sends `POST wake.path` every `every_minutes` as the identity `<service>-wake`, with an
+  identity token for the run.app address or, for `lab-members`, for the project's IAP client, and waits up to the
+  contract's `timeout_seconds` (five minutes at most). Answer quickly and do the work inside the request: Cloud Run gives a
+  service CPU only while it answers. Check that the caller is the wake identity (the signed header IAP adds names it) before
+  acting. After three failed wakes in a row the clock waits half an hour. A service the spending cap closed is not woken.
+- **The guard.** Every minute the controller looks at every job the platform made for the service and cancels a run that
+  has more than one task, has run five minutes past its `timeout_minutes`, or is beyond the day's `runs_per_day` (UTC), and
+  any run of a job the released contract does not declare; each cancel is in the audit trail. Cloud Run lets the one
+  permission that starts a job with arguments also set its task count and timeout, so the guard is what holds the
+  contract's limits. A run that ends within the minute between two looks cannot be cancelled: it counts towards the day,
+  a day over its runs is recorded for the digest, and the spending cap is the backstop.
+- **The cap.** At the budget line the spending cap also cancels every running execution of a managed job. What already ran
+  is billed.
+- **Cost.** A run bills instance-based for its whole life, at least a minute: about $0.16 an hour at 2 CPUs and 4 GiB, $0.06
+  at 1 CPU and 512 MiB (list prices, us-central1). Every plan shows each job's price a minute and its worst case, every run
+  of every day at its full timeout. Model tokens bill separately, per use. The clock and the guard cost nothing.
+
 ## 5. platform.yaml reference
 
 ```yaml
@@ -576,6 +654,8 @@ trust: reviewed           # who has read the code: reviewed (the lab) or unknown
 egress: internet          # where it may connect: internet, or private (Google's APIs and the lab's network only); unset, by trust
 domain: api.example.org   # production only: a name of the lab's own, through a load balancer with Cloud Armor, about $25 a month (section 6b)
 project: shared           # or own: a project of the application's own, for code nobody has reviewed or people's data (section 5a)
+jobs: {}                  # Cloud Run jobs the service starts itself, at most four (section 4c)
+# wake: { path: /tick, every_minutes: 5 }   # the platform's clock: POST path on a schedule (section 4c)
 reviewed: true            # set by the person who reviewed the file
 ```
 

@@ -137,7 +137,31 @@ def needs_env(spec, project_id, region="us-central1"):
                     "DATABASE_USER": user, "DATABASE_IP_TYPE": "private"})
     if "claude" in spec.needs.models:
         env.update({"ANTHROPIC_VERTEX_PROJECT_ID": project_id, "CLOUD_ML_REGION": "global"})
+    # The jobs the service starts (docs/ROADMAP.md D64): JOB_<NAME> = the job's full resource name, for the Cloud Run API.
+    for name in spec.jobs:
+        env[f"JOB_{variable_name(name)}"] = job_resource(spec, name, project_id, region)
     return env
+
+
+def job_resource(spec, name, project_id, region="us-central1"):
+    return f"projects/{project_id}/locations/{region}/jobs/{spec.name}-{name}"
+
+
+def job_env(spec, name, project_id, region="us-central1", own_env=True):
+    """The variables a job gets (D64): BUCKET_<NAME> for the buckets it was given, the Vertex variables for its models, and
+    its own env; nothing of the service's other needs or settings, so a job holds only what it was given."""
+    job = spec.jobs[name]
+    env = {f"BUCKET_{variable_name(bucket)}": f"{project_id}-{spec.name}-{bucket}" for bucket in sorted(job.buckets)}
+    if "claude" in job.models:
+        env.update({"ANTHROPIC_VERTEX_PROJECT_ID": project_id, "CLOUD_ML_REGION": "global"})
+    if own_env:
+        env.update(job.env)
+    return env
+
+
+def job_egress(spec, name):
+    """Where a job may connect: private (Google's APIs and the lab's network, no internet) unless its contract says internet."""
+    return spec.jobs[name].egress or "private"
 
 
 def needs_secrets(spec):
@@ -250,6 +274,79 @@ class Scaling(StrictModel):
     maximum: int = Field(default=2, ge=1, le=5)
 
 
+class JobResources(StrictModel):
+    """A job's size (docs/ROADMAP.md D67). Cloud Run lets 1 vCPU have up to 4 GiB and 2 vCPUs up to 8 GiB; the lab's policy
+    stops at 2 CPUs and 4096 MiB (enforce)."""
+    cpu: int = Field(default=1, ge=1, le=4)
+    memory_mib: int = Field(default=512, ge=512, le=8192)
+
+
+# A job's name: the Cloud Run job is <service>-<name> and its identity the account <service>-<name>, so service and job
+# together stay within an account id's 30 characters (AppSpec checks the sum). The platform's own identities and the
+# migration job keep their names.
+JOB_NAME = re.compile(r"^[a-z][a-z0-9-]{0,12}[a-z0-9]$")
+RESERVED_JOBS = frozenset({"runtime", "deploy", "probe", "wake", "migrate"})
+MAX_JOBS = 4
+
+
+class Job(StrictModel):
+    """A Cloud Run job the service starts itself (docs/ROADMAP.md D64): its own image, identity and limits.
+
+    dockerfile: the job's Dockerfile, relative to the service's folder; the folder holding it is the build context.
+    base: an onboarded Node.js application whose test image the platform builds and passes as the build argument BASE (D69).
+    One task, never retried, stopped after timeout_minutes; the controller's guard cancels a run beyond runs_per_day (D70).
+    buckets: the service's declared buckets this job may read or write; models, secrets and env are its own; egress is
+    private (Google's APIs and the lab's network only) unless the contract says internet."""
+    dockerfile: str = Field(max_length=200, pattern=SERVICE_PATH.pattern)
+    base: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9-]{1,19}[a-z0-9]$")
+    command: list[str] | None = None
+    args: list[str] | None = None
+    resources: JobResources = Field(default_factory=JobResources)
+    timeout_minutes: int = Field(default=10, ge=1, le=60)
+    runs_per_day: int = Field(default=30, ge=1, le=30)
+    buckets: dict[str, Literal["read", "write"]] = Field(default_factory=dict)
+    models: list[Literal["claude"]] = Field(default_factory=list)
+    secrets: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    egress: Literal["private", "internet"] | None = None
+
+    @model_validator(mode="after")
+    def valid(self):
+        if ".." in self.dockerfile.split("/"):
+            raise ValueError("A job's dockerfile is a path inside the service's folder, without parent folders")
+        if self.resources.memory_mib % 256:
+            raise ValueError("A job's memory_mib must be a multiple of 256")
+        if self.resources.memory_mib > 4096 * self.resources.cpu:
+            raise ValueError("Cloud Run gives a job at most 4 GiB a CPU: raise cpu or lower memory_mib")
+        for field, parts in (("command", self.command), ("args", self.args)):
+            if parts is None:
+                continue
+            if not parts and field == "command":
+                raise ValueError("A job's command needs at least one word, or leave it out")
+            if len(parts) > 32 or not all(isinstance(p, str) and 0 < len(p) <= 200 and p.isprintable() and "," not in p for p in parts):
+                raise ValueError(f"A job's {field} is a list of at most 32 printable words of at most 200 characters, without commas")
+        if len(set(self.models)) != len(self.models) or len(set(self.secrets)) != len(self.secrets):
+            raise ValueError("A job's models and secrets are each named once")
+        if len(self.env) > 16 or len(self.secrets) > 16:
+            raise ValueError("A job takes at most 16 env values and 16 secrets")
+        for name in list(self.env) + self.secrets:
+            if not ENV_NAME.fullmatch(name) or name in RESERVED_ENV:
+                raise ValueError(f"'{name}' is not a variable name a job may set (uppercase letters, digits, underscores; not one Cloud Run sets)")
+        for name, value in self.env.items():
+            if len(value) > 1024 or "\n" in value:
+                raise ValueError(f"A job's env value for {name} must be a single line of at most 1024 characters")
+        if set(self.secrets) & set(self.env):
+            raise ValueError("A job's secrets must not repeat one of its env names")
+        return self
+
+
+class Wake(StrictModel):
+    """The platform's clock (docs/ROADMAP.md D66): the controller sends POST `path` every `every_minutes` as the
+    application's <service>-wake identity, so an application that must look for work runs without an instance kept on."""
+    path: str = Field(pattern=r"^/[A-Za-z0-9/_-]*$", max_length=200)
+    every_minutes: int = Field(default=5, ge=1, le=60)
+
+
 class AppSpec(StrictModel):
     api_version: Literal["lab/v1"] = "lab/v1"
     name: str = Field(pattern=r"^[a-z][a-z0-9-]{1,19}[a-z0-9]$")  # 3 to 21 characters: what Cloud Run, the registry and the root accept
@@ -312,6 +409,9 @@ class AppSpec(StrictModel):
     # project of its own, for code nobody has reviewed or an application that holds people's data, so its identities,
     # resources, quotas and bill stay apart. The operator creates the project and applies its foundation first.
     project: Literal["shared", "own"] | None = None
+    # Cloud Run jobs the service starts itself, and the clock that wakes it (docs/ROADMAP.md D64, D66).
+    jobs: dict[str, Job] = Field(default_factory=dict)
+    wake: Wake | None = None
     reviewed: bool = False
 
     @model_validator(mode="after")
@@ -344,6 +444,7 @@ class AppSpec(StrictModel):
         if (self.command is not None or self.args is not None) and self.build.recipe == "buildpacks":
             raise ValueError("command and args replace the image's start command, which on a buildpacks image bypasses its launcher; use build.entrypoint")
         self.runtime_fits()
+        self.jobs_fit()
         # IAP_AUDIENCE: what a lab-members app checks the proxy's signed header against, set by the release (1.25.1).
         derived = {**needs_env(self, "project"), **needs_secrets(self), **({"IAP_AUDIENCE": ""} if self.exposure == "lab-members" else {})}
         taken = set(self.env) | set(self.secrets)
@@ -353,6 +454,37 @@ class AppSpec(StrictModel):
         if len(derived) + len(self.env) > 48:
             raise ValueError("Too many variables: needs, env and secrets together must stay under 48")
         return self
+
+    def jobs_fit(self):
+        """The jobs the service starts and the clock (docs/ROADMAP.md D64, D66): names that make valid job and account names,
+        and only what the service itself declared (its buckets, its secrets)."""
+        if len(self.jobs) > MAX_JOBS:
+            raise ValueError(f"A service starts at most {MAX_JOBS} jobs")
+        if (self.jobs or self.wake) and self.runtime == "static":
+            raise ValueError("runtime: static has no server to start jobs or to wake; give the jobs to a web service")
+        for name, job in self.jobs.items():
+            if not JOB_NAME.fullmatch(name) or "--" in name:
+                raise ValueError(f"'{name}' is not a job name: 2 to 14 lowercase letters, digits and single dashes, starting with a letter")
+            if name in RESERVED_JOBS or name.endswith(tuple(f"-{word}" for word in RESERVED_JOBS)):
+                # foo's job x-runtime would be the account foo-x-runtime: the runtime identity of an application named foo-x.
+                raise ValueError(f"'{name}' is or ends in a name the platform uses for its own identities or the migration job; call the job something else")
+            if len(self.name) + 1 + len(name) > 30:
+                raise ValueError(f"The job's identity {self.name}-{name} would exceed the 30 characters of an account id: shorten the job's name "
+                                 f"to {29 - len(self.name)} characters or fewer")
+            unknown = sorted(set(job.buckets) - set(self.needs.buckets))
+            if unknown:
+                raise ValueError(f"The job {name} names {', '.join(unknown)}, which is not under needs.buckets: declare the bucket, then give it to the job")
+            missing = sorted(set(job.secrets) - set(self.secrets))
+            if missing:
+                raise ValueError(f"The job {name} reads {', '.join(missing)}, which is not under secrets: name the secret there first")
+            if job.base == self.name:
+                raise ValueError(f"The job {name} cannot build on this service's own test image; base names another onboarded application")
+            platform = job_env(self, name, "project", own_env=False)
+            clash = sorted(set(job.env) & set(platform))
+            if clash:
+                raise ValueError(f"The job {name} sets {', '.join(clash)}, which the platform sets for what the job was given")
+            if len(platform) + len(job.env) + len(job.secrets) > 48:
+                raise ValueError(f"Too many variables for the job {name}: its buckets, models, env and secrets together must stay under 48")
 
     def runtime_fits(self):
         """Exactly one of python and node, as the runtime says, and the Node.js rules of docs/ROADMAP.md D43 and D45."""
@@ -453,6 +585,9 @@ def draft_dump(spec: AppSpec) -> dict:
         data.pop("proxy", None)
     if not build.get("scripts"):
         build.pop("scripts", None)
+    for key in ("jobs", "wake"):  # Phase 27's, shown only when declared, so other drafts read as before
+        if not data.get(key):
+            data.pop(key, None)
     needs = data.get("needs") or {}
     for key in ("mounts", "models"):  # Phase 19's needs, shown only when declared, so other drafts read as before
         if not needs.get(key):
@@ -513,4 +648,13 @@ def enforce(spec: AppSpec, cloud="gcp", environment="staging", today=None) -> No
         raise ValueError("GPUs are not supported")
     if spec.resources.cpu > 2 or spec.resources.memory_mib > 2048 or spec.scaling.maximum > 3:
         raise ValueError(f"{environment.capitalize()} policy: maximum 2 CPUs, 2048 MiB, 3 instances")
+    for name, job in spec.jobs.items():
+        # D67: a job may be larger than a service (the agent used 4 GiB on a laptop); D64 and D65 bound its time and runs.
+        if job.resources.cpu > JOB_POLICY["cpu"] or job.resources.memory_mib > JOB_POLICY["memory_mib"]:
+            raise ValueError(f"{environment.capitalize()} policy: a job (here {name}) takes at most {JOB_POLICY['cpu']} CPUs and {JOB_POLICY['memory_mib']} MiB")
+
+
+# The lab's policy for a job (docs/ROADMAP.md D64, D65, D67): its size, its time and how many runs a day. The model's own
+# bounds hold the last two; enforce checks the size.
+JOB_POLICY = {"cpu": 2, "memory_mib": 4096, "timeout_minutes": 60, "runs_per_day": 30}
 

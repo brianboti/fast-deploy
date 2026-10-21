@@ -49,6 +49,7 @@ STEP_WORDS = (
     ("Sign the promotion", "signing the promotion"),
 )
 PHASE_WORDS = {"preparing": "getting the new version ready", "migrating": "updating the database (the migration)",
+               "updating_jobs": "pointing the app's jobs at their new images",
                "deploying": "starting the new version beside the old one", "promoting": "moving visitors to the new version",
                "baking": "watching the new version with real traffic"}
 ONBOARDING_STEPS = (("validating", "check the repository"), ("registering", "register the app"),
@@ -359,7 +360,10 @@ def cost_line(cost):
     if not cost:
         return None
     floor = (cost.get("idle_floor_usd_month") or 0) + (cost.get("needs_floor_usd_month") or 0)
-    return f"Cost: {money(floor)} a month with no visitors; compute at most {money(cost.get('compute_ceiling_usd_month'))} a month"
+    line = f"Cost: {money(floor)} a month with no visitors; compute at most {money(cost.get('compute_ceiling_usd_month'))} a month"
+    if cost.get("jobs"):
+        line += f"; its jobs at most {money(cost.get('jobs_ceiling_usd_month'))} a month if every run of every day ran to its timeout"
+    return line
 
 
 # ---- after a release (docs/ROADMAP.md Phase 23): the report a day later, the digest, the trust numbers
@@ -521,6 +525,13 @@ def digest(record):
     if update_attention:
         facts += [fact for fact in update_facts if "waiting for a person" in fact or "fails" in fact or "failed" in fact or "went back" in fact]
         looks += 1
+    jobs = record.get("jobs") or {}
+    for item in (jobs.get("cancels") or [])[:6]:
+        # D70: a run beyond its contract's limits, cancelled by the guard (docs/RUNBOOK.md, "Jobs and the clock").
+        facts.append(f"`{item['application']}`: the guard cancelled a run of `{item.get('job')}` ({clip(item.get('detail'), 160)})")
+        looks += 1
+    for item in (jobs.get("wake_failures") or [])[:4]:
+        facts.append(f"`{item['application']}`: the clock could not wake it ({clip(item.get('detail'), 160)}); docs/RUNBOOK.md, \"Jobs and the clock\"")
     for problem in problems[:6]:
         facts.append(f"To look at: {clip(problem, 220)}")
     looks += len(problems)
@@ -692,6 +703,7 @@ def release(plan):
             reason, error = "it was cancelled", None
         else:
             reason = {"preparing": "it stopped before deploying anything", "migrating": "the database migration failed, so nothing new was deployed",
+                      "updating_jobs": "a job could not be pointed at its new image, so nothing new was deployed and the jobs went back",
                       "baking": "the new version took over, then failed its watch with real traffic"}.get(failed_phase, "the new version failed its health check")
         facts = [f"Why: {reason}", f"Error: `{clip(error, 240)}`" if error else None,
                  "The new version's last log lines are in the release details; ask me to show them" if phases.get("candidate_logs") else None]
@@ -784,6 +796,7 @@ def promotion(plan):
                   f"the new version failed its watch with {share}% of the traffic" if share and share < 100 and failed_phase == "baking" else
                   f"the new version failed its health check with {share}% of the traffic" if share and share < 100 and failed_phase == "promoting" else
                   {"preparing": "it stopped before deploying anything", "migrating": "the database migration failed, so nothing new was deployed",
+                      "updating_jobs": "a job could not be pointed at its new image, so nothing new was deployed and the jobs went back",
                    "baking": "the new version took over, then failed its watch with real traffic"}.get(failed_phase, "the new version failed its health check"))
         return compose(f"**Promotion stopped for `{app}`: production's previous version is serving.**",
                        [f"Why: {reason}", None if cancelled or not error else f"Error: `{clip(error, 240)}`"],
