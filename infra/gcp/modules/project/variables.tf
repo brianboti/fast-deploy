@@ -64,3 +64,12 @@ variable "billing_export_dataset" {
   type        = string
   description = "BigQuery dataset id for the billing export (enable the export in the Billing console to this dataset); empty creates nothing."
 }
+variable "access_change_quiet_members" {
+  type        = list(string)
+  default     = []
+  description = "Email addresses whose own IAM changes do not raise \"access changed outside the pipeline\" (docs/ROADMAP.md 25.6): the operator who applies the foundation, if those alerts are noise. Empty: every change but the pipeline's is reported."
+  validation {
+    condition     = alltrue([for member in var.access_change_quiet_members : can(regex("^[^\"\\s]+@[^\"\\s]+$", member))])
+    error_message = "access_change_quiet_members holds plain email addresses."
+  }
+}

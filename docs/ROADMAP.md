@@ -758,6 +758,36 @@ Requires regeneration of app workflows: yes (the report template). Terraform app
 billing-export grants).
 Cost effect: none; the daily billing query reads megabytes of a free terabyte a month.
 
+## Phase 25: faster starts and the failures nobody saw (about two days) → version 1.29.0
+
+Planned and built on 2026-10-21 from the review `docs/RESEARCH-2026-10-21-scaling.md`, which measured 30 days of container
+starts (nearly every application's typical start was 5.0 to 5.2 seconds because of the start-up probe's five-second
+period, against 0.3 seconds for the same kind of application probed by a TCP connect), weighed the autoscaling algorithms
+(none worth building: Cloud Run's reactive scaler fits, and every cleverer family needs traffic the lab does not have),
+and catalogued 46 ways a service can fail, 11 of them unseen. No decision is needed beyond the review's defaults.
+
+| Item | Change | Where |
+|---|---|---|
+| 25.1 | The start-up probe tries every second (it was five), one second to answer (Google's default), 60 tries: the same one-minute window | labdeploy/release.py |
+| 25.2 | Startup CPU boost at every release: Terraform creates the services, so gcloud's own default for new services never applied | labdeploy/release.py |
+| 25.3 | An alert on requests refused with 429, read from the request log (Cloud Run's request metric leaves out requests refused at the instance limit); "at maximum instances" at the contract's own maximum (at least 2) from the root's next render; the health view's note | infra/gcp/modules/service/main.tf, labdeploy/controller.py, labdeploy/cloud.py |
+| 25.4 | Google's own incidents: the Service Health API and an alert on Personalized Service Health's new incidents in the region, and the digest's line | infra/gcp/modules/project/main.tf, labdeploy/cloud.py, labdeploy/chat.py |
+| 25.5 | The digest's day: requests refused, the slowest starts above 10 seconds, quotas above 80 percent of their limit | labdeploy/aftercare.py, labdeploy/cloud.py, labdeploy/chat.py |
+| 25.6 | An alert when access changes outside the pipeline (`SetIamPolicy` in the Admin Activity audit log by anyone but the apply identity), with `access_change_quiet_members` for the operator's own applies | infra/gcp/modules/project/, infra/gcp/project/ |
+
+Live exercise: one application's cold start measured before and after (the probe and the boost), a burst past
+`scaling.maximum` raising "requests refused", a role granted by hand raising "access changed", and the digest with its new
+lines.
+Requires regeneration of app workflows: yes, for the probe and the boost to reach applications with their own workflows
+(the platform pipeline's applications take them at once). Terraform apply: every application root by the pipeline (the
+refused alert); the foundation in each project (the two project alerts).
+Cost effect: about $0.0004 of extra CPU per 15-second start for the boost; the alerts and reads stay inside the free
+allotments.
+
+Not built from the review, for later if wanted: a floor of 50 user requests under the weekly right-sizing proposals,
+per-dependency alerts when a topic or a database is declared, a weekly scan of the images that serve, and an uptime check
+on a custom domain.
+
 ## Later, unscheduled (research item 13 of 2026-10-14; reviews of 2026-10-16, 2026-10-19, 2026-10-20 and 2026-10-21)
 
 `cache: valkey` behind operator approval with its floor in every plan (two days plus a trial; Memorystore never scales to zero); `gpu: l4` with one instance, zonal redundancy off, weights on a read-only bucket volume and the cap able to stop it (three days plus a trial; instance-based billing); after Phase 21 (built 2026-10-20 as 1.23.0, which installs pnpm, Yarn and Bun lockfiles, builds and workspaces): `turbo prune --docker` for a pruned workspace install instead of the whole workspace (half a day); Node's permission model as an opt-in, `--permission-audit` first (half a day; it restricts no network before Node 25); a filtered internet egress through Cloud NAT and Cloud NGFW FQDN rules, if a backup model provider ever justifies about $5 a month before traffic and a test (one day); a container-only runtime for a third language (two days); Firebase Hosting for a public front-end only if the lab ever allows public exposure; Cloud Deploy pipelines with approvals and automated canaries, if the runner's split release of Phase 16 ever proves too little (the first pipeline is free, each further one $5 a month); SLSA Build Level 3 by isolating the signing job in the central pipeline; OpenTelemetry when an application needs traces beyond Cloud Run's own. From the review of 2026-10-21: synthetic traffic during the bake as an opt-in list of read-only paths, counted apart from real traffic (the hosted platforms do not do it, and the release report of 23.1 gives a quiet release a verdict a day later instead); Cloud Deploy's canary with an analysis on the alert policies and its repair rule (generally available since 2026-03-23, the first pipeline free) if a bake measured in hours is ever wanted; alert policies in PromQL with a one-week dynamic baseline (a preview of 2026-06) once a service has steady traffic.
@@ -793,5 +823,6 @@ Not planned, because the evidence is against it for this lab: a second cloud or 
 | 22 | about three days | yes | no |
 | 23 | about four days | no | by the pipeline |
 | 24 | about two days | yes | the foundation once |
+| 25 | about two days | yes | by the pipeline; the foundation once |
 
-About nine and a half days of work for Phases 0 to 5, plus the live exercises, which take an hour or two per phase. Phase 6 adds about eleven days and a trial per resource type. Phases 9 to 12 add about fifteen and a half days, planned on 2026-10-14 from `docs/RESEARCH-2026-10-14.md`. Phases 13 to 17 add about twenty-three days, planned on 2026-10-16 from `docs/RESEARCH-2026-10-16.md`; their idle cost is about $4 a month for the controller's machine and about $0.06 for the production project, everything else being a per-app or per-tier choice shown on the approval block. Phases 18 and 19 add about eight days, planned on 2026-10-19 from `docs/RESEARCH-2026-10-19.md`; they add no idle cost, and model calls through Vertex are billed per token inside the project's budget. Phases 20 to 22 add about eleven days, planned on 2026-10-20 from `docs/RESEARCH-2026-10-20.md`; they add no idle cost, and widen what the platform takes as it is from 3 to about 20 of the 33 repositories the review measured. Phases 23 and 24 add about six days, planned on 2026-10-21 from `docs/RESEARCH-2026-10-21.md`; they add no idle cost, and give the platform a voice after a release: a report a day after each one, a daily digest, an objective a quiet application can keep, and the spend between Mondays.
+About nine and a half days of work for Phases 0 to 5, plus the live exercises, which take an hour or two per phase. Phase 6 adds about eleven days and a trial per resource type. Phases 9 to 12 add about fifteen and a half days, planned on 2026-10-14 from `docs/RESEARCH-2026-10-14.md`. Phases 13 to 17 add about twenty-three days, planned on 2026-10-16 from `docs/RESEARCH-2026-10-16.md`; their idle cost is about $4 a month for the controller's machine and about $0.06 for the production project, everything else being a per-app or per-tier choice shown on the approval block. Phases 18 and 19 add about eight days, planned on 2026-10-19 from `docs/RESEARCH-2026-10-19.md`; they add no idle cost, and model calls through Vertex are billed per token inside the project's budget. Phases 20 to 22 add about eleven days, planned on 2026-10-20 from `docs/RESEARCH-2026-10-20.md`; they add no idle cost, and widen what the platform takes as it is from 3 to about 20 of the 33 repositories the review measured. Phases 23 and 24 add about six days, planned on 2026-10-21 from `docs/RESEARCH-2026-10-21.md`; they add no idle cost, and give the platform a voice after a release: a report a day after each one, a daily digest, an objective a quiet application can keep, and the spend between Mondays. Phase 25 adds about two days, planned and built on 2026-10-21 from `docs/RESEARCH-2026-10-21-scaling.md`: starts about four seconds faster, and alerts for refused requests, Google's incidents and access changed by hand, at no idle cost.

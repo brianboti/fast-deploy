@@ -45,8 +45,10 @@ def test_every_alert_has_a_severity_labels_and_words_and_the_log_line_alert_is_g
     block that says what it means and what to ask; any ERROR log line is no longer an alert but a count in the digest."""
     import re
     main = Path("infra/gcp/modules/service/main.tf").read_text()
-    assert 'resource "google_monitoring_alert_policy" "log_errors"' not in main and "condition_matched_log" not in main
-    expected = {"health": "CRITICAL", "errors": "ERROR", "latency": "WARNING", "saturation": "WARNING", "memory": "WARNING"}
+    assert 'resource "google_monitoring_alert_policy" "log_errors"' not in main and main.count("condition_matched_log") == 1  # only "refused" (25.3)
+    refused = main[main.index('resource "google_monitoring_alert_policy" "refused"'):]
+    assert 'httpRequest.status=429' in refused[:refused.index("\n}\n")] and 'period = "3600s"' in refused[:refused.index("\n}\n")]
+    expected = {"health": "CRITICAL", "errors": "ERROR", "refused": "ERROR", "latency": "WARNING", "saturation": "WARNING", "memory": "WARNING"}
     for name, severity in expected.items():
         block = main[main.index(f'resource "google_monitoring_alert_policy" "{name}"'):]
         block = block[:block.index("\n}\n")]

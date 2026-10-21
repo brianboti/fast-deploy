@@ -261,7 +261,9 @@ repository, where an incident's details help an attacker.
    "worse" (both on the issue **Fast Deploy: today**), the drift issue, GitHub's Dependabot and secret-scanning alerts,
    and Google's own emails. Ask Claude for the application's health in production and its deployment status for the facts.
    It is an incident when production is affected or something is exposed; anything else is one of the sections below.
-2. **Mitigate first**, before looking for the cause:
+2. **Is it Google?** An alert "Google reports an incident" or the digest's line, or every application failing at once
+   (section "Google's own incidents"): then nothing of yours needs rolling back.
+3. **Mitigate first**, before looking for the cause:
    - A bad release in production: ask for `rollback_production` and approve it (seconds); in staging, `rollback`.
    - An application doing harm or running up cost: close it from outside as the cap does,
      `gcloud run services update SERVICE --region us-central1 --project PROJECT --ingress=internal`, and reopen it with
@@ -276,11 +278,11 @@ repository, where an incident's details help an attacker.
      nothing reaches production without a reviewer's approval anyway.
    - Data damaged or deleted: close ingress so nothing writes more, then restore into a new instance (section
      Production, "Production's data"). Never overwrite the one serving.
-3. **Communicate.** Tell the people who use the application what is affected and when you will say more, then keep to
+4. **Communicate.** Tell the people who use the application what is affected and when you will say more, then keep to
    it. When a credential or personal data may have been exposed, tell the institution's information security office the
    same day. With protected health information (Phase 17), the institution's privacy office decides on notifications:
    HIPAA asks for them without unreasonable delay and within 60 days of discovering a breach.
-4. **Review**, within a week: a short write-up without blame (what happened, the timeline, how it was found, what made it
+5. **Review**, within a week: a short write-up without blame (what happened, the timeline, how it was found, what made it
    better or worse) and one issue or pull request per fix, starting with whatever would have caught it sooner. Change
    this runbook where a step was missing or wrong.
 
@@ -313,6 +315,43 @@ written by code from the controller's records and the observer's reads; neither 
   were rolled back by a person; the change failure rate; the median time back to a good release; how many watches after
   a switch had too little traffic; restores that may have been for nothing (the same commit passed later). They are for
   reading, never a threshold.
+
+## Requests refused
+
+Alert **"SERVICE: requests refused"** (ERROR, since 1.29.0), the digest's "requests refused (429)", or a health-view note.
+A request was answered 429. When its log line says "The request was aborted because there was no available instance",
+every instance the service may run was busy for 30 seconds and a person or a program was turned away; Cloud Run's request
+metric leaves those requests out, so neither the server-errors alert nor the objective counts them. Otherwise the
+application refused it itself (a rate limit of its own).
+
+1. Ask Claude for the service's health and its WARNING lines: how many, since when, and whether the line names "no
+   available instance".
+2. Turned away at the limit: raise `scaling.maximum` in `platform.yaml` (the cost bound rises with it; the policy allows 3)
+   or `concurrency` when the code serves requests in parallel safely; release. A burst that will not come back needs
+   nothing.
+3. "At maximum instances" (WARNING) now fires at the application's own maximum (2 by default), from the root's next render;
+   an application limited to one instance is watched by this alert alone.
+
+## Slow starts
+
+The digest names each application whose slowest start of the day passed 10 seconds. Since 1.29.0 the start-up probe tries
+every second (it was every five, which added about four seconds to every start of every application) and startup CPU
+boost gives a starting instance twice its CPU. What remains is the application's own work at start. The developer
+shortens it: load heavy libraries lazily or once, one gunicorn worker with threads (`--workers 1 --threads 8 --timeout
+0`), start Node.js with `node file.js` rather than `npm start`, and read data computed before the release from a mounted
+bucket rather than computing it at each start (`docs/DEVELOPER-CONTRACT.md`). A warm instance (`scaling.minimum: 1`,
+about $9.72 a month) removes the first start for good; the uptime check already keeps most services warm between calls.
+
+## Google's own incidents
+
+Alert **"[ENV] Google reports an incident in us-central1"** (WARNING, since 1.29.0) or the digest's "Google reports an
+incident". Google's Personalized Service Health wrote an incident that may touch this project. Errors and slowness that
+start with it are likely Google's: a rollback will not help, and a release now may fail for Google's reasons.
+
+1. Read it in the console (Service Health) or at status.cloud.google.com: which products, which locations, Google's next
+   update.
+2. Hold releases and promotions until it closes (`paused: true` in the configuration, or simply wait).
+3. Afterwards, look at the next day's release reports and the digest: anything still wrong is the application's.
 
 ## The controller's machine
 
@@ -924,6 +963,9 @@ and the apps' pins carry the name, so the order matters:
 - `scripts/machine.sh status`: the three services active, the disk under half full, the commit the one you expect, and
   the last automatic update; `get_controller_status` names any re-pin that waits for you.
 - Every quarter: the restore drill (`scripts/machine.sh drill`; the watchdog reminds).
+- The alert **"access changed outside the pipeline"** fires for every IAM change not made by the pipeline, your own foundation
+  applies included. To stop hearing about your own, add your address to `access_change_quiet_members` in the
+  foundation's tfvars and apply it; anyone else's change still raises it.
 - Twice a year, for production: the rollback drill, the cap-fire drill and, for each database there, the data restore
   drill (section Production). Each is recorded with `scripts/machine.sh record-drill`; the watchdog reminds when one is due.
 - The daily digest issue **Fast Deploy: today**: still hearing from the controller every day.
