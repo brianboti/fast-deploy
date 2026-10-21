@@ -895,6 +895,68 @@ class Controller:
                 results[app_id] = f"error: {message}"
         return results
 
+    def base_tick(self):
+        """Jobs built on another application's test image follow it (docs/ROADMAP.md D69): when that application's newest staging
+        release changed its npm lockfile, its Node.js line or its build.scripts since the release the jobs were built on, the
+        application is released again at the commit it runs (with auto_deploy), else the trail and the status say it is behind."""
+        if self.config.paused:
+            return {"paused": True}
+        results = {}
+        for app_id, app in self.config.applications.items():
+            live = self.store.latest_success(app_id)
+            built_on = (live or {}).get("base")
+            if not live or not built_on:
+                continue
+            found = next(((other_id, other) for other_id, other in self.config.applications.items() if other.service == built_on["service"]), None)
+            newest = self.store.latest_success(found[0]) if found else None
+            if newest is None or newest["sha"] == built_on["commit"]:
+                results[app_id] = "up to date"
+                continue
+            try:
+                changed = self.packages_changed(found[1], built_on["commit"], newest)
+            except Exception as exc:  # noqa: BLE001 - unreadable means changed: building the test image again is the safe side
+                changed = f"could not compare ({explain(exc) or type(exc).__name__})"
+            if not changed:
+                results[app_id] = f"up to date: {built_on['service']}'s packages are the same at {newest['sha'][:12]}"
+                continue
+            attempted = self.store.latest_plan(app_id)
+            if attempted and (attempted.get("base") or {}).get("commit") == newest["sha"] and not self.retryable(attempted):
+                results[app_id] = f"plan {attempted['id'][:8]} already builds on {newest['sha'][:12]} ({attempted['state']})"
+                continue
+            if not app.auto_deploy or app.paused:
+                results[app_id] = f"behind: {built_on['service']} {changed} at {newest['sha'][:12]}; release {app_id} again to rebuild its jobs"
+                self.store.record_event("jobs_base", name=app_id, application=app_id, outcome="behind", detail=results[app_id])
+                continue
+            try:
+                principal = Principal(name=self.AUTO_DEPLOY_IDENTITY, token_sha256="0" * 64, applications=[app_id], can_deploy=True)
+                plan = self.plan(principal, app_id, commit_sha=None if app.central else live["sha"])
+                outcome = self.deploy(principal, plan["id"])
+                state = "dispatch disabled" if outcome.get("dispatch") == "disabled" else outcome.get("state")
+                results[app_id] = f"{state}: plan {plan['id'][:8]} rebuilds its jobs on {built_on['service']} {newest['sha'][:12]} ({changed})"
+                self.store.record_event("jobs_base", name=app_id, identity=self.AUTO_DEPLOY_IDENTITY, application=app_id, outcome=state, detail=results[app_id])
+            except Exception as exc:  # noqa: BLE001 - one app's trouble must not stop the others
+                results[app_id] = f"error: {explain(exc) or exc}"
+                self.store.record_event("jobs_base", name=app_id, application=app_id, outcome="error", detail=results[app_id])
+        return results
+
+    def packages_changed(self, base_app, old_sha, newest):
+        """What changed in a base application's packages between two of its commits: its lockfile, its Node.js line or its
+        build.scripts (the spec its newest release recorded against the one at the old commit); an empty string for nothing."""
+        old = self.store.latest_success(next(app_id for app_id, app in self.config.applications.items() if app is base_app), old_sha)
+        before, after = (old or {}).get("spec") or {}, newest.get("spec") or {}
+        if before.get("node") != after.get("node"):
+            return f"moved Node.js from {before.get('node')} to {after.get('node')}"
+        if (before.get("build") or {}).get("scripts") != (after.get("build") or {}).get("scripts"):
+            return "changed its build.scripts"
+        for name in ("npm-shrinkwrap.json", "package-lock.json"):
+            path = base_app.repo_path(name)
+            try:
+                then, now = self.github.file(base_app, old_sha, path), self.github.file(base_app, newest["sha"], path)
+            except Exception:  # noqa: BLE001, S112 - a lockfile the repository does not have at both commits is compared by the next name
+                continue
+            return "" if then == now else f"changed {name}"
+        return "changed (no lockfile of its own to compare)"
+
     def watchdog_problems(self, now=None):
         """The daily look around: configuration, credential, each app's schedules, pin and newest attempt, drift, drills, the
         database's live copy and the daily digest itself. Shared by the watchdog and the digest (docs/ROADMAP.md D60)."""
@@ -2505,6 +2567,15 @@ class Controller:
         }
         if source.get("contract"):
             plan["contract"] = source["contract"]
+        if spec.jobs:
+            # 27.8: the jobs' images the staging release ran, copied with the service's (D68).
+            jobs = {name: (entry or {}).get("image") for name, entry in (receipt.get("jobs") or {}).items()}
+            if set(jobs) != set(spec.jobs) or not all(jobs.values()):
+                raise ValueError("The staging release carries no image for every job its contract declares: release staging again, then promote that release")
+            plan["source"]["jobs"] = jobs
+            plan["jobs"] = source.get("jobs") or {}
+            plan["warnings"].append(f"Copies the images of its jobs ({', '.join(sorted(jobs))}) as well, each verified against its staging signature and "
+                                    "signed again with production's key; production's guard holds them to the same limits.")
         if spec.needs.migrate:
             plan["warnings"].append("Runs its migration against production's database before the switch; a rollback restores traffic, not data.")
         if spec.secrets:

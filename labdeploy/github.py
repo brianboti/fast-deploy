@@ -695,6 +695,9 @@ class GitHub:
                   "staging_workflow": source["workflow"], "provenance": source["provenance"], "bake_seconds": str(int(plan["bake_seconds"]))}
         if plan.get("rollout"):
             inputs["rollout"] = ",".join(str(int(step)) for step in plan["rollout"])  # the split release's steps (D38)
+        if source.get("jobs"):
+            # The jobs' staging images (docs/ROADMAP.md 27.8), sent only then: promote.yml before 1.31.0 has no such input.
+            inputs["source_jobs"] = json.dumps(source["jobs"], sort_keys=True)
         if source.get("attested_commit") and source["attested_commit"] != plan["sha"]:
             # GitHub's attestation names the commit its build run started on (docs/CHANGES.md 1.18.2); sent only when it
             # differs, so a promotion of a release built at the tip of main stays as it was.

@@ -96,6 +96,11 @@ on:
         required: false
         default: ''
         type: string
+      source_jobs:
+        description: The staging images of the service's jobs, by digest (JSON, job name to image; docs/ROADMAP.md 27.8); empty for none
+        required: false
+        default: ''
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -121,6 +126,7 @@ env:
   PROVENANCE_INPUT: ${{ inputs.provenance }}
   BAKE_SECONDS: ${{ inputs.bake_seconds }}
   ATTESTED_COMMIT: ${{ inputs.attested_commit }}
+  SOURCE_JOBS: ${{ inputs.source_jobs }}
   # Code a contract of this repository describes is code nobody has reviewed (docs/ROADMAP.md D35), and production holds
   # it exactly as staging did; an application's own platform.yaml is reviewed.
   TRUST_DEFAULT: ${{ inputs.contract_commit != '' && 'unknown' || 'reviewed' }}
@@ -384,6 +390,18 @@ jobs:
             exit 1
           fi
           "$COSIGN" verify-attestation --key "$PROVENANCE_KEY" --type https://slsa.dev/verification_summary/v1 --insecure-ignore-tlog=true "$IMAGE_DIGEST" > /dev/null
+      # 27.8: the images of the jobs the staging release ran, each verified against its staging signature (always the
+      # application's Cloud KMS key there), copied by digest and signed with production's key; the release points
+      # production's jobs at them.
+      - name: Verify, copy and sign the jobs' images
+        if: inputs.operation == 'promote' && inputs.source_jobs != ''
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m labdeploy.promotion jobs --image-prefix "$GCP_REGION-docker.pkg.dev/$GCP_PROJECT_ID/$REGISTRY_NAME/$SERVICE"
+          echo "JOB_IMAGES_FILE=$GITHUB_WORKSPACE/job-images.json" >> "$GITHUB_ENV"
       # 14.8: production's own attestor, after the staging provenance was verified and a reviewer approved.
       - name: Attest the image for Binary Authorization
         if: inputs.operation == 'promote'

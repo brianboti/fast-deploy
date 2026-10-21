@@ -233,7 +233,7 @@ def test_scheduler_runs_due_jobs_and_records_outcomes(tmp_path):
     c = Controller(cfg, FakeGitHub(), Store(cfg.database))
     scheduler = Scheduler(c, cfg)
     assert set(scheduler.state) == {"auto_deploy", "watchdog", "backup", "onboarding", "follow", "contracts", "platform_updates", "release_reports", "digest",
-                                    "wake", "job_guard"}
+                                    "wake", "job_guard", "jobs_base"}
     assert all(e["last_run"] is None for e in scheduler.state.values())
     entry = scheduler.run_job("auto_deploy")
     assert entry["last_result"] == {} and entry["last_error"] is None and entry["next_run"] > time.time() + 200

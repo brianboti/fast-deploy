@@ -15,6 +15,8 @@ The release workflow calls it in three places:
     python -m labdeploy.jobimages scan
         the vulnerability summary of each image in job-images.json, under the contract's trust, as for the service's
 
+Production copies the jobs' images with the service's: `python -m labdeploy.promotion jobs` (labdeploy/promotion.py).
+
 Every tool is the one the service's own steps use, downloaded by those steps and found under $RUNNER_TEMP.
 """
 import argparse

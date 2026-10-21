@@ -39,6 +39,7 @@ class Scheduler(threading.Thread):
             # The jobs applications start (docs/ROADMAP.md D66, D70): the clock that wakes them, and the guard of their limits.
             "wake": (controller.wake_tick, lambda: 60, 20),
             "job_guard": (controller.job_guard_tick, lambda: 60, 25),
+            "jobs_base": (controller.base_tick, lambda: 3600, 600),
         }
         self.config = config
         self.state = {name: {"next_run": started + first, "last_run": None, "last_result": None, "last_error": None} for name, (_, _, first) in self.jobs.items()}
