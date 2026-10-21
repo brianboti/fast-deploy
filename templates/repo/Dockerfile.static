@@ -1,0 +1,36 @@
+# Made by Fast Deploy at build time from the contract (runtime: static, docs/ROADMAP.md D55, 22.4); never committed.
+# node:__NODE__-trixie-slim (Debian 13) by its multi-architecture index digest, resolved __RESOLVED__, builds the site; Caddy serves it.
+# tini, the init the platform's images start under (docs/ROADMAP.md 22.2): it forwards SIGTERM to the service and reaps
+# what a chained start leaves behind. Downloaded by version and held to its SHA-256 (labdeploy/pins.py follows both).
+# Caddy, the web server, the release the controller's machine runs, by version and held to its SHA-512.
+FROM node:__NODE__-trixie-slim@__DIGEST__ AS init
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+RUN node -e "fetch('https://github.com/krallin/tini/releases/download/v0.19.0/tini-static-amd64').then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); }).then(b => require('fs').writeFileSync('/tini', Buffer.from(b)))" \
+ && echo "c5b0666b4cb676901f90dfcb37106783c5fe2077b04590973b885950611b30ee  /tini" | sha256sum --check --strict && chmod 0755 /tini \
+ && node -e "fetch('https://github.com/caddyserver/caddy/releases/download/v2.11.7/caddy_2.11.7_linux_amd64.tar.gz').then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); }).then(b => require('fs').writeFileSync('/caddy.tar.gz', Buffer.from(b)))" \
+ && echo "a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7  /caddy.tar.gz" | sha512sum --check --strict && tar -xzf /caddy.tar.gz -C / caddy
+
+# The build: the dependencies with every install script off, then the build script, which writes the site into __OUTPUT__.
+FROM node:__NODE__-trixie-slim@__DIGEST__ AS build
+ENV HOME=/tmp
+__MANAGER__WORKDIR /app
+# Only what passed the platform's deny-list was copied into this build context.
+COPY . .
+__INSTALL____BUILD__
+FROM node:__NODE__-trixie-slim@__DIGEST__
+ENV HOME=/tmp XDG_CONFIG_HOME=/tmp XDG_DATA_HOME=/tmp
+# The site's files only: no node_modules, no source, no package manager (node stays unused in the image).
+# The Caddyfile reads {$PORT} itself, so the single quotes are meant: the shell must not expand it.
+# hadolint ignore=SC2016
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /usr/local/bin/npm /usr/local/bin/npx \
+           /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-v* \
+ && mkdir -p /etc/caddy \
+ && printf '%s\n' '{' '	admin off' '}' ':{$PORT} {' '	root * /srv' '	encode gzip' '	try_files {path} /index.html' '	file_server' '}' > /etc/caddy/Caddyfile
+COPY --from=init /tini /usr/local/bin/tini
+COPY --from=init /caddy /usr/local/bin/caddy
+COPY --from=build /app/__OUTPUT__ /srv
+# A numeric user that does not exist in the image: the site is never served as root.
+USER 65532:65532
+EXPOSE __PORT__
+ENTRYPOINT ["/usr/local/bin/tini", "-g", "--"]
+CMD __CMD__

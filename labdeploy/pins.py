@@ -54,7 +54,10 @@ CONTRACT = "docs/DEVELOPER-CONTRACT.md"
 RUNBOOK = "docs/RUNBOOK.md"
 SETUP = "docs/SETUP.md"
 HANDOFF = "PROJECT_HANDOFF.md"
-WORKFLOWS = "labdeploy/workflows.py"  # the steps it adds to the platform pipeline pin actions too
+WORKFLOWS = "labdeploy/workflows.py"
+PLATFORM_PY = "templates/repo/Dockerfile.platform"
+PLATFORM_NODE = "templates/repo/Dockerfile.node.platform"
+STATIC = "templates/repo/Dockerfile.static"  # the steps it adds to the platform pipeline pin actions too
 # Where actions are pinned by commit: every workflow of this repository, the templates an application's workflows and its
 # drafted CI are made from, and labdeploy/workflows.py. Each mention is `owner/name@<commit> # vX.Y.Z`.
 ACTION_FILES = (".github/workflows/*.yml", "templates/*.yml", "templates/repo/*.yml", WORKFLOWS)
@@ -105,6 +108,7 @@ class Pin:
     stack: str = ""    # gcr: the io.buildpacks.stack.id label the image must carry
     tags: str = ""     # dockerhub: the version tag that names the image's release and Debian, as a regular expression
     notes: str = ""    # pypi, npm: the release notes, {version} standing for the version
+    scripts_ok: bool = False  # npm: the package has an install script that the platform skips (installed with scripts off) and does not need
 
 
 def release_url(repository, asset):
@@ -180,14 +184,27 @@ PINS = (
                 "tofu.tar.gz", "1", "validates every Terraform root in CI, so OpenTofu stays a drop-in", AT_ONCE, paths=(CI,),
                 extra=((RUNBOOK, "with OpenTofu {version} as well as"), (HANDOFF, "then repeats it with OpenTofu {version})"))),
     Pin("caddy", "Caddy", "github", "caddyserver/caddy",
-        ((STARTUP, "CADDY_VERSION={version}"), (STARTUP, "CADDY_SHA512={sha512}")),
-        "serves HTTPS in front of the controller on its machine", MACHINE, line="2",
+        ((STARTUP, "CADDY_VERSION={version}"), (STARTUP, "CADDY_SHA512={sha512}"),
+         (STATIC, "releases/download/v{version}/caddy_{version}_linux_amd64.tar.gz"), (STATIC, 'echo "{sha512}  /caddy.tar.gz"')),
+        "serves HTTPS in front of the controller on its machine, and a static site from the platform's image (runtime: static)",
+        f"{MACHINE}; a static site at {PIPELINE}", line="2",
         asset="caddy_{version}_linux_amd64.tar.gz", sums="caddy_{version}_checksums.txt", algorithm="sha512"),
     Pin("litestream", "Litestream", "github", "benbjohnson/litestream",
         ((STARTUP, "LITESTREAM_VERSION={version}"), (STARTUP, "LITESTREAM_SHA256={sha256}")),
         "copies the controller's database to Cloud Storage, at most a minute behind", MACHINE, line="0.5",
         line_note="Litestream's configuration and replica format changed between its lines (0.3 to 0.5).",
         asset="litestream-{version}-linux-x86_64.tar.gz", sums="checksums.txt"),
+    # tini, the init of the platform's images (docs/ROADMAP.md 22.2): downloaded in each image's first stage and held to its SHA-256.
+    Pin("tini", "tini", "github", "krallin/tini",
+        tuple(place for path in (PLATFORM_PY, PLATFORM_NODE, STATIC)
+              for place in ((path, "releases/download/v{version}/tini-static-amd64"), (path, 'echo "{sha256}  /tini"'))),
+        "starts every image the platform builds, so SIGTERM reaches the service and a chained start still stops cleanly", PIPELINE,
+        line="0", asset="tini-static-amd64", sums="tini-static-amd64.sha256sum"),
+    # Nginx, the proxy sidecar for a service that binds loopback (D51, 22.1), as Google's guide runs it in front of a container.
+    Pin("nginx", "nginx:1-trixie", "dockerhub", "nginx:1-trixie",
+        (("labdeploy/release.py", 'NGINX_IMAGE = "nginx@{digest}"  # {release}, Debian {debian}'),),
+        "takes a loopback-bound service's requests on the ingress port and forwards them to it (proxy: true)", PIPELINE,
+        tags=r"(?P<release>\d+\.\d+\.\d+)-(?P<debian>[a-z]+)"),
     buildpacks("builder-22", "buildpacks builder (Ubuntu 22.04)", "buildpacks/builder:google-22", "google.22",
                "3.11|3.12)\n                BUILDER=gcr.io/buildpacks/builder@{digest}"),
     buildpacks("run-22", "buildpacks run image (Ubuntu 22.04)", "buildpacks/google-22/run:latest", "google.22",
@@ -210,6 +227,24 @@ PINS = (
         "makes a Node.js 22 service's lock on the controller's machine (Node 22's own npm cannot hold back new releases)", CONTROLLER,
         line="11", line_note="npm 12 blocks dependency scripts by default and no Node.js line bundles it yet.",
         notes="https://github.com/npm/cli/releases/tag/v{version}"),
+    # The other package managers (docs/ROADMAP.md 21.1), each from its npm package at the integrity the registry published,
+    # installed with scripts off in the pipeline and in the platform's Node.js image; a new major waits for a person.
+    Pin("pnpm", "pnpm", "npm", "pnpm", ((SCAFFOLD, '    "pnpm": ("{version}", "{integrity}"),  # published {released}'),),
+        "installs a service whose lockfile is pnpm-lock.yaml, frozen and with every install script off, in the pipeline and in the platform's image",
+        PIPELINE, line="12", line_note="pnpm's majors change the lockfile format and the defaults of its settings.",
+        notes="https://github.com/pnpm/pnpm/releases/tag/v{version}", scripts_ok=True),
+    Pin("yarn", "Yarn", "npm", "@yarnpkg/cli-dist", ((SCAFFOLD, '    "yarn": ("{version}", "{integrity}"),  # published {released}'),),
+        "installs a service whose yarn.lock is Yarn 2 or later's, immutable and with scripts off, in the pipeline and in the platform's image",
+        PIPELINE, line="4", line_note="Yarn's majors change the lockfile format and the settings of .yarnrc.yml.",
+        notes="https://github.com/yarnpkg/berry/releases/tag/%40yarnpkg%2Fcli%2F{version}"),
+    Pin("yarn1", "Yarn 1", "npm", "yarn", ((SCAFFOLD, '    "yarn1": ("{version}", "{integrity}"),  # published {released}'),),
+        "installs a service whose yarn.lock is Yarn 1's, frozen and with scripts off, in the pipeline and in the platform's image",
+        PIPELINE, line="1", line_note="Yarn 1 is in maintenance; its lockfile format is the one a `# yarn lockfile v1` file carries.",
+        notes="https://github.com/yarnpkg/yarn/releases/tag/v{version}", scripts_ok=True),
+    Pin("bun", "Bun", "npm", "@oven/bun-linux-x64", ((SCAFFOLD, '    "bun": ("{version}", "{integrity}"),  # published {released}'),),
+        "installs a service whose lockfile is bun.lock, frozen and with scripts off, in the pipeline and in the platform's image (Bun's Linux x64 binary)",
+        PIPELINE, line="1", line_note="Bun's majors are its breaking releases.",
+        notes="https://github.com/oven-sh/bun/releases/tag/bun-v{version}"),
     # The actions the templates use (tests/test_pins.py keeps this list equal to theirs and to .github/dependabot.yml's ignore list).
     action("actions/checkout", "7", "checks out the code in every workflow, an application's own and its drafted CI included"),
     action("actions/setup-python", "7", "installs Python in the pipeline, CI, promotion and an application's drafted CI"),
@@ -630,16 +665,16 @@ def from_npm(pin, current, web, now):
         if meta.get("deprecated") or published is None:
             continue
         if now - published < COOLDOWN:
-            found.waiting.append((f"npm {version}", published, pin.notes.format(version=version)))
+            found.waiting.append((f"{pin.title} {version}", published, pin.notes.format(version=version)))
             continue
         scripts = meta.get("scripts") or {}
         if meta.get("engines") != engines:
-            return held(found, f"npm {version} asks for {meta.get('engines')} where {current['version']} asked for {engines}: check it still runs on Node.js 22")
-        if meta.get("hasInstallScript") or any(scripts.get(name) for name in ("preinstall", "install", "postinstall")):
-            return held(found, f"npm {version} has an install script, and the lock container installs npm with scripts off")
+            return held(found, f"{pin.title} {version} asks for {meta.get('engines')} where {current['version']} asked for {engines}: check it still runs on Node.js 22")
+        if not pin.scripts_ok and (meta.get("hasInstallScript") or any(scripts.get(name) for name in ("preinstall", "install", "postinstall"))):
+            return held(found, f"{pin.title} {version} has an install script, and the platform installs {pin.title} with scripts off")
         integrity = (meta.get("dist") or {}).get("integrity") or ""
         if not re.fullmatch(FIELDS["integrity"], integrity):
-            return held(found, f"the registry publishes no SHA-512 integrity for npm {version}")
+            return held(found, f"the registry publishes no SHA-512 integrity for {pin.title} {version}")
         found.status, found.released, found.label = "update", published, version
         found.new = {"version": version, "integrity": integrity, "released": day(published)}
         found.sources = [("release notes", pin.notes.format(version=version)), ("the registry's metadata", f"{api}/{version}")]

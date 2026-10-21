@@ -3,6 +3,7 @@ ladders and refusals, the lock the platform makes, the pipeline and its dependen
 test runs npm or touches the network; the drafted health test runs on the Node.js of the machine when there is one."""
 import datetime
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -191,7 +192,8 @@ def test_npm_ranges_are_read_like_npm_reads_them():
 # ---- 18.2 the packages (D42)
 def test_the_repositorys_lockfile_is_used_and_checked_entry_by_entry():
     result = read(repo())
-    assert result["lock"] == {"action": "use", "runtime": "node-http", "from": "package-lock.json", "file": "package-lock.json"}
+    assert {key: result["lock"][key] for key in ("action", "runtime", "from", "file", "manager")} == {
+        "action": "use", "runtime": "node-http", "from": "package-lock.json", "file": "package-lock.json", "manager": "npm"}
     assert choice(result, "Dependencies")["value"].startswith("package-lock.json, installed with npm ci and every install script off")
     package = json.loads(repo()["package.json"])
     shrinkwrap = read(repo(files={"npm-shrinkwrap.json": lockfile(package)}))
@@ -229,18 +231,20 @@ def test_lockfiles_that_npm_ci_cannot_trust_or_use_are_refused():
     stale["packages"][""]["dependencies"] = {"express": "^4.0.0"}
     assert read(repo(files={"package-lock.json": json.dumps(stale)}))["lock"]["action"] == "lock"  # locked again by the platform since 1.22.0 (20.4)
     assert refused(read(repo(deps={"mylib": "github:lab/mylib", "express": "^4"})), "through a local path, a git repository or a URL")
-    assert refused(read(repo(deps={"shared": "workspace:*"})), "through a local path")
+    assert refused(read(repo(deps={"shared": "workspace:*"})), "through workspace: or catalog:, and no workspace lockfile resolves them")
     assert refused(read(repo(extra={"bundleDependencies": ["express"]})), "bundleDependencies")
 
 
-def test_other_package_managers_are_refused_with_the_conversion():
-    yarn = read(repo(lock=False, files={"yarn.lock": "# yarn lockfile v1\n"}))
-    assert refused(yarn, "Yarn's lockfile") and "docs/DEVELOPER-CONTRACT.md" in yarn["refusals"][0]["fix"]
+def test_other_package_managers_install_their_own_lockfiles_since_phase_21():
+    # pnpm, Yarn and Bun lockfiles are installed by their own manager since 1.23.0 (21.1, tests/test_phase21.py); what stays refused:
+    # two lockfiles, Bun's old binary format, and a lockfile the manager would install without a registry check.
     assert refused(read(repo(files={"pnpm-lock.yaml": "lockfileVersion: '9.0'\n"})), "more than one lockfile")
-    assert refused(read(repo(lock=False, files={"bun.lock": "{}"})), "Bun's lockfile")
+    assert refused(read(repo(lock=False, files={"bun.lockb": "\x00\x01"})), "Bun's old binary lockfile")
+    yarn = read(repo(lock=False, files={"yarn.lock": "# yarn lockfile v1\n\nexpress@^4.21.2:\n  version \"4.21.2\"\n  resolved \"https://registry.yarnpkg.com/express/-/express-4.21.2.tgz#abc\"\n"}))
+    assert refused(yarn, "holds packages Yarn 1 would install without checking them against the npm registry: express has no integrity hash")
     two = read(repo(extra={"packageManager": "yarn@4.5.0", "engines": {"npm": ">=10"}}))
     assert refused(two, "names yarn in packageManager but npm in engines")
-    assert any("packageManager names pnpm" in note for note in read(repo(extra={"packageManager": "pnpm@9.1.0"}))["notes"])
+    assert any("packageManager names pnpm, but the lockfile is package-lock.json, npm's" in note for note in read(repo(extra={"packageManager": "pnpm@9.1.0"}))["notes"])
 
 
 def test_without_a_lockfile_the_platform_locks_it():
@@ -255,10 +259,12 @@ def test_install_scripts_run_only_for_packages_allow_scripts_pins_by_version():
     packages = {"express": {}, "sharp": {"hasInstallScript": True}, "esbuild": {"hasInstallScript": True}, "bcrypt": {"hasInstallScript": True}}
     deps = {name: "^1.2.3" for name in packages}
     result = read(repo(deps=deps, packages=packages, extra={"allowScripts": {"sharp@1.2.3": True, "esbuild": True, "bcrypt@9.9.9": True}}))
-    assert result["spec"].build.scripts == ["sharp@1.2.3"]
-    assert choice(result, "Install scripts")["value"] == "run after the install, each by name and version: sharp@1.2.3"
+    # bcrypt@1.2.3 (below 5.1) and sharp@1.2.3 (below 0.33) are in the platform's table of packages that need their script (D53, since 1.23.0):
+    # drafted for the merge to approve, whatever allowScripts says; esbuild has no table entry and no version in allowScripts.
+    assert result["spec"].build.scripts == ["bcrypt@1.2.3", "sharp@1.2.3"]
+    assert choice(result, "Install scripts")["value"].startswith("run after the install, each by name and version: bcrypt@1.2.3, sharp@1.2.3; from the platform's table")
     assert any("approves esbuild without an exact version" in note for note in result["notes"])
-    assert any("bcrypt@1.2.3" in note and "esbuild@1.2.3" in note for note in result["notes"] if note.startswith("These packages have install scripts"))
+    assert any("esbuild@1.2.3" in note and "bcrypt" not in note for note in result["notes"] if note.startswith("These packages have install scripts"))
     nothing = read(repo())
     assert nothing["spec"].build.scripts == [] and choice(nothing, "Install scripts")["value"] == "none run: no package has one"
 
@@ -278,15 +284,16 @@ def test_scripts_a_cloud_run_service_never_needs_are_left_out_and_said_why():
 @pytest.mark.parametrize(("start", "fragment", "fix"), [
     # nodemon, node-dev, pm2 and forever on a file are rewritten to node since 1.22.0 (20.4, test_phase20); with --exec they still refuse.
     ("nodemon --exec babel-node server.js", "restarts on file changes (nodemon)", "start the service with node itself"),
-    ("ts-node src/index.ts", "transpiles TypeScript at start (ts-node)", "commit the built output"),
-    ("tsx watch src/index.ts", "transpiles TypeScript at start (tsx)", "commit the built output"),
+    # ts-node and tsx are rewritten to the built file since 1.23.0 (21.3) when typescript is a dependency (tests/test_phase21.py); without it:
+    ("ts-node src/index.ts", "starts src/index.ts, TypeScript that needs a build, and typescript is not among the dependencies", "add typescript"),
+    ("tsx watch src/index.ts", "starts src/index.ts, TypeScript that needs a build, and typescript is not among the dependencies", "add typescript"),
     ("node --watch server.js", "watches or debugs (--watch)", "start the service with node itself"),
     ("node --inspect=0.0.0.0 server.js", "watches or debugs (--inspect)", "start the service with node itself"),
     ("node -r ts-node/register src/index.ts", "transpiles at start", "commit the built output"),
     ("vite", "runs Vite's development server", "the platform serves web services"),
     ("next start", "runs Next.js, which needs a build", "commit the built output"),
     ("concurrently \"node api.js\" \"node worker.js\"", "starts several processes at once", "start the service with node itself"),
-    ("node migrate.js && node server.js", "chains commands through a shell", "start the service with node itself"),
+    ("npm run migrate && node server.js", "chains commands through a shell", "start the service with node itself"),  # node-only chains run since 1.24.0 (D49)
     ("sh -c 'node server.js'", "runs a shell", "start the service with node itself"),
     ("pm2-runtime ecosystem.config.js", "process manager", "start the service with node itself"),
     ("npm run serve", "runs npm, not node", "start the service with node itself"),
@@ -294,7 +301,7 @@ def test_scripts_a_cloud_run_service_never_needs_are_left_out_and_said_why():
 def test_a_start_script_that_watches_transpiles_or_chains_is_refused(start, fragment, fix):
     result = read(repo(start=start))
     assert result["spec"] is None
-    item = next(item for item in result["refusals"] if "scripts.start" in item["problem"])
+    item = next(item for item in result["refusals"] if item["file"] == "package.json")
     assert fragment in item["problem"] and item["fix"].startswith(fix), item
     assert len([item for item in result["refusals"] if item["file"] == "package.json"]) == 1  # one refusal for one start script
 
@@ -314,14 +321,17 @@ def test_the_start_ladder_runs_node_on_a_file_of_the_repository():
     assert any("scripts.prestart" in note for note in prestart["notes"])
 
 
-def test_a_service_that_needs_a_build_is_refused_until_the_later_item():
+def test_a_service_that_needs_a_build_gets_a_build_stage_since_phase_21():
+    # Since 1.23.0 (21.2, 21.3; tests/test_phase21.py) a build script makes the missing file, Next.js builds, and TypeScript is built
+    # with tsc (or stripped when tsconfig says erasableSyntaxOnly). What stays refused: a missing file with nothing that makes it,
+    # and TypeScript without typescript among the dependencies.
     built = read(repo(start="node dist/index.js", extra={"scripts": {"start": "node dist/index.js", "build": "tsc"}}))
-    assert refused(built, "starts dist/index.js, which is not in the repository: the service needs a build first")
-    assert refused(read(repo(deps={"next": "^15.0.0", "express": "^4"})), "uses Next.js, which needs a build")
-    assert refused(read(repo(start="node src/index.ts", files={"src/index.ts": SERVER, ".nvmrc": "22\n"})), "Node.js 22 cannot run without a build")
-    typescript = read(repo(start="node src/index.ts", files={"src/index.ts": SERVER, ".nvmrc": "24\n"}))
-    assert not typescript["refusals"] and any("type stripping" in note for note in typescript["notes"])
-    # A build script for something else (Sophia's builds its browser extension) is noted, not refused.
+    assert not built["refusals"] and built["spec"].build.entrypoint == "node dist/index.js" and "with a build stage" in choice(built, "Build")["value"]
+    assert refused(read(repo(start="node dist/index.js")), "starts dist/index.js, which is not in the repository: the service needs a build first, and nothing says how")
+    assert refused(read(repo(start="node src/index.ts", files={"src/index.ts": SERVER, ".nvmrc": "22\n"})), "typescript is not among the dependencies")
+    stripped = read(repo(start="node src/index.ts", files={"src/index.ts": SERVER, ".nvmrc": "24\n", "tsconfig.json": '{"compilerOptions": {"erasableSyntaxOnly": true}}'}))
+    assert not stripped["refusals"] and any("type stripping" in note for note in stripped["notes"]) and stripped["spec"].build.entrypoint == "node src/index.ts"
+    # A build script for something else (Sophia's builds its browser extension) is noted, not refused, and not run.
     other = read(repo(extra={"scripts": {"start": "node server.js", "build": "node tools/build-extension.mjs"}}))
     assert not other["refusals"] and any("build script" in note and "is not run" in note for note in other["notes"])
     # The repository's own Dockerfile builds whatever it needs.
@@ -362,9 +372,13 @@ def test_a_server_must_read_port_and_listen_on_every_interface():
     literal = read(repo(files={"server.js": "const http = require('http');\nhttp.createServer(() => {}).listen(3000);\n"}))
     assert not literal["refusals"] and literal["spec"].port == 3000  # port: 3000 in the contract since 1.22.0 (20.4): --port sets PORT alike
     loopback = read(repo(files={"server.js": "require('http').createServer().listen(process.env.PORT, '127.0.0.1');\n"}))
-    assert refused(loopback, "listens on 127.0.0.1, which Cloud Run cannot reach")
+    # Since 1.24.0 (D51, 22.1) a loopback binder gets the proxy sidecar; a contract that says proxy: false keeps the refusal.
+    assert not loopback["refusals"] and loopback["spec"].proxy and choice(loopback, "Proxy")["from"] == "server.js"
+    refused_loopback = read(repo(files={"server.js": "require('http').createServer().listen(process.env.PORT, '127.0.0.1');\n",
+                                        "platform.yaml": "name: svc\nruntime: node-http\nnode: '24'\nproxy: false\n"}))
+    assert refused(refused_loopback, "listens on 127.0.0.1, which Cloud Run cannot reach")
     fastify = read(repo(deps={"fastify": "^5.0.0"}, files={"server.js": "const app = require('fastify')();\napp.listen({ port: process.env.PORT || 3000 });\n"}))
-    assert refused(fastify, "starts Fastify without host: '0.0.0.0'")
+    assert fastify["spec"].proxy and any("starts Fastify without host" in note for note in fastify["notes"])
     good = read(repo(deps={"fastify": "^5.0.0"}, files={"server.js": "const app = require('fastify')();\napp.listen({ port: process.env.PORT || 3000, host: '0.0.0.0' });\n"}))
     assert not good["refusals"] and good["spec"].port == 3000
     destructured = read(repo(files={"server.js": "const { PORT = 8081 } = process.env;\nrequire('http').createServer().listen(PORT);\n"}))
@@ -432,9 +446,12 @@ def test_the_tests_ladder_says_none_plainly():
 
 
 def test_workspaces_tokens_and_committed_installs():
-    workspace = read(repo(extra={"workspaces": ["packages/*"]}, files={"packages/api/package.json": "{}", "packages/web/package.json": "{}"}))
-    assert refused(workspace, "is a workspace of several packages (packages/api, packages/web)") and "path packages/api" in workspace["refusals"][0]["fix"]
-    assert refused(read(repo(files={"turbo.json": "{}"})), "is a workspace")
+    workspace = read(repo(start=None, extra={"workspaces": ["packages/*"]}, files={"packages/api/package.json": "{}", "packages/web/package.json": "{}", "server.js": None}))
+    assert refused(workspace, "is a workspace of several packages (packages/api, packages/web) and starts nothing itself") and "path packages/api" in workspace["refusals"][0]["fix"]
+    # A root that starts something itself is the service, its members installed with it (21.4, since 1.23.0); turbo.json alone refuses nothing.
+    root_service = read(repo(extra={"workspaces": ["packages/*"]}, files={"packages/api/package.json": "{}"}))
+    assert not root_service["refusals"] and any("the service itself: the members install with it" in note for note in root_service["notes"])
+    assert not read(repo(files={"turbo.json": "{}"}))["refusals"]
     token = read(repo(files={".npmrc": "//registry.npmjs.org/:_authToken=npm_abcdefghijklmnop\n"}))
     assert refused(token, "holds a literal registry token") and "rotate" in token["refusals"][0]["fix"]
     variable = read(repo(files={".npmrc": "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n"}))
@@ -444,11 +461,16 @@ def test_workspaces_tokens_and_committed_installs():
     assert {item["file"] for item in committed["ignored"]} >= {"node_modules", "dist"} and not committed["refusals"]
 
 
-def test_a_package_in_a_folder_of_a_workspace_is_refused_until_workspaces_are_supported():
+def test_a_package_in_a_folder_of_a_workspace_is_one_service_since_phase_21():
+    # Its own lockfile first (as before); without one, the root's lockfile that lists it (21.4, tests/test_phase21.py).
     files = {"package.json": json.dumps({"name": "mono", "workspaces": ["apps/*"]}), "apps/api/server.js": SERVER}
     package = {"name": "api", "version": "1.0.0", "scripts": {"start": "node server.js"}, "dependencies": {"express": "^4"}}
     files.update({"apps/api/package.json": json.dumps(package), "apps/api/package-lock.json": lockfile(package)})
-    assert refused(read(files, "apps/api"), "is a package of the repository's workspace")
+    own = read(files, "apps/api")
+    assert not own["refusals"] and own["lock"]["from"] == "apps/api/package-lock.json" and own["spec"].build.context == "service"
+    del files["apps/api/package-lock.json"]
+    assert refused(read(files, "apps/api"), "does not list apps/api as a package of the workspace") is False  # no root lockfile: the platform locks it
+    assert read(files, "apps/api")["lock"]["action"] == "lock"
 
 
 def test_needs_sqlite_egress_and_a_python_repository_with_front_end_tooling():
@@ -585,11 +607,11 @@ def test_the_node_steps_are_pinned_and_run_for_node_services_only():
         setup = next(step for step in steps if step.get("id") == "app-node")
         assert setup["uses"] == pins.mentions("actions/setup-node")[0].split(" # ")[0]  # by commit, as labdeploy/pins.py reads it
         assert setup["with"] == {"node-version": "${{ steps.policy.outputs.node }}", "package-manager-cache": False}
-        assert setup["if"] == "steps.policy.outputs.runtime == 'node-http'"
+        assert setup["if"] == "steps.policy.outputs.js == 'true'"  # node-http and static (since 1.24.0)
         for name in ("Run unit tests", "Audit Python dependencies"):
             assert "steps.policy.outputs.runtime == 'python-http'" in next(step for step in steps if step.get("name") == name)["if"]
         for name in ("Audit Node.js dependencies", "Install Node.js dependencies with their scripts off", "Run unit tests (Node.js)"):
-            assert "steps.policy.outputs.runtime == 'node-http'" in next(step for step in steps if step.get("name") == name)["if"]
+            assert "steps.policy.outputs.js == 'true'" in next(step for step in steps if step.get("name") == name)["if"]
         # The audit reads the lockfile before any package is installed or run; the build comes last.
         order = [names.index(name) for name in ("Scan the checkout for secrets", "app-node", "Audit Node.js dependencies",
                                                 "Install Node.js dependencies with their scripts off", "Run unit tests (Node.js)", "Build without cloud credentials")]
@@ -605,8 +627,8 @@ def test_the_node_steps_are_pinned_and_run_for_node_services_only():
         tests = next(step for step in steps if step.get("name") == "Run unit tests (Node.js)")
         assert tests["env"]["SCRIPTS"] == "${{ steps.policy.outputs.scripts }}" and 'npm rebuild --ignore-scripts=false "${PACKAGES[@]}"' in tests["run"]
         assert "npm test" in tests["run"] and "--test-reporter=junit" in tests["run"] and "found no test files" in tests["run"]
-        for forbidden in ("cache: npm", "cache: 'npm'", "npm install --", "npm start"):
-            assert forbidden not in text, forbidden
+        for forbidden in ("cache: npm", "cache: 'npm'", r"(?<![a-z])npm install --", "npm start"):  # pnpm install is its own frozen install (21.1)
+            assert not re.search(forbidden, text), forbidden
     central = Path(".github/workflows/deploy.yml").read_text()
     assert central_deploy(Path("templates/deploy-gcp.yml").read_text()) == central
     assert yaml.safe_load(central)["env"]["PLATFORM_NODE_LOCK"] == "platform/apps/${{ inputs.application }}/package-lock.json"
@@ -633,7 +655,7 @@ def test_the_build_installs_the_platforms_lock_and_keeps_buildpacks_for_reviewed
     build = next(step for step in steps if step.get("name") == "Build without cloud credentials")
     assert build["env"]["RUNTIME"] == "${{ steps.policy.outputs.runtime }}" and build["env"]["TRUST"] == "${{ steps.policy.outputs.trust }}"
     run = build["run"]
-    assert 'cp "$PLATFORM_NODE_LOCK" "$LOCK_FILE"' in run and 'LOCK_FILE="$APP_DIR/npm-shrinkwrap.json"' in run
+    assert 'cp "$PLATFORM_NODE_LOCK" "$LOCK_FILE"' in run and 'LOCK_FILE="app/$LOCK_DIR/$LOCKFILE"' in run  # the manager's lockfile, or the root's (21.1, 21.4)
     assert 'if [ "$RUNTIME" = "node-http" ] && [ "$TRUST" != "reviewed" ]' in run and "build reviewed code only" in run
     assert '--env "GOOGLE_NODEJS_VERSION=$NODE_VERSION.x.x"' in run and 'BUILDS_ON="node-$NODE_VERSION"' in run
     assert 'python3 - "$DOCKERFILE_USED" "$LOCK_FILE" "$LOCK_SOURCE"' in run  # the provenance records the lockfile that was installed
@@ -757,22 +779,24 @@ def node_spec(**build):
 
 
 def test_the_platforms_node_dockerfile():
+    # Since 1.24.0 (22.2) every platform image has an init stage (tini) and installs in a build stage, npm included.
     text = scaffold.platform_dockerfile(node_spec(scripts=["sharp@0.34.4"]), True, "package-lock.json")
     assert text.startswith("# Made by Fast Deploy at build time") and f"FROM {scaffold.node_base_image('24')}\n" in text
-    assert "ENV NODE_ENV=production HOME=/tmp\n" in text and "COPY package.json package-lock.json ./\n" in text
-    assert "RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm rebuild sharp@0.34.4 && npm cache clean --force \\\n" in text
+    assert "ENV NODE_ENV=production HOME=/tmp\n" in text and "COPY --from=init /tini /usr/local/bin/tini\n" in text
+    assert "RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \\\n && npm rebuild --ignore-scripts=false sharp@0.34.4\n" in text
+    assert 'ENTRYPOINT ["/usr/local/bin/tini", "-g", "--"]' in text
     # Live 2026-10-19: node:24-slim (Debian 12) carried perl's fixable critical findings and npm's bundled libraries three
     # fixable high ones, so the gate stopped every Node.js service nobody had reviewed. Debian 13, and no package manager left.
     assert "-trixie-slim@" in scaffold.node_base_image("24") and all("trixie" in comment for comment in Path("labdeploy/scaffold.py").read_text().split(
         "NODE_IMAGES = {", 1)[1].split("}", 1)[0].splitlines()[1:])
-    removed = text.split("npm cache clean --force", 1)[1].split("COPY . .", 1)[0]
+    removed = text.split("# No package manager stays in the image", 1)[1].split("USER", 1)[0]
     for path in ("/usr/local/lib/node_modules/npm", "/usr/local/lib/node_modules/corepack", "/usr/local/bin/npm", "/usr/local/bin/npx",
                  "/usr/local/bin/corepack", "/usr/local/bin/yarn", "/usr/local/bin/yarnpkg", "/opt/yarn-v*"):
         assert f" {path}" in removed
-    assert text.index("RUN npm ci") < text.index("COPY . .") < text.index("USER 65532:65532") and "EXPOSE 8787\n" in text
+    assert text.index("COPY . .") < text.index("RUN npm ci") < text.index("USER 65532:65532") and "EXPOSE 8787\n" in text
     assert text.rstrip().endswith('CMD ["node", "server/index.mjs"]') and "npm start" not in text.split("never npm start")[0]
     plain = scaffold.platform_dockerfile(node_spec(), True, "npm-shrinkwrap.json")
-    assert "COPY package.json npm-shrinkwrap.json ./" in plain and "npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm cache clean" in plain
+    assert "RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund\n" in plain
     assert not [finding for finding in dockerpolicy.check(plain, "unknown")]  # the platform's own image meets its own policy
 
 
@@ -970,7 +994,7 @@ def test_compose_hono_and_hapi_say_where_a_node_service_listens():
            "serve({ fetch: app.fetch, port: Number(process.env.PORT) || 8788 });\n"
     assert read(repo(deps={"hono": "^4", "@hono/node-server": "^1"}, files={"server.js": hono}))["spec"].port == 8788
     hapi = "const Hapi = require('@hapi/hapi');\nconst server = Hapi.server({ port: process.env.PORT || 3000, host: 'localhost' });\n"
-    assert refused(read(repo(deps={"@hapi/hapi": "^21"}, files={"server.js": hapi})), "listens on localhost")
+    assert read(repo(deps={"@hapi/hapi": "^21"}, files={"server.js": hapi}))["spec"].proxy  # the proxy sidecar since 1.24.0 (D51, 22.1)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed here")

@@ -10,9 +10,10 @@ import logging
 
 log = logging.getLogger("labdeploy")
 
-PASSED = {"passed", "passed_in_earlier_release"}
+PASSED = {"passed", "passed_in_earlier_release", "reported"}
 CHECK_NAMES = (("tests", "tests"), ("dependency_scan", "library audit"), ("health", "health check"))
 CHECK_WORDS = {"passed": "passed", "passed_in_earlier_release": "passed in an earlier release", "skipped_by_config": "skipped by its settings",
+               "reported": "ran and reported, not a gate (tests: report)", "reported_by_config": "pending (tests: report)",
                "failed": "failed", "release_failed_health_unconfirmed": "failed", "pending": "pending", "queued": "pending",
                "in_progress": "running", "not_run": "not run", "unconfirmed": "not confirmed", "interrupted": "interrupted", "cancelled": "cancelled"}
 # The deploy workflow's steps in plain words, matched by a piece of the step's name, in the order they run.
