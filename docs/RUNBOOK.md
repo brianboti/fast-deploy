@@ -303,8 +303,9 @@ is no open SSH port: `scripts/machine.sh` goes through Identity-Aware Proxy, and
 **Change its configuration.** Open `https://MACHINE/settings` (the machine's address or DNS name, as in Claude's
 connector) and sign in with an operator token whose principal has `applications: ["*"]` and `can_deploy`; anyone else is
 refused. The sign-in lasts an hour (`settings_session_seconds`), and a restart, a rotated token or a removed principal ends
-it. Five tabs: Applications (each application's cost ceiling, auto-deploy, auto-merge, bake, viewers and infrastructure
-settings; for one onboarding registered they go under `application_settings`), Platform (the auto-deploy interval, the
+it. Five tabs: Applications (a list, and each application's own page with its cost ceiling, auto-deploy, auto-merge, bake,
+viewers, infrastructure settings and links to where its contract, Terraform root and secrets live; for one onboarding
+registered the switches go under `application_settings`), Platform (the auto-deploy interval, the
 watchdog webhook, the spend caps you recorded, backups, `platform_updates`), People (principals, a new token shown once),
 Production (reviewers, rollout, bake) and Advanced (the whole file; the only place for `database`, `oauth` and
 `github_app`, which need `restart`). Every save shows the change as a diff first and writes nothing until you confirm;
