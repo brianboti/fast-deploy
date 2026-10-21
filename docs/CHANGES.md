@@ -1,3 +1,22 @@
+# 1.29.1: the pipeline may create an objective's log-based metrics
+
+Found on 2026-10-21 by production's first apply of 1.26.0 to 1.29.0 (run 39639153714), approved in chat: the apply
+identity was refused "Permission 'logging.logMetrics.create' denied" for the two log-based metrics production's objective
+now counts (users' requests and their server errors, D58). `monitoring.admin` does not cover them, and staging never
+needed them because only production has an objective. The rest of that apply went through: every alert's severity and
+words, the new "requests refused" alert, and the old log-line alert removed. What waits is the objective's new counting
+and its three burn-rate alerts; production keeps its earlier objective until then.
+
+The foundation's narrow log role (`labDeployLogAlertWriter`, already the apply identity's for log-based alert policies)
+gains the five `logging.logMetrics` permissions; still no sinks, views, buckets or exclusions. A test holds it.
+
+Upgrade steps: merge; apply the foundation in production (`scripts/apply-foundation.sh fast-deploy-prod-c602 production`)
+and, for the same role everywhere, in staging; then re-run the failed production job of the Infrastructure apply and
+approve it.
+
+Tests: 1,042 pass (one new; the older test of the role widened to the same ten permissions); ruff clean; `terraform validate` passes for the foundation.
+
+
 # 1.29.0: faster starts and the failures nobody saw (Phase 25)
 
 From the review of 2026-10-21 (`docs/RESEARCH-2026-10-21-scaling.md`), which asked which scaling algorithms are worth
