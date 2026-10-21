@@ -674,6 +674,9 @@ class GitHub:
         if plan.get("bake_seconds", DEFAULT_BAKE_SECONDS) != DEFAULT_BAKE_SECONDS:
             # Sent only when the operator changed it, for the same reason: a workflow pinned before 1.9.0 has no such input.
             inputs["bake_seconds"] = str(int(plan["bake_seconds"]))
+        if plan.get("base"):
+            # The application the jobs build on (docs/ROADMAP.md D69), sent only then: a workflow pinned before 1.31.0 has no such input.
+            inputs["base"] = json.dumps(plan["base"], sort_keys=True)
         if central_of(app):
             # The platform repository's pipeline (docs/ROADMAP.md D33): which application, where its source is, and the
             # platform commit whose apps/<id>/platform.yaml the plan was made from.

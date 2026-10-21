@@ -513,6 +513,9 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
                  "digest": newest_digest(everything), "trust": controller.trust_numbers(principal, 30)["overall"],
                  "pricing_verified": PRICING["verified"], "started_at": datetime.datetime.fromtimestamp(started, datetime.UTC).isoformat(timespec="seconds"),
                  "uptime_seconds": int(time.time() - started)}
+        jobs = controller.jobs_for(principal)
+        if jobs:  # the clock's wakes and the guard's cancels (docs/ROADMAP.md D66, D70), once there are any
+            found["jobs"] = jobs
         if not everything:
             found["hidden"] = HIDDEN_STATUS
         return chat.attach(chat.controller, found)

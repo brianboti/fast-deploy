@@ -16,7 +16,9 @@ from .contract import Contracts, contract_path
 from .cost import domain_floor, estimate, findings
 from .github import explain
 from .infra import BOOTSTRAP_IMAGE, PRODUCTION_ROOTS, PRODUCTION_WORKFLOWS, app_root, root_jobs
-from .models import AppSpec, containment, enforce, needs_env, parse_contract, parse_spec, spec_hash
+from .jobimages import base_of
+from .jobs import Keeper
+from .models import AppSpec, containment, enforce, job_egress, needs_env, parse_contract, parse_spec, spec_hash
 from .rightsize import SETTINGS, apply_settings
 from .status import TERMINAL, advice, diagnose, release_phases, summarize
 from .updates import PlatformUpdates
@@ -472,6 +474,12 @@ def release_approval(plan, requested_by=None):
     if plan.get("containment"):
         held = plan["containment"]
         block["containment"] = {key: held.get(key) for key in ("trust", "egress", "execution_environment", "vulnerability_gate")}
+    if plan.get("jobs"):
+        # The jobs the service starts (docs/ROADMAP.md D64): their limits and worst case, and the test image they build on.
+        block["jobs"] = plan["jobs"]
+        block["cost"]["jobs_ceiling_usd_month"] = cost.get("jobs_ceiling_usd_month")
+        if plan.get("base"):
+            block["base"] = plan["base"]
     if plan.get("contract"):
         # An application taken as it is (docs/ROADMAP.md 13.1) also names its source and the platform commit whose contract describes it.
         contract = plan["contract"]
@@ -532,6 +540,7 @@ class Controller:
         self.started = time.time()
         self.contracts = Contracts(self)
         self.updates = PlatformUpdates(self)
+        self.jobs = Keeper(self, observer, config)  # the clock and the guard of the jobs applications start (docs/ROADMAP.md D66, D70)
         self.refresh_registry()
 
     def refresh_registry(self):
@@ -572,6 +581,23 @@ class Controller:
         if not isinstance(jobs, dict) or "*" in principal.applications:
             return jobs
         return {name: {"last_run": entry.get("last_run"), "next_run": entry.get("next_run")} for name, entry in jobs.items()}
+
+    def jobs_for(self, principal):
+        """The clock's wakes and the guard's newest cancels (docs/ROADMAP.md D66, D70) for the applications this identity may see."""
+        snapshot = self.jobs.snapshot()
+        if "*" not in principal.applications:
+            visible = set(self.visible_apps(principal))
+            snapshot = {"wakes": {key: value for key, value in snapshot["wakes"].items() if key.split(" (", 1)[0] in visible},
+                        "cancels": [item for item in snapshot["cancels"] if item.get("application") in visible]}
+        return snapshot if snapshot["wakes"] or snapshot["cancels"] else None
+
+    def wake_tick(self):
+        """The platform's clock (D66): POST wake.path to each released application whose interval has passed."""
+        return self.jobs.wake_tick()
+
+    def job_guard_tick(self):
+        """The guard (D70): cancel any job run beyond its contract's limits."""
+        return self.jobs.guard_tick()
 
     def drift_for(self, principal):
         """The weekly drift check's result (drift_status) as this identity may see it: for one that sees only some
@@ -1696,9 +1722,41 @@ class Controller:
         if image and image.startswith(prefix) and not recent(prior):
             plan["stale_image"] = True
         self.contain(plan, spec, app)
+        self.plan_jobs(plan, spec)
         plan["approval"] = release_approval(plan, principal.name)
         self.store.add(principal.name, plan)
         return {**plan, "state": "planned", "live_dispatch_enabled": self.config.live_dispatch, "next_action": advice({"state": "planned"})}
+
+    def plan_jobs(self, plan, spec):
+        """The jobs a release points at their images (docs/ROADMAP.md D64, 27.3): built every time, never an earlier run's, and
+        built on the test image of the application they name at the commit its last staging release deployed (D69)."""
+        if not spec.jobs:
+            return
+        if plan.pop("reuse_image", None):
+            plan.pop("reused_from_plan", None)
+            plan["checks"].update(tests="pending_in_ci", dependency_scan="pending_in_ci")
+        costs = {item["job"]: item for item in (plan.get("cost") or {}).get("jobs") or []}
+        plan["jobs"] = {name: {"cpu": job.resources.cpu, "memory_mib": job.resources.memory_mib, "timeout_minutes": job.timeout_minutes,
+                               "runs_per_day": job.runs_per_day, "egress": job_egress(spec, name), "base": job.base,
+                               "worst_month_usd": (costs.get(name) or {}).get("worst_month_usd")} for name, job in spec.jobs.items()}
+        worst = (plan.get("cost") or {}).get("jobs_ceiling_usd_month")
+        plan["warnings"].append(f"Starts its own jobs ({', '.join(sorted(spec.jobs))}): one task each, never retried; the guard cancels a run past its "
+                                f"timeout or beyond its runs a day. If every run of every day ran to its timeout: ${worst:,.2f} a month of compute, "
+                                "plus any model tokens.")
+        base = base_of(spec)
+        if base is None:
+            return
+        found = next(((app_id, item) for app_id, item in self.config.applications.items() if item.service == base and app_id != plan["application"]), None)
+        if found is None:
+            raise ValueError(f"The jobs build on {base}'s test image, and no application with the service {base} is registered: onboard it first")
+        base_id, base_app = found
+        release = self.store.latest_success(base_id)
+        if release is None:
+            raise ValueError(f"The jobs build on {base}'s test image, and {base} has no successful staging release yet: release it first, then this")
+        if (release.get("spec") or {}).get("runtime") != "node-http":
+            raise ValueError(f"The jobs build on {base}'s test image, and {base} is not a Node.js web service: a test image is made for node-http only")
+        plan["base"] = {"service": base, "repository": base_app.repository, "path": base_app.path or "", "commit": release["sha"]}
+        plan["warnings"].append(f"The jobs build on the test image of {base} at {release['sha'][:12]}, the commit its last staging release deployed.")
 
     @staticmethod
     def contain(plan, spec, app):
@@ -1792,6 +1850,7 @@ class Controller:
         if image and image.startswith(prefix) and not recent(prior):
             plan["stale_image"] = True
         self.contain(plan, spec, app)
+        self.plan_jobs(plan, spec)
         plan["approval"] = release_approval(plan, principal.name)
         self.store.add(principal.name, plan)
         return {**plan, "state": "planned", "live_dispatch_enabled": self.config.live_dispatch, "next_action": advice({"state": "planned"})}
