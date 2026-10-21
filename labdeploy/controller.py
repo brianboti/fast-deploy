@@ -15,7 +15,7 @@ from .config import Application, Principal, Production
 from .contract import Contracts, contract_path
 from .cost import domain_floor, estimate, findings
 from .github import explain
-from .infra import BOOTSTRAP_IMAGE, PRODUCTION_ROOTS, PRODUCTION_WORKFLOWS, app_root
+from .infra import BOOTSTRAP_IMAGE, PRODUCTION_ROOTS, PRODUCTION_WORKFLOWS, app_root, root_jobs
 from .models import AppSpec, containment, enforce, needs_env, parse_contract, parse_spec, spec_hash
 from .rightsize import SETTINGS, apply_settings
 from .status import TERMINAL, advice, diagnose, release_phases, summarize
@@ -1957,10 +1957,11 @@ class Controller:
             state_bucket = state_bucket or production.state_bucket
         ids = self.github.repository_ids(trusted)
         note, needs, exposure = None, None, "authenticated"
-        domain, maximum = None, None
+        domain, maximum, jobs, wake = None, None, {}, False
         try:
             spec = self.spec_at(app, self.github.head(app))
             health_path, needs, exposure = spec.health_path, spec.needs.model_dump(), spec.exposure
+            jobs, wake = root_jobs(spec), spec.wake is not None  # docs/ROADMAP.md D64, D66
             domain = spec.domain if environment == "production" else None  # staging keeps its run.app address (16.6)
             maximum = spec.scaling.maximum
             onboarding = getattr(self.config, "onboarding", None)
@@ -1982,7 +1983,8 @@ class Controller:
         files = app_root(target.service, project_id=target.project_id, region=target.region, state_bucket=state_bucket or f"{target.project_id}-tfstate",
                          github_repository=trusted, github_repository_id=ids["repository_id"], github_owner_id=ids["owner_id"],
                          bootstrap_image=bootstrap_image or BOOTSTRAP_IMAGE, health_path=health_path, settings=settings, needs=needs,
-                         exposure=exposure, viewers=self.viewers(app), environment=environment, promotion_readers=readers, domain=domain, **layout)
+                         exposure=exposure, viewers=self.viewers(app), environment=environment, promotion_readers=readers, domain=domain,
+                         jobs=jobs, wake=wake, **layout)
         return {"application": app_id, "service": target.service, "environment": environment, "directory": directory, "files": files, "note": note}
 
     def add_production(self, principal, app_id):
@@ -2185,12 +2187,12 @@ class Controller:
             summary["findings"].insert(0, {"id": "no_native_spend_cap", "severity": "warning", "setting": "cloud_run_spend_caps (controller configuration)",
                                            "current": None, "message": summary["spending_guards"]["cloud_run_spend_cap"]["advice"]})
         limit = app.cost_ceiling_usd
-        compared = round(summary["compute_ceiling_usd_month"] + summary["needs_floor_usd_month"], 2)
+        compared = round(summary["compute_ceiling_usd_month"] + summary["needs_floor_usd_month"] + summary.get("jobs_ceiling_usd_month", 0), 2)
         over = limit is not None and compared > limit
         summary["ceiling_policy"] = {"limit_usd_month": limit, "compared_usd_month": compared,
                                      "status": "not_configured" if limit is None else ("exceeds_limit" if over else "within_limit")}
         summary["note"] = ("Bounds from list prices and the reviewed configuration, not a bill forecast: the ceiling policy compares the compute bound "
-                           "plus the needs' floor with the operator's limit; request fees, egress and the per-image scan are extra and unbounded by it. "
+                           "plus the needs' floor (and the jobs' worst case) with the operator's limit; request fees, egress and the per-image scan are extra and unbounded by it. "
                            "Measured right-sizing comes from the rightsizing workflow report (get_cost_report).")
         return summary
 

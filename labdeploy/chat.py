@@ -359,7 +359,10 @@ def cost_line(cost):
     if not cost:
         return None
     floor = (cost.get("idle_floor_usd_month") or 0) + (cost.get("needs_floor_usd_month") or 0)
-    return f"Cost: {money(floor)} a month with no visitors; compute at most {money(cost.get('compute_ceiling_usd_month'))} a month"
+    line = f"Cost: {money(floor)} a month with no visitors; compute at most {money(cost.get('compute_ceiling_usd_month'))} a month"
+    if cost.get("jobs"):
+        line += f"; its jobs at most {money(cost.get('jobs_ceiling_usd_month'))} a month if every run of every day ran to its timeout"
+    return line
 
 
 # ---- after a release (docs/ROADMAP.md Phase 23): the report a day later, the digest, the trust numbers

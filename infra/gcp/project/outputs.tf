@@ -26,3 +26,5 @@ output "cost_controls" {
     billing_dataset              = module.project.billing_dataset
   }
 }
+output "controller_members" { value = module.project.controller_members }
+output "job_guard_role" { value = module.project.job_guard_role }

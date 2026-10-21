@@ -21,6 +21,9 @@ ROOT_LABEL = re.compile(r"^(production-)?[a-z][a-z0-9-]{2,20}$")
 RESOURCE_NAME = re.compile(r"^[a-z][a-z0-9-]{1,20}$")
 # The model APIs an app may declare under needs.models (docs/ROADMAP.md D47); the contract's model holds the same list.
 MODELS = ("claude",)
+# A job's name and a secret's variable name, as labdeploy/models.py keeps them (docs/ROADMAP.md D64).
+JOB = re.compile(r"^[a-z][a-z0-9-]{0,12}[a-z0-9]$")
+SECRET_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 ENVIRONMENT = re.compile(r"^[a-z][a-z0-9-]{1,15}$")
 DIGITS = re.compile(r"^[0-9]{1,20}$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -55,10 +58,10 @@ DATA_TYPES = (
     "google_storage_bucket", "google_sql_database_instance", "google_sql_database", "google_bigquery_dataset", "google_firestore_database",
     "google_secret_manager_secret", "google_artifact_registry_repository", "google_kms_crypto_key",
 )
-LABELLED_TYPES = ("google_cloud_run_v2_service", "google_storage_bucket", "google_artifact_registry_repository",
+LABELLED_TYPES = ("google_cloud_run_v2_service", "google_cloud_run_v2_job", "google_storage_bucket", "google_artifact_registry_repository",
                   "google_sql_database_instance", "google_bigquery_dataset", "google_pubsub_topic", "google_pubsub_subscription",
                   "google_kms_crypto_key")
-PLATFORM_IDENTITIES = ("lab-deploy-infra-", "lab-deploy-observer", "lab-deploy-spending-cap")
+PLATFORM_IDENTITIES = ("lab-deploy-infra-", "lab-deploy-observer", "lab-deploy-spending-cap", "lab-deploy-controller")
 # Fields Google writes itself to say who changed a resource and when (an alert policy's creation_record and
 # mutation_record name the apply identity that made it): a record, never a grant or a reference the root makes, so the
 # identity rule does not read them (found on 2026-10-21: the first update of existing alert policies was refused).
@@ -74,6 +77,8 @@ def _hcl(value):
         return str(value)
     if isinstance(value, list):
         return "[" + ", ".join(_hcl(item) for item in value) + "]"
+    if isinstance(value, dict):  # an object with quoted keys, in the order given
+        return "{ " + ", ".join(f"{json.dumps(str(key))} = {_hcl(item)}" for key, item in value.items()) + " }" if value else "{}"
     # A value is always a literal: Terraform's template sequences are escaped so nothing in a spec becomes an expression.
     return json.dumps(value).replace("${", "$${").replace("%{", "%%{")
 
@@ -103,14 +108,16 @@ PRODUCTION_ROOTS = "infra/gcp/apps-production"
 
 def app_root(name, *, project_id, region, state_bucket, github_repository, github_repository_id, github_owner_id,
              bootstrap_image, health_path="/health", environment="staging", settings=None, needs=None, exposure="authenticated", viewers=(),
-             github_environment="staging", workflow_files=PLAIN_WORKFLOWS, pipeline="repository", promotion_readers=(), domain=None):
+             github_environment="staging", workflow_files=PLAIN_WORKFLOWS, pipeline="repository", promotion_readers=(), domain=None,
+             jobs=None, wake=False):
     """The three files of an application's Terraform root, with every input a literal so a reviewer sees the truth.
     `pipeline`: repository when the application's own workflows release it (github_repository is the application's);
     platform when the platform repository's pipeline does (github_repository and the ids are the platform's, the
     environment is staging-<service> there, and the workflow files are deploy.yml, recover.yml and rightsize.yml).
     `promotion_readers`: in a staging root, the application's production deployer, which may read the images staging
     released and check their provenance to promote them (docs/ROADMAP.md D37). `domain`: in a production root, the name a
-    load balancer with Cloud Armor answers at (docs/ROADMAP.md 16.6)."""
+    load balancer with Cloud Armor answers at (docs/ROADMAP.md 16.6). `jobs` and `wake`: the Cloud Run jobs the service
+    starts and whether the platform's clock wakes it (docs/ROADMAP.md D64, D66), from root_jobs(spec)."""
     checks = [
         (NAME, name, "application name"), (PROJECT, project_id, "project id"), (BUCKET, state_bucket, "state bucket"),
         (REPOSITORY, github_repository, "GitHub repository"), (DIGITS, github_repository_id, "GitHub repository id"),
@@ -200,6 +207,24 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
     for item in needs["buckets"]:
         if len(f"{project_id}-{name}-{item}") > 63:
             raise ValueError(f"Bucket name {project_id}-{name}-{item} exceeds 63 characters; shorten the need's name")
+    jobs = dict(jobs or {})
+    if len(jobs) > 4:
+        raise ValueError("A service starts at most four jobs")
+    for job, item in jobs.items():
+        if not isinstance(job, str) or not JOB.fullmatch(job) or job in ("runtime", "deploy", "probe", "wake", "migrate") or len(name) + 1 + len(job) > 30:
+            raise ValueError(f"Invalid job name: {job!r}")
+        if (not isinstance(item, dict) or set(item) != {"cpu", "memory_mib", "timeout_minutes", "buckets", "models", "secrets"}
+                or item["cpu"] not in (1, 2) or type(item["memory_mib"]) is not int or not 512 <= item["memory_mib"] <= 4096 or item["memory_mib"] % 256
+                or type(item["timeout_minutes"]) is not int or not 1 <= item["timeout_minutes"] <= 60):
+            raise ValueError(f"The job {job} needs cpu (1 or 2), memory_mib (512 to 4096, steps of 256), timeout_minutes (1 to 60), buckets, models and secrets")
+        if not isinstance(item["buckets"], dict) or not set(item["buckets"]) <= set(needs["buckets"]) or any(a not in ("read", "write") for a in item["buckets"].values()):
+            raise ValueError(f"The job {job} may read or write declared buckets only")
+        if not isinstance(item["models"], list) or any(m not in MODELS for m in item["models"]):
+            raise ValueError(f"The job {job}'s models are a list of {', '.join(MODELS)}")
+        if not isinstance(item["secrets"], list) or any(not isinstance(x, str) or not SECRET_NAME.fullmatch(x) for x in item["secrets"]):
+            raise ValueError(f"The job {job}'s secrets are variable names")
+    if not isinstance(wake, bool):
+        raise ValueError("wake is true or false")
     header = (f"# Generated by `lab-deploy infra render {name}` from the controller configuration and the app's platform.yaml.\n"
               "# Change those sources and render again; the pipeline plans this root on a pull request and applies it on merge.\n")
     random_provider = ("\n    random = {\n      source  = \"hashicorp/random\"\n      version = \"~> 3.7\"\n    }" if password else "")
@@ -266,7 +291,17 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
     # Added in 1.30.0, read the same way: until the foundation has an attestor the service stays out of Binary Authorization
     # and its releases attest nothing (docs/ROADMAP.md 14.8).
     lines.append(f"  {'binary_authorization'.ljust(width)} = try(data.terraform_remote_state.project.outputs.binary_authorization, null)")
-    if needs["models"]:
+    if jobs:  # only a root whose service starts jobs carries them (docs/ROADMAP.md D64); the others stay as they were
+        lines.append(f"  {'jobs'.ljust(width)} = {_hcl(jobs)}")
+    if wake:
+        lines.append(f"  {'wake'.ljust(width)} = true")
+    if jobs or wake:
+        # Added in 1.31.0, read the same way: until the foundation publishes the controller's identities and the guard's role,
+        # the clock and the guard have no grant here, and the health view says so.
+        lines.append(f"  {'controller_members'.ljust(width)} = try(data.terraform_remote_state.project.outputs.controller_members, [])")
+    if jobs:
+        lines.append(f"  {'job_guard_role'.ljust(width)} = try(data.terraform_remote_state.project.outputs.job_guard_role, \"\")")
+    if needs["models"] or any(item["models"] for item in jobs.values()):
         # Added in 1.21.0 and read the same way, by the roots that declare a model only: until the foundation has the model
         # role, the module's precondition stops the plan with the step that fixes it.
         lines.append(f"  {'model_user_role'.ljust(width)} = try(data.terraform_remote_state.project.outputs.model_user_role, \"\")")
@@ -308,6 +343,14 @@ output "runtime_alerts" {{ value = module.service.runtime_alerts }}
     if domain:  # the address the domain's A record points at, printed by every apply
         outputs += 'output "domain_address" { value = module.service.domain_address }\n'
     return {"backend.tf": backend, "main.tf": main, "outputs.tf": outputs}
+
+
+def root_jobs(spec):
+    """What an application's root needs of its contract's jobs (docs/ROADMAP.md D64): size, timeout and what each was given;
+    the release sets the rest (image, command, variables, egress) every time."""
+    return {name: {"cpu": job.resources.cpu, "memory_mib": job.resources.memory_mib, "timeout_minutes": job.timeout_minutes,
+                   "buckets": dict(sorted(job.buckets.items())), "models": list(job.models), "secrets": list(job.secrets)}
+            for name, job in spec.jobs.items()}
 
 
 def roots(changed, apps_dir):
@@ -361,6 +404,8 @@ PUBLIC_MEMBERS = ("allUsers", "allAuthenticatedUsers")
 # The only roles an application root may grant; everything else is the foundation's business.
 ALLOWED_ROLES = frozenset({
     "roles/run.invoker", "roles/run.developer", "roles/run.viewer", "roles/artifactregistry.writer", "roles/artifactregistry.reader",
+    # The service starts its own jobs with per-run arguments, cancels and reads them (docs/ROADMAP.md D64, D70), on each job only.
+    "roles/run.jobsExecutorWithOverrides",
     "roles/storage.objectUser", "roles/storage.objectViewer", "roles/storage.bucketViewer", "roles/pubsub.publisher", "roles/pubsub.subscriber",
     "roles/pubsub.viewer", "roles/datastore.user", "roles/datastore.viewer", "roles/cloudsql.client", "roles/cloudsql.instanceUser", "roles/cloudsql.viewer",
     "roles/logging.viewer", "roles/monitoring.viewer", "roles/secretmanager.secretAccessor", "roles/secretmanager.viewer", "roles/bigquery.dataViewer",
@@ -380,6 +425,11 @@ CUSTOM_ROLE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/roles/labDeplo
 # application's own Cloud Run service through the foundation's cap-operator role, nothing more and nowhere else.
 CAP_OPERATOR_ROLE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/roles/labDeployCapOperator$")
 CAP_IDENTITY = "serviceAccount:lab-deploy-spending-cap@"
+# The controller's two grants an application root makes by design (docs/ROADMAP.md D66, D70): its guard may cancel a run of
+# the application's jobs through the foundation's guard role, and it may mint the token of the application's wake identity.
+JOB_GUARD_ROLE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/roles/labDeployJobGuard$")
+CONTROLLER_IDENTITY = "serviceAccount:lab-deploy-controller@"
+WAKE_IDENTITY = re.compile(r"/serviceAccounts/[a-z][a-z0-9-]{1,19}[a-z0-9]-wake@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$")
 RUNTIME_IDENTITY = re.compile(r"/serviceAccounts/[a-z][a-z0-9-]{1,19}[a-z0-9]-runtime@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$")
 STATE_BUCKET = re.compile(r"-tfstate$")
 # Buckets whose old object versions are what makes them useful: a release's recovery checkpoint and the controller's backups.
@@ -430,6 +480,14 @@ def check_plan(plan, allowed_locations=ALLOWED_LOCATIONS):
         cap_grant = cap_grant or (kind == "google_service_account_iam_member" and after.get("role") == "roles/iam.serviceAccountUser"
                                   and (after.get("member") or "").startswith(CAP_IDENTITY)
                                   and (_unknown(change, "service_account_id") or RUNTIME_IDENTITY.search(after.get("service_account_id") or "") is not None))
+        # 27.7, D70: the cap and the controller's guard may cancel the application's own jobs' runs, through their roles only.
+        cap_grant = cap_grant or (kind == "google_cloud_run_v2_job_iam_member" and (
+            (CAP_OPERATOR_ROLE.fullmatch(after.get("role") or "") is not None and (after.get("member") or "").startswith(CAP_IDENTITY))
+            or (JOB_GUARD_ROLE.fullmatch(after.get("role") or "") is not None and (after.get("member") or "").startswith(CONTROLLER_IDENTITY))))
+        # D66: the controller may mint the token of the application's own wake identity, and of no other.
+        cap_grant = cap_grant or (kind == "google_service_account_iam_member" and after.get("role") == "roles/iam.serviceAccountOpenIdTokenCreator"
+                                  and (after.get("member") or "").startswith(CONTROLLER_IDENTITY)
+                                  and (_unknown(change, "service_account_id") or WAKE_IDENTITY.search(after.get("service_account_id") or "") is not None))
         if touching and not cap_grant and any(marker in text for marker in PLATFORM_IDENTITIES for text in texts):
             add("platform_identities_untouched", address, "application roots may not create, grant or reference the platform's own identities")
         if touching and iam:

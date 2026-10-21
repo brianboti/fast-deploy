@@ -320,8 +320,18 @@ resource "google_project_iam_custom_role" "cap_operator" {
   count       = local.cap_enabled ? 1 : 0
   role_id     = "labDeployCapOperator"
   title       = "Lab Deploy spending-cap operator"
-  description = "Reads and updates a Cloud Run service's ingress setting; nothing else"
-  permissions = ["run.services.get", "run.services.update", "run.services.list", "run.operations.get"]
+  description = "Reads and updates a Cloud Run service's ingress setting, and cancels a managed job's running execution; nothing else"
+  # run.executions.cancel (docs/ROADMAP.md 27.7): granted on each managed job by the service module; the cap's project-wide
+  # run.viewer lists the jobs and their executions.
+  permissions = ["run.services.get", "run.services.update", "run.services.list", "run.operations.get", "run.executions.cancel"]
+}
+# The controller's guard (docs/ROADMAP.md D70): it cancels a job's execution that runs more than one task, past its timeout
+# or beyond the day's runs. Granted on each job by the service module; the machine's run.viewer already reads executions.
+resource "google_project_iam_custom_role" "job_guard" {
+  role_id     = "labDeployJobGuard"
+  title       = "Lab Deploy job guard"
+  description = "Cancels a Cloud Run job's execution; nothing else"
+  permissions = ["run.executions.cancel", "run.operations.get"]
 }
 # A cap execution that fails is the one failure that must never go unnoticed.
 resource "google_monitoring_alert_policy" "cap_failures" {

@@ -239,3 +239,37 @@ variable "binary_authorization" {
   default     = null
   description = "The foundation's Binary Authorization output (docs/ROADMAP.md 14.8): the service opts in to the project's policy and its deployer attests its releases; null until the foundation has it."
 }
+variable "jobs" {
+  type = map(object({
+    cpu             = number
+    memory_mib      = number
+    timeout_minutes = number
+    buckets         = optional(map(string), {})
+    models          = optional(list(string), [])
+    secrets         = optional(list(string), [])
+  }))
+  default     = {}
+  description = "The Cloud Run jobs the service starts itself (jobs.tf, docs/ROADMAP.md D64): their size and timeout, and what each was given; the release sets the rest."
+  validation {
+    condition = length(var.jobs) <= 4 && alltrue([for name, job in var.jobs : can(regex("^[a-z][a-z0-9-]{0,12}[a-z0-9]$", name)) && !contains(["runtime", "deploy", "probe", "wake", "migrate"], name)
+      && contains([1, 2], job.cpu) && job.memory_mib >= 512 && job.memory_mib <= 4096 && job.memory_mib % 256 == 0 && job.memory_mib <= 4096 * job.cpu
+      && job.timeout_minutes >= 1 && job.timeout_minutes <= 60
+    && alltrue([for access in values(job.buckets) : contains(["read", "write"], access)]) && alltrue([for model in job.models : model == "claude"])])
+    error_message = "At most four jobs, each named like a job (not runtime, deploy, probe, wake or migrate), 1 or 2 CPUs, 512 to 4096 MiB in steps of 256, 1 to 60 minutes; buckets read or write; models claude."
+  }
+}
+variable "wake" {
+  type        = bool
+  default     = false
+  description = "Whether the platform's clock wakes the service (jobs.tf, D66): its <service>-wake identity may call it, and the controller may mint that identity's token."
+}
+variable "controller_members" {
+  type        = list(string)
+  default     = []
+  description = "The controller's identities in this project (the foundation's output): they mint the wake identity's token and cancel a job's run beyond its limits (D70)."
+}
+variable "job_guard_role" {
+  type        = string
+  default     = ""
+  description = "The foundation's role for the controller's guard (labDeployJobGuard): cancels a job's execution; empty until the foundation has it."
+}
