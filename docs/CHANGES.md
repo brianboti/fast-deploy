@@ -1,4 +1,4 @@
-# 1.29.2: cost and controller state for limited identities
+# 1.29.3: cost and controller state for limited identities
 
 Found on 2026-10-21 by a review of 1.28.0, before a second person is given a token (a student with a read-only token for
 two applications, say). The settings page and Claude's tools told an identity that does not see every application more
@@ -41,6 +41,21 @@ Tests: 1,047 pass, 5 of them new. In `tests/test_monitor.py`, the Cost and Activ
 both answers with parts hidden; in `tests/test_cost_tools.py`, the limited report, and the kept report left whole. The
 scoping test of 1.28.0 now looks for the new line, and the status tool test of 1.9.0 for the `hidden` sentence. Ruff check
 and zizmor are clean.
+
+
+# 1.29.2: the error budget's counts read from the field the API returns
+
+Found on 2026-10-21 by reading production's objective back after 1.29.1's apply: the Monitoring API returns an
+objective's counting rules under `serviceLevelIndicator.requestBased`, while 1.26.0's code (`labdeploy/cloud.py`,
+`error_budget`) read `requestBasedSli`, Terraform's name for the same block, and its test used the same wrong name. The
+reads found nothing and were skipped quietly, so the health view never said "no user requests in the 30 days" or the day a
+spent budget's errors leave the window. Now read from the right field; the test uses the shape production returned.
+Checked read-only against production: "Error budget: no user requests in the 30 days, so nothing to count yet", correct
+for counters created that afternoon.
+
+Upgrade steps: merge, then update the machine. Nothing to apply.
+
+Tests: 1,042 pass; ruff clean.
 
 
 # 1.29.1: the pipeline may create an objective's log-based metrics

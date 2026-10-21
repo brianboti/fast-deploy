@@ -318,7 +318,7 @@ def test_the_controller_status_says_the_weekly_report_runs_on_its_own():
 def test_the_controller_status_of_a_limited_identity_says_what_it_leaves_out():
     """An identity that sees only some applications gets each job's times, not its result, and the digest without the verdict
     judged across every application (labdeploy/controller.py, HIDDEN_STATUS); the answer says so and still reads whole."""
-    limited = {"version": "1.29.2", "live_dispatch": True, "paused": False, "github_credential": {"kind": "github_app"},
+    limited = {"version": "1.29.3", "live_dispatch": True, "paused": False, "github_credential": {"kind": "github_app"},
                "background": {"backup": {"last_run": "2026-10-21T03:00:00+00:00", "next_run": "2026-10-22T03:00:00+00:00"},
                               "watchdog": {"last_run": "2026-10-21T09:00:00+00:00", "next_run": "2026-10-22T09:00:00+00:00"}},
                "infrastructure_drift": {"status": "clean", "age_days": 1.4, "drifted": {}}, "spending_guards": {"missing": []},
