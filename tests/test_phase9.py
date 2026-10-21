@@ -365,6 +365,8 @@ def test_controller_status_reports_guards_and_drift(tmp_path):
     status = result["structuredContent"]
     assert status["spending_guards"]["cloud_run_spend_caps"] == {"test-project": 25} and status["spending_guards"]["missing"] == []
     assert status["infrastructure_drift"]["status"] == "not_configured"
+    # manager's token lists demo, not "*": the cap of its own application's project, and a word on what it does not see (1.29.3)
+    assert status["applications"] == ["demo"] and status["hidden"].startswith("Other applications, and the background jobs' results")
 
 
 # ---- 9.4 data-protection rules, each with a planted violation

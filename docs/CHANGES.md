@@ -1,3 +1,48 @@
+# 1.29.3: cost and controller state for limited identities
+
+Found on 2026-10-21 by a review of 1.28.0, before a second person is given a token (a student with a read-only token for
+two applications, say). The settings page and Claude's tools told an identity that does not see every application more
+than its own numbers. On the Cost view, "Where the money goes" drew each of its applications' weekly reports as they were,
+and a weekly report holds the whole project's bill: by Google service, the 30-day totals beside the 30 days before, the
+project names and every other application's line. On the Activity view, the background jobs' results named any
+application ("lab-notebook: up to date"). `get_cost_report` and `get_controller_status` gave the same to such an identity,
+and `get_controller_status` also listed every application with its pause, its drift, its re-pins and its project's spend
+cap. Nobody was affected: today's only identity is the operator's, with `"*"`.
+
+One rule now holds on the page and in the tools alike: an identity whose token does not list `"*"` gets the numbers and
+names of its own applications only. The controller decides it in one place (`cost_report_for`, `background_for`,
+`drift_for` and `updates_for` in `labdeploy/controller.py`), and the page and the tools both use it. Such an identity gets:
+
+1. **On the Cost view and from `get_cost_report`**: of the bill, the lines labelled with its own applications, each beside
+   the same line of the window before (▲ more, ▼ less), and what was measured on the application itself (usage, bounds,
+   proposals, drift from its contract, the image scans). Its right-sizing proposals and its floor and ceiling stay as they
+   were. Gone: the bill by Google service, the projects' totals in both windows, the "gone since" line, the project names,
+   the month so far with its budget, what moved most, Google's cost recommender (it covers every service of the project)
+   and a repository's Actions minutes (a repository can hold other services). One plain line takes their place: "The
+   whole project's bill is shown to an identity that sees every application." The answer of `get_cost_report` gives
+   "$7.00 for `demo`'s own resources, net of credits; $5.00 in the 30 days before", then that line.
+2. **On the Activity view and from `get_controller_status`**: each background job's name, last run and next run, without
+   its result or error. Of the two ways the review named, this one is the simpler to test: keeping only the result entries
+   that name its applications would need a reading of each job's own result, and an error is free text.
+3. **The rest of `get_controller_status`**: its own applications in the lists of applications, auto-deploy and pauses;
+   their drift, said clean or drifted by them alone; their re-pins, without the re-pin step's own error; the spend caps of
+   their projects; the daily digest's day and delivery, without its verdict, which was judged across every application
+   (`get_digest` already builds a digest of its applications); and a `hidden` sentence saying what it does not see, which
+   the answer repeats as a line.
+
+An identity with `"*"` sees exactly what it saw: every Monitor view's markup and both tools' answers, through the MCP
+endpoint, were compared byte for byte with 1.29.1's from the same records, for a deployer and for a read-only identity.
+
+Upgrade steps: update the machine. No configuration change. The skill is unchanged: Claude answers from the summary, which
+carries the line.
+
+Tests: 1,047 pass, 5 of them new. In `tests/test_monitor.py`, the Cost and Activity views beside `get_cost_report` and
+`get_controller_status` called through the MCP endpoint, for a limited identity and for a `*` one; in `tests/test_chat.py`,
+both answers with parts hidden; in `tests/test_cost_tools.py`, the limited report, and the kept report left whole. The
+scoping test of 1.28.0 now looks for the new line, and the status tool test of 1.9.0 for the `hidden` sentence. Ruff check
+and zizmor are clean.
+
+
 # 1.29.2: the error budget's counts read from the field the API returns
 
 Found on 2026-10-21 by reading production's objective back after 1.29.1's apply: the Monitoring API returns an
@@ -73,6 +118,8 @@ to move its "at maximum instances" threshold.
 
 Tests: 1,041 pass (8 new, `tests/test_phase25.py`); ruff and zizmor clean; `terraform validate` passes for the foundation,
 a staging root and a production root.
+
+
 # 1.28.0: reports in the settings page
 
 Brian asked for the reports in one place, drawn: today they are spread over chat answers, GitHub issues and runs, one

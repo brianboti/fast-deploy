@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from labdeploy import chat
 from labdeploy.config import Config
+from labdeploy.controller import HIDDEN_COSTS, HIDDEN_STATUS
 from labdeploy.server import INSTRUCTIONS, build_app
 
 SHA = "dede786786f5e38646cf5c221f9628fedfa08d41"
@@ -312,6 +313,41 @@ def test_the_controller_status_says_the_weekly_report_runs_on_its_own():
     assert "GitHub access through the GitHub App" in status and "Weekly cost report not run yet for: `api`; it runs on its own every week" in status
     assert "**Next:** nothing to do; the weekly cost report runs on its own. Tell the operator only if it is still missing after a week." in status
     assert chat.controller({"version": "1.17.1", "live_dispatch": True}).endswith("**Next:** nothing to do.")
+
+
+def test_the_controller_status_of_a_limited_identity_says_what_it_leaves_out():
+    """An identity that sees only some applications gets each job's times, not its result, and the digest without the verdict
+    judged across every application (labdeploy/controller.py, HIDDEN_STATUS); the answer says so and still reads whole."""
+    limited = {"version": "1.29.3", "live_dispatch": True, "paused": False, "github_credential": {"kind": "github_app"},
+               "background": {"backup": {"last_run": "2026-10-21T03:00:00+00:00", "next_run": "2026-10-22T03:00:00+00:00"},
+                              "watchdog": {"last_run": "2026-10-21T09:00:00+00:00", "next_run": "2026-10-22T09:00:00+00:00"}},
+               "infrastructure_drift": {"status": "clean", "age_days": 1.4, "drifted": {}}, "spending_guards": {"missing": []},
+               "digest": {"day": "2026-10-21", "delivered": [{"channel": "email", "ok": True}], "generated_at": "2026-10-21T13:00:00+00:00"},
+               "hidden": HIDDEN_STATUS}
+    text = chat.controller(limited)
+    assert "- Last backup: 21 Oct 2026\n" in text and "- The cloud setup matches the code (checked 1.4 days ago)\n" in text
+    assert "- Daily digest of 21 Oct 2026: sent by email\n" in text and "all quiet" not in text and "something to look at" not in text
+    assert f"- {HIDDEN_STATUS.rstrip('.')}\n" in text and "Watchdog" not in text and text.endswith("**Next:** nothing to do.")
+    whole = chat.controller({**limited, "digest": {**limited["digest"], "attention": True}, "hidden": None})
+    assert "- Daily digest of 21 Oct 2026: something to look at, sent by email" in whole and "shown to an identity" not in whole
+
+
+def test_the_cost_report_of_a_limited_identity_gives_its_own_spend_and_says_who_sees_the_rest():
+    """Of the bill, an identity that sees only some applications gets the lines labelled with them (Controller.cost_report_for):
+    the answer gives the application's own spend beside its window before, and one line on the whole project's bill."""
+    report = {"generated_at": "2026-10-12T06:23:00+00:00", "service": "demo", "window_days": 14, "rightsizing": {"observed": None, "recommendations": []},
+              "actual_spend": {"window_days": 30, "by_app": [{"app": "demo", "net_cost_usd": 1.5}], "previous": {"window_days": 30, "by_app": []},
+                               "app": {"name": "demo", "net_cost_usd": 1.5, "by_environment": {"staging": 1.0, "production": 0.5}}}}
+    text = chat.cost_report({"report": report, "hidden": HIDDEN_COSTS}, application="demo")
+    assert ("- Actual spend, last 30 days: $1.50 for `demo`'s own resources, net of credits (staging $1.00, production $0.50); $0 in the 30 days before\n"
+            f"- {chat.WHOLE_BILL}\n") in text
+    assert "whole project, net" not in text and "This month in" not in text and "**Next:** nothing to do; the report runs again next week." in text
+    older = {**report, "actual_spend": {"window_days": 30, "by_app": [{"app": "other", "net_cost_usd": 4.0}, {"app": "demo", "net_cost_usd": 2.25}]}}
+    assert "- Actual spend, last 30 days: $2.25 for `demo`'s own resources, net of credits\n" in chat.cost_report({"report": older, "hidden": HIDDEN_COSTS})
+    nothing = {**report, "actual_spend": {"window_days": 30, "by_app": []}}
+    assert "- Actual spend, last 30 days: $0 for `demo`'s own resources, net of credits\n" in chat.cost_report({"report": nothing, "hidden": HIDDEN_COSTS})
+    stale = chat.cost_report({"report": {**report, "actual_spend": {"window_days": 30, "warning": "The billing export is empty"}}, "hidden": HIDDEN_COSTS})
+    assert "- Actual spend unknown: The billing export is empty" in stale and chat.WHOLE_BILL not in stale
 
 
 def test_the_plan_list_is_a_short_table_with_plain_outcomes_and_readable_times():

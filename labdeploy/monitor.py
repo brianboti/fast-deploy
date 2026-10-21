@@ -8,7 +8,9 @@ every viewer; Cloud Logging only on one application's page and only when asked (
 project, shared with the release reports and the digest); never BigQuery. The weekly cost report comes from GitHub and is
 kept until a newer run exists. Nothing here changes anything.
 
-Every view is scoped as Claude's tools are: a principal sees the applications its token lists, "*" every one.
+Every view is scoped as Claude's tools are: a principal sees the applications its token lists, "*" every one. One that
+sees only some applications gets only their numbers, through the controller's *_for methods that the tools use too: never
+the whole project's bill, another application's line of it, or the background jobs' results.
 """
 import concurrent.futures
 import datetime
@@ -550,9 +552,15 @@ class Monitor:
         return result
 
     def weekly_report(self, principal, app_id):
-        """An application's newest weekly cost report, kept until GitHub has a newer run: at most one check every fifteen
-        minutes, and a download only when the run changed. {"result", "checked_at"} or {"error"}."""
+        """An application's newest weekly cost report as this identity may see it, as get_cost_report gives it
+        (Controller.cost_report_for). {"result", "checked_at"} or {"error"}."""
         app = self.controller.app(principal, app_id)
+        found = self.kept_report(app_id, app)
+        return {**found, "result": self.controller.cost_report_for(principal, found["result"])} if "result" in found else found
+
+    def kept_report(self, app_id, app):
+        """The whole report, kept for everyone until GitHub has a newer run: at most one check every fifteen minutes, and a
+        download only when the run changed."""
         now = self.clock()
         with self.reports_lock:
             kept = self.reports.get(app_id)
@@ -576,7 +584,7 @@ class Monitor:
         elif kept and now - kept["checked"] < 4 * REPORT_CHECK_SECONDS:  # an adapter that cannot ask cheaply reads again hourly
             return {"result": kept["result"], "checked_at": kept["checked"]}
         try:
-            result = self.controller.cost_report(principal, app_id)
+            result = self.controller.read_cost_report(app)
         except Exception as exc:  # noqa: BLE001 - one application's report missing is said; the others still show
             with self.reports_lock:
                 self.reports[app_id] = {"error": str(exc)[:200] or type(exc).__name__, "checked": now}
@@ -607,17 +615,14 @@ class Monitor:
             day_rows.append({"day": day, "events": total, "configuration": configured})
         result = {"as_of": now, "filters": {"kind": kind, "identity": identity, "application": application}, "choices": choices,
                   "events": self.store.find_events(limit, kind, identity, application, scope), "days": day_rows,
-                  "scope": "everything" if scope is None else "own" if scope[1] is None else "applications", "limit": limit}
-        result["jobs"] = self.jobs() if callable(self.jobs) else None
+                  "scope": "everything" if scope is None else "own" if scope[1] is None else "applications", "limit": limit,
+                  "everything": self.everything(principal)}
+        # The jobs and the drift as get_controller_status gives them to this identity.
+        result["jobs"] = self.controller.background_for(principal, self.jobs() if callable(self.jobs) else None)
         result["backup"] = self.store.newest_event("backup")
         result["restore_drill"] = self.store.newest_event("restore_drill")
         result["digest"] = self.digest_facts(self.store.digest())
-        visible = set(self.visible(principal))
-        drift = self.controller.drift_status()
-        if not self.everything(principal):
-            drift = {**drift, "drifted": {key: value for key, value in (drift.get("drifted") or {}).items() if key in visible},
-                     "serious": [key for key in drift.get("serious") or [] if key in visible], "failed": [key for key in drift.get("failed") or [] if key in visible]}
-        result["drift"] = drift
+        result["drift"] = self.controller.drift_for(principal)
         status = getattr(self.controller.github, "credential_status", None)
         if callable(status):
             try:
