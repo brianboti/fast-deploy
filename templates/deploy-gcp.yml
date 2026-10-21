@@ -322,7 +322,8 @@ jobs:
           set -euo pipefail
           . "$RUNNER_TEMP/node-facts.sh"
           if [ "$MANAGER" != "npm" ]; then
-            python -m labdeploy.scaffold manager-install "$MANAGER" "$RUNNER_TEMP/manager" > "$RUNNER_TEMP/manager-install.sh"
+            # The release package.json's packageManager names when it names this manager (its lockfile was written by it), else the pin.
+            python -m labdeploy.scaffold manager-install "$MANAGER" "$RUNNER_TEMP/manager" --version "$VERSION" --integrity "$INTEGRITY" > "$RUNNER_TEMP/manager-install.sh"
             bash "$RUNNER_TEMP/manager-install.sh"
             echo "$RUNNER_TEMP/manager/bin" >> "$GITHUB_PATH"
             echo "Package manager: $TITLE $VERSION, installed by version and integrity for $LOCKFILE" | tee -a "$GITHUB_STEP_SUMMARY"

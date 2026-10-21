@@ -235,8 +235,12 @@ text format; `bun.lockb` is refused with the command that rewrites it). Each is 
 with every install script off: `pnpm install --frozen-lockfile --ignore-scripts`, `yarn install --immutable` with
 `YARN_ENABLE_SCRIPTS=false`, `yarn install --frozen-lockfile --ignore-scripts` (Yarn 1), `bun install --frozen-lockfile
 --ignore-scripts`. The manager itself is installed by version and integrity from its npm package (pnpm, `@yarnpkg/cli-dist`,
-`yarn`, `@oven/bun-linux-x64`), never through Corepack, which Node.js 25 and later no longer ship, and the weekly pin
-refresh follows each one's line. Whatever the manager, every entry must carry its integrity hash or checksum and come from
+`yarn`, `@oven/bun-linux-x64`), never through Corepack, which Node.js 25 and later no longer ship. The release is the one
+`package.json`'s `packageManager` names (`"pnpm@9.15.0+sha512.…"`, `"yarn@4.5.3"`), as Corepack and Railpack honour it,
+held to the sha512 the field carries or else to the integrity the npm registry publishes; without the field it is the
+platform's pin (pnpm 12, Yarn 4, Yarn 1, Bun 1), which the weekly pin refresh follows. A lockfile only another release can
+install frozen (checked on 2026-10-20: pnpm 12 reads lockfile 9.0 only, and Yarn 4.18 rewrites every other Yarn 2+
+format, Yarn 4.0 to 4.12's included) is refused without `packageManager`, with the line to add. Whatever the manager, every entry must carry its integrity hash or checksum and come from
 `https://registry.npmjs.org/` (Yarn 1 lockfiles may name `registry.yarnpkg.com`, the same registry); a git dependency, a
 tarball from elsewhere, a `file:`, `link:` or `patch:` source and `bundleDependencies` are refused, because the manager
 installs them without checking them against the registry. The platform reads no `.npmrc`: it installs from the public

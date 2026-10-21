@@ -1312,10 +1312,22 @@ NODE_CONFIG_FILES = ("tsconfig.json", "tsconfig.base.json", "tsconfig.build.json
 
 def pinned_package_check(name, version, folder):
     """JavaScript that exits 4 unless the package `name` installed in `folder` is `version` with the integrity given as its
-    first argument, read from the lockfile npm wrote there."""
+    first argument, read from the lockfile npm wrote there. An empty first argument holds the version only: npm itself
+    checked the tarball against the integrity the registry publishes (a packageManager release without a sha512)."""
     return (f"const e = (require('{folder}/package-lock.json').packages || {{}})['node_modules/{name}'] || {{}}; "
-            f"if (e.version !== '{version}' || e.integrity !== process.argv[1]) {{ console.error('{name} ' + e.version + "
+            f"if (e.version !== '{version}' || !e.integrity || (process.argv[1] && e.integrity !== process.argv[1])) {{ console.error('{name} ' + e.version + "
             "' does not match its pinned version and integrity'); process.exit(4); }")
+
+
+def manager_release(manager, release=None):
+    """(version, integrity) a manager is installed at: the repository's packageManager release when the reader chose it
+    (integrity "" when the field carries no sha512: the registry's integrity, which npm checks, holds it), else the pin."""
+    if release and re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", str(release.get("version") or "")):
+        integrity = release.get("integrity") or ""
+        if integrity and not re.fullmatch(r"sha512-[A-Za-z0-9+/]{86}==", integrity):
+            raise ValueError("packageManager's hash is not a sha512 the platform can check")
+        return release["version"], integrity
+    return MANAGER_PINS[manager]
 
 
 def manager_command(manager, folder):
@@ -1324,14 +1336,14 @@ def manager_command(manager, folder):
     return f"{runner} {folder}/node_modules/{package}/{bin_path}".strip()
 
 
-def manager_install_lines(manager, folder, wrapper=True):
+def manager_install_lines(manager, folder, wrapper=True, release=None):
     """Shell lines that install a package manager into `folder` by version and integrity, with every script off, and check
     it against that integrity. With `wrapper`, `folder`/bin/<pnpm|yarn|bun> is written for the pipeline's PATH; the image
     runs the command-line file directly (manager_command). npm needs nothing."""
     if manager == "npm":
         return []
     package, bin_path, runner = MANAGER_PACKAGES[manager]
-    version, integrity = MANAGER_PINS[manager]
+    version, integrity = manager_release(manager, release)
     lines = [f"mkdir -p {folder}/bin",
              f"echo '{{\"private\": true}}' > {folder}/package.json",
              f"cd {folder} && npm install --no-audit --no-fund --ignore-scripts --loglevel=error {package}@{version} >&2 && cd - > /dev/null",
@@ -1380,10 +1392,18 @@ def node_facts(folder, path="", line="24"):
     if plan.get("copy"):
         plan["copy"] = [item for item in plan["copy"] if item.startswith(".next/") or (service / item).exists()]
     commands = nodejs.MANAGER_COMMANDS[manager]
+    release = None
+    if manager != "npm":
+        for candidate in (package, json.loads((root / "package.json").read_text(errors="replace")) if path and (root / "package.json").is_file() else None):
+            spec = nodejs.manager_spec(candidate if isinstance(candidate, dict) else None)
+            if spec and spec["manager"] == manager:
+                release = {"version": spec["version"], "integrity": spec["integrity"] or ""}
+                break
+    version, integrity = manager_release(manager, release) if manager != "npm" else ("", "")
     return {"manager": manager, "lockfile": lockfile, "lock_dir": where.relative_to(root).as_posix() if where != root else ".",
             "member": path if where == root and path else "", "frozen": commands["frozen"], "production": commands["production"],
             "prune": commands["prune"], "rebuild": commands["rebuild"], "run": commands["run"], "test": commands["run"] + " test", "title": commands["title"],
-            "plan": plan, "version": MANAGER_PINS.get(manager, ("", ""))[0]}
+            "plan": plan, "version": version, "integrity": integrity, "release": release}
 
 
 def node_platform_dockerfile(spec, facts):
@@ -1409,7 +1429,7 @@ def node_platform_dockerfile(spec, facts):
     manager_lines = ""
     if manager != "npm":
         package, bin_path, runner = MANAGER_PACKAGES[manager]
-        version, integrity = MANAGER_PINS[manager]
+        version, integrity = manager_release(manager, facts.get("release"))
         steps = ["echo '{\"private\": true}' > package.json",
                  f"npm install --no-audit --no-fund --ignore-scripts --loglevel=error {package}@{version} >&2",
                  f"node -e {shlex.quote(pinned_package_check(package, version, '/opt/manager'))} {shlex.quote(integrity)}"]
@@ -1585,6 +1605,8 @@ def main(argv=None):
     install = commands.add_parser("manager-install", help="print the shell lines that install a package manager by version and integrity")
     install.add_argument("manager")
     install.add_argument("folder")
+    install.add_argument("--version", default="", help="an exact release (package.json's packageManager), else the platform's pin")
+    install.add_argument("--integrity", default="", help="the sha512 integrity packageManager carries, if any")
     commands.add_parser("descriptor", help="print the buildpacks' project descriptor")
     commands.add_parser("deny-dockerignore", help="print the deny-list .dockerignore for a repository without one")
     args = parser.parse_args(argv)
@@ -1600,7 +1622,8 @@ def main(argv=None):
                 raise ValueError(f"{args.manager} is not a package manager the platform installs (pnpm, yarn, yarn1, bun)")
             if not re.fullmatch(r"[A-Za-z0-9_./-]+", args.folder):
                 raise ValueError("the folder is a plain path")
-            print("\n".join(manager_install_lines(args.manager, args.folder)))
+            release = {"version": args.version, "integrity": args.integrity} if args.version else None
+            print("\n".join(manager_install_lines(args.manager, args.folder, release=release)))
             return 0
         if args.command == "node-facts":
             facts = node_facts(args.app_dir, clean_path(args.path), args.node if args.node in NODE_IMAGES else "24")
@@ -1612,6 +1635,9 @@ def main(argv=None):
                 if not re.fullmatch(r"[A-Za-z0-9 _./@=:-]*", value):
                     raise ValueError(f"{key} holds characters the build cannot pass on")
                 print(f"{key.upper()}={shlex.quote(value)}")
+            if facts["integrity"] and not re.fullmatch(r"sha512-[A-Za-z0-9+/]{86}==", facts["integrity"]):
+                raise ValueError("the manager's integrity is not a sha512")
+            print(f"INTEGRITY={shlex.quote(facts['integrity'] or '')}")
             print(f"BUILD={shlex.quote(' '.join(plan.get('build') or []))}")
             print(f"START={shlex.quote(' '.join(plan.get('start') or []))}")
             return 0

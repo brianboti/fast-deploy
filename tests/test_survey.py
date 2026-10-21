@@ -16,7 +16,7 @@ INDEX = json.loads((FIXTURES / "index.json").read_text())
 
 # What the reader makes of each repository: accepted with the start it chose, or refused with a fragment of each refusal's
 # problem. The research review counted 3 accepted and 60 refusals at 1.21.0; Phase 20 (1.22.0) read 8 and 42; Phase 21
-# (1.23.0, the Node.js builds and managers) reads 14 accepted and 27 refusals, and the rows below say which rung each one
+# (1.23.0, the Node.js builds and managers) reads 13 accepted and 28 refusals, and the rows below say which rung each one
 # stops at. Phase 22 (the root user, the proxy sidecar, static sites) moves more of them.
 EXPECTED = {
     # Python
@@ -51,7 +51,7 @@ EXPECTED = {
     "vercel/ai-chatbot": "node node_modules/next/dist/bin/next start -H 0.0.0.0 -p $PORT",  # pnpm-lock.yaml installed by pnpm (21.1), Next.js built
     "GoogleCloudPlatform/nodejs-docs-samples:run/helloworld": ["the final image runs as root", "builds on Node.js 20"],
     "huggingface/chat-ui": ["looks like a committed secret", "looks like a committed secret", "copies .env into the image", "the final image runs as root"],
-    "shadcn-ui/taxonomy": "node node_modules/next/dist/bin/next start -H 0.0.0.0 -p $PORT",  # pnpm, Next.js; its .nvmrc 16 passes (D48)
+    "shadcn-ui/taxonomy": ["is lockfile version 6"],  # pnpm 8's lockfile and no packageManager: pnpm 12 cannot install it frozen
     "discord/discord-example-app": "node app.js",
     "langgenius/dify:web": "its own Dockerfile",  # its workspace: dependencies resolve in the root's pnpm-lock.yaml (21.4)
 }
@@ -98,8 +98,8 @@ def test_the_sample_moves_from_three_accepted_toward_the_reviews_estimate():
         if result["spec"] is not None:
             accepted.add(item["entry"])
     assert ACCEPTED_AT_1_21 <= accepted  # nothing that was taken as it is at 1.21.0 is refused now
-    assert len(accepted) == sum(isinstance(value, str) for value in EXPECTED.values()) == 14
-    assert refusals == sum(len(value) for value in EXPECTED.values() if isinstance(value, list)) == 27
+    assert len(accepted) == sum(isinstance(value, str) for value in EXPECTED.values()) == 13
+    assert refusals == sum(len(value) for value in EXPECTED.values() if isinstance(value, list)) == 28
     assert len(INDEX) == 33 and all(item["paths"] > 0 for item in INDEX)
 
 

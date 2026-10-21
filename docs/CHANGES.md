@@ -17,7 +17,12 @@ checked locally; the live exercise listed under Phase 21 has not run yet.
    that integrity, never through Corepack. Four pins join the weekly refresh (`MANAGER_PINS` in `labdeploy/scaffold.py`;
    pnpm's and Yarn 1's own install scripts, skipped, hold nothing back). OSV-Scanner reads all three lockfiles, and the
    audit's summary applies the registry checks to them. The platform still makes its own lock with npm when a repository
-   has none.
+   has none. The release that installs is the one `package.json`'s `packageManager` names (`"pnpm@8.15.9+sha512.…"`,
+   `"yarn@3.8.7"`), held to the sha512 the field carries or to the registry's integrity, as Corepack and Railpack honour
+   it; the pin applies only without the field, and a lockfile the pin cannot install frozen is then refused with the line
+   to add. This was checked in Docker on 2026-10-20 with small lockfiles (no repository's code): pnpm 12 refuses pnpm
+   8's lockfile 6.0, and Yarn 4.18.1 `--immutable` fails on Yarn 3's and on Yarn 4.0 to 4.12's lockfiles, so a single
+   pinned release could not install most Yarn 2+ projects.
 2. **A build stage** (21.2). When a service builds first (a `build` script with a missing start file, or Next.js, NestJS,
    React Router, Remix, SvelteKit with adapter-node, Nuxt, Astro with its Node adapter, AdonisJS among the dependencies),
    the platform's Node.js image (`templates/repo/Dockerfile.node.platform`) installs the development dependencies with
@@ -52,9 +57,10 @@ checked locally; the live exercise listed under Phase 21 has not run yet.
    scripts run through the manager that installed the packages (`npm rebuild`, `pnpm rebuild`, `yarn rebuild`, `bun pm
    trust`). Name-only approvals and `--all` stay refused.
 6. **The survey** (`tests/test_survey.py`, re-recorded with the lockfiles and configuration files the reader now fetches):
-   **14 accepted and 27 refusals**, from 8 and 42 at 1.22.0 (3 and 60 at 1.21.0). New since 1.22.0: NestJS's starter,
-   three Next.js applications on pnpm or npm (chatbot-ui, Vercel's AI chatbot, Taxonomy), Dify's web package out of its
-   pnpm workspace, and hagopj13's Express boilerplate (Yarn 1). Fastify's demo now stops only at its host (D51), and the
+   **13 accepted and 28 refusals**, from 8 and 42 at 1.22.0 (3 and 60 at 1.21.0). New since 1.22.0: NestJS's starter,
+   two Next.js applications (chatbot-ui on npm, Vercel's AI chatbot on pnpm), Dify's web package out of its pnpm
+   workspace, and hagopj13's Express boilerplate (Yarn 1). Taxonomy builds too but stops at its lockfile: pnpm 8's
+   format with no `packageManager`, which pnpm 12 cannot install frozen. Fastify's demo now stops only at its host (D51), and the
    two workspace repositories at their root user or their static site (Phase 22).
 7. **Smaller changes.** A pm2 start with an ecosystem file in JSON starts the file it names (D49). The pipeline keeps the
    lockfile's real name for the audit, installs the manager by version and integrity before the install, and runs the
@@ -64,7 +70,7 @@ checked locally; the live exercise listed under Phase 21 has not run yet.
    workspaces, install scripts); CLAUDE-CHAT; the operator skill and its reference (the skill zip on claude.ai needs
    re-uploading); the roadmap's Phase 21 status and its "later" list; the handoff.
 
-Tests: 923 pass (10 new, on top of 1.22.5; the survey fixtures were recorded again with the lockfiles and configuration
+Tests: 924 pass (11 new, on top of 1.22.5; the survey fixtures were recorded again with the lockfiles and configuration
 files the reader now fetches, 4 MB gzipped); ruff clean; hadolint 2.15.1 through Docker reports only informational notes
 on the rendered Node.js images (consecutive `RUN` lines), nothing that blocks. No package manager ran, and nothing from
 the sampled repositories was executed.

@@ -632,8 +632,8 @@ Cost effect: none; a wrong guess costs one failed build and its scan (about $0.2
 
 Status: planned on 2026-10-20 (research review sections 4, 6.3 and 7.2) and built the same day as 1.23.0, on 1.22.5
 after the live exercise of Phase 20 (code, tests and documents, checked locally; the live exercise below has not run).
-The survey (`tests/test_survey.py`) now reads 14 of the 33 repositories as they are and refuses 27 things, from 8 and 42
-at 1.22.0: NestJS's starter, three Next.js applications on pnpm or npm, Dify's web package out of its pnpm workspace and
+The survey (`tests/test_survey.py`) now reads 13 of the 33 repositories as they are and refuses 28 things, from 8 and 42
+at 1.22.0: NestJS's starter, two Next.js applications on pnpm or npm, Dify's web package out of its pnpm workspace and
 a Yarn 1 Express boilerplate joined; what still stops the Node.js sample is Phase 22's (the root user, Fastify's host, a
 static site). `turbo prune` was left out: the whole workspace is installed and one package deployed out of it. The three
 items the review of 2026-10-19 ranked 7 to 9, built first because the survey shows them in 8 of 15 Node.js

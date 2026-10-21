@@ -244,7 +244,7 @@ def test_other_package_managers_install_their_own_lockfiles_since_phase_21():
     assert refused(yarn, "holds packages Yarn 1 would install without checking them against the npm registry: express has no integrity hash")
     two = read(repo(extra={"packageManager": "yarn@4.5.0", "engines": {"npm": ">=10"}}))
     assert refused(two, "names yarn in packageManager but npm in engines")
-    assert any("packageManager names pnpm" in note for note in read(repo(extra={"packageManager": "pnpm@9.1.0"}))["notes"])
+    assert any("packageManager names pnpm, but the lockfile is package-lock.json, npm's" in note for note in read(repo(extra={"packageManager": "pnpm@9.1.0"}))["notes"])
 
 
 def test_without_a_lockfile_the_platform_locks_it():

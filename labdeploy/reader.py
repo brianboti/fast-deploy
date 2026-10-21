@@ -1384,16 +1384,48 @@ def node_lock(repo, ladder, package, member=False):
             ladder.note(f"{repo.at(name)} is behind package.json ({', '.join(stale)} differ): the platform's lock replaces it for the build; run npm "
                         "install and commit the two together to have your own lockfile used")
             return {"action": "lock", "runtime": "node-http", "from": repo.at("package.json"), "package": repo.text("package.json")}
+    chosen = None
+    if manager != "npm":
+        from .scaffold import MANAGER_PINS
+        root_package = nodejs.package_data(repo.texts.get("package.json", "")) if member else None
+        spec = nodejs.manager_spec(package) or nodejs.manager_spec(root_package)
+        named = nodejs.manager_of(package) or nodejs.manager_of(root_package)
+        family = "yarn" if manager in ("yarn", "yarn1") else manager
+        if named and named != family and named != "npm":
+            ladder.refuse(repo.at("package.json"), f"names {named} in packageManager, but the lockfile is {name}, {commands['title']}'s",
+                          "keep one manager: remove the other's lockfile, or correct packageManager")
+            return None
+        if spec and spec["manager"] == manager:
+            # The repository's own release of its manager, as Corepack and Railpack honour it: a lockfile is written for it.
+            chosen = {"version": spec["version"], "integrity": spec["integrity"]}
+            held = "the sha512 packageManager carries" if spec["integrity"] else "the integrity the npm registry publishes"
+            how = f"{commands['title']} {spec['version']} from packageManager, installed by version and checked against {held}"
+        else:
+            if spec and spec["manager"] != manager:
+                ladder.note(f"packageManager names {spec['manager']} {spec['version']}, which does not write {name}: the platform's own "
+                            f"{commands['title']} is used")
+            formats = nodejs.PINNED_FORMATS.get(manager)
+            found_format = nodejs.lock_format(view)
+            if formats and found_format not in formats:
+                pinned = MANAGER_PINS[manager][0]
+                fix = (f"name the release that wrote it in package.json (\"packageManager\": \"{'pnpm' if manager == 'pnpm' else 'yarn'}@<version>\"), "
+                       f"or run the install with {commands['title']} {pinned.split('.')[0]} and commit the lockfile it writes")
+                ladder.refuse(at(name), f"is {'lockfile version' if manager == 'pnpm' else 'Yarn lockfile format'} {found_format or 'unknown'}, which the "
+                              f"platform's {commands['title']} {pinned} cannot install frozen, and package.json names no packageManager release", fix)
+                return None
+            how = f"{commands['title']} {MANAGER_PINS[manager][0]}, the platform's pin, installed by version and integrity"
+    if manager == "npm" and nodejs.manager_of(package) not in (None, "npm"):
+        ladder.note(f"packageManager names {nodejs.manager_of(package)}, but the lockfile is {name}, npm's: the platform installs it with npm ci")
     if manager == "npm":
         ladder.choose("Dependencies", f"{name}, installed with npm ci and every install script off" + (" (the workspace root's lockfile)" if member else ""), at(name))
     else:
-        from .scaffold import MANAGER_PINS
-        ladder.choose("Dependencies", f"{name}, installed with `{commands['frozen']}` ({commands['title']} {MANAGER_PINS[manager][0]}, installed by version "
-                      "and integrity; every install script off)" + (" from the workspace root" if member else ""), at(name))
+        ladder.choose("Dependencies", f"{name}, installed with `{commands['frozen']}` ({how}; every install script off)"
+                      + (" from the workspace root" if member else ""), at(name))
         ladder.note(f"{at(name)} is installed frozen by {commands['title']}: a lockfile behind package.json stops the build, so commit the two together")
     if name == "npm-shrinkwrap.json" and repo.has("package-lock.json"):
         ladder.ignore(repo.at("package-lock.json"), "npm-shrinkwrap.json comes first, as npm reads it")
-    return {"action": "use", "runtime": "node-http", "from": at(name), "file": name, "data": data, "view": view, "manager": manager, "member": member}
+    return {"action": "use", "runtime": "node-http", "from": at(name), "file": name, "data": data, "view": view, "manager": manager, "member": member,
+            "manager_release": chosen}
 
 
 def script_ladder(repo, ladder, package, lock):
@@ -1708,8 +1740,6 @@ def node_read(repo, ladder, result, base, compose, name, paths):
     if manager and named:
         ladder.refuse(repo.at("package.json"), f"names {manager} in packageManager but {named[0]} in engines, two package managers",
                       "keep one: the platform installs with npm, so name npm in both, or remove one")
-    elif manager and manager != "npm":
-        ladder.note(f"packageManager names {manager}; the platform installs with npm from the lockfile, without Corepack")
     for rc, yarn in ((".npmrc", False), (".yarnrc.yml", True)):
         for location, text in repo.nearest(rc):
             if nodejs.literal_token(text, yarn):

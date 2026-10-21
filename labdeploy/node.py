@@ -315,6 +315,37 @@ def workspace_packages(package, paths):
     return [folder for folder in folders if any(fnmatch.fnmatch(folder, str(glob).rstrip("/")) for glob in globs)]
 
 
+def manager_spec(package):
+    """package.json's packageManager as {"manager", "version", "integrity"} when it names an exact release
+    ("pnpm@9.15.0+sha512.<hex>", "yarn@4.5.3"), as Corepack and Railpack read it; None when absent or not exact. The
+    manager is the platform's name: yarn1 for Yarn 1, yarn for 2 and later. A sha512 hash is Corepack's hex digest of the
+    npm tarball, given back as npm's integrity form (sha512-<base64>) so the install can be held to it."""
+    import base64
+    value = (package or {}).get("packageManager")
+    match = re.fullmatch(r"(npm|yarn|pnpm|bun)@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?:\+(sha\d+)\.([0-9a-f]+))?", value.strip()) if isinstance(value, str) else None
+    if not match:
+        return None
+    name, version, algorithm, digest = match.groups()
+    manager = "yarn1" if name == "yarn" and version.split(".")[0] == "1" else name
+    integrity = None
+    if algorithm == "sha512" and len(digest) == 128:
+        integrity = "sha512-" + base64.b64encode(bytes.fromhex(digest)).decode()
+    return {"manager": manager, "version": version, "integrity": integrity, "algorithm": algorithm}
+
+
+# What a manager at the platform's pinned major can install frozen, by lockfile format (checked in Docker on 2026-10-20):
+# pnpm 12 reads lockfile 9.0 only (pnpm 8's 6.0 is refused); Yarn 4.18 rewrites any other Yarn 2+ lockfile (metadata 4,
+# 6 and even Yarn 4.0 to 4.12's 8), which --immutable forbids. A repository that names its manager's exact release in
+# packageManager installs with that release instead, so these only decide when packageManager is absent.
+PINNED_FORMATS = {"pnpm": ("9",), "yarn": ("10",)}
+
+
+def lock_format(view):
+    """The format a lockfile names: pnpm's lockfileVersion major, Yarn 2+'s __metadata version."""
+    version = str(view.get("lockfileVersion") or "")
+    return version.split(".")[0] if view.get("manager") == "pnpm" else version
+
+
 def manager_of(package):
     """The package manager package.json's packageManager names (yarn for "yarn@4.5.0"), or None."""
     value = (package or {}).get("packageManager")
