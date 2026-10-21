@@ -951,3 +951,19 @@ def test_the_platforms_workflow_files_may_be_read_past_64_kib_and_nothing_else_m
     # The templates themselves stay well inside the limit.
     for name in ("deploy-gcp.yml", "recover-gcp.yml", "rightsize-gcp.yml"):
         assert (ROOT / "templates" / name).stat().st_size < WORKFLOW_LIMIT // 2
+
+
+def test_a_service_reads_how_its_runs_ended_through_the_foundations_narrow_role():
+    # Found live on 2026-10-21: the job-level viewer grant did not let the service read its run's execution and task (403), while
+    # the machine's project-level viewer did. The service now holds labDeployJobReader on the project: four reads, nothing else.
+    jobs = (ROOT / "infra/gcp/modules/service/jobs.tf").read_text()
+    reader = jobs[jobs.index('resource "google_project_iam_member" "job_runtime_reader"'):]
+    reader = reader[:reader.index("\n}")]
+    assert 'role    = "projects/${var.project_id}/roles/labDeployJobReader"' in reader and "length(var.jobs) > 0" in reader
+    assert '"job_runtime_viewer"' not in jobs
+    project = (ROOT / "infra/gcp/modules/project/main.tf").read_text()
+    role = project[project.index('resource "google_project_iam_custom_role" "job_reader"'):]
+    assert 'permissions = ["run.executions.get", "run.executions.list", "run.tasks.get", "run.tasks.list"]' in role[:role.index("\n}")]
+    grant = change("google_project_iam_member", "projects/lab-proj-123/roles/labDeployJobReader",
+                   "serviceAccount:codesurgeon-runtime@lab-proj-123.iam.gserviceaccount.com", project="lab-proj-123")
+    assert check_plan({"resource_changes": [grant]}) == []

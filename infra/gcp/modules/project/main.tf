@@ -327,6 +327,15 @@ resource "google_project_iam_custom_role" "cap_operator" {
 }
 # The controller's guard (docs/ROADMAP.md D70): it cancels a job's execution that runs more than one task, past its timeout
 # or beyond the day's runs. Granted on each job by the service module; the machine's run.viewer already reads executions.
+# How a run of an application's job ended (docs/ROADMAP.md 27.6): its execution and its task's exit code. Cloud Run checks
+# these reads on the project, not on the job (the live exercise of 2026-10-21: a job-level viewer grant was refused), and takes
+# no IAM condition on a resource's name, so the service module grants this narrow role on the project to a service with jobs.
+resource "google_project_iam_custom_role" "job_reader" {
+  role_id     = "labDeployJobReader"
+  title       = "Lab Deploy job reader"
+  description = "Reads Cloud Run job executions and their tasks; nothing else"
+  permissions = ["run.executions.get", "run.executions.list", "run.tasks.get", "run.tasks.list"]
+}
 resource "google_project_iam_custom_role" "job_guard" {
   role_id     = "labDeployJobGuard"
   title       = "Lab Deploy job guard"

@@ -46,3 +46,4 @@ output "binary_authorization" {
 # with jobs or a clock let these mint their wake token and cancel a run beyond its limits.
 output "controller_members" { value = local.controller_enabled ? ["serviceAccount:${google_service_account.controller[0].email}"] : var.viewer_members }
 output "job_guard_role" { value = google_project_iam_custom_role.job_guard.name }
+output "job_reader_role" { value = google_project_iam_custom_role.job_reader.name }

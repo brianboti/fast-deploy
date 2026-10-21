@@ -580,8 +580,9 @@ wake:
   global endpoint) and the lab's network, never the internet; `egress: internet` opens it, through a reviewed pull request.
   Jobs always run in Cloud Run's second-generation environment.
 - **What the service gets.** `JOB_<NAME>`, the job's full resource name. Its identity may start its own jobs (with
-  per-run arguments and environment: the Cloud Run API's `run` with `overrides`), cancel them and read their executions and
-  tasks, including each task's exit code; nothing on any other job. Read a run's verdict from its execution, never from a file the
+  per-run arguments and environment: the Cloud Run API's `run` with `overrides`) and cancel them, and nothing on any other
+  job; it reads how runs ended (executions and tasks, each task's exit code) through a read-only role on the project, which
+  Cloud Run checks there, so it could also see other jobs' runs, never their secrets or settings. Read a run's verdict from its execution, never from a file the
   code it ran could have written.
 - **Images.** Each job's Dockerfile is held to the same policy, lint, secret scans and parts list as the service's, built
   with no build cache and no cloud credentials, pushed as `<service>-<name>`, signed with the application's Cloud KMS key
