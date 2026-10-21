@@ -469,10 +469,9 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
     @quiet
     def list_events(limit: Annotated[int, described("At most this many events (default 50, up to 500).")] = 50,
                     application: Annotated[str | None, described("Only events about this app; omit for all.")] = None) -> dict[str, Any]:
-        """Recent audit events: tool and REST calls, sign-ins, throttling, token reuse. Deployers see every identity; read-only identities see their own."""
-        principal = identity.get()
-        return chat.attach(chat.events, {"events": store.recent_events(min(max(int(limit), 1), 500), identity=None if principal.can_deploy else principal.name,
-                                                                        application=application)})
+        """Recent audit events: tool and REST calls, sign-ins, throttling, token reuse. A deployer of every application sees them all; one of
+        some applications, the events about them and its own; a read-only identity, its own."""
+        return chat.attach(chat.events, controller.events_for(identity.get(), limit, application))
 
     def spending_guards(app_ids):
         caps = getattr(config, "cloud_run_spend_caps", None) or {}
@@ -592,8 +591,7 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
 
     @app.get("/events")
     def events(limit: int = 50, application: str | None = None):
-        principal = identity.get()
-        return {"events": store.recent_events(min(max(limit, 1), 500), identity=None if principal.can_deploy else principal.name, application=application)}
+        return controller.events_for(identity.get(), limit, application)
 
     if oauth is not None:
         mount(app, oauth, limits.failures)  # must precede the catch-all MCP mount

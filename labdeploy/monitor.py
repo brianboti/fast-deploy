@@ -159,13 +159,6 @@ class Monitor:
     def everything(principal):
         return "*" in principal.applications
 
-    def event_scope(self, principal):
-        """Which events a principal sees, as list_events decides: a read-only identity its own; a deployer of some
-        applications the events about them and its own; a deployer of every application all."""
-        if not principal.can_deploy:
-            return (principal.name, None)
-        return None if self.everything(principal) else (principal.name, self.visible(principal))
-
     def services(self, app_ids):
         """(application, environment, target) for every service of these applications: staging, and production where it exists."""
         found = []
@@ -600,7 +593,7 @@ class Monitor:
 
     def activity(self, principal, kind=None, identity=None, application=None, days=30, limit=50):
         now = self.clock()
-        scope = self.event_scope(principal)
+        scope = self.controller.event_scope(principal)  # the same events as list_events gives this identity
         since = now - 365 * 86_400
         choices = {column: self.store.event_values(column, scope, since) for column in ("kind", "identity", "application")}
         kind = kind if kind in choices["kind"] else None

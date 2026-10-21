@@ -36,6 +36,8 @@ HIDDEN_COSTS = ("Of the bill, only the lines labelled with this token's applicat
                 "totals, the month so far and its budget) and other applications' spend are shown to an identity that sees every application.")
 HIDDEN_STATUS = ("Other applications, and the background jobs' results and errors (which can name any application), are shown to an "
                  "identity that sees every application.")
+HIDDEN_EVENTS = ("Events about the applications this token may see, and its own: the rest of the audit trail is shown to an identity "
+                 "that may deploy every application.")
 
 
 def own_spend(actual, labels):
@@ -341,15 +343,18 @@ class Store:
             row = db.execute(query + " ORDER BY at DESC, rowid DESC LIMIT 1", params).fetchone()
         return dict(zip(("at", "identity", "name", "outcome", "detail"), row, strict=True)) if row else None
 
-    def recent_events(self, limit=50, identity=None, application=None):
+    def recent_events(self, limit=50, application=None, scope=None):
+        """The newest events first (list_events, GET /events): one application's when named, and of them those `scope` may see
+        (scope_clause; None for every event)."""
         query, params = "SELECT at, identity, client, kind, name, application, outcome, duration_ms, detail FROM events", []
         clauses = []
-        if identity is not None:
-            clauses.append("identity=?")
-            params.append(identity)
         if application is not None:
             clauses.append("application=?")
             params.append(application)
+        if scope is not None:
+            clause, values = self.scope_clause(scope)
+            clauses.append(clause)
+            params += values
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         with self.connect() as db:
@@ -359,9 +364,19 @@ class Store:
 
     # ---- the audit trail as the settings page's Activity view filters it
     @staticmethod
+    def scope_clause(scope):
+        """The condition for the events `scope` may see (Controller.event_scope): with (an identity, the applications it may
+        see), the events about those applications or made by that identity; with (an identity, None), that identity's own."""
+        who, visible = scope
+        if visible is None:
+            return "identity=?", [who]
+        marks = ",".join("?" for _ in visible) or "''"  # only placeholders are interpolated; every value is bound
+        return f"(application IN ({marks}) OR identity=?)", [*visible, who]
+
+    @staticmethod
     def event_filter(kind=None, identity=None, application=None, scope=None, since=None):
-        """A WHERE clause and its values: one kind, identity or application, and `scope` (an identity, the applications it may
-        see, or None for every application): only events about those applications or made by that identity."""
+        """A WHERE clause and its values: one kind, identity or application, and `scope` (scope_clause; None for every
+        event)."""
         clauses, params = [], []
         for column, value in (("kind", kind), ("identity", identity), ("application", application)):
             if value:
@@ -371,14 +386,9 @@ class Store:
             clauses.append("at >= ?")
             params.append(since)
         if scope is not None:
-            who, visible = scope
-            if visible is not None:
-                marks = ",".join("?" for _ in visible) or "''"  # only placeholders are interpolated; every value is bound
-                clauses.append(f"(application IN ({marks}) OR identity=?)")
-                params += [*visible, who]
-            else:
-                clauses.append("identity=?")
-                params.append(who)
+            clause, values = Store.scope_clause(scope)
+            clauses.append(clause)
+            params += values
         return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
     def find_events(self, limit=100, kind=None, identity=None, application=None, scope=None, since=None):
@@ -583,6 +593,21 @@ class Controller:
         visible = set(self.visible_apps(principal))
         return {**view, "applications": {key: value for key, value in view["applications"].items() if key in visible},
                 "errors": {part: message for part, message in (view.get("errors") or {}).items() if part != "workflows"}}
+
+    def event_scope(self, principal):
+        """Which audit events this identity may see (Store.scope_clause): a read-only identity its own; a deployer of some
+        applications the events about them and its own; a deployer of every application all of them (None)."""
+        if not principal.can_deploy:
+            return (principal.name, None)
+        return None if "*" in principal.applications else (principal.name, sorted(self.visible_apps(principal)))
+
+    def events_for(self, principal, limit=50, application=None):
+        """The audit trail, newest first, as list_events and GET /events give it: the events the Activity view gives this
+        identity (event_scope). A deployer of some applications is told in one line what it does not see."""
+        found = {"events": self.store.recent_events(min(max(int(limit), 1), 500), application, self.event_scope(principal))}
+        if principal.can_deploy and "*" not in principal.applications:
+            found["hidden"] = HIDDEN_EVENTS
+        return found
 
     # ---- one sentence: a repository that follows the contract becomes a running service
     def onboard(self, principal, repository, app_id=None, auto_deploy=False, path=None, as_is=False):
