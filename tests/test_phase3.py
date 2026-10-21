@@ -155,7 +155,8 @@ def test_cap_workflow_renders_to_valid_yaml_with_complete_expressions():
         assert text.startswith("${") and text.endswith("}") and text.count("{") == text.count("}"), text
     steps = [next(iter(step)) for step in document["main"]["steps"]]
     assert steps == ["decode", "ratio", "below_cap", "list_services", "nothing_to_close", "close_ingress", "list_instances", "nothing_to_stop",
-                     "stop_instances", "compose", "log_message", "maybe_detach", "fail_if_needed", "done", "report_below"]
+                     "stop_instances", "list_jobs", "no_jobs", "cancel_runs", "compose", "log_message", "maybe_detach", "fail_if_needed", "done",
+                     "report_below"]
     assert max(len(text) for text in expressions) <= 400  # Cloud Workflows refuses longer expressions
     assert "activationPolicy: NEVER" in rendered and "settings.userLabels.lab-deploy-managed:true" in rendered
     assert "{}" not in "".join(expressions) and "[]" not in "".join(expressions)  # Workflows expressions take no map or list literals
@@ -164,6 +165,6 @@ def test_cap_workflow_renders_to_valid_yaml_with_complete_expressions():
     # Review H6: every call retries, each resource is handled in its own try so one failure never leaves the others
     # open, failures end the execution (the alert policy watches), the ratio comes from the amounts rather than from
     # the budget's own alert lines, and a lifted resource stays open until the operator removes the label.
-    assert rendered.count("retry: ${http.default_retry}") >= 5 and rendered.count("except:") == 2
+    assert rendered.count("retry: ${http.default_retry}") >= 5 and rendered.count("except:") == 3  # services, databases, job runs (27.7)
     assert "costAmount" in rendered and "budgetAmount" in rendered and "cost / budget" in rendered
     assert "lab-deploy-cap-lifted" in rendered and "raise:" in rendered
