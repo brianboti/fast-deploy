@@ -82,6 +82,11 @@ variable "alert_email" {
   default     = ""
   description = "Email address for runtime alerts (health, errors, latency, saturation, memory, log errors); empty disables email."
 }
+variable "access_change_quiet_members" {
+  type        = list(string)
+  default     = []
+  description = "Email addresses whose own IAM changes do not raise the access-change alert (docs/ROADMAP.md 25.6), such as the operator who applies the foundation."
+}
 variable "alert_webhook_url" {
   type        = string
   default     = ""

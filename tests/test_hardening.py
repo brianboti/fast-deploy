@@ -65,7 +65,8 @@ def test_cloud_run_deploy_configures_startup_probe_and_concurrency():
     args = next(call for call in calls if call[:3] == ["gcloud", "run", "deploy"])  # after reading the live containers (1.24.0)
     assert args[:3] == ["gcloud", "run", "deploy"] and "--no-traffic" in args and "--cpu-throttling" in args
     probe = args[args.index("--startup-probe") + 1]
-    assert probe.startswith("httpGet.path=/ready,httpGet.port=9000,") and "failureThreshold=12" in probe and "timeoutSeconds=3" in probe
+    assert probe == "httpGet.path=/ready,httpGet.port=9000,initialDelaySeconds=0,periodSeconds=1,timeoutSeconds=1,failureThreshold=60"
+    assert "--cpu-boost" in args  # 25.2: Terraform creates the services, so gcloud's own default for new services never applies
     assert args[args.index("--concurrency") + 1] == "40" and args[args.index("--port") + 1] == "9000"
 
 

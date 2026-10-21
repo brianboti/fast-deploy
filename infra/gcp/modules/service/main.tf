@@ -422,6 +422,35 @@ resource "google_monitoring_alert_policy" "errors" {
     auto_close = "1800s"
   }
 }
+# Requests turned away (docs/ROADMAP.md 25.3): Cloud Run answers 429 "The request was aborted because there was no available
+# instance" when every allowed instance is busy for 30 seconds. Its request metric leaves those requests out ("Excludes
+# requests that are not reaching your container instances ... when maximum number of instances is reached"), so neither the
+# server-errors alert nor the objective sees them; the request log does. An application's own 429 counts too.
+resource "google_monitoring_alert_policy" "refused" {
+  count        = var.runtime_alerts ? 1 : 0
+  display_name = "${var.service}: requests refused"
+  combiner     = "OR"
+  conditions {
+    display_name = "a request answered 429: no instance was free, or the application refused it"
+    condition_matched_log {
+      filter = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"${var.service}\" AND logName=\"projects/${var.project_id}/logs/run.googleapis.com%2Frequests\" AND httpRequest.status=429"
+    }
+  }
+  notification_channels = var.alert_channels
+  severity              = "ERROR"
+  user_labels           = merge(local.labels, { lab-deploy-environment = local.environment_name })
+  documentation {
+    subject   = "[${local.environment_name}] ${var.service}: requests refused"
+    content   = "Requests to ${var.service} were answered 429. When the log says \"no available instance\", every allowed instance was busy and people were turned away; raising scaling.maximum in platform.yaml raises the cost bound too. Ask Claude for \"${var.service}'s health\"${local.where} and its warning lines (docs/RUNBOOK.md, \"Requests refused\")."
+    mime_type = "text/markdown"
+  }
+  alert_strategy {
+    notification_rate_limit {
+      period = "3600s"
+    }
+    auto_close = "1800s"
+  }
+}
 resource "google_monitoring_alert_policy" "latency" {
   count        = var.runtime_alerts ? 1 : 0
   display_name = "${var.service}: slow responses"

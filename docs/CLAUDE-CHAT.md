@@ -265,6 +265,8 @@ bake's numbers and the revision's log lines are in the status. A bake with too l
 | Failed its bake after promotion | The new version crashed or answered too many 5xx once it served everyone; the previous version is back | Read the bake's numbers and the log lines in the status, fix, deploy again |
 | `no_native_spend_cap` in a plan or estimate | Google's spend cap for Cloud Run is not recorded for the project | `docs/SETUP.md` 7i: create it, then record it under `cloud_run_spend_caps` |
 | Infrastructure drift in the controller status | Something in an app's infrastructure differs from the code | `docs/RUNBOOK.md` "Drift reported" |
+| "Requests refused (429)" | Every instance the app may run was busy, or the app refused requests itself | `docs/RUNBOOK.md` "Requests refused" |
+| "Google reports an incident" | Google's own service is degraded in the region; a rollback will not help | `docs/RUNBOOK.md` "Google's own incidents" |
 | "Did worse than the version before" | A day after the release, its server errors or its latency were more than twice the week before (or the uptime check missed); nothing was changed | Ask for its errors; roll it back if the release caused them (`docs/RUNBOOK.md` "After a release") |
 | "The daily digest reached no one" | The GitHub App lacks the Issues permission and no webhook is set | `docs/SETUP.md` section 4 (Issues read and write), or set `notify_webhook_url` |
 
