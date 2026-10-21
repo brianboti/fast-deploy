@@ -73,7 +73,7 @@ the skill must be re-uploaded after every release that changes `skills/` (the re
 | "What would demo cost?" | `estimate_cost` | Floor, compute ceiling, needs' floor, optional traffic scenario, findings |
 | "What did we actually spend?" | `get_cost_report` | The weekly right-sizing report with measured usage, proposals and billing export |
 | "Where is my release?" | `get_deployment_status` | Every workflow step, the release phases, candidate logs on failure, a next action |
-| "What happened today?" | `list_plans`, `list_events` | Plan history and the audit trail of every call and sign-in |
+| "What happened today?" | `list_plans`, `list_events` | Plan history and the audit trail of every call and sign-in; a `configuration` event is a change saved on the settings page (who, which tab, which keys, never their values) |
 
 **Acting** (Claude's client asks you to confirm; each one is bound to an exact commit and target):
 

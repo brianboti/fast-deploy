@@ -31,6 +31,7 @@ allowed_hosts:
 #   refresh_token_days: 30       # default; 1 to 365
 # rate_limit_per_minute: 120      # requests per operator identity (default)
 # auth_failures_per_minute: 20    # failed logins per client address (default)
+# settings_session_seconds: 3600  # how long a sign-in to https://HOST/settings lasts (300 to 86400)
 applications:
   demo:
     repository: YOUR_ORG/YOUR_APP

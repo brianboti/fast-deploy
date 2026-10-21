@@ -1,3 +1,44 @@
+# 1.25.0: a settings page for the controller's configuration
+
+Until now the controller's own configuration changed one way: `scripts/machine.sh config-get FILE`, YAML edited by hand,
+`config-put FILE`. That needs the laptop, gcloud and Identity-Aware Proxy, and a typo is found only when the file is
+checked. `https://MACHINE/settings` is the same change in a browser, checked the same way before anything is written.
+Server-rendered HTML, no JavaScript, no new package and no monthly cost; the same headers as `/login`.
+
+1. **Sign-in.** An operator token, looked up as `/login` looks it up and under its failed-login budget. Only a principal
+   with `applications: ["*"]` and `can_deploy` may open the page; anyone else gets a plain refusal. The cookie is
+   `__Host-` prefixed, signed with a key that lives only in the controller's process, HttpOnly, Secure and
+   SameSite=Strict, and every form carries a token of its own; the database keeps only the session's SHA-256, for an hour
+   (`settings_session_seconds`, 300 to 86400). A restart, a rotated token or a removed principal ends the session. The page
+   answers only on `allowed_hosts` and refuses a form sent from another origin.
+2. **Five tabs.** Applications: each application's cost ceiling, auto-deploy, auto-merge, bake, viewers and the
+   infrastructure settings of `labdeploy.infra.DEFAULT_SETTINGS` with their ranges, on its entry for an application of
+   the file and under `application_settings` for one onboarding registered. Platform: the auto-deploy interval, the
+   watchdog webhook (never shown back), the Cloud Run spend caps you recorded, how long backups stay, `platform_updates`.
+   People: principals, and a new person whose token is made on the server and shown once, after the confirm step.
+   Production: reviewers, rollout and bake, when the production block exists. Advanced: the whole file, the only place for
+   `database`, `oauth` and `github_app`. A panel at the top says what the page does not change and links to where it
+   lives: each application's contract and Terraform root (pull requests, D32), its GitHub environment, its secrets in
+   Secret Manager (gcloud, D5) and `scripts/spend-cap.sh`.
+3. **Every save the same way.** The form becomes a candidate file; it is checked with the controller's own loader and
+   `Config`, then every onboarded application with its `application_settings` laid over it (the check `LiveConfig`
+   makes, now one function, `with_settings`), and each problem is shown next to its field in plain words. Then the diff of
+   the file as the controller reads it, or "Nothing would change". Only the confirm step writes: a temporary file in the
+   same folder, mode 0600, renamed over the old one; the old one kept in `history/` beside it (the last twenty); a copy to
+   `gs://BUCKET/PREFIX/config.yaml` through the nightly backup's own upload (`copy_to_bucket`), skipped when no bucket is
+   set; one `configuration` event with the identity, the tab and the keys that changed, never their values. The
+   controller reloads the file at once and the result page shows its notes ("oauth changes need a restart"). A file that
+   changed between the review and the confirm step is not overwritten.
+4. **Danger zone.** Pausing an application, the kill switch, provenance `unavailable`, rotating a token and removing a
+   person each ask for the application's or the person's name typed out (`all applications` for the kill switch). The
+   page refuses a change that would leave nobody able to open it.
+
+The scripts stay the fallback. The page never touches contracts, Terraform roots, GitHub environments or secrets, and
+comments in the file are not kept (the machine's has none). `docs/RUNBOOK.md` ("The controller's machine", "Rotate
+credentials"), `docs/SETUP.md` section 5 and `docs/CLAUDE-CHAT.md` say how to use it.
+
+Tests: 965 pass (21 new, `tests/test_settings.py`); ruff clean.
+
 # 1.24.0: run it, then say what to fix (Phase 22)
 
 Roadmap Phase 22 (docs/ROADMAP.md 22.1 to 22.6, decisions D49, D51, D52, D54 and D55 at their defaults), from the research

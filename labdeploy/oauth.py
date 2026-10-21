@@ -63,6 +63,18 @@ def redirect_allowed(uri, allowed):
     return False
 
 
+def find_principal(config, token):
+    """The configured principal whose token this is, or None; the one lookup every browser sign-in makes (the OAuth page and the
+    settings page), comparing hashes in constant time."""
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    return next((p for p in config.principals if token and hmac.compare_digest(digest, p.token_sha256)), None)
+
+
+def principal_for(config, subject, credential):
+    """The configured principal a session was opened as, or None once its token was rotated or the principal removed."""
+    return next((p for p in config.principals if p.name == subject and hmac.compare_digest(p.token_sha256, credential)), None)
+
+
 class Code(AuthorizationCode):
     credential: str  # SHA-256 of the operator token used to sign in; rotating that token ends the session
 
@@ -174,11 +186,10 @@ class Provider:
 
     def principal(self, subject, credential):
         """The configured principal that signed in, or None once its token was rotated or the principal removed."""
-        return next((p for p in self.config.principals if p.name == subject and hmac.compare_digest(p.token_sha256, credential)), None)
+        return principal_for(self.config, subject, credential)
 
     def login(self, token):
-        digest = self.store.digest(token)
-        return next((p for p in self.config.principals if token and hmac.compare_digest(digest, p.token_sha256)), None)
+        return find_principal(self.config, token)
 
     def authenticate(self, token):
         """Synchronous lookup for the request gate: the principal behind a live access token issued for this resource, or None."""
