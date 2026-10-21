@@ -1108,10 +1108,27 @@ class Controller:
                     if target is None:
                         continue
                     try:
-                        record["services"].append(aftercare.service_day(self.observer, target, app_id, environment))
+                        record["services"].append(aftercare.service_day(self.observer, target, app_id, environment, now))
                     except Exception as exc:  # noqa: BLE001 - one application not read is said, the rest still counted
                         record["notes"].append(f"{app_id} ({environment}) was not read: {str(exc)[:120]}")
         record["troubled"] = [day for day in record["services"] if aftercare.troubled(day)]
+        record["slow_starts"] = aftercare.slow_starts(record["services"])
+        # Google's side and the quotas, once per project (docs/ROADMAP.md 25.4, 25.5).
+        record["google"], record["quotas"] = [], []
+        if self.observer is not None and applications is None:
+            for project, environment in self.projects().items():
+                if callable(getattr(self.observer, "google_incidents", None)):
+                    try:
+                        for incident in self.observer.google_incidents(project, 1440):
+                            record["google"].append({"project": project, "environment": environment, **incident})
+                    except Exception as exc:  # noqa: BLE001 - informative; the note says what was not read
+                        record["notes"].append(f"Google's incidents for {project} were not read: {str(exc)[:120]}")
+                if callable(getattr(self.observer, "quota_pressure", None)):
+                    try:
+                        for quota in self.observer.quota_pressure(project):
+                            record["quotas"].append({"project": project, "environment": environment, **quota})
+                    except Exception as exc:  # noqa: BLE001
+                        record["notes"].append(f"The quotas of {project} were not read: {str(exc)[:120]}")
         drift = self.drift_status()
         record["drift"] = {key: drift.get(key) for key in ("status", "checked_at", "drifted", "serious", "failed", "stale", "run_url")}
         try:
@@ -1130,7 +1147,8 @@ class Controller:
                 record["alert_slots"] = self.alert_slots()
                 record["idle"] = self.idle_services(plans)
         record["attention"] = bool(
-            any(item.get("over_budget") for item in (record.get("cost") or {}).get("projects") or [])
+            record["google"] or record["quotas"]
+            or any(item.get("over_budget") for item in (record.get("cost") or {}).get("projects") or [])
             or any(item["result"] in ("restored", "stopped", "rolled_back") for item in record["releases"])
             or any(item.get("verdict") == "worse" for item in record["reports"]) or record["troubled"]
             or (record["drift"].get("drifted") or record["drift"].get("failed")) or record["problems"])
@@ -1357,6 +1375,16 @@ class Controller:
                          "someone changed traffic outside the pipeline, or a release is in progress")
         if metrics.get("server_errors"):
             notes.append(f"{metrics['server_errors']} server errors in the last {metrics['window_minutes']} minutes")
+        if callable(getattr(observer, "refused_requests", None)):
+            # Requests refused with 429 (docs/ROADMAP.md 25.3): Cloud Run's request metric leaves out those refused at the limit.
+            try:
+                refused = observer.refused_requests(target, max(5, min(int(minutes), 1440)))
+            except (ValueError, httpx.HTTPError):
+                refused = 0
+            if refused:
+                metrics["refused"] = refused
+                notes.append(f"{refused} request(s) answered 429 in the last {metrics['window_minutes']} minutes: when the log says \"no available "
+                             "instance\", every allowed instance was busy and people were turned away (raise scaling.maximum, or concurrency)")
         passed = metrics.get("uptime_checks_passed")
         if passed is not None and passed < 1:
             notes.append(f"Google's uptime check reached the health path in only {passed:.0%} of its probes in the last {metrics['window_minutes']} minutes, "
@@ -1886,18 +1914,25 @@ class Controller:
             state_bucket = state_bucket or production.state_bucket
         ids = self.github.repository_ids(trusted)
         note, needs, exposure = None, None, "authenticated"
-        domain = None
+        domain, maximum = None, None
         try:
             spec = self.spec_at(app, self.github.head(app))
             health_path, needs, exposure = spec.health_path, spec.needs.model_dump(), spec.exposure
             domain = spec.domain if environment == "production" else None  # staging keeps its run.app address (16.6)
+            maximum = spec.scaling.maximum
         except ValueError as exc:
             health_path, note = "/health", f"Defaults used until the app has a reviewed platform.yaml: {exc}"
+        settings = {**app.infra, **(settings or {})}
+        if maximum is not None and "instance_alert_count" not in settings:
+            # "At maximum instances" at the application's own limit (docs/ROADMAP.md 25.3), not a fixed 3 that a default
+            # application (at most 2) never reaches; an application limited to one instance is watched by the refused-requests
+            # alert alone, since one busy instance is its ordinary state.
+            settings["instance_alert_count"] = max(2, maximum)
         # A staging root lets the application's production deployer read what staging released, to promote it (16.2).
         readers = [app.production.target.deploy_service_account] if environment == "staging" and app.production is not None else []
         files = app_root(target.service, project_id=target.project_id, region=target.region, state_bucket=state_bucket or f"{target.project_id}-tfstate",
                          github_repository=trusted, github_repository_id=ids["repository_id"], github_owner_id=ids["owner_id"],
-                         bootstrap_image=bootstrap_image or BOOTSTRAP_IMAGE, health_path=health_path, settings={**app.infra, **(settings or {})}, needs=needs,
+                         bootstrap_image=bootstrap_image or BOOTSTRAP_IMAGE, health_path=health_path, settings=settings, needs=needs,
                          exposure=exposure, viewers=self.viewers(app), environment=environment, promotion_readers=readers, domain=domain, **layout)
         return {"application": app_id, "service": target.service, "environment": environment, "directory": directory, "files": files, "note": note}
 

@@ -86,13 +86,13 @@ see (a rollback, a right-sizing pull request), ask Claude: a right-sizing propos
 
 **A token that does not see every application** (its `applications` list has no `"*"`, such as a student's read-only
 token for two apps) gets only the numbers and names of its own applications, in chat and on the page alike (since
-1.28.1). `get_cost_report` and the Cost view give the lines of the bill labelled with its applications, each beside the
+1.29.3). `get_cost_report` and the Cost view give the lines of the bill labelled with its applications, each beside the
 same line of the window before, with their right-sizing proposals, floor and ceiling; the whole project's bill (by Google
 service, its totals, the month so far and its budget) and other applications' lines are shown to an identity that sees
 every application, and the answer says so in one line. `get_controller_status` and the Activity view give each background
 job's last and next run, without its result or error, which can name any application; of the rest, only its own
 applications: their drift, re-pins and pauses, and the spend caps of their projects. `get_digest` already gave such a
-token a digest of its own applications, without the cost line. Since 1.29.3 `list_events` gives it the same events as
+token a digest of its own applications, without the cost line. Since 1.29.4 `list_events` gives it the same events as
 the Activity view: the events about its applications and its own if it may deploy (the answer says so in one line), its
 own if it is read-only.
 
@@ -267,6 +267,8 @@ bake's numbers and the revision's log lines are in the status. A bake with too l
 | Failed its bake after promotion | The new version crashed or answered too many 5xx once it served everyone; the previous version is back | Read the bake's numbers and the log lines in the status, fix, deploy again |
 | `no_native_spend_cap` in a plan or estimate | Google's spend cap for Cloud Run is not recorded for the project | `docs/SETUP.md` 7i: create it, then record it under `cloud_run_spend_caps` |
 | Infrastructure drift in the controller status | Something in an app's infrastructure differs from the code | `docs/RUNBOOK.md` "Drift reported" |
+| "Requests refused (429)" | Every instance the app may run was busy, or the app refused requests itself | `docs/RUNBOOK.md` "Requests refused" |
+| "Google reports an incident" | Google's own service is degraded in the region; a rollback will not help | `docs/RUNBOOK.md` "Google's own incidents" |
 | "Did worse than the version before" | A day after the release, its server errors or its latency were more than twice the week before (or the uptime check missed); nothing was changed | Ask for its errors; roll it back if the release caused them (`docs/RUNBOOK.md` "After a release") |
 | "The daily digest reached no one" | The GitHub App lacks the Issues permission and no webhook is set | `docs/SETUP.md` section 4 (Issues read and write), or set `notify_webhook_url` |
 

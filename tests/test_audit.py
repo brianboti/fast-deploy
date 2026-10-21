@@ -1,4 +1,4 @@
-"""Phase 1: the audit trail records tool calls, REST calls, sign-ins, throttling and token reuse. Since 1.29.3 each identity
+"""Phase 1: the audit trail records tool calls, REST calls, sign-ins, throttling and token reuse. Since 1.29.4 each identity
 reads the events the settings page's Activity view gives it."""
 import hashlib
 import logging
@@ -105,7 +105,7 @@ def busy(client, config):
 
 
 def trail(config, identity=None):
-    """The audit trail read straight from the database, newest first, as list_events gave it before 1.29.3: every event to a
+    """The audit trail read straight from the database, newest first, as list_events gave it before 1.29.4: every event to a
     deployer, its own to a read-only identity."""
     query, values = "SELECT at, identity, client, kind, name, application, outcome, duration_ms, detail FROM events", ()
     if identity is not None:
@@ -139,7 +139,7 @@ def test_a_deployer_of_some_applications_gets_the_events_about_them_and_its_own(
 
 
 def test_a_deployer_of_every_application_and_a_read_only_identity_get_what_they_got(tmp_path):
-    """A deployer of every application gets every event and a read-only identity its own, as before 1.29.3: the same events in
+    """A deployer of every application gets every event and a read-only identity its own, as before 1.29.4: the same events in
     the same order, the same summary and no line about what is hidden, through list_events and GET /events alike."""
     config = identities(tmp_path, auth_failures_per_minute=1)
     with TestClient(build_app(config, FakeGitHub())) as client:

@@ -123,7 +123,9 @@ def test_the_apply_identity_may_write_log_alert_notification_rules_and_nothing_w
     role = pipeline[pipeline.index('resource "google_project_iam_custom_role" "log_alert_writer"'):]
     role = role[:role.index("\n}")]
     assert 'role_id     = "labDeployLogAlertWriter"' in role
-    assert sorted(re.findall(r'"(logging\.[a-zA-Z.]+)"', role)) == [f"logging.notificationRules.{verb}" for verb in ("create", "delete", "get", "list", "update")]
+    # 1.29.1: and the log-based metrics an objective counts (D58), nothing wider.
+    assert sorted(re.findall(r'"(logging\.[a-zA-Z.]+)"', role)) == sorted(
+        [f"logging.{kind}.{verb}" for kind in ("notificationRules", "logMetrics") for verb in ("create", "delete", "get", "list", "update")])
     assert "role    = google_project_iam_custom_role.log_alert_writer[0].name" in pipeline
 
 

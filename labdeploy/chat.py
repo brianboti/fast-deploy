@@ -466,6 +466,9 @@ def service_words(day_record):
     parts = []
     if day_record.get("server_errors"):
         parts.append(plural(day_record["server_errors"], "server error"))
+    if day_record.get("refused"):
+        parts.append(f"{'200 or more' if day_record['refused'] >= 200 else day_record['refused']} requests refused (429: every instance busy, "
+                     "or the application said no)")
     if day_record.get("error_lines"):
         parts.append(("200 or more" if day_record.get("error_lines_capped") else str(day_record["error_lines"])) + " error lines in its log")
     if day_record.get("uptime") is not None and day_record["uptime"] < 0.99:
@@ -492,9 +495,24 @@ def digest(record):
         where = " in production" if item.get("environment") == "production" else ""
         facts.append(f"`{item.get('application')}`{where}, released {day(item.get('released_at'))}: a day later it {report_line(item)}")
         looks += item.get("verdict") == "worse"
+    for item in record.get("google") or []:
+        where = ", ".join(item.get("locations") or []) or "this project's region"
+        facts.append(f"Google reports an incident ({str(item.get('state') or 'open').lower()}): {clip(item.get('title'), 140)}, in {where}. "
+                     "Errors now are likely Google's; a rollback will not help")
+        looks += 1
     for item in troubled[:8]:
         facts.append(service_words(item))
     looks += len(troubled)
+    for item in (record.get("quotas") or [])[:4]:
+        facts.append(f"`{item['project']}`: the quota {item['quota']} is at {item['share'] * 100:.0f}% of its limit "
+                     f"({item['usage']:g} of {item['limit']:g}); ask Google for more in the console's Quotas page before it runs out")
+        looks += 1
+    slow = record.get("slow_starts") or []
+    if slow:
+        facts.append("Slowest starts in the last day: " + ", ".join(
+            f"`{day['application']}`{' in production' if day.get('environment') == 'production' else ''} {day['starts']['slowest_s']:g} s "
+            f"({plural(day['starts']['starts'], 'start')})" for day in slow[:4])
+            + ". A start this slow keeps the first visitor after a release waiting; the developer can shorten it (docs/RUNBOOK.md, \"Slow starts\")")
     if drift.get("drifted"):
         facts.append("The cloud setup differs from the code for " + ", ".join(f"`{name}`" for name in sorted(drift["drifted"]))
                      + " (docs/RUNBOOK.md, \"Drift reported\")")
@@ -1202,7 +1220,7 @@ def health(result):
              (f"Likely cause: {result['diagnosis']['cause']} (its log: “{clip(result['diagnosis']['evidence'], 120)}”). "
               f"In the code: {result['diagnosis']['developer']}. In the contract: {result['diagnosis']['operator']}") if result.get("diagnosis") else None,
              *[f"Note: {clip(note, 220)}" for note in (result.get("notes") or [])[:3]]]
-    trouble = bool(errors) or service.get("ready") is False or unreachable
+    trouble = bool(errors) or bool(metrics.get("refused")) or service.get("ready") is False or unreachable
     where = " in production" if production else ""
     return compose(head, facts, (f"look at the error lines (“show {app}'s errors”); if the latest release caused it, “roll {app} back{where}”."
                                  if trouble else "nothing to do."), link("Cloud console", result.get("console_url")) if result.get("console_url") else None)
