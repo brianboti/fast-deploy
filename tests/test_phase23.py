@@ -335,9 +335,10 @@ def test_the_error_budget_says_when_its_errors_leave_the_window_and_counts_alert
         if path.endswith("/uptimeCheckConfigs"):
             return httpx.Response(200, json={"uptimeCheckConfigs": [{"period": "300s"}, {"period": "60s", "selectedRegions": ["USA_OREGON", "USA_IOWA", "USA_VIRGINIA"]}]})
         if path.endswith("/serviceLevelObjectives/availability"):
-            return httpx.Response(200, json={"goal": 0.995, "rollingPeriod": "2592000s", "requestBasedSli": {"goodTotalRatio": {
+            # The shape the Monitoring API returns, read from production's objective on 2026-10-21 (1.29.2).
+            return httpx.Response(200, json={"goal": 0.995, "rollingPeriod": "2592000s", "serviceLevelIndicator": {"requestBased": {"goodTotalRatio": {
                 "badServiceFilter": 'metric.type="logging.googleapis.com/user/lab-deploy/demo/server-errors"',
-                "totalServiceFilter": 'metric.type="logging.googleapis.com/user/lab-deploy/demo/requests"'}}})
+                "totalServiceFilter": 'metric.type="logging.googleapis.com/user/lab-deploy/demo/requests"'}}}})
         selector = request.url.params["filter"]
         if selector.startswith("select_slo"):
             return httpx.Response(200, json={"timeSeries": [{"points": [{"interval": {"endTime": "2026-10-18T22:00:00Z"}, "value": {"doubleValue": -0.2}}]}]})
