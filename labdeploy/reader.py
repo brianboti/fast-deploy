@@ -135,6 +135,15 @@ CONFIG_PATTERNS = (
 SECRET_NAME = re.compile(r"(^|_)(SECRET|PASSWORD|PASSWD|TOKEN|KEY|DSN|CREDENTIALS?)$|^DATABASE_URL$")
 NOT_SECRET = re.compile(r"(^|_)(ALLOW|ENABLE|ENABLED|DISABLE|MAX|MIN|TTL|TIMEOUT|COUNT|LENGTH|SIZE|TYPE|FILE|PATH|DIR|ID)(_|$)")
 TEST_TOOLS = {"httpx": re.compile(r"\bhttpx\b|TestClient"), "pytest-asyncio": re.compile(r"pytest\.mark\.asyncio|pytest_asyncio")}
+# How many settings the settings note names before it says how many more there are.
+SETTINGS_SHOWN = 40
+# Responses streamed as server-sent events (docs/ROADMAP.md 19.4): Cloud Run ends every request at the contract's
+# timeout_seconds, a stream included.
+STREAMS = re.compile(r"text/event-stream|EventSourceResponse")
+# Python libraries that fetch models from the Hugging Face Hub on first use, into HOME (/tmp in the platform's images).
+HUB_DOWNLOADERS = ("transformers", "sentence-transformers", "huggingface-hub")
+# Anthropic's Vertex AI client, in a Python manifest (anthropic[vertex]) or in the code of either runtime (D47).
+CLAUDE_VERTEX = re.compile(r"\banthropic\[[^\]]*\bvertex\b", re.I)
 ROTATE_AND_REMOVE = ("remove it from the repository (and from its history), rotate whatever it held, and give the values to the service as "
               "Secret Manager secrets named under secrets in the contract")
 
@@ -1173,6 +1182,45 @@ def configuration_names(repo, compose, sources):
     return sorted(names - {"PORT", "K_SERVICE", "K_REVISION", "K_CONFIGURATION"})
 
 
+def settings_note(ladder, names):
+    """The settings the code reads, by name (never values), up to SETTINGS_SHOWN of them, and those that look like secrets."""
+    if not names:
+        return
+    shown = ", ".join(names[:SETTINGS_SHOWN]) + (f" and {len(names) - SETTINGS_SHOWN} more" if len(names) > SETTINGS_SHOWN else "")
+    secret = [n for n in names if SECRET_NAME.search(n) and not NOT_SECRET.search(n)]
+    ladder.note(f"The code reads these settings: {shown}. Before merging, give plain values under env and name secrets under secrets "
+                "(Secret Manager secrets called <service>-NAME); nothing was added."
+                + (f" These look like secrets: {', '.join(secret[:10])}." if secret else ""))
+
+
+def data_app_notes(ladder, base, sources, direct, vertex, downloaders, node):
+    """What a service that calls Claude, loads a model or streams its answers asks of the contract (D47, 19.4), for either
+    runtime: notes for the reviewer, nothing added to the draft. `direct` names Anthropic's own client when the code uses it,
+    `vertex` says Anthropic's Vertex AI client is there too, `downloaders` names the libraries that fetch models from Hugging
+    Face on first use."""
+    needs = base.get("needs") or {}
+    if direct and not vertex and "claude" not in (needs.get("models") or []):
+        client = nodejs.CLAUDE_VERTEX_CLIENT if node else "anthropic[vertex]"
+        ladder.note(f"It calls Claude with Anthropic's own client ({direct}), which needs an API key and the internet: with needs.models: "
+                    f"[claude] and Anthropic's Vertex AI client ({client}) the same calls go through Google Cloud with neither, billed inside "
+                    "the project's budget and spending cap (docs/DEVELOPER-CONTRACT.md, section 4b)")
+    for name in downloaders:
+        if node:
+            ladder.note(f"{name} fetches each model from Hugging Face on first use and keeps it inside node_modules by default, which the "
+                        "service cannot write (version 4 stops with EACCES at the first model load): put the model's files in a mounted bucket "
+                        "(needs.mounts) and point env.localModelPath at that folder with env.allowRemoteModels = false (no internet, nothing "
+                        "fetched at a cold start), or set env.cacheDir to a folder under /tmp and add egress: internet")
+        else:
+            ladder.note(f"{name} fetches models from the Hugging Face Hub on first use, into HOME (memory on Cloud Run) at every new "
+                        "instance, and code nobody has reviewed reaches no internet: put the model's files in a mounted bucket (needs.mounts) "
+                        "and load them from that folder with HF_HUB_OFFLINE=1 under env, or add egress: internet")
+    timeout = base.get("timeout_seconds") or 60
+    if isinstance(timeout, int) and timeout <= 60 and any(STREAMS.search(text) for text in sources.values()):
+        ladder.note(f"It streams its responses (server-sent events): Cloud Run closes a request when timeout_seconds runs out ({timeout} "
+                    "seconds here), a stream still sending included, so set timeout_seconds in the review to the longest answer it must "
+                    "carry (3600 at most)")
+
+
 def tests_ladder(repo, ladder):
     """Whether the service has tests: pytest's own configuration, noxfile.py, a tests folder or test files. None: no tests,
     said plainly, never fabricated."""
@@ -1723,18 +1771,15 @@ def node_read(repo, ladder, result, base, compose, name, paths):
     for item in repo.local_paths:
         if EXAMPLE_ENV.search(item) and "/" not in item:
             names.update(re.findall(r"(?m)^\s*(?:export\s+)?([A-Z][A-Z0-9_]{1,63})\s*=", repo.text(item)))
-    names = sorted(names - {"PORT", "K_SERVICE", "K_REVISION", "K_CONFIGURATION", "NODE_ENV"})
-    if names:
-        secret = [n for n in names if SECRET_NAME.search(n) and not NOT_SECRET.search(n)]
-        ladder.note("The code reads these settings: " + ", ".join(names[:20]) + ". Before merging, give plain values under env and name secrets "
-                    "under secrets (Secret Manager secrets called <service>-NAME); nothing was added."
-                    + (f" These look like secrets: {', '.join(secret[:10])}." if secret else ""))
+    settings_note(ladder, sorted(names - {"PORT", "K_SERVICE", "K_REVISION", "K_CONFIGURATION", "NODE_ENV"}))
     if not nodejs.handles_sigterm(sources) and sources:
         ladder.note("No SIGTERM handler was found: Cloud Run sends SIGTERM and stops the container ten seconds later, so requests in flight fail; "
                     "close the server on SIGTERM (process.on('SIGTERM', () => server.close(() => process.exit(0))))")
     if any(nodejs.SQLITE.search(text) for text in sources.values()):
-        ladder.note("It keeps a SQLite database on local disk, which Cloud Run loses at every restart and does not share between instances: "
-                    "a replicated SQLite file is roadmap Phase 19 (state: sqlite); until then, keep that state in Firestore or Postgres")
+        # D47: a replicated SQLite file (state: sqlite) was dropped before it was built, so the answer is a database need.
+        ladder.note("It keeps a SQLite database on local disk, which Cloud Run loses at every restart and does not share between instances, "
+                    "and every release runs the old and the new version side by side, each with its own copy: keep that state in Firestore "
+                    "or Postgres (needs.database)")
 
     needs = dict(base.get("needs") or {})
     if compose and not needs:
@@ -1753,10 +1798,13 @@ def node_read(repo, ladder, result, base, compose, name, paths):
     if any(re.search(nodejs.WORKERS, item) for item in dependencies):
         ladder.note("A job queue or scheduler appears in the dependencies: work that runs on its own schedule needs a Cloud Run job or a Pub/Sub "
                     "push service, since an idle service scales to zero")
-    outside = sorted(runtime_deps & (nodejs.INTERNET_CLIENTS | {"@huggingface/transformers"}))
+    outside = sorted(runtime_deps & nodejs.INTERNET_CLIENTS)
     if outside and not base.get("egress"):
         ladder.note(f"It uses {', '.join(outside[:5])}: if it calls services outside Google Cloud, add egress: internet in the review "
                     "(code nobody has reviewed reaches no internet otherwise)")
+    vertex = nodejs.CLAUDE_VERTEX_CLIENT in runtime_deps or any("AnthropicVertex" in text for text in sources.values())
+    data_app_notes(ladder, base, sources, nodejs.CLAUDE_CLIENT if nodejs.CLAUDE_CLIENT in runtime_deps else None, vertex,
+                   [name for name in nodejs.MODEL_DOWNLOADERS if name in runtime_deps], node=True)
 
     how, what, notes = nodejs.tests_of(package, repo.local_paths, line)
     for note in notes:
@@ -2022,12 +2070,7 @@ def read(paths, texts, path="", name=None, fallback_name=None, sizes=None):
                         "from the release's image before the candidate gets traffic")
 
     health = health_ladder(repo, ladder, base, compose, sources)
-    names = configuration_names(repo, compose, sources)
-    if names:
-        secret = [n for n in names if SECRET_NAME.search(n) and not NOT_SECRET.search(n)]
-        ladder.note("The code reads these settings: " + ", ".join(names[:20]) + ". Before merging, give plain values under env and name secrets "
-                    "under secrets (Secret Manager secrets called <service>-NAME); nothing was added."
-                    + (f" These look like secrets: {', '.join(secret[:10])}." if secret else ""))
+    settings_note(ladder, configuration_names(repo, compose, sources))
 
     # Needs: what Compose says explicitly goes in the draft; what the dependencies suggest is a note (D16).
     needs = dict(base.get("needs") or {})
@@ -2054,6 +2097,9 @@ def read(paths, texts, path="", name=None, fallback_name=None, sizes=None):
         # D35: code nobody has reviewed reaches Google's APIs and the lab's private network, never the internet, by default.
         ladder.note(f"It uses {', '.join(outside[:5])}: if it calls services outside Google Cloud, add egress: internet in the review "
                     "(code nobody has reviewed reaches no internet otherwise)")
+    vertex = bool(CLAUDE_VERTEX.search(manifest_text)) or any("AnthropicVertex" in text for text in sources.values())
+    data_app_notes(ladder, base, sources, "anthropic" if "anthropic" in dependencies else None, vertex,
+                   [name for name in HUB_DOWNLOADERS if name in dependencies], node=False)
 
     tests = tests_ladder(repo, ladder)
     if ladder.refusals or lock is None:
