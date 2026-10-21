@@ -697,6 +697,27 @@ and re-pin the applications with their own workflows. Enforce Binary Authorizati
 binary_authorization = "enforced"   # in staging.tfvars or production.tfvars; "off" allows every image
 ```
 
+## 7u. Jobs an application starts, and the clock (1.31.0)
+
+Apply the foundation in each project after the merge (`scripts/apply-foundation.sh STAGING_PROJECT`, then
+`scripts/apply-foundation.sh PROD_PROJECT production`). It adds the role `labDeployJobGuard` (cancel a job's execution),
+gives the cap's role the same permission, and publishes `controller_members`: the machine's identity in staging, and in
+production the identities of `viewer_members` (the staging machine). Then re-render the roots of applications whose
+contracts declare `jobs` or `wake` (`propose_infrastructure`; production roots through `add_production`) and merge, and
+re-pin applications with their own workflows, whose build and deploy jobs learn the jobs' images.
+
+For a `lab-members` application with `wake` in production, record production's IAP OAuth client in the controller
+configuration, as staging's is under `onboarding`:
+
+```yaml
+production:
+  iap_client_id: 123456789-abc.apps.googleusercontent.com
+```
+
+A job whose `base` names another application needs that application onboarded and released in staging first. Its
+repository is read with the platform's GitHub App when it is installed, else `APPS_READ_TOKEN`, else the run's own token,
+which reaches public repositories only.
+
 ## 7k. The weekly drift check
 
 `.github/workflows/infra-drift.yml` plans every application root against the live infrastructure on Mondays at 07:37 UTC

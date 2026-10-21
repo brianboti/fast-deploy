@@ -700,6 +700,36 @@ and, if any service or instance could not be closed, the alert **Lab Deploy: spe
 3. When the new month starts, remove the labels: `gcloud run services update SERVICE --region us-central1 --remove-labels lab-deploy-cap-lifted`
    (`gcloud sql instances patch NAME --remove-labels lab-deploy-cap-lifted`), or the cap no longer protects that service.
 4. If billing was detached (`detach_billing = true`), re-link the project in the Billing console; every API in it stopped.
+5. Since 1.31.0 the cap also cancelled every running execution of a job an application starts (labelled `lab-deploy-job`;
+   the migration job is left alone), and the controller's clock wakes no service the cap closed, so no new run starts
+   through it. What ran is billed. Reopening the service lets the clock wake it again; to let one job run while its service
+   stays closed, label the job: `gcloud run jobs update JOB --region us-central1 --update-labels lab-deploy-cap-lifted=true`.
+
+## Jobs and the clock
+
+Since 1.31.0 (docs/DEVELOPER-CONTRACT.md section 4c). How you know something happened: `get_controller_status` shows the
+clock's last wake per application and the guard's newest cancels under `jobs`; the audit trail has a `wake`, `job_guard`
+or `jobs_base` event for each (`get_events`).
+
+- **The guard cancelled a run.** It runs every minute and cancels a run of more than one task, one five minutes past its
+  `timeout_minutes`, or one beyond the day's `runs_per_day` (UTC). The application asked for more than its contract allows:
+  look at its code, or raise the limit in the contract through a reviewed pull request (`runs_per_day` at most 30,
+  `timeout_minutes` at most 60, the lab's policy). A cancel that says "refused: the guard's role is not granted" means the
+  foundation (the role `labDeployJobGuard`) or the application's root (its grant) has not been applied yet.
+- **The executions themselves**: `gcloud run jobs executions list --job SERVICE-JOB --region us-central1`, and one run's
+  log: `gcloud run jobs executions describe EXECUTION --region us-central1` names its log URL. Cancel one by hand with
+  `gcloud run jobs executions cancel EXECUTION --region us-central1`.
+- **The clock does not wake an application.** Its last status says why: "closed by the spending cap"; "no IAP client
+  recorded" (set `onboarding.iap_client_id`, or `production.iap_client_id` for production); "could not mint the wake
+  identity's token" (apply the application's root, which lets the machine mint it); an HTTP status from the application
+  itself (its own logs say why). After three failures in a row it tries every half hour. The clock runs on the controller's
+  machine: while the machine is down, nothing is woken, and the application catches up at the next wake.
+- **A job builds on an older test image.** When the application its jobs build on (`base`) changed its lockfile, its Node.js
+  line or its `build.scripts`, the controller releases the dependant again if it has `auto_deploy`; otherwise the event
+  `jobs_base` says it is behind: release it with `deploy_latest`.
+- **A release failed while it updated the jobs.** The receipt's `jobs` names each job's new and previous image and
+  `jobs_restored` the ones put back; `jobs_restore_errors` names any that could not be, which you point back by hand:
+  `gcloud run jobs update SERVICE-JOB --region us-central1 --image PREVIOUS`.
 
 ## The native spend cap tripped
 

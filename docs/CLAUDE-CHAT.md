@@ -271,6 +271,8 @@ bake's numbers and the revision's log lines are in the status. A bake with too l
 | "Google reports an incident" | Google's own service is degraded in the region; a rollback will not help | `docs/RUNBOOK.md` "Google's own incidents" |
 | "Did worse than the version before" | A day after the release, its server errors or its latency were more than twice the week before (or the uptime check missed); nothing was changed | Ask for its errors; roll it back if the release caused them (`docs/RUNBOOK.md` "After a release") |
 | "The daily digest reached no one" | The GitHub App lacks the Issues permission and no webhook is set | `docs/SETUP.md` section 4 (Issues read and write), or set `notify_webhook_url` |
+| "The guard cancelled a run of JOB" | An application started a job run beyond its contract: more than one task, past its timeout, or over its runs a day | `docs/RUNBOOK.md` "Jobs and the clock" |
+| "The clock could not wake APP" | The cap closed it, the IAP client is not recorded, or the root that lets the machine mint the wake token is not applied | `docs/RUNBOOK.md` "Jobs and the clock" |
 
 ## Verified
 

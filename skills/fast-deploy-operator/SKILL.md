@@ -256,6 +256,12 @@ default, or with `database_auth: password` when the code reads a `DATABASE_URL`,
 costs money every month from the moment it exists, so show `estimate_cost` first. Removing or switching a database is
 refused by the safety rules because it would delete data; retiring one is a deliberate operator step.
 
+Jobs the app starts itself (since 1.31.0): `jobs:` in `platform.yaml` (at most four, each its own Dockerfile, size up to 2
+CPUs and 4 GiB, 1 to 60 minutes, at most 30 runs a day) and `wake:` (the platform's clock calls a path of the app every few
+minutes). Never set images, buckets or permissions up by hand for them: the platform builds, checks, signs and caps the
+jobs, and its guard cancels a run past its limits. `base: APP` builds a job on another onboarded Node.js app's test image,
+which that app must have released first. Show `estimate_cost`: each job's worst case is in it.
+
 ## Reading a status
 
 Always pass on the status's own `next_action` too; it is written for exactly this.

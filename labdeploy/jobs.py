@@ -121,9 +121,11 @@ class Keeper:
                 return
             audience = url
             if spec.exposure == "lab-members":
-                audience = getattr(getattr(self.config, "onboarding", None), "iap_client_id", None)
+                # Behind IAP the token is for the project's IAP client, as the release probe's (docs/ROADMAP.md D66).
+                setting = "production.iap_client_id" if key[1] == "production" else "onboarding.iap_client_id"
+                audience = getattr(getattr(self.config, setting.split(".")[0], None), "iap_client_id", None)
                 if not audience:
-                    status = "no IAP client recorded (onboarding.iap_client_id), so the clock cannot pass the proxy"
+                    status = f"no IAP client recorded ({setting}), so the clock cannot pass the proxy"
                     return
             account = f"{target.service}-wake@{target.project_id}.iam.gserviceaccount.com"
             minted = self.client.post(f"{IAM_CREDENTIALS}/{account}:generateIdToken", json={"audience": audience, "includeEmail": True},

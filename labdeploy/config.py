@@ -214,6 +214,9 @@ class ProductionSettings(StrictModel):
     # The split release (D38): the share of traffic at each step, every step watched like the bake (seconds per step).
     rollout: list[int] = Field(default_factory=lambda: [10, 50, 100])
     bake_seconds: int = Field(default=300, ge=0, le=1800)
+    # Production's IAP OAuth client id (not secret), the audience the platform's clock mints its token for to wake a
+    # lab-members application in production (docs/ROADMAP.md D66); staging's is onboarding.iap_client_id.
+    iap_client_id: str | None = Field(default=None, pattern=r"^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$")
 
     @model_validator(mode="after")
     def well_formed(self):

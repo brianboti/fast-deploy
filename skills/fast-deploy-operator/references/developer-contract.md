@@ -124,6 +124,13 @@ does not build its own sign-in for these people: Google has already checked who 
 request header `X-Goog-Authenticated-User-Email` (verified, when needed, from `X-Goog-IAP-JWT-Assertion`). Programs that
 call the app need a token for the sign-in's client id, which the operator provides.
 
+## 5b. Jobs and the clock
+
+An app that must look for work or run short pieces of work declares `jobs:` (Cloud Run jobs it starts itself, each with its
+own Dockerfile, identity, buckets, size, timeout and runs a day) and `wake:` (the platform calls a path of it on a schedule).
+A container cannot start containers on Cloud Run, and a loop gets no CPU between requests: the job and the clock replace
+both. The full rules are section 4c of the developer contract.
+
 ## 6. Not supported
 
 Apps anyone can open without signing in, GPUs, runtimes other than Python and Node.js web services, apps that keep state in the

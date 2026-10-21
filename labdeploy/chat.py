@@ -524,6 +524,13 @@ def digest(record):
     if update_attention:
         facts += [fact for fact in update_facts if "waiting for a person" in fact or "fails" in fact or "failed" in fact or "went back" in fact]
         looks += 1
+    jobs = record.get("jobs") or {}
+    for item in (jobs.get("cancels") or [])[:6]:
+        # D70: a run beyond its contract's limits, cancelled by the guard (docs/RUNBOOK.md, "Jobs and the clock").
+        facts.append(f"`{item['application']}`: the guard cancelled a run of `{item.get('job')}` ({clip(item.get('detail'), 160)})")
+        looks += 1
+    for item in (jobs.get("wake_failures") or [])[:4]:
+        facts.append(f"`{item['application']}`: the clock could not wake it ({clip(item.get('detail'), 160)}); docs/RUNBOOK.md, \"Jobs and the clock\"")
     for problem in problems[:6]:
         facts.append(f"To look at: {clip(problem, 220)}")
     looks += len(problems)

@@ -1,3 +1,55 @@
+# 1.31.0: jobs an application starts itself (Phase 27)
+
+CodeSurgeon's developer asked for two images, a bucket and a permission to be set up by hand, so that its always-on part
+could start an AI agent and a test checker per GitHub issue. The operator asked for it as a platform feature instead, in
+staging and production. The research review is `docs/RESEARCH-2026-10-21-jobs.md`; the decisions are D64 to D70.
+
+**27.1, the contract.** `jobs:` (at most four), each a Cloud Run job `<service>-<name>` with its own Dockerfile, size (up
+to 2 CPUs and 4096 MiB, D67), timeout (1 to 60 minutes, one try, never retried), runs a day (1 to 30, D65), buckets (read
+or write), models, secrets, env and egress (private unless it says internet); and `wake:`, the path and interval of the
+platform's clock (D66). The service gets `JOB_<NAME>`; a job gets only what its entry names. Every plan and approval block
+shows each job's price a minute and its worst case, every run of every day at its full timeout; the cost ceiling compares
+it too. Contracts without jobs hash, draft and render as before.
+
+**27.2, identities and grants.** One identity and one job per declared job, created with the bootstrap image
+(`infra/gcp/modules/service/jobs.tf`). The service may start its jobs with per-run arguments, cancel them and read their
+executions, on its own jobs only; the deployer may update them; the machine may cancel their runs through the
+foundation's new role `labDeployJobGuard`; the cap's role gains the same permission. The `<service>-wake` identity may call
+the service (through IAP for `lab-members`), and the machine may mint its token. The plan policy allows exactly these grants
+to the platform's identities and labels a job like every managed resource.
+
+**27.3, images.** The build job builds each job's image after the service's, held to the same Dockerfile policy, lint,
+secret scans and parts list, with no build cache and no cloud credentials (`labdeploy/jobimages.py`). The deploy job
+inspects each image's data files, pushes it as `<service>-<name>`, signs its provenance and parts list with the
+application's Cloud KMS key (whatever the repository's visibility: GitHub's attestation actions take one subject per
+call, Cosign takes them in a loop), verifies them, and summarises each image's vulnerabilities under the contract's
+trust. A release with jobs always builds its images again.
+
+**27.4, the test image of another application.** `base: <service>` names an onboarded Node.js application; the platform
+renders its test image from that application's contract (its Node line, its npm lockfile with every install script off,
+then its `build.scripts`, development dependencies in `/deps`, npm kept, a writable `/work`, user 65532, none of its code)
+at the commit its last staging release deployed, and passes it as the build argument `BASE`. Built locally on 2026-10-21
+from BetterCare's own files: 27 seconds, 482 MB, and its 44 tests passed inside it with no network, the code read only,
+through Smart Dev's unchanged `run-tests.sh`.
+
+**27.5, releases.** Each job is pointed at its new image and settings before the candidate is deployed, and back to its
+previous image on any failure, on recovery and on a rollback; the receipt names both images.
+
+**27.6, the clock and the guard.** Every minute the controller wakes each released application whose interval has passed
+(an identity token as `<service>-wake`, a thread per call, no wake for a service the cap closed, half an hour between
+tries after three failures), and cancels any job run of more than one task, past its timeout or beyond the day's runs;
+each lands in the audit trail and the status. Hourly, an application whose jobs build on another application is released
+again (with `auto_deploy`) when that application's lockfile, Node line or `build.scripts` changed.
+
+**27.7, the cap.** The spending cap also cancels every running execution of a job applications start.
+
+**27.8, production.** A promotion copies each job's staging image by digest after verifying its staging signature, signs
+it with production's key, and points production's jobs at it; production roots create the jobs.
+
+Requires: the foundation applied in each project, then the roots of applications with jobs; applications with their own
+workflows re-pinned. Cost: nothing at idle; a run bills at least a minute at instance-based rates (about $0.16 an hour at 2
+CPUs and 4 GiB).
+
 # 1.30.0: the rest of Phases 14 and 25 (Phase 26)
 
 Seven items the roadmap had left open: three controls of Phase 14 that waited for machinery (14.8 to 14.10) and four

@@ -1227,6 +1227,16 @@ class Controller:
         record["problems"] = self.watchdog_problems(now) if applications is None else []
         if moment.weekday() == 0 or applications is not None:
             record["trust"] = aftercare.trust(plans, now, 30)
+        # The jobs applications start (docs/ROADMAP.md D66, D70): each run the guard cancelled in the last day, and each
+        # application the clock could not wake there.
+        cancels = [event for event in self.store.find_events(limit=50, kind="job_guard", since=now - 86_400) if event.get("application") in visible]
+        failed = {}
+        for event in self.store.find_events(limit=500, kind="wake", since=now - 86_400):
+            if event.get("application") in visible and not str(event.get("outcome") or "").startswith("2"):
+                failed.setdefault(event["application"], event)
+        if cancels or failed:
+            record["jobs"] = {"cancels": [{"application": e["application"], "job": e.get("name"), "detail": e.get("detail")} for e in cancels],
+                              "wake_failures": [{"application": app, "detail": e.get("detail")} for app, e in sorted(failed.items())]}
         record["guards"] = {"missing_native_caps": sorted({app.target.project_id for app_id, app in self.config.applications.items() if app_id in visible}
                                                           - set(getattr(self.config, "cloud_run_spend_caps", None) or {}))}
         if applications is None:
@@ -1242,7 +1252,7 @@ class Controller:
             or any(item.get("over_budget") for item in (record.get("cost") or {}).get("projects") or [])
             or any(item["result"] in ("restored", "stopped", "rolled_back") for item in record["releases"])
             or any(item.get("verdict") == "worse" for item in record["reports"]) or record["troubled"]
-            or (record["drift"].get("drifted") or record["drift"].get("failed")) or record["problems"])
+            or (record["drift"].get("drifted") or record["drift"].get("failed")) or record["problems"] or (record.get("jobs") or {}).get("cancels"))
         return record
 
     def projects(self):
