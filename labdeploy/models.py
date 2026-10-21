@@ -340,11 +340,12 @@ class AppSpec(StrictModel):
         if (self.command is not None or self.args is not None) and self.build.recipe == "buildpacks":
             raise ValueError("command and args replace the image's start command, which on a buildpacks image bypasses its launcher; use build.entrypoint")
         self.runtime_fits()
-        derived = {**needs_env(self, "project"), **needs_secrets(self)}
+        # IAP_AUDIENCE: what a lab-members app checks the proxy's signed header against, set by the release (1.25.1).
+        derived = {**needs_env(self, "project"), **needs_secrets(self), **({"IAP_AUDIENCE": ""} if self.exposure == "lab-members" else {})}
         taken = set(self.env) | set(self.secrets)
         for name in derived:
             if name in taken:
-                raise ValueError(f"'{name}' is set by the platform for a declared need and cannot be an env or secret name")
+                raise ValueError(f"'{name}' is set by the platform for a declared need or the exposure and cannot be an env or secret name")
         if len(derived) + len(self.env) > 48:
             raise ValueError("Too many variables: needs, env and secrets together must stay under 48")
         return self
