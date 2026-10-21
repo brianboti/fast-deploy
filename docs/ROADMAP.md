@@ -602,8 +602,17 @@ say it, and the rule that nothing is public.
 
 ## Phase 20: read more, refuse less (about four days) → version 1.22.0
 
-Status: planned on 2026-10-20 (research review sections 4, 6.1, 6.4 and 7.1) and built the same day as 1.22.0 with the
-defaults of D48, D50 and D56 (code, tests and documents, checked locally; the live exercise below has not run). The
+Status: planned on 2026-10-20 (research review sections 4, 6.1, 6.4 and 7.1), built the same day as 1.22.0 with the
+defaults of D48, D50 and D56, and exercised live the same evening (`docs/VALIDATION.md`, "Live exercise of Phase 20"):
+an aiohttp app started with `python main.py` and a Node.js service on the literal port 3000 with a dead `.nvmrc` went
+live as they are; a root with four services was onboarded with one sentence; the Streamlit example was read from its
+`master` branch; the Django project, with its `requirements/` include, collectstatic and a migration job, went live after
+1.22.5 took the base image's build tools out of the platform's Python image. What the exercise showed
+was fixed as 1.22.1 (the as-is path reads the repository's default branch; `HOST` for the `python FILE` rungs), 1.22.2
+(the one-sentence onboarding answers at once), 1.22.3 (certifi, the platform's own audit), 1.22.4 (a decommission
+script) and 1.22.5 (no package manager in the platform's Python image). The Gradio and Streamlit first releases were
+stopped by the dependency audit, as designed: both frameworks pin `pillow<13`, and pillow 12.3.0 carries fixable critical
+findings since 2026-10-16. Open: the Python dependency audit held to the Node.js rule of D44 (a template change). The
 survey of section 4 is now a test (`tests/test_survey.py`, 20.6): the same 33 repositories read as 8 accepted and 42
 refusals, from 3 and 60 at 1.21.0; of the 25 still refused, 9 carry a Dockerfile that runs as root (Phase 22's wrapper
 user; four of them also name a dead line in that Dockerfile or a real `.env`), 8 need the builds, managers or workspaces

@@ -807,3 +807,65 @@ What it cost: nine new images, each scanned once by Artifact Analysis (the first
 and the three releases after #117), about $2.34 at $0.26 each; the reuse and the stopped releases built nothing. While
 the five services exist, their provenance keys cost about $0.30 a month and their images about a gigabyte of the
 registry; Cloud Run idles at nothing.
+
+## Live exercise of Phase 20: read more, refuse less (2026-10-20 UTC)
+
+Asked for by the operator after the merge of #123 (`a800b3e`, 1.22.0), with about $1.30 to $1.82 of staging builds approved.
+With the operator's agreement, one public test repository, `brianboti/fast-deploy-phase20-trial`, holds four small
+services in folders, written as a developer writes them for a tutorial and with nothing added for the platform:
+`gradio-hello` (a Gradio interface), `aiohttp-main` (an aiohttp application built inside `main()` and started with
+`python main.py`; `HOST` read with the usual development default of 127.0.0.1), `node-port` (Express on the literal
+port 3000, `PORT` never read, `.nvmrc` 18) and `django-static` (a Django project whose `requirements.txt` includes
+`requirements/base.txt`, with static files, migrations, `.python-version` 3.10 and an ephemeral SQLite file). The
+Streamlit case is `streamlit/streamlit-example` as it is. Every contract pull request was merged by the operator; the
+infrastructure pull requests by the controller (`onboarding.auto_merge`). Nothing from any sampled repository ran on the
+laptop: the reader ran locally on the survey's fixtures and on the trial's own files, and Docker built only the trial's
+`django-static` for the check of 1.22.5.
+
+Before anything ran live, with the controller still on 1.20.11 and the 1.22.0 reader on the laptop:
+
+| Check | Observed |
+|---|---|
+| The 1.22.0 reader on the four trial folders (`labdeploy.reader`, the controller's file selection) | `gradio-hello`: `python app.py` with `GRADIO_SERVER_NAME=0.0.0.0` and `GRADIO_SERVER_PORT=8080` from `gradio` among the dependencies, no health route (TCP probe). `aiohttp-main`: `python main.py` (no object, no factory), `/health`; "The code reads these settings: HOST", and nothing set for it. `node-port`: `node server.js`, `port: 3000` ("listens on port 3000 and never reads PORT"), Node.js 22 from `.nvmrc` 18 ("at end of life since 2025-04-30"). `django-static`: `gunicorn … trial.wsgi:application` from `WSGI_APPLICATION`, Python 3.11 from `.python-version` 3.10 ("end of life 2026-10-01"), "requirements.txt … with what it includes (requirements/base.txt)", gunicorn added to the lock, collectstatic at build noted, `needs.migrate` offered. The root names the four folders |
+| The reader on `HackSoftware/Django-Styleguide-Example` (its survey fixture) | Its `-r requirements/base.txt` followed; the Procfile taken through the buildpacks (`gunicorn config.wsgi:application`); `needs.database: postgres` from psycopg2, a Cloud SQL instance of about $8.57 a month while it exists. Checked live (below), not deployed |
+
+Live, with the controller on 1.22.0 (`a800b3e`, installed by the operator at about 19:05 UTC; the automatic updates of 1.20.4 are off):
+
+| Item | What was done | Observed |
+|---|---|---|
+| 1. Streamlit as it is | `check_repository` on `streamlit/streamlit-example` | **Refused before the reader ran**: "The default branch is master; the platform releases only from main". The same for `HackSoftware/Django-Styleguide-Example`. The rule came from the platform's own workflows, which trigger on `main`; a kept contract pins a commit. Fixed in 1.22.1 (#128): the as-is path reads the repository's default branch, whatever its name, and the registered application follows it |
+| A private repository | `check_repository` on the trial repository, created private first (the session's own permission check refused creating a public one; the operator made it public) | Refused, by design: "is private, and the platform repository that would build it is public: its build logs and the image it uploads would be readable by anyone". The root's answer named the four folders and said that "deploy everything" takes them all |
+| 6. Everything in one sentence | `onboard_application(url, all=true)` at 19:14 UTC | Four contract pull requests, #124 `aiohttp-main`, #125 `django-static`, #126 `gradio-hello`, #127 `node-port`, opened between 19:15:17 and 19:16:16 UTC, each with the contract and the lock the platform compiled on the machine (789 lines for aiohttp, 1,075 for Gradio; `node-port` brought its own). The call that asked had timed out long before: the work was done, the answer lost. Fixed in 1.22.2 (#129): the call returns once each service is read, and the onboarding tick opens the contracts within a minute |
+| The review | The operator's edits before merging (21:40 to 21:41 UTC) | #124: `env: HOST: 0.0.0.0`, because the reader's note named the setting and set nothing (1.22.1 drafts it; aiohttp, Gradio, Tornado and NiceGUI rungs set `HOST` when the entry file reads it). #125: `needs.migrate: [python, manage.py, migrate]`, as the pull request offered. #126 and #127 as drafted |
+| The controller's part | After each merge | Infrastructure pull requests #130 to #133 within a minute (38 to add each, 40 for `django-static` with its migration job and the deployer's grant on it; idle floor +$0.06 a month, the provenance key; `Policy: passed`), merged and applied by the controller, environments and first releases dispatched by 21:56 UTC |
+| The platform's own audit | From 21:42 UTC | **Every pull request's "Audit platform dependencies" failed**: `certifi 2026.7.22`, GHSA-6q48-6c7w-9gw2 (critical, published that evening: compromised root certificates), fixed in 2026.10.19. The gate held the four infrastructure pull requests and #128 itself until 1.22.3 moved certifi in the three platform locks (#128, merged 21:49). The application locks the platform made earlier (`apps/llm-debate-backend/requirements.lock`, `apps/lab-demo-two/requirements-test.lock`) still pin the old certifi: their next release's audit names it |
+| 3. An aiohttp app started with `python main.py` | The first release of `aiohttp-main` (plan `dc508bf1`) | **Live in 8 minutes** on `python:3.12-slim`: audit passed, no working keys, 99 parts in the parts list, health check passed, scan 5 high with no fix (let through), contained. `/` answered `{"service": "aiohttp-main", "python": "3.12.15", "aiohttp": "3.14.5"}` with a token, 403 without |
+| 5. A Node.js service on a literal port | The first release of `node-port` (plan `8f908c16`) | **Live in 8 minutes**: dependency audit passed (65 packages), 146 parts, health check passed, scan 5 high with no fix. `/` answered `{"node": "v22.23.3", "port": 3000}`; Cloud Run's container port is 3000 (`gcloud run services describe`): the literal port and the dead `.nvmrc` line (D48) both held |
+| 4. A Django project with `requirements/base.txt`, collectstatic and migrate | The first release of `django-static` (plan `bc55d45e`) | Built on `python:3.11-slim` (collectstatic ran in the build), audit passed, then **stopped by the image scan**: "2 critical or high findings with a fix available, in code nobody has reviewed". Neither was the service's: `wheel 0.45.1` (CVE-2026-24049) and `jaraco-context 5.3` (CVE-2026-23949, inside setuptools) ship with the base image for Python 3.11; the 3.12 image ships pip alone. Fixed in 1.22.5 (#137): the platform's Python image uninstalls pip, setuptools and wheel, as the Node.js image left npm out in 1.20.9. On the laptop the rendered image built, `pip`, `setuptools` and `wheel` were gone, `/health` and the collected `/static/trial.css` answered 200, and `/` answered 500 as expected: the migration job runs in its own container against its own `/tmp/db.sqlite3`, and the service's SQLite starts empty in every instance, so the job's mechanism is proven and no page is counted as working; a real Django service declares a database. After #137 merged, a plan for the same commit (`744ad9ef`) took main's new head and built again (the first release had left no attested image to reuse): **live in 9 minutes** on the 1.22.5 image, 94 parts in the parts list (from 113), scan critical 0, high 5, medium 6, low 37 with none fixable, "The database migration ran first" (execution `django-static-migrate-f45q6` succeeded at 22:52 UTC), health check passed. Live: `/health` 200, `/static/trial.css` 200, `/` 500 as predicted |
+| 2. A Gradio app | The first release of `gradio-hello` (plan `bd287dab`) | **Stopped by the dependency audit before any build**: `pillow 12.3.0`, eight new CVEs (CVE-2026-112895 and others, OSV's groups scored up to CVSS 9.2), fixed only in `pillow 13.0.0` (published 2026-10-16). Gradio 6.30.0 itself requires `pillow<13.0`, so no lock can satisfy both the framework and the gate; by D44 a fixable critical or high finding stops the release whoever wrote the code, and there is no acceptance mechanism on purpose. The rung itself was right (`python app.py`, Gradio's two variables). Nothing was built, nothing billed |
+| 1. Streamlit as it is, after 1.22.1 | `check_repository`, then `onboard_application(as_is)` on `streamlit/streamlit-example` with the controller on 1.22.3 (installed by the operator at about 21:50 UTC) | **Read from `master`** (`8bd2197`, the survey's commit): "Ready as it is", with the start `streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true` and the TCP probe; contract #134 merged by the operator; infrastructure applied; first release (plan `93c18469`) **stopped by the dependency audit** like Gradio's: Streamlit 1.66.0 requires `pillow<13` too. Finding 1 is fixed; the rung is proven in the contract; the gate did its job |
+
+Smaller observations, not changed: each infrastructure pull request is written in five pushes, each starting a Platform
+tests run (six runs per root); `check_repository` for a `master` repository said "deploy it as it is" twice (1.22.4,
+#136, says it once); the Python dependency audit is `pip-audit`, which fails any finding of any severity with no trust
+rule, while the Node.js audit holds the words of D44 (a critical or high finding with a fix, a malicious package, an
+unfinished audit); aligning the two changes the workflow templates and re-pins every application, so it is a roadmap item,
+not a patch. The trial's two Python locks were compiled at 19:15 UTC and already carried `certifi 2026.10.19`.
+
+The clean-up: `scripts/decommission.sh` (1.22.4, #136) was dry-run on the laptop for the five services, each listing its
+service (and `django-static`'s migration job), its recovery bucket with every object version, its registry, the
+`terraform destroy` of its root and its GitHub environment; the operator ran the five deletions and
+`scripts/machine.sh unregister` for each after this record was written (the session that ran the exercise may not
+delete), and the pull request that removes `apps/<service>/` and `infra/gcp/apps/<service>/` for the five followed.
+The operator's run matched the dry run for each: the service deleted (and `django-static`'s job), "deleted
+gs://…-recovery with every object version" ("Removing buckets: Completed 1/1"), "deleted the registry … and its images",
+six `forgot` lines (the registry, its two grants, the service, the bucket, its grant), "Destroy complete! Resources: 28
+destroyed.", and "deleted staging-<service> on brianboti/fast-deploy". Checked afterwards, by the reviewing session and
+again by this one: no Cloud Run service or job, recovery bucket, registry, service account or environment of the five is
+left; each `<service>-provenance` key's one version is `DESTROY_SCHEDULED`; the other thirteen services are untouched.
+The contracts and roots went in #139.
+
+What it cost: four images, each scanned once by Artifact Analysis (`aiohttp-main`, `node-port`, `django-static` twice)
+at about $0.26, about $1.04 of the $1.30 to $1.82 approved; the two releases the audit stopped built nothing, and the
+migration job's one execution cost a few hundredths of a cent. While the five services existed, their provenance keys
+cost about $0.06 a month each; Cloud Run idled at nothing.
