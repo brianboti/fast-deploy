@@ -648,6 +648,8 @@ class FakeObserver:
 
     def get(self, url, **params):
         self.got.append(url)
+        if "/services/" in url:
+            return {"ingress": self.ingress}
         return {"executions": self.executions}
 
 

@@ -6,8 +6,10 @@ locals {
   job_bucket_grants = { for grant in flatten([for job, spec in var.jobs : [for bucket, access in spec.buckets : {
     key = "${job} ${bucket}", job = job, bucket = bucket, role = access == "write" ? "roles/storage.objectUser" : "roles/storage.objectViewer"
   }]]) : grant.key => grant }
+
   job_secret_grants = { for grant in flatten([for job, spec in var.jobs : [for secret in spec.secrets : { key = "${job} ${secret}", job = job, secret = secret }]]) : grant.key => grant }
   job_models        = { for job, spec in var.jobs : job => spec if length(spec.models) > 0 }
+
   # Who acts on the jobs: the service starts, cancels and reads them; the controller's guard cancels a run beyond the
   # contract's limits (D70); the cap cancels every running one at the budget line.
   job_guards = { for pair in setproduct(keys(var.jobs), var.job_guard_role != "" ? var.controller_members : []) : "${pair[0]} ${pair[1]}" => { job = pair[0], member = pair[1] } }

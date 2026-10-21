@@ -251,11 +251,16 @@ variable "jobs" {
   default     = {}
   description = "The Cloud Run jobs the service starts itself (jobs.tf, docs/ROADMAP.md D64): their size and timeout, and what each was given; the release sets the rest."
   validation {
-    condition = length(var.jobs) <= 4 && alltrue([for name, job in var.jobs : can(regex("^[a-z][a-z0-9-]{0,12}[a-z0-9]$", name)) && !contains(["runtime", "deploy", "probe", "wake", "migrate"], name)
-      && contains([1, 2], job.cpu) && job.memory_mib >= 512 && job.memory_mib <= 4096 && job.memory_mib % 256 == 0 && job.memory_mib <= 4096 * job.cpu
-      && job.timeout_minutes >= 1 && job.timeout_minutes <= 60
-    && alltrue([for access in values(job.buckets) : contains(["read", "write"], access)]) && alltrue([for model in job.models : model == "claude"])])
-    error_message = "At most four jobs, each named like a job (not runtime, deploy, probe, wake or migrate), 1 or 2 CPUs, 512 to 4096 MiB in steps of 256, 1 to 60 minutes; buckets read or write; models claude."
+    condition     = length(var.jobs) <= 4 && alltrue([for name, job in var.jobs : can(regex("^[a-z][a-z0-9-]{0,12}[a-z0-9]$", name)) && !contains(["runtime", "deploy", "probe", "wake", "migrate"], name)])
+    error_message = "At most four jobs, each named like a job: not runtime, deploy, probe, wake or migrate."
+  }
+  validation {
+    condition     = alltrue([for job in values(var.jobs) : contains([1, 2], job.cpu) && job.memory_mib >= 512 && job.memory_mib <= 4096 && job.memory_mib % 256 == 0 && job.memory_mib <= 4096 * job.cpu && job.timeout_minutes >= 1 && job.timeout_minutes <= 60])
+    error_message = "A job takes 1 or 2 CPUs, 512 to 4096 MiB in steps of 256 (at most 4096 a CPU) and 1 to 60 minutes."
+  }
+  validation {
+    condition     = alltrue([for job in values(var.jobs) : alltrue([for access in values(job.buckets) : contains(["read", "write"], access)]) && alltrue([for model in job.models : model == "claude"])])
+    error_message = "A job reads or writes its buckets, and its models are claude."
   }
 }
 variable "wake" {

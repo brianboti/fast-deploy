@@ -115,7 +115,8 @@ class Keeper:
     def wake(self, key, target, spec, url):
         status = "error"
         try:
-            service = self.observer.service(target)
+            # One read of the service itself (its ingress), not of its revisions: the cap closes ingress (27.7).
+            service = self.observer.get(f"{RUN_API}/projects/{target.project_id}/locations/{target.region}/services/{target.service}")
             if service.get("ingress") == CLOSED:
                 status = "closed by the spending cap"
                 return

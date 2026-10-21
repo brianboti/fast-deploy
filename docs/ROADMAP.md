@@ -834,6 +834,8 @@ staging and production, quickly. The operator answered D65 to D68 in chat; the o
 
 ## Phase 27: jobs an application starts itself (about five days) → version 1.31.0
 
+Built on 2026-10-21 as 1.31.0, every item. Checked locally the same day: the test image of BetterCare made from its own files (27 seconds, 482 MB) and its 44 tests passing inside it with no network through Smart Dev's unchanged run-tests.sh. The live exercise below waits for the operator's go and the foundation applies.
+
 | Item | Change | Where |
 |---|---|---|
 | 27.1 | The contract's `jobs` and `wake`, their limits and the policy (D64, D65, D67); every plan shows each job's price a minute and its worst case a day and a month | labdeploy/models.py, schema/platform.schema.json, labdeploy/cost.py, labdeploy/infra.py |
