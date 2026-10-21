@@ -212,7 +212,7 @@ Then, in Claude (Customize > Connectors > Add custom connector), enter `https://
 
 To end sessions, replace the operator's `token_sha256` and restart (every session signed in with that token ends), run `python -m labdeploy.cli sessions --revoke ID`, or call `POST /revoke` with `token`, `client_id` and a `client_secret` field (empty for the public clients the controller registers: the SDK's endpoint requires the field to be present). Lower `oauth.access_token_seconds` or `oauth.refresh_token_days` to shorten lifetimes. Sign-in with the university identity provider is not implemented; the sign-in page is where it would plug in.
 
-The controller's own configuration can then be changed in the browser at `https://YOUR_HOST/settings`, with an operator token whose principal has `applications: ["*"]` and `can_deploy` (docs/RUNBOOK.md, "The controller's machine"); `config-get` and `config-put` stay the fallback.
+The controller's own configuration can then be changed in the browser at `https://YOUR_HOST/settings`, with an operator token whose principal has `applications: ["*"]` and `can_deploy` (docs/RUNBOOK.md, "The controller's machine"); `config-get` and `config-put` stay the fallback. The same page's Monitor section (reports, live health and cost, drawn) opens for any operator token, showing the applications that token may see.
 
 Anthropic's connector permission prompts are additional user-interface controls. The server's identity/app allowlists and GitHub/GCP permissions enforce the actual access boundary.
 

@@ -175,10 +175,18 @@ def test_sign_in_refusals_headers_and_the_cookie(site):
     for header, value in PAGE_HEADERS.items():
         assert page.headers[header] == value
     assert "Signed in" not in page.text
-    viewer = sign_in(client, "viewer-token")  # may deploy, but not every application
-    assert viewer.status_code == 403 and "viewer may not change" in viewer.text
-    watcher = sign_in(client, "watcher-token")  # every application, but read-only
-    assert watcher.status_code == 403 and "can_deploy" in watcher.text
+    # Any principal signs in: Monitor shows what its token may see (tests/test_monitor.py); Configure stays the operator's.
+    viewer = site.client()
+    assert sign_in(viewer, "viewer-token").status_code == 303  # may deploy, but not every application
+    refused = viewer.get("/settings?tab=platform")
+    assert refused.status_code == 403 and "viewer may not change" in refused.text and "set-cookie" not in refused.headers
+    csrf = html.unescape(re.search(r'name="csrf" value="([^"]+)"', refused.text).group(1))  # its own sign-out form's token
+    change = viewer.post("/settings/change", data={"csrf": csrf, "tab": "platform", "form": "main", "backup_keep_days": "3"})
+    assert change.status_code == 403 and "viewer may not change" in change.text  # a hand-made form is refused the same way
+    watcher = site.client()
+    assert sign_in(watcher, "watcher-token").status_code == 303  # every application, but read-only
+    refused = watcher.get("/settings?tab=people")
+    assert refused.status_code == 403 and "can_deploy" in refused.text and 'id="nav-configure"' not in refused.text
     assert sign_in(client, "wrong").status_code == 401
     for _ in range(4):
         last = sign_in(client, "wrong")
@@ -192,7 +200,7 @@ def test_sign_in_refusals_headers_and_the_cookie(site):
     page = client.get("/settings")
     assert "Signed in as operator" in words_of(page) and 'aria-current="page"' in page.text
     outcomes = [(e["identity"], e["outcome"]) for e in store.recent_events(20) if e["kind"] == "sign_in" and e["name"] == "settings page"]
-    assert ("operator", "ok") in outcomes and ("viewer", "refused") in outcomes and (None, "rejected") in outcomes and (None, "throttled") in outcomes
+    assert ("operator", "ok") in outcomes and ("viewer", "ok") in outcomes and (None, "rejected") in outcomes and (None, "throttled") in outcomes
     signed_out = client.post("/settings/sign-out", follow_redirects=False)
     assert signed_out.status_code == 303 and "Max-Age=0" in signed_out.headers["set-cookie"]
     assert "Operator token" in client.get("/settings").text

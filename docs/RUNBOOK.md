@@ -339,10 +339,21 @@ is no open SSH port: `scripts/machine.sh` goes through Identity-Aware Proxy, and
 | Forget a retired application | `scripts/machine.sh unregister APP`, after `scripts/decommission.sh APP --yes` (section "Retire an application") |
 | Hold it while a laptop takes over | `scripts/machine.sh stop` (not even a reboot starts it); `scripts/machine.sh start` releases the hold |
 
+**Watch it.** `https://MACHINE/settings` opens on its Monitor section (since 1.28.0): Overview (what needs you first,
+then services healthy, releases this week, the change failure rate, this month's spend per project and one card per
+application), Health (one application's traffic, errors, latency and saturation over 1 h, 24 h, 7 or 30 days with its
+releases marked, 30 days of uptime, production's error budget, its newest error lines when you ask), Releases (the DORA
+numbers, a timeline, every release with its verdict and run), Cost (the month against budgets and caps, where the money
+goes, right-sizing proposals, each application's bounds) and Activity (the audit trail, events per day, the background
+jobs, backups, drift, the GitHub credential). Any operator token signs in, and Monitor shows the applications that token
+may see, as Claude's tools do. Live numbers are a few minutes behind, kept five minutes for everyone, and spend is as of
+the daily digest; nothing on these views changes anything, and they read only what the controller keeps and a few
+Monitoring queries of the observer identity (free: far below the million time series a month Google does not charge for).
+
 **Change its configuration.** Open `https://MACHINE/settings` (the machine's address or DNS name, as in Claude's
-connector) and sign in with an operator token whose principal has `applications: ["*"]` and `can_deploy`; anyone else is
-refused. The sign-in lasts an hour (`settings_session_seconds`), and a restart, a rotated token or a removed principal ends
-it. Five tabs: Applications (a list, and each application's own page with its cost ceiling, auto-deploy, auto-merge, bake,
+connector) and sign in with an operator token; its Configure section opens only for a principal with `applications: ["*"]`
+and `can_deploy`, and refuses anyone else. The sign-in lasts an hour (`settings_session_seconds`), and a restart, a rotated
+token or a removed principal ends it. Five tabs: Applications (a list, and each application's own page with its cost ceiling, auto-deploy, auto-merge, bake,
 viewers, infrastructure settings and links to where its contract, Terraform root and secrets live; for one onboarding
 registered the switches go under `application_settings`), Platform (the auto-deploy interval, the
 watchdog webhook, the spend caps you recorded, backups, `platform_updates`), People (principals, a new token shown once),

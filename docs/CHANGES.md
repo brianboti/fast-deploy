@@ -1,3 +1,78 @@
+# 1.28.0: reports in the settings page
+
+Brian asked for the reports in one place, drawn: today they are spread over chat answers, GitHub issues and runs, one
+mailbox, an optional webhook, the Cloud console and `get_controller_status` (docs/RESEARCH-2026-10-21.md, 2.5). The
+settings page gains a **Monitor** section above its **Configure** section, in the same frame and look as 1.25.2. It shows
+what the controller already keeps and what Google already measures: nothing new is collected, nothing here changes
+anything, and it adds no monthly charge and no package. Still no JavaScript and the same Content-Security-Policy: the
+charts are inline SVG drawn on the server (`labdeploy/charts.py`).
+
+1. **Overview** (the page's new landing). "Needs attention" first, the worst first, each line with where to look: a live
+   release that did worse a day later, a service with server errors in the last 24 hours, error lines or a missed uptime
+   check on the digest's day, a newest release attempt that did not finish, a forecast over its budget, drift, and the
+   watchdog's problems; or "Nothing needs you", naming only what was checked. Then four tiles: services healthy, the change
+   failure rate over 30 days, releases this week (with the 14 days as small bars) and this month's spend per project as a
+   bullet graph against its budget and cap. Then one card per application: its status, a 24-hour request sparkline,
+   requests, server errors, the 95th-percentile latency, the live commit and what its release report said a day later.
+2. **Health**, per application and environment, with ranges of 1 h, 24 h, 7 days and 30 days: requests by answer
+   (answered, refused 4xx, server errors 5xx) and the server errors alone with the alert's rule; the 95th-percentile latency
+   against its alert line; instances against `scaling.maximum` and the instance alert; memory against the 80 percent alert;
+   every release as a flagged line on each chart. A 30-day uptime strip like a status page (each day green, amber or red, a
+   caret under each day that was not green), production's error budget left, the newest error lines read only when asked,
+   and links to Cloud Run's metrics, the Monitoring dashboards and Logs Explorer.
+3. **Releases**: the four DORA numbers over 30 days (releases that reached users a week, change failure rate, time back to
+   a good release, commit to live), the first two with eight weekly bars; a timeline across applications whose shapes and
+   colours say what became of each release (reached users and better, the same or worse a day later, went back on its own,
+   rolled back by a person, stopped before anyone); and a table of every release, promotion and rollback of 90 days with
+   its commit, who asked, how long it took, its outcome and verdict, and its GitHub run.
+4. **Cost**: per project, the month so far, its forecast, budget and cap as a bullet graph, and the month's running total
+   from the daily digests against the budget and the cap, the forecast dashed to the month's end; spend by Google service
+   and by application from the weekly report, each against the window before (▲ more, ▼ less); its right-sizing proposals
+   with their savings, each linking to asking Claude; and each application's floor and ceiling against its cost ceiling.
+5. **Activity**: the audit trail filtered by kind, identity and application (a GET form: a filter changes nothing), events
+   per day over 30 days with the days of a configuration change flagged, configuration changes highlighted in the table,
+   and the controller itself: its background jobs, the nightly backup, the restore drill, the digest, drift and the GitHub
+   credential.
+
+**Every chart** is an image to a screen reader, named by its title and described by its description; each bar, point,
+day or release carries its value in an SVG title for the hover; each has "Show the numbers", a table with every value; and
+nothing rests on colour alone (legends with words, shapes, carets, the tables). The colours were checked with the dataviz
+skill's validator on the page's white surface: one series in the page's blue, status in green, amber (`#C98500`, chosen
+because the lighter amber sat too close to red) and red, grey for what is not the point. No chart has a viewBox, so text
+never scales and a chart fits a 375-pixel phone; wide tables become stacked rows there. Checked at 1280 px and 375 px.
+
+**Freshness on every view.** Live numbers say "Live, a few minutes behind · as of HH:MM UTC" (Cloud Monitoring samples
+each minute and shows a sample up to three minutes later); spend says "Cost through" the digest's day (the billing export
+lands hours to a day late); records say "as of" the moment the page was drawn. No view refreshes itself: a Refresh link.
+
+**The read budget** (`labdeploy/monitor.py`, and a test that counts calls against a mock of Google's APIs): the overview
+reads one Monitoring query per service; an application's health four (requests by answer with their latency, from one
+query of Cloud Run's request-latency distribution grouped by response class; instances; memory; 30 days of uptime) and up
+to five more for production's error budget; its error lines one Logging call, only when asked (`entries.list` allows 60 a
+minute per project, shared with the release reports and the digest). Each reading is kept five minutes per application,
+environment and range and shared by everyone who opens it; a failed read is not tried again for a minute. Releases, Cost
+and Activity read no cloud at all; no view queries BigQuery (the cost line is the digest's). The weekly cost report is
+downloaded from GitHub once and kept until GitHub has a newer run (one call every fifteen minutes asks).
+
+**Who sees what.** Any principal may now sign in; Monitor shows the applications its token may see, as Claude's tools do
+("*" sees all): an identity of some applications sees their cards, health, releases and reports, events about them and its
+own, and no project's spend; a read-only identity sees its own events, as `list_events` decides. Configure keeps its rule
+(`applications: ["*"]` and `can_deploy`); for anyone else its tabs are refused inside the frame, whose sidebar then shows
+Monitor only, and the sign-in stays. The sign-in page says so. Sessions, the form token, the origin and host checks and the
+headers are unchanged.
+
+What it costs: nothing a month. The Monitoring read API charges $0.50 per million time series returned beyond a free
+million a month per billing account (since 2025-10-02); a view returns at most about ten, so even a hundred views a day
+stay near 3 percent of the free million. Logging's reads and GitHub's API are free; the machine runs no new process and
+keeps a few kilobytes in memory.
+
+Upgrade steps: update the machine. No foundation apply, no permission (the observer identity already reads Monitoring and
+Logging), no configuration change; the skill is unchanged.
+
+Tests: 1,033 pass (19 new in `tests/test_monitor.py`: the charts, the latency histograms, scoping, the read budget, the
+weekly report's cache, the empty states, the headers; the settings page's sign-in test follows the new rule); ruff clean.
+
+
 # 1.27.0: cost between Mondays (Phase 24)
 
 Roadmap Phase 24 (docs/ROADMAP.md 24.1 to 24.4, decisions D62 and D63 at their defaults), stacked on 1.26.0 (#146). The

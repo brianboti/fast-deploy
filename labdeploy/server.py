@@ -589,7 +589,10 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
 
     if oauth is not None:
         mount(app, oauth, limits.failures)  # must precede the catch-all MCP mount
-    app.router.routes.extend(settings.routes(config, store, limits.failures))  # the settings page, ahead of the MCP mount too
+    # The settings page, ahead of the MCP mount too: its Monitor section reads the controller's records and observer, and the
+    # background jobs' state.
+    jobs = lambda: scheduler["thread"].snapshot() if scheduler["thread"] is not None else None  # noqa: E731
+    app.router.routes.extend(settings.routes(config, store, limits.failures, controller, jobs))
     app.mount("/", mcp.streamable_http_app())
     return app
 
