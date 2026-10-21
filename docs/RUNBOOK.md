@@ -123,17 +123,24 @@ that repository that runs on every push without a branch filter; the platform's 
 ### The objective and its error budget
 
 Since 1.18.5 (roadmap item 16.4, decision D39) every production application has one objective: 99.5 percent of its
-requests answered without a server error over 30 days, counted from Cloud Run's own request metric, so the uptime
-check's calls to the health path count too. The 0.5 percent it may miss is the error budget. Its uptime check calls the
-health path every minute from three US regions. Two alerts reach the alert channels:
+requests answered without a server error over 30 days. The 0.5 percent it may miss is the error budget. Since 1.26.0
+(decision D58) it counts the users' requests only, from two log-based counters that read Cloud Run's request log with the
+health path left out; before, Cloud Run's request metric counted the uptime check's calls too, so a quiet application's
+budget measured mostly the uptime check, and the rollback drill's 18 planted errors spent it for a month. The uptime check
+calls the health path every minute from three US regions and keeps its own alert ("health check failing") and its own
+line in the health view (its 30-day pass rate). Three alerts reach the alert channels, each only when its long and its
+short window both burn and at least 100 user requests came in the long window, so a few errors on a quiet application
+never page:
 
-- **"error budget burning fast"**: ten times the sustainable rate over the last hour, which is an outage. Ask Claude for
-  "demo's health in production" and its errors. If the newest promotion caused it, roll production back
-  (`rollback_production`); otherwise follow the error lines.
-- **"error budget burning slow"**: twice the sustainable rate over the last day, which is a leak. Look at the errors when
-  convenient and fix it before the budget runs out.
+- **"error budget burning fast"** (CRITICAL): ten times the sustainable rate over the last hour and the last five
+  minutes, which is an outage. Ask Claude for "demo's health in production" and its errors. If the newest promotion
+  caused it, roll production back (`rollback_production`); otherwise follow the error lines.
+- **"error budget burning slowly"** (ERROR): twice the sustainable rate over six hours and the last half hour, which is a
+  leak. Look at the errors today and fix it before the budget runs out.
+- **"error budget used steadily"** (WARNING): at the sustainable rate for a whole day. Look this week.
 
-`get_service_health` with `environment: production` shows how much of the budget is left. Below a quarter it says so:
+`get_service_health` with `environment: production` shows how much of the budget is left, "no user requests" when there
+were none, and for a spent budget the day its errors leave the 30-day window at the latest. Below a quarter it says so:
 keep risky changes out of production until it recovers. An application's first promotion carries a readiness checklist
 in its approval block, covering probes, alerts, runbook, backup, capacity and the rollback path, with what to do where
 one falls short. A production root made before 1.18.5 has no objective yet: ask for `add_production` again, which
@@ -247,10 +254,12 @@ the pipeline. The procedure is NIST SP 800-61 Rev. 3 (April 2025) in the shape t
 first, communicate, review. Note the time of each step as you go, in a private note: never in the public platform
 repository, where an incident's details help an attacker.
 
-1. **Detect and decide.** What arrives on its own: `SERVICE: error budget burning fast` (act now) and `... burning slow`
-   (today), `SERVICE: health check failing`, `SERVICE: server errors`, the budget emails, **Lab Deploy: spending-cap
-   workflow failed**, the watchdog's notification, the drift issue, GitHub's Dependabot and secret-scanning alerts, and
-   Google's own emails. Ask Claude for the application's health in production and its deployment status for the facts.
+1. **Detect and decide.** What arrives on its own, each alert's subject starting with its environment and its severity
+   in the email: `SERVICE: error budget burning fast` (CRITICAL, act now), `... burning slowly` (ERROR, today) and `...
+   used steadily` (WARNING, this week), `SERVICE: health check failing` (CRITICAL), `SERVICE: server errors` (ERROR),
+   `[ENV] the spending cap could not act` (CRITICAL), the budget emails, the daily digest and a release report that says
+   "worse" (both on the issue **Fast Deploy: today**), the drift issue, GitHub's Dependabot and secret-scanning alerts,
+   and Google's own emails. Ask Claude for the application's health in production and its deployment status for the facts.
    It is an incident when production is affected or something is exposed; anything else is one of the sections below.
 2. **Mitigate first**, before looking for the cause:
    - A bad release in production: ask for `rollback_production` and approve it (seconds); in staging, `rollback`.
@@ -274,6 +283,36 @@ repository, where an incident's details help an attacker.
 4. **Review**, within a week: a short write-up without blame (what happened, the timeline, how it was found, what made it
    better or worse) and one issue or pull request per fix, starting with whatever would have caught it sooner. Change
    this runbook where a step was missing or wrong.
+
+## After a release: the report and the daily digest
+
+Since 1.26.0 (roadmap Phase 23) the platform speaks first, once a day, and at once when a release did worse. Both are
+written by code from the controller's records and the observer's reads; neither changes anything.
+
+- **The release report** (decision D57). A day after a release or promotion succeeded (sooner when a newer one replaced
+  it), the controller reads the new version's requests besides the health path, its server errors and how fast 95
+  percent were answered, against the previous version's week before the switch, plus the uptime check. "Worse" is a
+  server-error share above 1 percent and above twice the week before, a 95 percent latency above twice the week before,
+  or the uptime check passing less than 99 percent of the time; it is posted at once with its numbers. "Too little
+  traffic to compare" means fewer than 100 requests on a side: only the probes and the uptime check vouch for that
+  release. The verdict shows in the release's status, `list_applications` and `get_service_health`. On "worse": ask
+  Claude for the errors, and roll back if the release caused them (sections "An incident", "Undo a promotion").
+- **The daily digest** (decision D60), at `digest_hour_utc` (13 UTC by default): what shipped, each report, the
+  applications with server errors, error lines in their log or missed uptime checks, drift, re-pins and drills waiting,
+  the watchdog's problems, the trust numbers on Mondays, or "all quiet". It is a comment on the issue **Fast Deploy:
+  today** of the platform repository, sent to `notify_webhook_url` too, and `get_digest` shows it in chat. The watchdog's
+  own webhook post is folded into it. When it reaches no one (the App lacks the Issues permission, no webhook) or stops,
+  the watchdog says so, and the Controller watch workflow fails after two days without it.
+- **The cost line** (since 1.27.0, decision D63): every day the digest gives each project's spend this month from the
+  billing export, its forecast (the month so far scaled to the month) and its recorded budget, and says when a forecast
+  is above its budget. On Mondays it also counts each project's alert policies and uptime executions against Google's
+  free allotments, and names the services nobody but the health checks called in 30 days: candidates to retire with
+  `scripts/decommission.sh`, which a person decides. The weekly cost report sets the window before beside the window and
+  names what moved by more than a fifth and a dollar.
+- **The trust numbers** (decision D61) in `get_controller_status`: releases that reached users, went back on their own,
+  were rolled back by a person; the change failure rate; the median time back to a good release; how many watches after
+  a switch had too little traffic; restores that may have been for nothing (the same commit passed later). They are for
+  reading, never a threshold.
 
 ## The controller's machine
 
@@ -731,17 +770,22 @@ Services, Credentials). To add someone, add `user:name@example.edu` to the app's
 
 ## Prove the alerts work
 
-Once a month, or after changing channels:
+Once a month (the watchdog reminds), or after changing channels: `scripts/alert-drill.sh PROJECT` for each project. It
+runs the three steps below, asks whether the email arrived, and records the drill on the machine
+(`scripts/machine.sh record-drill alerts ok`), so the reminder stops for a month. By hand:
 
 1. `gcloud workflows run lab-deploy-spending-cap --location us-central1 --data='{"data":{"message":{"data":"eyJjb3N0QW1vdW50IjogMCwgImJ1ZGdldEFtb3VudCI6IDF9"}}}'`
    (a notification with cost 0 of budget 1) must answer `below cap: 0 of the budget`: the trigger path and the
    identity work without closing anything. Production's cap is its own: the same with `--project PROD_PROJECT`. The
    cap-fire drill (section Production) is the version that closes and reopens.
 2. `gcloud workflows run lab-deploy-spending-cap --location us-central1 --data='{"data":{"message":{"data":"bm90IGpzb24="}}}'`
-   (a message that is not JSON) fails on purpose; within about five minutes the alert
-   **Lab Deploy: spending-cap workflow failed** must reach the alert email (and the webhook when configured) and
-   close itself half an hour later.
-3. `gcloud monitoring channels list --format="table(displayName,type,enabled,verificationStatus)"` must show the channels enabled and verified.
+   (a message that is not JSON) fails on purpose; within about five minutes the alert **[ENV] the spending cap could not
+   act** must reach the alert email (and the webhook when configured) and close itself half an hour later.
+3. The project's notification channels must be enabled (the script reads them; the console's Alerting, Edit
+   notification channels, shows the same).
+
+The rollback and cap-fire drills of section Production are recorded the same way (`record-drill rollback ok`,
+`record-drill cap_fire ok`); a production rollback that succeeded counts as the rollback path proven.
 
 ## Retire an application
 
@@ -870,8 +914,14 @@ and the apps' pins carry the name, so the order matters:
   the last automatic update; `get_controller_status` names any re-pin that waits for you.
 - Every quarter: the restore drill (`scripts/machine.sh drill`; the watchdog reminds).
 - Twice a year, for production: the rollback drill, the cap-fire drill and, for each database there, the data restore
-  drill (section Production).
-- The cost report issue on each app repository: spend against the budget, drift, proposals. An application with a
+  drill (section Production). Each is recorded with `scripts/machine.sh record-drill`; the watchdog reminds when one is due.
+- The daily digest issue **Fast Deploy: today**: still hearing from the controller every day.
+- Google's alert pricing: no sooner than 2027-09-01, $0.35 a month per metric reference in an alert policy (uptime,
+  billing and quota alerts excepted). Before then, retire test services nobody uses (`scripts/decommission.sh`): each
+  takes five alert policies and an uptime check.
+- The cost report issue on each app repository: spend against the budget and against the period before, drift, proposals.
+  The budgets recorded under `monthly_budgets_usd` still match Cloud Billing's, and Google's Cost Anomaly Detection is on
+  (`docs/SETUP.md` 7q). An application with a
   production shows production's spend beside staging's once `add_production` has run for it with 1.18.8.
 - Any `lab-deploy-cap-lifted` label left from the previous month (`gcloud run services list --format="table(name,labels)"`).
 - The native spend cap still exists (`scripts/spend-cap.sh check PROJECT`) and the drift issue on the platform repository is closed.

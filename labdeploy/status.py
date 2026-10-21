@@ -78,6 +78,13 @@ DIAGNOSES = (
     (re.compile(r"(?:Startup|Liveness) (?:HTTP )?probe failed|probe failed", re.I), "Cloud Run's startup probe did not get an answer in time",
      "answer the health path with 200 quickly, without calling other services", "health_path",
      "set health_path: null to use the TCP probe, or to a path that answers at once"),
+    # A service that passed its release and fails later (docs/ROADMAP.md 23.3): Google's documented messages for it.
+    (re.compile(r"no available instance", re.I), "every instance was busy and Cloud Run could not start another one (the instance limit)",
+     "answer faster, or serve several requests at once in one instance", "scaling.maximum",
+     "raise scaling.maximum (the cost bound rises with it) or concurrency"),
+    (re.compile(r"maximum request timeout|upstream request timeout", re.I), "a request took longer than the service's timeout",
+     "answer within the timeout, or move long work to a job and answer at once", "timeout_seconds",
+     "raise timeout_seconds (60 by default, up to 3600 for a service that streams)"),
 )
 
 

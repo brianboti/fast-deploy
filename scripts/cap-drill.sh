@@ -149,4 +149,5 @@ for line in "${OPEN[@]}"; do
 done
 rm -rf "$DIR"
 (( FAILED )) && { echo "FAILED: see the lines above; every service the drill closed was reopened"; exit 2; }
-echo "PASSED: the cap fired on a notification at its line and closed ${#OPEN} service(s); all are open again. Record it in docs/VALIDATION.md"
+echo "PASSED: the cap fired on a notification at its line and closed ${#OPEN} service(s); all are open again. Record it in docs/VALIDATION.md,"
+echo "and on the controller so the watchdog stops reminding: scripts/machine.sh record-drill cap_fire ok \"$PROJECT: closed ${#OPEN}, reopened\""

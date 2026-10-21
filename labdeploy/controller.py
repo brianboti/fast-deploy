@@ -8,6 +8,7 @@ import time
 import types
 import uuid
 
+from . import aftercare
 from .analyzer import COMPOSE_FILES, FILES, analyze
 from .bake import MAX_BAKE_SECONDS
 from .config import Application, Principal, Production
@@ -17,7 +18,7 @@ from .github import explain
 from .infra import BOOTSTRAP_IMAGE, PRODUCTION_ROOTS, PRODUCTION_WORKFLOWS, app_root
 from .models import AppSpec, containment, enforce, needs_env, parse_contract, parse_spec, spec_hash
 from .rightsize import SETTINGS, apply_settings
-from .status import TERMINAL, advice, release_phases, summarize
+from .status import TERMINAL, advice, diagnose, release_phases, summarize
 from .updates import PlatformUpdates
 from .workflows import TEMPLATES, pinned_commit, render
 
@@ -61,6 +62,8 @@ class Store:
             # What follows a platform release (labdeploy/updates.py): the machine's record under `machine`, each application's
             # re-pin under `workflows:<id>`.
             db.execute("CREATE TABLE IF NOT EXISTS platform_updates (id TEXT PRIMARY KEY, updated REAL NOT NULL, payload TEXT NOT NULL)")
+            # The daily digest (docs/ROADMAP.md D60), one per UTC day, with where it was sent.
+            db.execute("CREATE TABLE IF NOT EXISTS digests (day TEXT PRIMARY KEY, created REAL NOT NULL, payload TEXT NOT NULL)")
             db.execute("PRAGMA journal_mode=WAL")  # readers never block the scheduler's and the request handlers' writes
 
     # ---- applications registered by onboarding, and the onboarding records themselves
@@ -125,6 +128,29 @@ class Store:
         with self.connect() as db:
             rows = db.execute("SELECT id, payload FROM platform_updates WHERE substr(id, 1, ?) = ? ORDER BY id", (len(prefix), prefix)).fetchall()
         return {row[0]: json.loads(row[1]) for row in rows}
+
+    def save_digest(self, day, record):
+        with self.connect() as db:
+            db.execute("INSERT OR REPLACE INTO digests VALUES (?, ?, ?)", (day, time.time(), json.dumps(record)))
+            db.execute("DELETE FROM digests WHERE created < ?", (time.time() - 90 * 86_400,))
+
+    def digest(self, day=None):
+        """The digest of one UTC day, or the newest one; None when there is none."""
+        with self.connect() as db:
+            row = (db.execute("SELECT payload FROM digests WHERE day=?", (day,)) if day
+                   else db.execute("SELECT payload FROM digests ORDER BY day DESC LIMIT 1")).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def history(self, since=None):
+        """Every plan and rollback record with its state, oldest first; with `since`, only those made after that moment.
+        For the release reports and the trust numbers (docs/ROADMAP.md D57, D61)."""
+        query, params = "SELECT owner, state, payload FROM plans", ()
+        if since is not None:
+            query += " WHERE json_extract(payload, '$.expires_at') >= ?"
+            params = (since + 900,)
+        with self.connect() as db:
+            rows = db.execute(query + " ORDER BY rowid", params).fetchall()
+        return [{**json.loads(payload), "state": state, "owner": owner} for owner, state, payload in rows]
 
     @contextlib.contextmanager
     def connect(self):
@@ -264,12 +290,15 @@ class Store:
                        (time.time(), identity, client, kind, name, application, outcome, duration_ms, (detail or "")[:500] or None))
             db.execute("DELETE FROM events WHERE at < ?", (time.time() - 365 * 86_400,))
 
-    def newest_event(self, kind, outcome=None):
-        """The newest audit event of one kind, optionally with one outcome; None when there is none."""
+    def newest_event(self, kind, outcome=None, name=None):
+        """The newest audit event of one kind, optionally with one outcome and one name; None when there is none."""
         query, params = "SELECT at, identity, name, outcome, detail FROM events WHERE kind=?", [kind]
         if outcome is not None:
             query += " AND outcome=?"
             params.append(outcome)
+        if name is not None:
+            query += " AND name=?"
+            params.append(name)
         with self.connect() as db:
             row = db.execute(query + " ORDER BY at DESC, rowid DESC LIMIT 1", params).fetchone()
         return dict(zip(("at", "identity", "name", "outcome", "detail"), row, strict=True)) if row else None
@@ -403,6 +432,7 @@ class Controller:
         self._cache = {}
         self._onboarding_lock = threading.Lock()
         self.config, self.github, self.store, self.observer = config, github, store, observer
+        self.started = time.time()
         self.contracts = Contracts(self)
         self.updates = PlatformUpdates(self)
         self.refresh_registry()
@@ -680,8 +710,9 @@ class Controller:
                 results[app_id] = f"error: {message}"
         return results
 
-    def watchdog_tick(self):
-        """The daily look around: configuration, credential, each app's schedules, pin and newest attempt. Posts findings to the webhook."""
+    def watchdog_problems(self, now=None):
+        """The daily look around: configuration, credential, each app's schedules, pin and newest attempt, drift, drills, the
+        database's live copy and the daily digest itself. Shared by the watchdog and the digest (docs/ROADMAP.md D60)."""
         problems = []
         error = getattr(self.config, "error", None)
         if error:
@@ -728,17 +759,311 @@ class Controller:
         replication = self.replication_problem()
         if replication:
             problems.append(replication)
+        problems += self.drill_reminders(now)
+        digest = self.digest_problem(now)
+        if digest:
+            problems.append(digest)
+        return problems
+
+    def watchdog_tick(self):
+        """The daily look around (watchdog_problems), recorded; posted to the webhook only while the daily digest is off,
+        since the digest carries the same lines."""
+        problems = self.watchdog_problems()
         report = {"checked_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"), "problems": problems, "notified": False}
         self.store.record_event("watchdog", outcome="problems" if problems else "ok", detail="; ".join(problems) or None)
-        if problems and self.config.notify_webhook_url:
-            import httpx
+        if problems and self.config.notify_webhook_url and getattr(self.config, "digest_hour_utc", None) is None:
             text = "Fast Deploy watchdog found " + str(len(problems)) + " problem(s):\n- " + "\n- ".join(problems)
-            try:
-                httpx.post(self.config.notify_webhook_url, json={"text": text, "content": text}, timeout=20).raise_for_status()
-                report["notified"] = True
-            except Exception as exc:  # noqa: BLE001
-                report["notify_error"] = str(exc)[:200]
+            sent = self.post_webhook(text)
+            report["notified"] = sent["ok"]
+            if not sent["ok"]:
+                report["notify_error"] = sent["error"]
         return report
+
+    # ---- after a release (docs/ROADMAP.md Phase 23): drills, the release report, the digest and the trust numbers
+    # How often each drill is due, in days; the rollback and cap-fire drills only where a production exists.
+    DRILLS = {"alerts": (31, "the monthly proof that alerts reach you", "scripts/alert-drill.sh"),
+              "rollback": (183, "the rollback drill", "docs/RUNBOOK.md, \"The rollback drill\""),
+              "cap_fire": (183, "the cap-fire drill", "scripts/cap-drill.sh PRODUCTION_PROJECT")}
+
+    def drill_reminders(self, now=None):
+        """One line per drill that is due: none passed within its interval (docs/ROADMAP.md 23.6). A production rollback that
+        succeeded counts as the rollback path proven; the restore drill keeps its own reminder."""
+        now = now or time.time()
+        production = getattr(self.config, "production", None) is not None or any(app.production for app in self.config.applications.values())
+        lines = []
+        for name, (days, words, how) in self.DRILLS.items():
+            # The alert proof needs a cloud with alerts (the observer says there is one); the other two need a production.
+            if (name == "alerts" and getattr(self.config, "observer", None) is None) or (name != "alerts" and not production):
+                continue
+            passed = self.store.newest_event("drill", "ok", name)
+            last = passed["at"] if passed else None
+            if name == "rollback":
+                rollbacks = [self.store.latest_success(app_id, kind="production_rollback") for app_id, app in self.config.applications.items() if app.production]
+                moments = [float((item.get("outcome") or {}).get("recorded_at") or 0) for item in rollbacks if item]
+                last = max([moment for moment in [last, *moments] if moment], default=None)
+            if last and now - last <= days * 86_400:
+                continue
+            since = "none recorded yet" if not last else f"the last passed on {datetime.datetime.fromtimestamp(last, datetime.UTC):%Y-%m-%d}"
+            lines.append(f"{words} is due ({since}): {how}, then `scripts/machine.sh record-drill {name} ok`")
+        return lines
+
+    DIGEST_STALE_SECONDS = 2 * 86_400 + 3600
+
+    def digest_problem(self, now=None):
+        """The watchdog's line when the daily digest stopped or reached no one, else None."""
+        if getattr(self.config, "digest_hour_utc", None) is None:
+            return None
+        now = now or time.time()
+        newest = self.store.digest()
+        if newest is None:
+            return None if now - self.started < self.DIGEST_STALE_SECONDS else "the daily digest has never been written; the controller's background jobs may be stuck"
+        made = aftercare.parse_moment(newest.get("generated_at")) or 0
+        if now - made > self.DIGEST_STALE_SECONDS and now - self.started > self.DIGEST_STALE_SECONDS:
+            return f"the daily digest was last written on {newest.get('day')}; the controller's background jobs may be stuck"
+        delivered = newest.get("delivered") or []
+        if delivered and not any(item.get("ok") for item in delivered):
+            reasons = "; ".join(f"{item.get('channel')}: {item.get('error')}" for item in delivered)[:300]
+            return f"the daily digest of {newest.get('day')} reached no one ({reasons})"
+        return None
+
+    def post_webhook(self, text):
+        """Post one message to notify_webhook_url (Slack or Discord); {"channel", "ok", "error"}."""
+        url = getattr(self.config, "notify_webhook_url", None)
+        if not url:
+            return {"channel": "webhook", "ok": False, "error": "notify_webhook_url is not set"}
+        import httpx
+        short = text if len(text) <= 1900 else text[:1880].rstrip() + "\n…"
+        try:
+            httpx.post(url, json={"text": short, "content": short}, timeout=20).raise_for_status()
+        except Exception as exc:  # noqa: BLE001 - a channel that fails is reported, never fatal
+            return {"channel": "webhook", "ok": False, "error": str(exc)[:200]}
+        return {"channel": "webhook", "ok": True}
+
+    DIGEST_ISSUE = "Fast Deploy: today"
+    DIGEST_ISSUE_BODY = ("Fast Deploy's daily digest: once a day the controller adds a comment here with what shipped, how each release did a "
+                         "day later, what needs a person, and \"all quiet\" when nothing does (docs/ROADMAP.md D60). Watch this issue to get it "
+                         "by email. A release that did worse than the one before is posted at once. Written by code; nothing here acts.")
+
+    def post_issue(self, text):
+        """A comment on the platform repository's digest issue, opened the first time; {"channel", "ok", "error" or "url"}."""
+        platform = getattr(self.config, "platform", None)
+        find, create, comment = (getattr(self.github, name, None) for name in ("find_issue", "create_issue", "comment_issue"))
+        if platform is None:
+            return {"channel": "issue", "ok": False, "error": "platform.repository is not set in the controller configuration"}
+        if not all(callable(item) for item in (find, create, comment)):
+            return {"channel": "issue", "ok": False, "error": "this GitHub adapter cannot write issues"}
+        try:
+            issue = find(platform.repository, self.DIGEST_ISSUE) or create(platform.repository, self.DIGEST_ISSUE, self.DIGEST_ISSUE_BODY)
+            made = comment(platform.repository, issue["number"], text)
+        except Exception as exc:  # noqa: BLE001 - a channel that fails is reported, never fatal
+            note = explain(exc, platform.repository) or str(exc)[:200]
+            return {"channel": "issue", "ok": False, "error": note[:300]}
+        return {"channel": "issue", "ok": True, "issue": issue["number"], "url": made.get("url") or issue.get("url")}
+
+    def announce(self, text):
+        """Say something now, on every channel there is: the digest issue and the webhook (a release that did worse)."""
+        sent = [self.post_issue(text)]
+        if getattr(self.config, "notify_webhook_url", None):
+            sent.append(self.post_webhook(text))
+        return sent
+
+    def release_report_tick(self, limit=5, now=None):
+        """One pass: the report of each release that succeeded at least a day ago and has none (docs/ROADMAP.md D57), at most
+        `limit` a pass; a "worse" verdict is announced at once. Reads only; nothing here changes the cloud."""
+        if self.observer is None:
+            return {"skipped": "no observer identity: live views are off"}
+        from . import chat
+        now = now or time.time()
+        results = {}
+        plans = self.store.history(since=now - aftercare.HORIZON_SECONDS - aftercare.BASELINE_SECONDS)
+        for plan, replaced in aftercare.awaiting_report(plans, now)[:limit]:
+            short = plan["id"][:8]
+            if plan.get("rolled_back"):
+                report = {"generated_at": aftercare.iso(now), "verdict": "rolled_back", "note": "a person rolled it back; nothing to compare",
+                          "environment": "production" if plan.get("kind") == "promotion" else "staging"}
+            elif plan.get("application") not in self.config.applications:
+                report = {"generated_at": aftercare.iso(now), "verdict": "unreadable", "note": "the application is no longer registered"}
+            else:
+                try:
+                    report = aftercare.release_report(self.observer, types.SimpleNamespace(**plan["target"]), plan, replaced, now)
+                except Exception as exc:  # noqa: BLE001 - a read that fails is tried again at the next pass, a few times
+                    attempts = int(plan.get("release_report_attempts") or 0) + 1
+                    if attempts < aftercare.MAX_ATTEMPTS:
+                        self.store.mark(plan["id"], release_report_attempts=attempts)
+                        results[short] = f"not read yet ({attempts}): {str(exc)[:120]}"
+                        continue
+                    report = {"generated_at": aftercare.iso(now), "verdict": "unreadable", "note": f"the observer could not read it: {str(exc)[:200]}"}
+            self.store.mark(plan["id"], release_report=report)
+            self.store.record_event("release_report", name=plan["id"], identity="follow-up", application=plan.get("application"),
+                                    outcome=report["verdict"], detail="; ".join(str(item.get("rule")) for item in report.get("reasons") or []) or None)
+            results[short] = report["verdict"]
+            if report["verdict"] == "worse":
+                report["announced"] = self.announce(chat.release_report_alert({**plan, "release_report": report}))
+                self.store.mark(plan["id"], release_report=report)
+        return results
+
+    def digest_tick(self, now=None):
+        """Once a UTC day, from digest_hour_utc on: build the digest, send it, keep it (docs/ROADMAP.md D60)."""
+        hour = getattr(self.config, "digest_hour_utc", None)
+        if hour is None:
+            return {"off": "digest_hour_utc is null"}
+        now = now or time.time()
+        moment = datetime.datetime.fromtimestamp(now, datetime.UTC)
+        day = moment.date().isoformat()
+        if moment.hour < hour:
+            return {"waiting": f"until {hour:02d}:00 UTC"}
+        if self.store.digest(day):
+            return {"done": day}
+        record = self.build_digest(now)
+        self.store.save_digest(day, record)  # kept before it is sent: a channel that hangs never makes a second digest
+        from . import chat
+        record["delivered"] = self.publish_digest(chat.digest(record))
+        self.store.save_digest(day, record)
+        ok = [item["channel"] for item in record["delivered"] if item.get("ok")]
+        self.store.record_event("digest", name=day, identity="follow-up", outcome="sent" if ok else "kept",
+                                detail=("sent by " + ", ".join(ok)) if ok else "; ".join(f"{item['channel']}: {item.get('error')}" for item in record["delivered"]))
+        return {"day": day, "attention": record["attention"], "sent_by": ok}
+
+    def publish_digest(self, text):
+        sent = [self.post_issue(text)]
+        if getattr(self.config, "notify_webhook_url", None):
+            sent.append(self.post_webhook(text))
+        return sent
+
+    def build_digest(self, now=None, applications=None):
+        """The facts of the day, all from records and reads, none from a model: what shipped, how releases did a day later,
+        which applications had server errors, error lines or missed uptime checks, drift, waiting re-pins and drills, the
+        watchdog's problems, and on Mondays the trust numbers. `applications`: only these (an identity's own)."""
+        now = now or time.time()
+        moment = datetime.datetime.fromtimestamp(now, datetime.UTC)
+        visible = set(self.config.applications) if applications is None else set(applications)
+        plans = [plan for plan in self.store.history(since=now - 100 * 86_400) if plan.get("application") in visible]
+        record = {"day": moment.date().isoformat(), "generated_at": aftercare.iso(now), "hour_utc": getattr(self.config, "digest_hour_utc", None),
+                  "releases": aftercare.recent_releases(plans, now), "reports": aftercare.recent_reports(plans, now), "services": [], "notes": []}
+        if self.observer is None:
+            record["notes"].append("live views are off (no observer identity), so errors and uptime checks are not counted")
+        else:
+            for app_id in sorted(visible):
+                app = self.config.applications[app_id]
+                for environment, target in (("staging", app.target), ("production", app.production.target if app.production else None)):
+                    if target is None:
+                        continue
+                    try:
+                        record["services"].append(aftercare.service_day(self.observer, target, app_id, environment))
+                    except Exception as exc:  # noqa: BLE001 - one application not read is said, the rest still counted
+                        record["notes"].append(f"{app_id} ({environment}) was not read: {str(exc)[:120]}")
+        record["troubled"] = [day for day in record["services"] if aftercare.troubled(day)]
+        drift = self.drift_status()
+        record["drift"] = {key: drift.get(key) for key in ("status", "checked_at", "drifted", "serious", "failed", "stale", "run_url")}
+        try:
+            updates = self.updates.status()
+        except Exception:  # noqa: BLE001 - informative only
+            updates = {}
+        record["updates"] = updates
+        record["problems"] = self.watchdog_problems(now) if applications is None else []
+        if moment.weekday() == 0 or applications is not None:
+            record["trust"] = aftercare.trust(plans, now, 30)
+        record["guards"] = {"missing_native_caps": sorted({app.target.project_id for app_id, app in self.config.applications.items() if app_id in visible}
+                                                          - set(getattr(self.config, "cloud_run_spend_caps", None) or {}))}
+        if applications is None:
+            record["cost"] = self.cost_position(now)
+            if moment.weekday() == 0 and self.observer is not None:
+                record["alert_slots"] = self.alert_slots()
+                record["idle"] = self.idle_services(plans)
+        record["attention"] = bool(
+            any(item.get("over_budget") for item in (record.get("cost") or {}).get("projects") or [])
+            or any(item["result"] in ("restored", "stopped", "rolled_back") for item in record["releases"])
+            or any(item.get("verdict") == "worse" for item in record["reports"]) or record["troubled"]
+            or (record["drift"].get("drifted") or record["drift"].get("failed")) or record["problems"])
+        return record
+
+    def projects(self):
+        """Every project the platform releases into, staging first, each with its environment."""
+        found = {}
+        for app in self.config.applications.values():
+            found.setdefault(app.target.project_id, "staging")
+            if app.production:
+                found.setdefault(app.production.target.project_id, "production")
+        production = getattr(self.config, "production", None)
+        if production is not None:
+            found.setdefault(production.project_id, "production")
+        return found
+
+    def cost_position(self, now=None):
+        """The digest's cost line (docs/ROADMAP.md 24.2, D63): each project's spend this month from the billing export, its
+        forecast, its recorded budget and its native cap, and whether Google's anomaly detection is recorded as on."""
+        budgets = getattr(self.config, "monthly_budgets_usd", None) or {}
+        caps = getattr(self.config, "cloud_run_spend_caps", None) or {}
+        projects = self.projects()
+        position = {"anomaly_detection": bool(getattr(self.config, "cost_anomaly_detection", False)), "projects": []}
+        table = getattr(getattr(self.config, "onboarding", None), "billing_export_table", None)
+        spent = {}
+        if not table:
+            position["warning"] = "no billing export is recorded (onboarding.billing_export_table), so this month's spend is not read"
+        elif self.observer is None or not callable(getattr(self.observer, "month_spend", None)):
+            position["warning"] = "live views are off (no observer identity), so this month's spend is not read"
+        else:
+            try:
+                month = self.observer.month_spend(table, list(projects), now)
+                position.update(month=month["month"], days_elapsed=month["days_elapsed"], days_in_month=month["days_in_month"], rough=month["rough"])
+                spent = {item["project"]: item for item in month["projects"]}
+            except Exception as exc:  # noqa: BLE001 - the line says why it has no numbers; the digest goes on
+                position["warning"] = str(exc)[:240]
+        for project, environment in projects.items():
+            item = spent.get(project) or {}
+            budget = budgets.get(project)
+            forecast = item.get("forecast_usd")
+            position["projects"].append({"project": project, "environment": environment, "net_cost_usd": item.get("net_cost_usd"),
+                                         "forecast_usd": forecast, "budget_usd": budget, "native_cap_usd": caps.get(project),
+                                         "over_budget": bool(budget and forecast is not None and forecast > budget)})
+        return position
+
+    def alert_slots(self):
+        """Monday's count (docs/ROADMAP.md 24.4): each project's alert policies and uptime executions, against the free allotments."""
+        found = []
+        for project, environment in self.projects().items():
+            try:
+                found.append({"project": project, "environment": environment, **self.observer.policies(project)})
+            except Exception as exc:  # noqa: BLE001 - informative only
+                found.append({"project": project, "environment": environment, "warning": str(exc)[:160]})
+        return found
+
+    def idle_services(self, plans):
+        """Monday's list (docs/ROADMAP.md D63): staging services nobody but the health checks called in 30 days, candidates to
+        retire. Only services with a live release; a person decides."""
+        idle = []
+        for app_id, app in sorted(self.config.applications.items()):
+            live = next((plan for plan in reversed(plans) if plan.get("application") == app_id and plan.get("state") == "succeeded"
+                         and plan.get("kind") is None), None)
+            if live is None:
+                continue
+            try:
+                quiet = not self.observer.had_user_requests(app.target, 30, (live.get("spec") or {}).get("health_path"))
+            except Exception:  # noqa: BLE001 - informative only; an unread service is not called idle
+                quiet = False
+            if quiet:
+                idle.append(app_id)
+        return idle
+
+    def digest_view(self, principal, fresh=False):
+        """get_digest: the newest digest kept, or, with `fresh` or none kept today, one built now and not sent. An identity
+        that sees only some applications gets a digest of those."""
+        everything = "*" in principal.applications
+        today = datetime.datetime.now(datetime.UTC).date().isoformat()
+        kept = self.store.digest() if everything and not fresh else None
+        if kept and kept.get("day") == today:
+            return {**kept, "kept": True}
+        built = self.build_digest(applications=None if everything else self.visible_apps(principal))
+        return {**built, "kept": False, "previous": ({"day": kept.get("day"), "delivered": kept.get("delivered")} if kept else None)}
+
+    def trust_numbers(self, principal, days=30):
+        """The trust numbers (docs/ROADMAP.md D61) over the applications this identity may see."""
+        if not 1 <= int(days) <= 365:
+            raise ValueError("days is between 1 and 365")
+        visible = set(self.visible_apps(principal))
+        now = time.time()
+        plans = [plan for plan in self.store.history(since=now - int(days) * 86_400 - 86_400) if plan.get("application") in visible]
+        return aftercare.trust(plans, now, int(days))
 
     RESTORE_DRILL_DAYS = 92  # a quarter and a day: the restore drill is due when none has passed for longer than this
 
@@ -911,8 +1236,26 @@ class Controller:
             notes.append("platform.yaml says lab-members but Identity-Aware Proxy is not enabled on the service; render and merge the infrastructure")
         if access["exposure"] == "authenticated" and access["iap_enabled"]:
             notes.append("Identity-Aware Proxy is enabled although platform.yaml says authenticated; render and merge the infrastructure")
+        uptime_30 = None
+        if environment == "production" and callable(getattr(observer, "uptime_pass_rate", None)):
+            # The uptime check's own line (docs/ROADMAP.md D58): its calls no longer count in the users' objective.
+            try:
+                end = datetime.datetime.now(datetime.UTC)
+                uptime_30 = observer.uptime_pass_rate(target, end - datetime.timedelta(days=30), end)
+            except (ValueError, httpx.HTTPError):
+                uptime_30 = None
+        diagnosis = None
+        if (metrics.get("server_errors") or not service["ready"]) and callable(getattr(observer, "logs", None)):
+            # What the newest error lines say, against the same table a failed release is read with (docs/ROADMAP.md 23.3).
+            try:
+                diagnosis = diagnose({"candidate_logs": observer.logs(target, max(5, min(int(minutes), 1440)), "WARNING", 30),
+                                      "error": service.get("ready_message")})
+            except (ValueError, httpx.HTTPError):
+                diagnosis = None
         return {"application": app_id, "environment": environment, "service": service, "metrics": metrics,
-                "recorded_live_release": live and {"plan_id": live["id"], "sha": live["sha"], "revision": recorded},
+                "recorded_live_release": live and {"plan_id": live["id"], "sha": live["sha"], "revision": recorded,
+                                                   "released_at": (live.get("outcome") or {}).get("completed_at")},
+                "release_report": (live or {}).get("release_report"), "uptime_30_days": uptime_30, "diagnosis": diagnosis,
                 "agreement": agreement, "needs": needs, "access": access, "notes": notes, "error_budget": budget,
                 "console_url": f"https://console.cloud.google.com/run/detail/{target.region}/{target.service}/metrics?project={target.project_id}"}
 
@@ -1557,7 +1900,8 @@ class Controller:
             else:
                 receipt = live.get("receipt") or {}
                 entry["live_release"] = {"plan_id": live["id"], "sha": live["sha"], "commit": live.get("commit"), "revision": receipt.get("revision"),
-                                         "url": receipt.get("url"), "completed_at": (live.get("outcome") or {}).get("completed_at")}
+                                         "url": receipt.get("url"), "completed_at": (live.get("outcome") or {}).get("completed_at"),
+                                         "report": live.get("release_report")}
                 compare = getattr(self.github, "compare", None)
                 entry["undeployed_commits"] = compare(app, live["sha"]) if callable(compare) else None
             if app.production is not None:
@@ -1567,7 +1911,8 @@ class Controller:
                 entry["production_release"] = None if promoted is None else {
                     "plan_id": promoted["id"], "sha": promoted["sha"], "commit": promoted.get("commit"), "revision": receipt.get("revision"),
                     "url": receipt.get("url"), "completed_at": (promoted.get("outcome") or {}).get("completed_at"),
-                    "approved_by": (receipt.get("promotion") or {}).get("approved_by"), "staging_release": (promoted.get("source") or {}).get("plan")}
+                    "approved_by": (receipt.get("promotion") or {}).get("approved_by"), "staging_release": (promoted.get("source") or {}).get("plan"),
+                    "report": promoted.get("release_report")}
             result[app_id] = entry
         return result
 
@@ -1635,6 +1980,10 @@ class Controller:
         result = self.github.cost_report(app, workflow=app.workflows["rightsize"], **self.artifact_names(app, "cost-report"))
         if isinstance(result, dict):
             result["spending_guards"] = self.spending_guards(app)
+            budgets = getattr(self.config, "monthly_budgets_usd", None) or {}
+            projects = [app.target.project_id] + ([app.production.target.project_id] if app.production else [])
+            result["budgets"] = {project: budgets.get(project) for project in projects}
+            result["cost_anomaly_detection"] = bool(getattr(self.config, "cost_anomaly_detection", False))
         return result
 
     def propose_rightsizing(self, principal, app_id):

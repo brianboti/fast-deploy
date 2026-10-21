@@ -43,6 +43,29 @@ class CloudMonitoring:
                 return values
             params = {**params, "pageToken": page}
 
+    def points(self, filter_text, aligner, reducer, start, end, alignment_seconds):
+        """Every aligned point of the series a full filter selects, as (end time, value), oldest first; for questions that
+        need to know when (the newest day with errors), where `query` only gives the values."""
+        params = {"filter": filter_text, "interval.startTime": _iso(start), "interval.endTime": _iso(end),
+                  "aggregation.alignmentPeriod": f"{int(alignment_seconds)}s", "aggregation.perSeriesAligner": aligner,
+                  "aggregation.crossSeriesReducer": reducer, "view": "FULL"}
+        found = []
+        while True:
+            response = self.client.get(f"{BASE}/projects/{self.project}/timeSeries", params=params,
+                                       headers={"Authorization": "Bearer " + self.token()})
+            response.raise_for_status()
+            data = response.json()
+            for series in data.get("timeSeries", []):
+                for point in series.get("points", []):
+                    value = point.get("value", {})
+                    number = float(value["doubleValue"]) if "doubleValue" in value else int(value["int64Value"]) if "int64Value" in value else None
+                    if number is not None:
+                        found.append(((point.get("interval") or {}).get("endTime") or "", number))
+            page = data.get("nextPageToken")
+            if not page:
+                return sorted(found)
+            params = {**params, "pageToken": page}
+
     def collect(self, service, window_days=14, now=None):
         """Normalized usage for one service over the window. Missing data stays None; it is never estimated."""
         if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", service):

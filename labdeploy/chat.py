@@ -360,6 +360,229 @@ def cost_line(cost):
     return f"Cost: {money(floor)} a month with no visitors; compute at most {money(cost.get('compute_ceiling_usd_month'))} a month"
 
 
+# ---- after a release (docs/ROADMAP.md Phase 23): the report a day later, the digest, the trust numbers
+VERDICT_WORDS = {"better": "did better than the version before", "same": "behaves about the same as the version before",
+                 "worse": "did worse than the version before", "too_little_traffic": "had too little traffic to compare with the version before",
+                 "first": "is the first release here, so there is nothing before it to compare with",
+                 "replaced": "was replaced within the hour, so there was nothing to compare", "rolled_back": "was rolled back by a person",
+                 "unreadable": "could not be read"}
+
+
+def share(value):
+    return "no" if not value else f"{value * 100:.1f}%".replace(".0%", "%")
+
+
+def reason_words(reason):
+    rule, new, before = reason.get("rule"), reason.get("new"), reason.get("before")
+    if rule == "errors":
+        return f"{share(new)} of its requests answered with a server error, against {share(before)} before"
+    if rule == "latency":
+        return f"95% answered within {round(float(new)):,} ms, against {round(float(before)):,} ms before"
+    if rule == "uptime":
+        return f"Google's uptime check passed only {float(new) * 100:.1f}% of the time"
+    return None
+
+
+def window_words(stats):
+    if not stats:
+        return None
+    hours = stats.get("hours")
+    text = (f"{plural(stats.get('requests') or 0, 'request')} besides the health checks" + (f" in {hours:g} hours" if hours else "")
+            + f", {plural(stats.get('errors_5xx') or 0, 'server error')}")
+    if stats.get("p95_ms") is not None:
+        text += f", 95% within {round(float(stats['p95_ms'])):,} ms"
+    return text
+
+
+def report_line(report):
+    """One sentence-part for a release report: "did worse than the version before: 5.4% of its requests ..."; None without one."""
+    if not isinstance(report, dict) or not report.get("verdict"):
+        return None
+    verdict = report["verdict"]
+    details = [reason_words(item) for item in report.get("reasons") or []]
+    if not any(details):
+        if verdict in ("same", "too_little_traffic", "first", "better"):
+            details = [window_words(report.get("new"))]
+        elif report.get("note"):
+            details = [clip(report["note"], 160)]
+    details = [item for item in details if item]
+    return VERDICT_WORDS.get(verdict, verdict.replace("_", " ")) + (": " + "; ".join(details) if details else "")
+
+
+def release_report_alert(plan):
+    """The message sent at once when a release did worse a day later (docs/ROADMAP.md D57): what, how, and the one choice."""
+    app = plan.get("application") or "the app"
+    report = plan.get("release_report") or {}
+    production = report.get("environment") == "production" or plan.get("kind") == "promotion"
+    where = " in production" if production else ""
+    facts = [reason_words(item) for item in report.get("reasons") or []]
+    facts += [f"Released: {version(plan.get('sha'), (plan.get('commit') or {}).get('message'))} on {day((plan.get('outcome') or {}).get('completed_at'))}",
+              f"The week before, the previous version: {window_words(report.get('baseline'))}" if report.get("baseline") else None,
+              "Nothing was changed: the new version still serves. A person decides."]
+    return compose(f"**`{app}`{where} did worse than the version before, a day after its release.**", facts,
+                   f"look at its errors (“show {app}'s errors”); if this release caused them, “roll {app} back{where}”.",
+                   "Fast Deploy's release report, written by code (docs/ROADMAP.md D57).")
+
+
+def trust_line(numbers, days=30):
+    """The trust numbers in one line (docs/ROADMAP.md D61)."""
+    if not numbers or not numbers.get("releases"):
+        return f"Last {days} days: no releases recorded"
+    reached, restored, person = numbers.get("reached_traffic") or 0, numbers.get("restored_automatically") or 0, numbers.get("rolled_back_by_a_person") or 0
+    text = (f"Last {days} days: {plural(reached, 'release')} reached users, {restored} went back on {'its' if restored == 1 else 'their'} own, "
+            f"{person} rolled back by a person")
+    if numbers.get("change_failure_rate") is not None:
+        text += f"; {numbers['change_failure_rate'] * 100:.0f}% needed undoing"
+    if numbers.get("recovery_hours_median") is not None:
+        text += f", a good release again within {numbers['recovery_hours_median']:g} h (median)"
+    if numbers.get("stopped_before_traffic"):
+        text += f"; {plural(numbers['stopped_before_traffic'], 'attempt')} stopped before reaching anyone"
+    if numbers.get("inconclusive_share") is not None and numbers.get("bakes"):
+        text += f"; {numbers['inconclusive_share'] * 100:.0f}% of the watches after a switch had too little traffic to judge"
+    return text
+
+
+RESULT_WORDS = {"live": "is live", "restored": "went back to the previous version on its own", "stopped": "stopped before reaching anyone",
+                "rolled_back": "was rolled back", "in_progress": "is still on its way"}
+
+
+def shipped_words(item):
+    app, kind = item.get("application") or "an app", item.get("kind")
+    if kind in ("rollback", "production_rollback"):
+        where = " in production" if kind == "production_rollback" else ""
+        done = {"succeeded": "rolled back", "failed": "a rollback that did not finish"}.get(item.get("state"), f"a rollback, {item.get('state')}")
+        return f"`{app}`{where}: {done}"
+    where = " in production" if kind == "promotion" else ""
+    what = version(item.get("sha"), item.get("message"), 50)
+    words = RESULT_WORDS.get(item.get("result"), str(item.get("result")))
+    if item.get("result") == "restored":
+        words += {"baking": " (it failed its watch with real traffic)", "promoting": " (its health check failed after the switch)"}.get(item.get("failed_phase"), "")
+    return f"`{app}`{where} {what} {words}"
+
+
+def service_words(day_record):
+    parts = []
+    if day_record.get("server_errors"):
+        parts.append(plural(day_record["server_errors"], "server error"))
+    if day_record.get("error_lines"):
+        parts.append(("200 or more" if day_record.get("error_lines_capped") else str(day_record["error_lines"])) + " error lines in its log")
+    if day_record.get("uptime") is not None and day_record["uptime"] < 0.99:
+        parts.append(f"the uptime check passed {day_record['uptime'] * 100:.1f}% of the time")
+    where = " in production" if day_record.get("environment") == "production" else ""
+    return f"`{day_record.get('application')}`{where}, last day: " + ", ".join(parts)
+
+
+def digest(record):
+    """The daily digest (docs/ROADMAP.md D60): the most important line first, then each thing to look at, or all quiet."""
+    when_day = day(record.get("day"))
+    releases = [item for item in record.get("releases") or [] if item.get("result") != "in_progress"]
+    reports = record.get("reports") or []
+    troubled = record.get("troubled") or []
+    drift = record.get("drift") or {}
+    problems = record.get("problems") or []
+    facts, looks = [], 0
+    for item in releases[:8]:
+        facts.append(shipped_words(item))
+        looks += item.get("result") in ("restored", "stopped") or item.get("state") == "failed"
+    if len(releases) > 8:
+        facts.append(f"and {plural(len(releases) - 8, 'more release')}")
+    for item in reports[:6]:
+        where = " in production" if item.get("environment") == "production" else ""
+        facts.append(f"`{item.get('application')}`{where}, released {day(item.get('released_at'))}: a day later it {report_line(item)}")
+        looks += item.get("verdict") == "worse"
+    for item in troubled[:8]:
+        facts.append(service_words(item))
+    looks += len(troubled)
+    if drift.get("drifted"):
+        facts.append("The cloud setup differs from the code for " + ", ".join(f"`{name}`" for name in sorted(drift["drifted"]))
+                     + " (docs/RUNBOOK.md, \"Drift reported\")")
+        looks += 1
+    update_facts, update_attention = after_release(record.get("updates") or {})
+    if update_attention:
+        facts += [fact for fact in update_facts if "waiting for a person" in fact or "fails" in fact or "failed" in fact or "went back" in fact]
+        looks += 1
+    for problem in problems[:6]:
+        facts.append(f"To look at: {clip(problem, 220)}")
+    looks += len(problems)
+    if len(problems) > 6:
+        facts.append(f"and {plural(len(problems) - 6, 'more thing')} in the controller's status")
+    services = record.get("services") or []
+    if services and not troubled:
+        facts.append(f"{plural(len(services), 'service')} checked: no server errors, no error lines, every uptime check passed")
+    elif services:
+        facts.append(f"{len(services) - len(troubled)} of {plural(len(services), 'service')} had a quiet day")
+    if record.get("trust"):
+        facts.append(trust_line((record["trust"] or {}).get("overall"), (record["trust"] or {}).get("days", 30)))
+        suspects = ((record["trust"] or {}).get("overall") or {}).get("suspected_false_restores") or []
+        if suspects:
+            facts.append("Possibly restored for nothing (the same commit passed its watch later): "
+                         + ", ".join(f"`{item['application']}` plan `{item['plan']}`" for item in suspects[:3]))
+    cost = record.get("cost") or {}
+    line = cost_position_line(cost)
+    if line:
+        facts.append(line)
+    for item in cost.get("projects") or []:
+        if item.get("over_budget"):
+            facts.append(f"`{item['project']}` is on course for {money(item['forecast_usd'])} this month, above its {money(item['budget_usd'])} budget: "
+                         "ask me for the cost report; the spending cap closes it at the line")
+            looks += 1
+    missing = (record.get("guards") or {}).get("missing_native_caps") or []
+    if missing:
+        facts.append("Google's own spend cap is not recorded for " + ", ".join(f"`{name}`" for name in missing))
+    if record.get("alert_slots"):
+        facts.append(alert_slots_line(record["alert_slots"]))
+    if record.get("idle"):
+        facts.append("No user request in 30 days: " + ", ".join(f"`{name}`" for name in record["idle"])
+                     + ". Each keeps five alert policies and an uptime check; retire one with scripts/decommission.sh if nobody needs it")
+    if cost and record.get("alert_slots") is not None and not cost.get("anomaly_detection"):
+        facts.append("Google's free Cost Anomaly Detection is not recorded as on (docs/SETUP.md 7q)")
+    facts += [f"Note: {clip(note, 200)}" for note in (record.get("notes") or [])[:2]]
+    attention = bool(record.get("attention"))
+    head = (f"**{plural(max(looks, 1), 'thing')} to look at, {when_day}.**" if attention else f"**All quiet, {when_day}.**")
+    return compose(head, facts, "ask me about any line above; nothing in it was changed by itself." if attention else "nothing to do.",
+                   f"Fast Deploy's daily digest, written by code at {when(record.get('generated_at'))} UTC.")
+
+
+def cost_position_line(cost):
+    """The digest's cost line (docs/ROADMAP.md 24.2): each project's month so far, its forecast and its budget."""
+    if not cost:
+        return None
+    if cost.get("warning") and not any(item.get("net_cost_usd") is not None for item in cost.get("projects") or []):
+        return f"Spend this month: not read ({clip(cost['warning'], 160)})"
+    parts = []
+    for item in cost.get("projects") or []:
+        if item.get("net_cost_usd") is None:
+            continue
+        budget = f" of a {money(item['budget_usd'])} budget" if item.get("budget_usd") else " (budget not recorded)"
+        course = f", on course for {money(item['forecast_usd'])}" if item.get("forecast_usd") not in (None, item["net_cost_usd"]) else ""
+        parts.append(f"{item['environment']} {money(item['net_cost_usd'])}{budget}{course}")
+    if not parts:
+        return None
+    days = f" ({cost['days_elapsed']:g} of {cost['days_in_month']} days)" if cost.get("days_elapsed") is not None else ""
+    return f"Spend this month{days}: " + "; ".join(parts) + ("; early in the month, so the forecasts are rough" if cost.get("rough") else "")
+
+
+def alert_slots_line(slots):
+    """Monday's count of alert policies and uptime executions against Google's free allotments (docs/ROADMAP.md 24.4)."""
+    parts = []
+    for item in slots:
+        if item.get("warning"):
+            parts.append(f"`{item['project']}` not read")
+            continue
+        parts.append(f"`{item['project']}` {plural(item['alert_policies'], 'alert policy')}, {plural(item['uptime_checks'], 'uptime check')} "
+                     f"(about {item['uptime_executions_month']:,} of the free 1,000,000 executions a month)")
+    return ("Alert slots: " + "; ".join(parts) + ". Google charges for alert policies from 1 Sep 2027 at the earliest (docs/RUNBOOK.md, monthly checklist)")
+
+
+def digest_answer(result):
+    """get_digest: the digest, and whether it is the one kept and sent today or one built just now."""
+    text = digest(result)
+    if result.get("kept"):
+        sent = [item.get("channel") for item in result.get("delivered") or [] if item.get("ok")]
+        return text + ("\n\n" + ("Sent today by " + " and ".join(sent) + "." if sent else "Kept today, but not sent: no channel took it."))
+    return text + "\n\nBuilt just now on request; the controller sends one a day at its hour."
+
+
 def traffic(split):
     if isinstance(split, dict):
         return ", ".join(f"`{revision}` {share}%" for revision, share in split.items())
@@ -405,7 +628,8 @@ def release(plan):
         facts = [f"Address: {url} ({access((plan.get('spec') or {}).get('exposure'))})" if url else None, checks_line(checks),
                  gates_line(receipt.get("build_checks")), "The database migration ran first" if phases.get("migration") else None,
                  bake_line(phases, minutes), scan_line(plan.get("vulnerabilities")), contained_line(receipt.get("containment")),
-                 f"Took {took}" if took and state == "succeeded" else None]
+                 f"Took {took}" if took and state == "succeeded" else None,
+                 f"A day later, it {report_line(plan.get('release_report'))}" if plan.get("release_report") else None]
         if state != "succeeded":
             facts.append(f"The GitHub run ended '{state}' after the release itself had finished")
         return compose(f"**`{app}` is live** with {what}.", facts, f"nothing to do. To undo it, say “roll {app} back”.", foot)
@@ -909,6 +1133,9 @@ def applications(apps):
             promoted = app.get("production_release") or {}
             notes.append(f"`{app_id}` in production: {version(promoted['sha'], (promoted.get('commit') or {}).get('message'))} since "
                          f"{day(promoted.get('completed_at'))}" if promoted.get("sha") else f"`{app_id}` has a production; nothing promoted to it yet")
+        for where, record in (("", live), (" in production", app.get("production_release") or {})):
+            if (record.get("report") or {}).get("verdict") == "worse":
+                notes.append(f"`{app_id}`{where}: its release of {day(record.get('completed_at'))} did worse than the version before; ask me about it")
         if app.get("paused"):
             notes.append(f"`{app_id}` is paused: releases are refused")
         if (app.get("platform_pin") or {}).get("supported") is False:
@@ -928,10 +1155,16 @@ def budget_line(budget):
         return None
     goal, left, good = budget["goal"], budget.get("budget_remaining"), budget.get("compliance")
     target = f"objective {goal * 100:g}% of requests without a server error over {budget.get('days', 30)} days"
+    if budget.get("requests_counted") == 0:
+        # A quiet application has no score, not a perfect one (docs/ROADMAP.md D58).
+        return f"Error budget: no user requests in the {budget.get('days', 30)} days, so nothing to count yet ({target})"
     if left is None:
         return f"Error budget: no data yet ({target})"
     shown = "spent" if left <= 0 else f"{left:.0%} left"
-    return f"Error budget: {shown}" + (f", {good * 100:.2f}% of requests fine so far" if good is not None else "") + f" ({target})"
+    line = f"Error budget: {shown}" + (f", {good * 100:.2f}% of requests fine so far" if good is not None else "") + f" ({target})"
+    if left <= 0 and budget.get("clears_by"):
+        line += f"; its errors leave the window by {day(budget['clears_by'])} at the latest, if no new ones come"
+    return line
 
 
 def health(result):
@@ -961,6 +1194,11 @@ def health(result):
              f"Access: {access((result.get('access') or {}).get('exposure'))}",
              f"Memory: {percent(metrics['memory_utilization_p95'])} of its limit at the busiest" if metrics.get("memory_utilization_p95") is not None else None,
              budget_line(result.get("error_budget")),
+             f"Uptime check, 30 days: {result['uptime_30_days'] * 100:.2f}% passed" if result.get("uptime_30_days") is not None else None,
+             (f"Since its release of {day((result.get('recorded_live_release') or {}).get('released_at'))}, it {report_line(result['release_report'])}"
+              if result.get("release_report") else None),
+             (f"Likely cause: {result['diagnosis']['cause']} (its log: “{clip(result['diagnosis']['evidence'], 120)}”). "
+              f"In the code: {result['diagnosis']['developer']}. In the contract: {result['diagnosis']['operator']}") if result.get("diagnosis") else None,
              *[f"Note: {clip(note, 220)}" for note in (result.get("notes") or [])[:3]]]
     trouble = bool(errors) or service.get("ready") is False or unreachable
     where = " in production" if production else ""
@@ -1118,6 +1356,13 @@ def controller(status):
     facts += [f"Watchdog: {clip(problem, 220)}" for problem in others[:5]]
     update_facts, update_attention = after_release(status.get("platform_updates") or {})
     facts += update_facts
+    newest = status.get("digest") or {}
+    if newest.get("day"):
+        sent = [item.get("channel") for item in newest.get("delivered") or [] if item.get("ok")]
+        facts.append(f"Daily digest of {day(newest['day'])}: {'something to look at' if newest.get('attention') else 'all quiet'}, "
+                     + (("sent by " + " and ".join(sent)) if sent else "kept here but sent nowhere (ask me for it)"))
+    if status.get("trust"):
+        facts.append(trust_line(status["trust"]))
     attention = bool(others or credential.get("warning") or drift.get("drifted") or (status.get("configuration") or {}).get("error") or update_attention)
     next_line = ("ask me about any item above." if attention
                  else "nothing to do; the weekly cost report runs on its own. Tell the operator only if it is still missing after a week." if reports
@@ -1224,6 +1469,23 @@ def cost_report(result, application=None):
         facts.append(line)
     elif actual.get("warning"):
         facts.append(f"Actual spend unknown: {sentence_clip(actual['warning'], 200)}")
+    previous = actual.get("previous") or {}
+    if actual.get("total_net_cost_usd") is not None and previous.get("total_net_cost_usd") is not None:
+        moved = ((actual.get("movers") or {}).get("by_service") or []) + ((actual.get("movers") or {}).get("by_app") or [])
+        line = f"The {previous.get('window_days') or window} days before: {money(previous['total_net_cost_usd'])}"
+        if moved:
+            first = moved[0]
+            name = first.get("service") or f"`{first.get('app')}`"
+            line += f"; {name} moved most, {money(first['before_usd'])} to {money(first['net_cost_usd'])}"
+        facts.append(line)
+    month = report.get("month") or {}
+    budgets = result.get("budgets") or {}
+    for item in month.get("projects") or []:
+        budget = budgets.get(item["project"])
+        over = budget and item["forecast_usd"] > budget
+        facts.append(f"This month in `{item['project']}`: {money(item['net_cost_usd'])} so far, on course for {money(item['forecast_usd'])}"
+                     + (f", {'above' if over else 'within'} its {money(budget)} budget" if budget else "")
+                     + ("; early in the month, so the forecast is rough" if month.get("rough") else ""))
     observed = (report.get("rightsizing") or {}).get("observed") or {}
     if observed:
         facts.append(f"Measured use: {plural(observed.get('requests') or 0, 'request')} in the window, worth "
@@ -1248,6 +1510,8 @@ def cost_report(result, application=None):
         facts.append(f"This month: {plural(tolls['fresh_images'], 'new image')} scanned, {about(tolls.get('image_scans_usd'))}")
     if ((result.get("spending_guards") or {}).get("cloud_run_spend_cap") or {}).get("status") == "not_recorded":
         facts.append("Google's own spend cap is not recorded for this project")
+    if result.get("cost_anomaly_detection") is False:
+        facts.append("Google's free Cost Anomaly Detection is not recorded as on (docs/SETUP.md 7q)")
     next_line = (f"say “make {app} cheaper” and I'll open a pull request with these proposals; a person merges it." if concrete
                  else "nothing to do; the report runs again next week.")
     return compose(head, facts, next_line, link("GitHub run", result.get("run_url")) if result.get("run_url") else None)

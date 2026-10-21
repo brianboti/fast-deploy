@@ -72,6 +72,7 @@ changes until a person merges. **Act** tools change the cloud.
 |---|---|---|
 | `list_applications` | Look | Which apps exist, the live commit, what is waiting on main |
 | `get_controller_status` | Look | Is the controller healthy: version, dispatch on or off, pauses, GitHub credential expiry, background jobs |
+| `get_digest` | Look | Today's digest: what shipped, how each release did a day later, apps with errors or missed uptime checks, what waits for a person, or all quiet; `fresh: true` builds one now |
 | `analyze_repository` | Look | A registered app's repository read conservatively, with a draft `platform.yaml` and review questions |
 | `compare_with_live` | Look | What changed on main since the live release, and the cost before and after |
 | `get_service_health` | Look | Live: is it serving, requests, errors, latency, instances, memory, declared needs, who may open its pages; with `environment: production`, production and its error budget |
@@ -205,13 +206,26 @@ ready, say that `onboard_application` will deploy it. For "what do developers ne
    from what the platform wrote, changed by hand or left by an unfinished apply. Point the operator to `docs/RUNBOOK.md`
    "Drift reported"; never try to fix it from chat.
 
+### 4b. "How are things?", "What happened today?", "Did yesterday's release go well?"
+
+1. `get_digest`: one answer for the whole lab, written by code once a day. Show it as written; it says "all quiet" when
+   nothing needs a person.
+2. A day after each release the platform compares the new version with the one before it (requests besides the health
+   checks, server errors, how fast 95% were answered, the uptime check). The verdict is in `get_deployment_status`,
+   `list_applications` and `get_service_health`: "better", "about the same", "worse", or "too little traffic to compare".
+   It never acts. On "worse", show its reasons and offer the rollback; a person decides.
+3. `get_controller_status` adds the trust numbers: how many releases reached users, went back on their own or were
+   rolled back, over 30 days. Quote them; never judge them.
+
 ### 5. Money
 
 - "What will it cost?": `estimate_cost`. Give the idle cost and the worst case, and the biggest levers it names. A
   warm instance (`scaling.minimum: 1`) or a Postgres database costs money every month even with no visitors (the lab's
   standard says about 9 dollars a month each); the rest scales to zero. `estimate_cost` prices the committed
   `platform.yaml`, so for a change not yet merged, give the standard's rough figure and say the exact bound follows.
-- "What did we actually spend?": `get_cost_report` (measured weekly; nothing in it is estimated).
+- "What did we actually spend?": `get_cost_report` (measured weekly; nothing in it is estimated). It sets the period
+  before beside it and names what moved; quote both. "Are we on budget?": `get_digest`, whose cost line gives each
+  project's month so far, its forecast and its budget. A forecast is the month so far scaled to the month, not a bill.
 - "Make it cheaper": `propose_rightsizing` opens a pull request with the measured savings; a person merges it.
 - A plan refused for cost means the worst case is above the app's ceiling: lower the size in `platform.yaml`, or the
   operator raises the ceiling on purpose in the controller's configuration.

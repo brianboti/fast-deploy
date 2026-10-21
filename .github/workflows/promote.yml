@@ -423,3 +423,72 @@ jobs:
           path: recovery-receipt.json
           if-no-files-found: warn
           retention-days: 30
+  notify:
+    # Posts how the promotion or the rollback ended to the NOTIFY_WEBHOOK_URL secret (Slack or Discord) when it is set;
+    # silent otherwise (docs/ROADMAP.md 23.3). It runs without production's identity and never touches production.
+    needs: [describe, promote]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      DESCRIBE_RESULT: ${{ needs.describe.result }}
+      PROMOTE_RESULT: ${{ needs.promote.result }}
+      WEBHOOK: ${{ secrets.NOTIFY_WEBHOOK_URL }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      OPERATION: ${{ inputs.operation }}
+      APPLICATION: ${{ inputs.application }}
+      PLAN_ID: ${{ inputs.plan_id }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          pattern: '*-receipt'
+          path: receipt
+          merge-multiple: true
+      - name: Post the result
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$WEBHOOK" ]; then
+            echo "NOTIFY_WEBHOOK_URL is not set; no notification sent"
+            exit 0
+          fi
+          python3 - <<'PY'
+          import json, os, urllib.request
+          def read(name):
+              try:
+                  return json.load(open(f"receipt/{name}"))
+              except (OSError, ValueError):
+                  return {}
+          app, plan, result = os.environ["APPLICATION"], os.environ["PLAN_ID"][:8], os.environ["PROMOTE_RESULT"]
+          if os.environ["OPERATION"] == "rollback":
+              receipt = read("recovery-receipt.json")
+              if result == "success" and receipt.get("state") == "rolled_back":
+                  line = f"production rolled back: traffic is on {receipt.get('restored_traffic')} again"
+              elif result in ("skipped", "cancelled") and not receipt:
+                  line = "production rollback not approved or cancelled; production's traffic did not move"
+              else:
+                  line = f"production rollback did not finish ({result}, {receipt.get('state', 'no receipt')}); check Cloud Run and docs/RUNBOOK.md, Production"
+          else:
+              receipt = read("release-receipt.json")
+              if result == "success" and receipt.get("state") == "succeeded":
+                  line = f"promoted: revision {receipt.get('revision')} serves all of production's traffic"
+              elif receipt.get("state") == "traffic_restored":
+                  step = receipt.get("step")
+                  where = f" with {step} percent of the traffic" if step and step < 100 else ""
+                  line = f"promotion stopped{where} ({receipt.get('error')}); production's earlier split serves everyone again"
+              elif receipt.get("state") == "rollback_failed_manual_recovery_required":
+                  line = f"promotion failed and production's traffic was not restored: {receipt.get('restore_error')}; act now (docs/RUNBOOK.md, Production)"
+              elif result in ("skipped", "cancelled") and not receipt:
+                  line = ("promotion refused before production" if os.environ["DESCRIBE_RESULT"] == "failure"
+                          else "promotion not approved or cancelled; nothing changed in production")
+              else:
+                  line = f"promotion did not finish ({result}, {receipt.get('state', 'before the release step')}); open the run"
+          text = f"Fast Deploy, {app} in production, plan {plan}: {line}. {os.environ['RUN_URL']}"
+          body = json.dumps({"text": text, "content": text}).encode()
+          request = urllib.request.Request(os.environ["WEBHOOK"], data=body, headers={"Content-Type": "application/json"})
+          with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 - operator-configured webhook secret
+              print("notification sent:", response.status)
+          PY

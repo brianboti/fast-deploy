@@ -727,6 +727,20 @@ def set_application(candidate, config, registry, app_id, values):
         override(candidate, app_id, field, value, getattr(current, field), getattr(base, field))
 
 
+def amounts(form, key, found):
+    """`project: USD` lines of a text area as a mapping; a line that is not one is named next to the field."""
+    found_amounts = {}
+    for line in lines(form.get(key)):
+        project, _, amount = line.replace("=", ":").partition(":")
+        value = number({"amount": amount}, "amount", found, whole=False)
+        if not amount.strip() or value is INVALID or value is None:
+            found.pop("amount", None)
+            found[key] = f"{line!r} is not project: amount"
+            continue
+        found_amounts[project.strip()] = value
+    return found_amounts
+
+
 def change_platform(candidate, config, registry, form, which, found):
     if which == "kill":
         if danger_word(form, "danger.paused", KILL_SWITCH, found):
@@ -739,16 +753,14 @@ def change_platform(candidate, config, registry, form, which, found):
         put(candidate, "notify_webhook_url", webhook, config.notify_webhook_url, None)
     elif "notify_webhook_url.remove" in form:
         put(candidate, "notify_webhook_url", None, config.notify_webhook_url, None)
-    caps = {}
-    for line in lines(form.get("cloud_run_spend_caps")):
-        project, _, amount = line.replace("=", ":").partition(":")
-        value = number({"amount": amount}, "amount", found, whole=False)
-        if not amount.strip() or value is INVALID or value is None:
-            found.pop("amount", None)
-            found["cloud_run_spend_caps"] = f"{line!r} is not project: amount"
-            continue
-        caps[project.strip()] = value
-    put(candidate, "cloud_run_spend_caps", caps, config.cloud_run_spend_caps, {})
+    put(candidate, "cloud_run_spend_caps", amounts(form, "cloud_run_spend_caps", found), config.cloud_run_spend_caps, {})
+    # After a release and between Mondays (docs/ROADMAP.md D60, 24.2, 24.3): the digest's hour (empty turns it off), each
+    # project's budget as created in Cloud Billing, and whether Google's anomaly detection is on.
+    if "digest_hour_utc" in form:
+        put(candidate, "digest_hour_utc", number(form, "digest_hour_utc", found), config.digest_hour_utc, field_default(Config, "digest_hour_utc"))
+    if "monthly_budgets_usd" in form:
+        put(candidate, "monthly_budgets_usd", amounts(form, "monthly_budgets_usd", found), config.monthly_budgets_usd, {})
+        put(candidate, "cost_anomaly_detection", "cost_anomaly_detection" in form, config.cost_anomaly_detection, False)
     if "platform_updates.on" not in form:
         if config.platform_updates is not None:
             candidate.pop("platform_updates", None)

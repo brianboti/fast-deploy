@@ -76,7 +76,7 @@ def test_demo_server_serves_all_tools_over_mcp(tmp_path):
                          "propose_infrastructure", "add_production", "promote_to_production", "rollback_production", "onboard_application", "import_contract",
                          "check_repository", "get_onboarding_status", "deploy_staging",
                          "deploy_latest", "rollback_staging", "cancel_deployment", "compare_with_live", "get_service_health", "get_recent_logs", "get_deployment_status",
-                         "list_plans", "estimate_cost", "propose_rightsizing", "get_cost_report", "list_events", "get_controller_status"]
+                         "list_plans", "estimate_cost", "propose_rightsizing", "get_cost_report", "list_events", "get_digest", "get_controller_status"]
         planned = rpc("tools/call", {"name": "create_deployment_plan", "arguments": {"application": "demo"}})
         assert not planned.get("isError"), planned
         refused = rpc("tools/call", {"name": "create_deployment_plan", "arguments": {"application": "demo", "cloud": "aws"}})

@@ -1,5 +1,6 @@
 """Background work inside the controller process: auto-deploy, following unfinished releases, the daily watchdog, nightly
-backups, and what follows a platform release (the machine's update and the re-pins).
+backups, what follows a platform release (the machine's update and the re-pins), the report of each release a day later
+and the daily digest.
 
 One daemon thread wakes every fifteen seconds, reads the configuration file again if it changed (so a pause or a switch
 applies to the jobs without waiting for a request), and runs whichever job is due. Each job is a plain method on the
@@ -32,6 +33,9 @@ class Scheduler(threading.Thread):
             "contracts": (controller.contract_tick, lambda: 60, 50),
             # After a platform release (labdeploy/updates.py): the machine's update, then the re-pins; off without platform_updates.
             "platform_updates": (controller.platform_updates_tick, lambda: 300, 90),
+            # After a release (docs/ROADMAP.md Phase 23): each release's report a day later, and the daily digest at its hour.
+            "release_reports": (controller.release_report_tick, lambda: 900, 180),
+            "digest": (controller.digest_tick, lambda: 300, 240),
         }
         self.config = config
         self.state = {name: {"next_run": started + first, "last_run": None, "last_result": None, "last_error": None} for name, (_, _, first) in self.jobs.items()}

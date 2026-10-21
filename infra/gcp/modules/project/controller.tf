@@ -255,7 +255,10 @@ resource "google_monitoring_alert_policy" "controller" {
       }
     }
   }
+  severity    = "CRITICAL"
+  user_labels = { lab-deploy-managed = "true", lab-deploy-environment = var.environment }
   documentation {
+    subject   = "Fast Deploy controller: not answering"
     content   = "https://${local.controller_host}/healthz has not answered for five minutes, so Claude's tools are down. Releases already running finish on GitHub. docs/RUNBOOK.md, \"The controller's machine\": `scripts/machine.sh status`."
     mime_type = "text/markdown"
   }

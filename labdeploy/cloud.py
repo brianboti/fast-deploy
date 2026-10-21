@@ -165,8 +165,27 @@ class Observer:
             value = max(points, key=lambda point: (point.get("interval") or {}).get("endTime") or "").get("value") or {}
             return float(value["doubleValue"]) if "doubleValue" in value else None
         days = int(str(slo.get("rollingPeriod") or "2592000s").rstrip("s")) // 86400
-        return {"goal": slo.get("goal"), "days": days, "compliance": newest("select_slo_compliance"),
-                "budget_remaining": newest("select_slo_budget_fraction"), "name": name}
+        found = {"goal": slo.get("goal"), "days": days, "compliance": newest("select_slo_compliance"),
+                 "budget_remaining": newest("select_slo_budget_fraction"), "name": name}
+        # What the objective counts (docs/ROADMAP.md D58): its own filters, so the answer follows whatever it was rendered
+        # with. The newest day with a server error says when a spent budget recovers at the latest, if no new one comes.
+        ratio = (slo.get("requestBasedSli") or {}).get("goodTotalRatio") or {}
+        try:
+            monitoring = CloudMonitoring(target.project_id, self.token, self.client)
+            window_start = end - datetime.timedelta(days=days)
+            if ratio.get("totalServiceFilter"):
+                found["requests_counted"] = int(sum(value for _, value in monitoring.points(
+                    ratio["totalServiceFilter"], "ALIGN_DELTA", "REDUCE_SUM", window_start, end, 86400)))
+            if ratio.get("badServiceFilter"):
+                bad = [(at, value) for at, value in monitoring.points(ratio["badServiceFilter"], "ALIGN_DELTA", "REDUCE_SUM", window_start, end, 86400) if value]
+                found["errors_counted"] = int(sum(value for _, value in bad))
+                if bad:
+                    last = datetime.datetime.fromisoformat(bad[-1][0].replace("Z", "+00:00"))
+                    found["last_error_day"] = last.date().isoformat()
+                    found["clears_by"] = (last + datetime.timedelta(days=days)).date().isoformat()
+        except (httpx.HTTPError, ValueError, KeyError):
+            pass  # the counts explain the budget; the budget itself was read
+        return found
 
     def needs(self, target, needs):
         """Whether each declared need exists, with the facts that matter; a missing one is reported, not raised."""
@@ -236,6 +255,105 @@ class Observer:
                 "request_latency_ms_p95": peak("run.googleapis.com/request_latencies", "ALIGN_PERCENTILE_95"),
                 "max_active_instances": peak("run.googleapis.com/container/instance_count", "ALIGN_MAX", 'metric.labels.state="active"'),
                 "memory_utilization_p95": peak("run.googleapis.com/container/memory/utilizations", "ALIGN_PERCENTILE_95")}
+
+    def uptime_pass_rate(self, target, start, end):
+        """The share of Google's uptime checks that passed between two moments (every region together), or None without data."""
+        monitoring = CloudMonitoring(target.project_id, self.token, self.client)
+        seconds = max(60, int((end - start).total_seconds()))
+        values = monitoring.query("monitoring.googleapis.com/uptime_check/check_passed", "ALIGN_FRACTION_TRUE", "REDUCE_MEAN", start, end, seconds,
+                                  f'resource.labels.service_name="{target.service}"')
+        return round(min(values), 4) if values else None
+
+    def memory_p95(self, target, revisions, start, end):
+        """The busiest p95 memory utilization of these revisions in a window (a share of their limit), or None."""
+        names = [name for name in revisions if re.fullmatch(r"[a-z][a-z0-9-]{1,62}", str(name))]
+        if not names:
+            return None
+        monitoring = CloudMonitoring(target.project_id, self.token, self.client)
+        seconds = max(60, int((end - start).total_seconds()))
+        values = monitoring.query("run.googleapis.com/container/memory/utilizations", "ALIGN_PERCENTILE_95", "REDUCE_MAX", start, end, seconds,
+                                  f'resource.labels.service_name="{target.service}" AND resource.labels.revision_name = one_of('
+                                  + ", ".join(f'"{name}"' for name in names) + ")")
+        return round(max(values), 4) if values else None
+
+    REQUEST_CAP = 5000  # per window: enough to judge a share and a p95; a busier window is judged on its newest 5,000
+
+    def revision_requests(self, target, revisions, start, end, health_path=None, cap=REQUEST_CAP):
+        """Cloud Run's request log of some revisions between two moments, the health path left out: what users and programs
+        sent, not the uptime check or the probes (Cloud Run's request metric cannot tell them apart, docs/ROADMAP.md D57).
+        Returns {"requests": [{"status", "latency_ms"}], "truncated": bool}, newest first."""
+        names = [name for name in revisions if re.fullmatch(r"[a-z][a-z0-9-]{1,62}", str(name))]
+        if not names:
+            raise ValueError("Invalid revision name")
+        if health_path is not None and not re.fullmatch(r"/[A-Za-z0-9/_-]*", health_path):
+            raise ValueError("Invalid health path")
+        iso = lambda moment: moment.astimezone(datetime.UTC).isoformat(timespec="seconds").replace("+00:00", "Z")  # noqa: E731
+        clauses = ['resource.type="cloud_run_revision"', f'resource.labels.service_name="{target.service}"',
+                   "(" + " OR ".join(f'resource.labels.revision_name="{name}"' for name in names) + ")",
+                   f'logName="projects/{target.project_id}/logs/run.googleapis.com%2Frequests"', f'timestamp>="{iso(start)}"', f'timestamp<"{iso(end)}"']
+        if health_path:
+            clauses.append(f'NOT httpRequest.requestUrl=~"^https?://[^/]+{health_path}([?].*)?$"')
+        body = {"resourceNames": [f"projects/{target.project_id}"], "orderBy": "timestamp desc", "pageSize": 1000, "filter": " AND ".join(clauses)}
+        found, truncated = [], False
+        while True:
+            response = self.client.post("https://logging.googleapis.com/v2/entries:list", json=body, headers={"Authorization": "Bearer " + self.token()})
+            if response.status_code == 403:
+                raise ValueError("The observer identity is not allowed to read logs; apply the Terraform that grants it the viewer roles")
+            response.raise_for_status()
+            data = response.json()
+            for entry in data.get("entries", []):
+                request = entry.get("httpRequest") if isinstance(entry.get("httpRequest"), dict) else {}
+                path = (re.sub(r"^[a-z]+://[^/]+", "", str(request.get("requestUrl") or "")).split("?", 1)[0]) or "/"
+                if health_path and path == health_path:
+                    continue
+                latency = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)s", str(request.get("latency") or ""))
+                status = request.get("status")
+                found.append({"status": status if isinstance(status, int) else None, "latency_ms": float(latency.group(1)) * 1000 if latency else None})
+            token = data.get("nextPageToken")
+            if len(found) >= cap:
+                return {"requests": found[:cap], "truncated": True}
+            if not token:
+                return {"requests": found, "truncated": truncated}
+            body = {**body, "pageToken": token}
+
+    def month_spend(self, table, projects, now=None):
+        """Each project's spend this month and its forecast, from the billing export (docs/ROADMAP.md 24.2)."""
+        from .cost import month_to_date
+        return month_to_date(table, projects, self.token(), self.client, now)
+
+    def had_user_requests(self, target, days=30, health_path=None):
+        """Whether anyone but the health checks called the service in the last `days`: one log line is enough."""
+        end = datetime.datetime.now(datetime.UTC)
+        clauses = ['resource.type="cloud_run_revision"', f'resource.labels.service_name="{target.service}"',
+                   f'logName="projects/{target.project_id}/logs/run.googleapis.com%2Frequests"',
+                   f'timestamp>="{(end - datetime.timedelta(days=days)).isoformat(timespec="seconds").replace("+00:00", "Z")}"']
+        if health_path and re.fullmatch(r"/[A-Za-z0-9/_-]*", health_path):
+            clauses.append(f'NOT httpRequest.requestUrl=~"^https?://[^/]+{health_path}([?].*)?$"')
+        body = {"resourceNames": [f"projects/{target.project_id}"], "orderBy": "timestamp desc", "pageSize": 1, "filter": " AND ".join(clauses)}
+        response = self.client.post("https://logging.googleapis.com/v2/entries:list", json=body, headers={"Authorization": "Bearer " + self.token()})
+        response.raise_for_status()
+        return bool(response.json().get("entries"))
+
+    def policies(self, project_id):
+        """How many alert policies and uptime checks a project holds, and the uptime checks' executions a month: what Google's
+        free allotments are measured against (docs/ROADMAP.md 24.4)."""
+        def listed(url, key):
+            items, params = [], {"pageSize": 500}
+            while True:
+                data = self.get(url, **params)
+                items += data.get(key, [])
+                if not data.get("nextPageToken"):
+                    return items
+                params["pageToken"] = data["nextPageToken"]
+        alerts = listed(f"https://monitoring.googleapis.com/v3/projects/{project_id}/alertPolicies", "alertPolicies")
+        checks = listed(f"https://monitoring.googleapis.com/v3/projects/{project_id}/uptimeCheckConfigs", "uptimeCheckConfigs")
+        executions = 0
+        for check in checks:
+            period = int(str(check.get("period") or "60s").rstrip("s") or 60)
+            regions = len(check.get("selectedRegions") or []) or 6  # every region when none is chosen: six checker locations
+            executions += round(30 * 86400 / max(period, 60)) * regions
+        return {"alert_policies": len(alerts), "enabled_alert_policies": sum(1 for item in alerts if item.get("enabled", True)),
+                "uptime_checks": len(checks), "uptime_executions_month": executions}
 
     def logs(self, target, minutes=30, severity="ERROR", limit=50):
         """The newest log lines of the service at or above a severity, newest first."""

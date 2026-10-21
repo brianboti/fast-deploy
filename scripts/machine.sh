@@ -6,6 +6,8 @@
 #   scripts/machine.sh logs [UNIT]       the last 200 lines of fast-deploy (default), litestream, caddy, startup or update
 #   scripts/machine.sh restart           restart the controller
 #   scripts/machine.sh drill             the quarterly restore drill, on the machine: the nightly copy and the live copy
+#   scripts/machine.sh record-drill NAME ok|failed [DETAIL]
+#                                        record another drill (alerts, rollback, cap_fire) so the watchdog stops reminding
 #   scripts/machine.sh backup            the nightly backup, now
 #   scripts/machine.sh update COMMIT     install a commit from main; the previous one comes back if it does not answer
 #                                        (with platform_updates on, the machine does this by itself after a release)
@@ -49,6 +51,14 @@ case "$COMMAND" in
     iap 'sudo systemctl restart fast-deploy && sleep 3 && systemctl is-active fast-deploy' ;;
   drill)
     as_controller restore-drill ;;
+  record-drill)
+    DRILL=${2:?usage: scripts/machine.sh record-drill alerts|rollback|cap_fire ok|failed [DETAIL]}
+    OUTCOME=${3:?usage: scripts/machine.sh record-drill alerts|rollback|cap_fire ok|failed [DETAIL]}
+    [[ "$DRILL" =~ ^(alerts|rollback|cap_fire)$ && "$OUTCOME" =~ ^(ok|failed)$ ]] || { echo "NAME is alerts, rollback or cap_fire; the outcome ok or failed"; exit 1; }
+    DETAIL=${4:-}
+    ALLOWED='^[A-Za-z0-9 .,:;_/%()-]{0,200}$'
+    [[ "$DETAIL" =~ $ALLOWED ]] || { echo "Keep DETAIL to letters, digits, spaces and . , : ; _ / % ( ) -"; exit 1; }
+    if [[ -n "$DETAIL" ]]; then as_controller "record-drill $DRILL $OUTCOME --detail '$DETAIL'"; else as_controller "record-drill $DRILL $OUTCOME"; fi ;;
   backup)
     as_controller backup ;;
   update)
