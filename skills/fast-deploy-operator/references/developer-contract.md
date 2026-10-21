@@ -168,10 +168,16 @@ contract per folder, and a root with a single service folder takes it without as
 
 A Node.js service (since 1.20.0) is read the same way: its Node.js line from `.nvmrc`, `.node-version` or
 `engines.node`, else the newest long-term-support line (a file naming a dead line, 16, 18 or 20, gets 22 with a note
-since 1.22.0); its `package-lock.json` (up to 5 MB; one behind `package.json` is locked again), else one the platform
-makes with every install script off; `scripts.start` when it runs `node` on a file of the repository, or `nodemon`,
-`node-dev`, `pm2` or `forever` on one (rewritten to `node`); else `main`, `server.js`, `index.js`, `app.js` and the rest
-of the entry list; a literal port in the listen call becomes `port`. It refuses a start script that transpiles or chains
-(`tsx`, `&&`), a server on `localhost`, a lockfile from another package manager, a project that must be built first, a
-lockfile entry from outside the npm registry, and a line newer than 26 (22 is refused from 2027-04-30, 24 from
-2028-04-30).
+since 1.22.0); its `package-lock.json` (up to 5 MB; one behind `package.json` is locked again), or since 1.23.0 its
+`pnpm-lock.yaml`, `yarn.lock` or `bun.lock` installed by its own manager, frozen and with scripts off (a workspace
+package without a lockfile installs from the root's), else one the platform makes with npm and every install script off;
+`scripts.start` when it runs `node` on a file of the repository, or `nodemon`, `node-dev`, `pm2` or `forever` on one
+(rewritten to `node`), or a start the build replaces (`next start`, `nest start`, `tsx`: since 1.23.0 a service that
+must be built first, Next.js, NestJS, SvelteKit with adapter-node, a `build` script or TypeScript, is built in the
+platform's image and started by node on the built file); else `main`, `server.js`, `index.js`, `app.js` and the rest of
+the entry list; a literal port in the listen call becomes `port`; the packages whose install script Cloud Run needs are
+drafted into `build.scripts` for the merge to approve. It refuses a start script that chains or watches (`&&` other
+than `build && node FILE`, `concurrently`), a server on `localhost`, TypeScript without `typescript` among the
+dependencies, a front-end site with no server, a build that needs a secret (Strapi, Payload), a lockfile entry from
+outside the npm registry, Yarn 2+ without `nodeLinker: node-modules`, and a line newer than 26 (22 is refused from
+2027-04-30, 24 from 2028-04-30).

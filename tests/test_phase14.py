@@ -308,5 +308,5 @@ def test_unconfirmed_patterns_in_installed_packages_are_counted_not_listed(tmp_p
     assert "2 unconfirmed in installed packages or system files" in out and json.loads((tmp_path / "s.json").read_text())["installed"] == 2
     # Node.js (live 2026-10-19): the official node image's Yarn README, read from its own layer although the build deletes
     # Yarn, and a pattern in an installed npm package are someone else's code too; the service's own file is not.
-    assert leaks.third_party("/opt/yarn-v1.22.22/README.md") and leaks.third_party("/app/node_modules/aws-sdk/test/creds.js")
+    assert leaks.third_party("/opt/yarn-v1.22.19/README.md") and leaks.third_party("/app/node_modules/aws-sdk/test/creds.js")
     assert not leaks.third_party("/app/server.js") and not leaks.third_party("/app/lib/node_modules_helper.js")

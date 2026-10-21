@@ -177,11 +177,13 @@ def osv_findings(report):
     return findings
 
 
-def osv_summary(report, exit_code, lock_text):
+def osv_summary(report, exit_code, lock_text, lock_name="package-lock.json"):
     """What the audit found and whether it finished. OSV-Scanner exits 0 with no findings, 1 with findings, and 128 when it
-    found no packages, which counts as finished only for a lockfile that lists none; anything else did not finish."""
-    from .node import lock_problems, read_lockfile
-    data, _ = read_lockfile(lock_text or "")
+    found no packages, which counts as finished only for a lockfile that lists none; anything else did not finish. The
+    lockfile is npm's, pnpm's, Yarn's or Bun's (21.1), read into the same view and checked entry by entry (D42)."""
+    from .node import read_lock
+    from .node import view_problems as lock_problems
+    data, _ = read_lock(lock_name or "package-lock.json", lock_text or "")
     packages = sum(1 for path in (data or {}).get("packages", {}) if path)
     finished = exit_code in (0, 1) and isinstance(report, dict) or (exit_code == 128 and data is not None and packages == 0)
     findings = osv_findings(report) if finished and isinstance(report, dict) else []
@@ -205,7 +207,7 @@ def osv_verdict(summary):
         count = len(summary["malicious"])
         return f"{count} known malicious package{'s' if count != 1 else ''} in the lockfile ({', '.join(summary['malicious'][:3])})"
     if summary["lockfile"] != "read":
-        return "the lockfile could not be read as npm lockfile version 2 or 3, so its packages could not be checked"
+        return "the lockfile could not be read (npm's version 2 or 3, pnpm's 6 or 9, Yarn's, or Bun's text format), so its packages could not be checked"
     if summary["status"] != "finished":
         return f"the dependency audit did not finish ({summary['tool']} exited {summary['exit_code']}), and a release needs a finished audit"
     if summary["lock_problems"]:
@@ -231,7 +233,7 @@ def osv_main(argv):
     except (OSError, ValueError):
         report = None
     lock = Path(args.lockfile).read_text() if Path(args.lockfile).is_file() else ""
-    summary = osv_summary(report, args.exit_code, lock)
+    summary = osv_summary(report, args.exit_code, lock, Path(args.lockfile).name)
     reason = osv_verdict(summary)
     summary["blocked"] = reason is not None
     counts, fixable = summary["by_severity"], summary["fixable_by_severity"]

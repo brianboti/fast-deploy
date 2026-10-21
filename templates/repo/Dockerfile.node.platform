@@ -1,0 +1,23 @@
+# Made by Fast Deploy at build time from the contract (build.recipe: platform, docs/ROADMAP.md 13.3, 21.1 to 21.4); never committed.
+# node:__NODE__-trixie-slim (Debian 13) by its multi-architecture index digest, resolved __RESOLVED__.
+# A build stage: the development dependencies, the build and the prune happen here, and only its result enters the image below.
+FROM node:__NODE__-trixie-slim@__DIGEST__ AS build
+ENV HOME=/tmp
+__MANAGER__WORKDIR /app
+# Only what passed the platform's deny-list was copied into this build context.
+COPY . .
+__INSTALL____BUILD____PRUNE__
+FROM node:__NODE__-trixie-slim@__DIGEST__
+# Libraries read NODE_ENV to run in production mode. The user below has no home directory: what tools write under ~ goes
+# to /tmp, memory on Cloud Run.
+ENV NODE_ENV=production HOME=/tmp
+WORKDIR __WORKDIR__
+__FINAL_COPY__# No package manager stays in the image: node itself starts the service, and a manager left behind only brings findings of
+# its own to the image's scan.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /usr/local/bin/npm /usr/local/bin/npx \
+           /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-v*
+# A numeric user that does not exist in the image: the service never runs as root.
+USER 65532:65532
+EXPOSE __PORT__
+# node itself, never a package manager: a manager adds latency and does not pass SIGTERM on, so Cloud Run's shutdown would cut requests off.
+CMD __CMD__

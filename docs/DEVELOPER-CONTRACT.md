@@ -48,14 +48,14 @@ manifest. Its answers come from the same kind of ladder:
 
 | Question | Where the answer comes from, first match wins | When nothing says |
 |---|---|---|
-| How is the image built? | your `Dockerfile`; a `Procfile` (Google's buildpacks, for code the lab has reviewed only: they run install scripts) | the platform's own image on `node:<line>-trixie-slim` (Debian 13), made at build time and never committed |
+| How is the image built? | your `Dockerfile`; a `Procfile` (Google's buildpacks, for code the lab has reviewed only: they run install scripts) | the platform's own image on `node:<line>-trixie-slim` (Debian 13), made at build time and never committed; with a build stage when the service builds first (since 1.23.0, section 1b): the development dependencies, the `build` script or the framework's command, then the production dependencies alone |
 | Which Node? | the Dockerfile's `FROM node:X`; `.nvmrc`; `.node-version`; the `nodejs` line of `.tool-versions`; `engines.node` (a range takes the highest of 22, 24 and 26 it allows); `devEngines.runtime`. A version file or range naming only a line at its end of life (16, 18, 20, the odd lines) gets 22, the lowest supported line, with a note saying the date (since 1.22.0, D48); a Dockerfile's own `FROM` is yours and stays refused | the newest line in Active LTS: 24 until 2026-10-28, 26 from then |
-| Which packages? | `npm-shrinkwrap.json`; `package-lock.json` (version 2 or 3, up to 5 MB), installed with `npm ci`; a lockfile that disagrees with `package.json` is set aside and `package.json` locked again by the platform (since 1.22.0) | the platform locks `package.json` once (below) |
-| What starts it? | the Dockerfile's `CMD`; the Procfile's `web:`; Compose's `command`; `scripts.start` when it is `node [flags] <file> [args]`, or `nodemon`, `node-dev`, `pm2` or `forever` on a file (rewritten to `node <file>`, since 1.22.0); `main`; then `server.js`, `index.js`, `app.js`, `main.js`, `src/index.js`, `server/index.mjs` and the rest of the entry list | refused: say the start command |
+| Which packages? | `npm-shrinkwrap.json`; `package-lock.json` (version 2 or 3, up to 5 MB), installed with `npm ci`; `pnpm-lock.yaml`, `yarn.lock` (Yarn 1, or Yarn 2 and later with `nodeLinker: node-modules`) or `bun.lock`, each installed by its own manager, frozen and with every install script off (since 1.23.0, section 1b); a workspace member without a lockfile of its own installs from the root's; an npm lockfile that disagrees with `package.json` is set aside and `package.json` locked again by the platform (since 1.22.0) | the platform locks `package.json` once with npm (below) |
+| What starts it? | the Dockerfile's `CMD`; the Procfile's `web:`; Compose's `command`; `scripts.start` when it is `node [flags] <file> [args]`, or `nodemon`, `node-dev`, `pm2` or `forever` on a file (rewritten to `node <file>`, since 1.22.0; a pm2 ecosystem file in JSON names the file), or a start the build replaces (since 1.23.0: `next start`, `nest start`, `remix-serve`, `react-router-serve`, `tsx` and `ts-node` become node on the built file; `npm run build && node FILE` builds first); `main`; then `server.js`, `index.js`, `app.js`, `main.js`, `src/index.js`, `server/index.mjs` and the rest of the entry list; last, a framework's documented start after its build (Next.js, NestJS, React Router, Remix, SvelteKit with adapter-node, Nuxt, Astro with its Node adapter, AdonisJS) | refused: say the start command |
 | Which port? | Compose `ports` (the container side); one `EXPOSE`; `--port` in the start command; the code's `listen(process.env.PORT \|\| 8787)`, or its literal `listen(3000)` even when `PORT` is never read (since 1.22.0: Cloud Run's `--port` sets the container port and `PORT` alike) | 8080, passed in as `PORT` |
 | Which host? | the entry file's listen call and the modules it imports, never a helper script: a host read from a variable whose default is `127.0.0.1` gets `0.0.0.0` in the contract's `env`; `HOST`, `HOSTNAME` or `NITRO_HOST` are set to `0.0.0.0` for the frameworks that read them (Next.js, Astro, Nuxt, the serve commands of React Router and Remix) | every interface, Node's own default |
 | Health check? | a Compose `healthcheck`; a `/health` or `/healthcheck` route (Express, Fastify, Koa, Hono, Hapi, or `req.url === '/health'` in a plain server), prefixed paths like `/api/health` included | none: Cloud Run's TCP check, and the release says the HTTP check is off |
-| Install scripts? | the lockfile's packages that have one, kept only where `package.json`'s `allowScripts` pins them by version and the package needs it on Cloud Run | none run |
+| Install scripts? | the platform's own table of packages whose script is needed on Cloud Run (`sharp` below 0.33, `bcrypt` below 5.1, `canvas`, `sqlite3`, `better-sqlite3`, `argon2`, `re2`, `node-pty`, `@parcel/watcher`, `@tensorflow/tfjs-node`), drafted at the locked version for the merge to approve (since 1.23.0, D53); then what `package.json` approves for its manager (`allowScripts` by version; pnpm's `onlyBuiltDependencies`, Yarn's `dependenciesMeta` `built`, Bun's `trustedDependencies` by name, joined with the locked version), less those that ship their binary anyway | none run |
 | Tests? | `scripts.test` unless it is npm's placeholder; files `node --test` finds by its own patterns | none: said plainly, never invented |
 
 The packages are locked by the platform when the repository has no lockfile: `npm install --package-lock-only
@@ -63,18 +63,22 @@ The packages are locked by the platform when the repository has no lockfile: `np
 machine (Node 22 bundles npm 10.9.9, which has no `min-release-age`, so npm 11.19.1 is installed there first, by version
 and checked against its integrity hash), into `apps/<service>/package-lock.json`. Every entry must carry its integrity hash and come from the npm registry.
 
-For Node.js it also **refuses**: a start script that transpiles or chains (`ts-node`, `tsx`, `node --watch`, a
-development server, `concurrently`, `&&` or `sh -c`; `nodemon`, `node-dev`, `pm2` and `forever` on a file are rewritten
-to `node <file>` since 1.22.0, and refused only with `--exec` or an ecosystem file); a service that needs a build first
-(its start file is not in the repository, TypeScript on Node 22, Next.js, NestJS, Remix, SvelteKit, Astro or Nuxt)
-unless your own Dockerfile builds it; a listen call on `127.0.0.1` or `localhost`, or Fastify without
-`host: '0.0.0.0'` (a literal port is taken as `port` since 1.22.0); a front-end site with no server; two lockfiles, or
-`packageManager` and `engines` naming different managers; a `yarn.lock`, `pnpm-lock.yaml` or `bun.lock` (convert it,
-section 1b); a lockfile entry without an integrity hash or from git, a tarball elsewhere, a `file:` or `link:` path, or
-`bundleDependencies`; a lockfile over 5 MB; a workspace at the root (give one package's folder) or a package of one; a
-committed `.npmrc` or `.yarnrc.yml` with a literal token; a line newer than 26; and `engines.iojs`. A committed
-`node_modules/`, `dist/` or `.next/` is set aside with a note, as is a lockfile behind its `package.json`, and a `build`
-script that the start does not need (Sophia's builds a browser extension) is noted, not refused.
+For Node.js it also **refuses**: a start script that chains or watches (`node --watch`, a development server,
+`concurrently`, `&&` other than `build && node FILE`, `sh -c`; `nodemon`, `node-dev`, `pm2` and `forever` on a file are
+rewritten to `node <file>` since 1.22.0, and refused only with `--exec` or an ecosystem file in JavaScript); a start file
+that is not in the repository when nothing builds it, and TypeScript without `typescript` among the dependencies (since
+1.23.0 a `build` script, the frameworks' builds and `tsc` run in the platform's image, section 1b); a build that needs a
+secret (Strapi, Payload); a listen call on `127.0.0.1` or `localhost`, or Fastify without `host: '0.0.0.0'` (a literal
+port is taken as `port` since 1.22.0); a front-end site with no server (SvelteKit without adapter-node, Astro without its
+Node adapter, Vite alone); two lockfiles, `bun.lockb` (Bun's old binary format), or `packageManager` and `engines` naming
+different managers; Yarn 2+ with Plug'n'Play (no `nodeLinker: node-modules`); a lockfile entry without an integrity hash
+or checksum, or from git, a tarball elsewhere, a `file:`, `link:` or `patch:` source, or `bundleDependencies`; a lockfile
+over 5 MB; a workspace root that starts nothing itself (give one package's folder: it installs from the root's lockfile,
+since 1.23.0), a root lockfile that does not list the package, or a repository managed by nx, Lerna or Rush with no
+`workspaces` field; a committed `.npmrc` or `.yarnrc.yml` with a literal token; a line newer than 26; and `engines.iojs`.
+A committed `node_modules/`, `dist/` or `.next/` is set aside with a note, as is an npm lockfile behind its
+`package.json`, and a `build` script that the start does not need (Sophia's builds a browser extension) is noted, not
+refused.
 
 Following the rest of this page is still the better path: your repository then carries its own tests, lock and
 workflows, and every change is reviewed in one place.
@@ -223,14 +227,31 @@ Dockerfile's `FROM node:X` the same. A line is refused from its end of life, and
 2027-04-30, 24 on 2028-04-30, 26 on 2029-04-30. The newest line in Active LTS is the default for a new contract (24 until
 2026-10-28, 26 from then).
 
-**The lockfile.** npm only in this version: `package-lock.json` (version 2 or 3) or `npm-shrinkwrap.json`, committed with
-`package.json` and installed with `npm ci`, which installs exactly the lockfile and stops when the two disagree. Every
-entry must carry its `integrity` hash and come from `https://registry.npmjs.org/`; a git dependency, a tarball from
-elsewhere, a `file:` or `link:` path and `bundleDependencies` are refused, because `npm ci` installs them without checking
-them against the registry. The platform reads no `.npmrc`: it installs from the public registry with npm's own settings.
-A lockfile is read up to 5 MB (a monorepo's is often 2 to 5 MB; since 1.22.0). For a repository taken as it is, a lockfile
-that is behind its `package.json` is set aside and `package.json` is locked again by the platform, as below; your own
-lockfile is used once the two are committed together.
+**The lockfile.** `package-lock.json` (version 2 or 3) or `npm-shrinkwrap.json`, committed with `package.json` and
+installed with `npm ci`, which installs exactly the lockfile and stops when the two disagree; or, since 1.23.0 (roadmap
+21.1), `pnpm-lock.yaml` (lockfile version 6 or 9), `yarn.lock` (Yarn 1's format, or Yarn 2 and later's with
+`nodeLinker: node-modules` in `.yarnrc.yml`, since Plug'n'Play needs a loader at every start) or `bun.lock` (Bun 1.2's
+text format; `bun.lockb` is refused with the command that rewrites it). Each is installed by its own manager, frozen and
+with every install script off: `pnpm install --frozen-lockfile --ignore-scripts`, `yarn install --immutable` with
+`YARN_ENABLE_SCRIPTS=false`, `yarn install --frozen-lockfile --ignore-scripts` (Yarn 1), `bun install --frozen-lockfile
+--ignore-scripts`. The manager itself is installed by version and integrity from its npm package (pnpm, `@yarnpkg/cli-dist`,
+`yarn`, `@oven/bun-linux-x64`), never through Corepack, which Node.js 25 and later no longer ship. The release is the one
+`package.json`'s `packageManager` names (`"pnpm@9.15.0+sha512.…"`, `"yarn@4.5.3"`), as Corepack and Railpack honour it,
+held to the sha512 the field carries or else to the integrity the npm registry publishes; without the field it is the
+platform's pin (pnpm 12, Yarn 4, Yarn 1, Bun 1), which the weekly pin refresh follows. A lockfile only another release can
+install frozen (checked on 2026-10-20: pnpm 12 reads lockfile 9.0 only, and Yarn 4.18 rewrites every other Yarn 2+
+format, Yarn 4.0 to 4.12's included) is refused without `packageManager`, with the line to add. Whatever the manager, every entry must carry its integrity hash or checksum and come from
+`https://registry.npmjs.org/` (Yarn 1 lockfiles may name `registry.yarnpkg.com`, the same registry); a git dependency, a
+tarball from elsewhere, a `file:`, `link:` or `patch:` source and `bundleDependencies` are refused, because the manager
+installs them without checking them against the registry. The platform reads no `.npmrc`: it installs from the public
+registry with the manager's own settings. A lockfile is read up to 5 MB (a monorepo's is often 2 to 5 MB; since 1.22.0).
+For a repository taken as it is, an npm lockfile that is behind its `package.json` is set aside and `package.json` is
+locked again by the platform, as below; the other managers' frozen installs stop on a stale lockfile, so commit the two
+together. A package of a workspace (`workspaces` in the root's `package.json`, or `pnpm-workspace.yaml`) without a lockfile
+of its own installs from the root's lockfile, which must list it (roadmap 21.4): the whole repository is the build
+context, the install runs at the root (`pnpm install --filter`, `npm ci`, `yarn workspaces focus`, `bun install`), the
+build in the package's folder, and only that package with its production dependencies enters the image (`pnpm deploy`
+for pnpm; the pruned tree for the others).
 
 **Install scripts never run at install.** Every npm attack of 2025 and 2026 ran from a package's install script, so the
 platform installs with `npm ci --ignore-scripts` on every npm, then runs the scripts of the packages `platform.yaml` lists
@@ -241,11 +262,18 @@ build:
   scripts: [sharp@0.34.4]   # npm rebuild sharp@0.34.4 after the install; a name alone, a range or --all is refused
 ```
 
-The reader drafts that list from the lockfile's packages that have a script, keeping only those your `package.json`
-approves by version in its `allowScripts` field (`npm install-scripts approve` writes them, from npm 11.16), and only when
-the package needs its script on Cloud Run. It is often empty: a package that ships its native binary inside its tarball
-needs no script (onnxruntime-node's script only downloads GPU libraries; protobufjs's only prints a warning). Your own
-`package.json`'s `preinstall`, `postinstall` and `prepare` never run either; `npm test` runs your `pretest` and `test`.
+The reader drafts that list from the platform's own table of packages whose script is needed on Cloud Run (since 1.23.0,
+D53: `sharp` below 0.33, `bcrypt` below 5.1, `canvas`, `sqlite3`, `better-sqlite3`, `argon2`, `re2`, `cpu-features`,
+`node-pty`, `@parcel/watcher`, `@tensorflow/tfjs-node`; `puppeteer` is named so the review can replace it with
+`puppeteer-core`), each at the version the lockfile pins, for the merge to approve; and from what your `package.json`
+approves for its manager, `allowScripts` by version (`npm install-scripts approve` writes them, from npm 11.16), pnpm's
+`onlyBuiltDependencies`, Yarn's `dependenciesMeta` with `built: true`, Bun's `trustedDependencies` (names, joined with
+the locked version), only when the package needs its script on Cloud Run. It is often empty: a package that ships its
+native binary inside its tarball needs no script (onnxruntime-node's script only downloads GPU libraries; protobufjs's
+only prints a warning). With npm and pnpm 8 the lockfile says which packages have a script; Yarn's, Bun's and pnpm 9's
+do not, so there the table alone decides. The scripts run through the manager that installed the packages (`npm
+rebuild`, `pnpm rebuild`, `yarn rebuild`, `bun pm trust`). Your own `package.json`'s `preinstall`, `postinstall` and
+`prepare` never run either; the test command runs your `pretest` and `test`.
 
 **The dependency audit.** Before anything is installed, OSV-Scanner 2.7.0 (pinned by version and checksum) reads the
 lockfile against the OSV database, which carries the malicious-package records (`MAL-`) of the OpenSSF and GitHub's
@@ -261,21 +289,26 @@ three days by default before it proposes a version; the Dependabot file the plat
 pip and Docker. npm 11.10 and later have `min-release-age` (in days) for your own installs, and the lock the platform makes
 uses three.
 
-**Other package managers** come later (a roadmap item). Until then, convert a pnpm, Yarn or Bun lockfile with npm 11.10 or
-later (Node 24 or 26 bundle it), from the service's folder, then review the lockfile's diff and run the tests:
+**Converting a lockfile** is no longer needed (since 1.23.0 the platform installs pnpm, Yarn and Bun lockfiles with their
+own manager, above). A repository that follows this page with its own workflows still drafts npm's CI and Dockerfile; to
+move to npm by hand, convert with npm 11.10 or later from the service's folder, review the lockfile's diff and run the
+tests (`rm -rf node_modules && npm install --package-lock-only --ignore-scripts --min-release-age=3`), and remove the
+old file and any `packageManager` field that names another manager in the same commit.
 
-```bash
-rm -rf node_modules && npm install --package-lock-only --ignore-scripts --min-release-age=3
-```
-
-and remove the old file in the same commit (`git rm yarn.lock`, `pnpm-lock.yaml` or `bun.lock`) and any `packageManager`
-field that names another manager. npm follows a Yarn 1 `yarn.lock` where it can; for the others it resolves the versions
-again from `package.json`'s ranges.
-
-**What does not need a build.** The platform's image runs your code as committed: plain JavaScript, or TypeScript under
-Node's type stripping on 24 and 26 (`node src/index.ts`; enums and namespaces need `--experimental-transform-types`).
-A service that must be compiled or bundled first (`tsc` into `dist/`, Next.js, NestJS) commits the built output, or
-builds it with a Dockerfile of its own; a build stage in the platform's image is a later roadmap item.
+**Builds** (since 1.23.0, roadmap 21.2 and 21.3). The platform's image runs plain JavaScript as committed, and TypeScript
+under Node's type stripping on 24 and 26 when `tsconfig.json` says `erasableSyntaxOnly` (`node src/index.ts`). Anything
+else is built in a build stage of the platform's image: the development dependencies are installed (scripts off), the
+`build` script runs (or the framework's own command when there is none), the development dependencies are pruned, and
+only the result enters the image, with `NODE_ENV=production`. The frameworks' outputs and starts are built in, and the
+start the contract names is the built one, run by node itself: Next.js (`output: 'standalone'` gives `node server.js`
+with `HOSTNAME=0.0.0.0`; otherwise `next start` under node with the production dependencies), NestJS (`node
+dist/main.js`), React Router and Remix (their serve commands on `build/server/index.js`, `HOST=0.0.0.0`), SvelteKit with
+adapter-node (`node build`), Nuxt (`node .output/server/index.mjs`, `NITRO_HOST`), Astro with its Node adapter (`node
+dist/server/entry.mjs`), AdonisJS (`node build/bin/server.js`); a `.ts` entry that cannot be stripped is built with `tsc`
+into the `outDir` of `tsconfig.json`, and `tsx`, `ts-node`, `next start`, `nest start` and `build && node FILE` starts
+are rewritten accordingly. A build that needs a secret (Strapi, Payload) is refused with the name: the platform's build
+has none. The image's build is decided again at build time from the same files, so what the contract's pull request says
+is what the image does.
 
 ## 2. The container: Cloud Run's contract and Docker's rules
 

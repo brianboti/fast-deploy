@@ -158,28 +158,28 @@
   "entry": "nestjs/typescript-starter",
   "file": "nestjs__typescript-starter.json.gz",
   "paths": 19,
-  "texts": 10,
+  "texts": 13,
   "skipped": []
  },
  {
   "entry": "fastify/demo",
   "file": "fastify__demo.json.gz",
   "paths": 101,
-  "texts": 50,
+  "texts": 51,
   "skipped": []
  },
  {
   "entry": "remix-run/indie-stack",
   "file": "remix-run__indie-stack.json.gz",
   "paths": 86,
-  "texts": 28,
+  "texts": 29,
   "skipped": []
  },
  {
   "entry": "sveltejs/realworld",
   "file": "sveltejs__realworld.json.gz",
   "paths": 78,
-  "texts": 21,
+  "texts": 23,
   "skipped": []
  },
  {
@@ -193,14 +193,14 @@
   "entry": "gothinkster/node-express-realworld-example-app",
   "file": "gothinkster__node-express-realworld-example-app.json.gz",
   "paths": 91,
-  "texts": 41,
+  "texts": 42,
   "skipped": []
  },
  {
   "entry": "hagopj13/node-express-boilerplate",
   "file": "hagopj13__node-express-boilerplate.json.gz",
   "paths": 100,
-  "texts": 48,
+  "texts": 50,
   "skipped": []
  },
  {
@@ -235,7 +235,7 @@
   "entry": "shadcn-ui/taxonomy",
   "file": "shadcn-ui__taxonomy.json.gz",
   "paths": 249,
-  "texts": 38,
+  "texts": 40,
   "skipped": []
  },
  {

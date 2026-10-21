@@ -1,3 +1,81 @@
+# 1.23.0: Node.js builds and managers (Phase 21)
+
+Roadmap Phase 21 (docs/ROADMAP.md 21.1 to 21.6, decision D53 at its default), from the research review of 2026-10-20
+(`docs/RESEARCH-2026-10-20.md`, sections 4, 6.3 and 7.2), built on 1.22.5 after the live exercise of Phase 20. The three
+Node.js items the review of 2026-10-19 had left for later, which the survey showed in 8 of its 15 Node.js repositories:
+the other package managers, the build stage and workspaces. Python services see no difference. The pipeline template
+changes, so every application's workflows are regenerated at the next re-pin; Terraform does not change. Built and
+checked locally; the live exercise listed under Phase 21 has not run yet.
+
+1. **pnpm, Yarn and Bun lockfiles** (21.1). `pnpm-lock.yaml` (lockfile version 6 or 9, several YAML documents included),
+   `yarn.lock` (Yarn 1's format and Yarn 2+'s) and `bun.lock` are read into the same view as npm's lockfile, and every
+   entry is checked the same way: from the npm registry (Yarn 1 may say `registry.yarnpkg.com`) with an integrity hash or
+   checksum; git, tarballs elsewhere, `file:`, `link:` and `patch:` sources are refused, as are `bun.lockb` and Yarn 2+
+   without `nodeLinker: node-modules`. Each is installed by its own manager, frozen and with every install script off, in
+   the pipeline and in the platform's image; the manager comes from its npm package at the integrity the registry
+   published (`pnpm`, `@yarnpkg/cli-dist`, `yarn`, `@oven/bun-linux-x64`), installed with scripts off and checked against
+   that integrity, never through Corepack. Four pins join the weekly refresh (`MANAGER_PINS` in `labdeploy/scaffold.py`;
+   pnpm's and Yarn 1's own install scripts, skipped, hold nothing back). OSV-Scanner reads all three lockfiles, and the
+   audit's summary applies the registry checks to them. The platform still makes its own lock with npm when a repository
+   has none. The release that installs is the one `package.json`'s `packageManager` names (`"pnpm@8.15.9+sha512.…"`,
+   `"yarn@3.8.7"`), held to the sha512 the field carries or to the registry's integrity, as Corepack and Railpack honour
+   it; the pin applies only without the field, and a lockfile the pin cannot install frozen is then refused with the line
+   to add. This was checked in Docker on 2026-10-20 with small lockfiles (no repository's code): pnpm 12 refuses pnpm
+   8's lockfile 6.0, and Yarn 4.18.1 `--immutable` fails on Yarn 3's and on Yarn 4.0 to 4.12's lockfiles, so a single
+   pinned release could not install most Yarn 2+ projects.
+2. **A build stage** (21.2). When a service builds first (a `build` script with a missing start file, or Next.js, NestJS,
+   React Router, Remix, SvelteKit with adapter-node, Nuxt, Astro with its Node adapter, AdonisJS among the dependencies),
+   the platform's Node.js image (`templates/repo/Dockerfile.node.platform`) installs the development dependencies with
+   scripts off, runs the `build` script (or the framework's own command through its installed file), prunes the
+   development dependencies and copies the result into a final image with `NODE_ENV=production` and no package manager.
+   The start the contract names is the built one, run by node itself, from each framework's own documentation: Next.js
+   `output: 'standalone'` gives `node server.js` with `HOSTNAME=0.0.0.0`, otherwise `next start` under node; NestJS
+   `node dist/main.js`; the serve commands of React Router and Remix with `HOST=0.0.0.0`; `node build` for SvelteKit;
+   `.output/server/index.mjs` for Nuxt with `NITRO_HOST`; and so on. `next start`, `nest start`, `remix-serve`,
+   `react-router-serve` and `build && node FILE` starts are rewritten to the built start. A SvelteKit or Astro site with no
+   server adapter is refused as a front-end site (D55, Phase 22); a build that needs a secret (Strapi, Payload) is refused
+   with the name. The build is decided again at build time from the same files (`node-facts` in the pipeline), so the
+   contract's pull request says what the image does.
+3. **TypeScript** (21.3). A `.ts` entry runs under Node's type stripping on 24 and 26 when `tsconfig.json` (comments and
+   `extends` followed) says `erasableSyntaxOnly`; otherwise it is built with `tsc` in the build stage into the
+   `outDir` (`src/index.ts` becomes `dist/index.js`), and `tsx` and `ts-node` starts are rewritten to that file. TypeScript
+   without `typescript` among the dependencies is refused with the fix.
+4. **Workspaces** (21.4). A package of a workspace (`workspaces` in the root's `package.json`, or `pnpm-workspace.yaml`)
+   without a lockfile of its own installs from the root's lockfile, which must list it: the contract says `build.context:
+   repository` (now allowed with the platform's image), the whole repository is the build context, the install runs at
+   the root (`pnpm install --filter`, `npm ci`, `yarn workspaces focus`, `bun install`), the build in the package's folder,
+   and only that package with its production dependencies enters the image (`pnpm deploy`; the pruned tree for the
+   others). `workspace:` and `catalog:` dependencies are no longer refused when the root's lockfile resolves them. A root
+   that starts something itself is the service, its members installed with it; one that starts nothing names its
+   packages. A repository managed by nx, Lerna or Rush with no `workspaces` field is refused with the fix. `turbo prune` is
+   not used (the whole workspace is installed; a later refinement).
+5. **Install scripts** (21.5, D53). The platform's own table of packages whose script is needed on Cloud Run (`sharp`
+   below 0.33, `bcrypt` below 5.1, `canvas`, `sqlite3`, `better-sqlite3`, `argon2`, `re2`, `cpu-features`, `node-pty`,
+   `@parcel/watcher`, `@tensorflow/tfjs-node`, and `puppeteer` so the review can replace it) is drafted into
+   `build.scripts` at the locked version for the merge to approve, together with what `package.json` approves for its
+   manager (`allowScripts`, pnpm's `onlyBuiltDependencies`, Yarn's `dependenciesMeta`, Bun's `trustedDependencies`). The
+   scripts run through the manager that installed the packages (`npm rebuild`, `pnpm rebuild`, `yarn rebuild`, `bun pm
+   trust`). Name-only approvals and `--all` stay refused.
+6. **The survey** (`tests/test_survey.py`, re-recorded with the lockfiles and configuration files the reader now fetches):
+   **13 accepted and 28 refusals**, from 8 and 42 at 1.22.0 (3 and 60 at 1.21.0). New since 1.22.0: NestJS's starter,
+   two Next.js applications (chatbot-ui on npm, Vercel's AI chatbot on pnpm), Dify's web package out of its pnpm
+   workspace, and hagopj13's Express boilerplate (Yarn 1). Taxonomy builds too but stops at its lockfile: pnpm 8's
+   format with no `packageManager`, which pnpm 12 cannot install frozen. Fastify's demo now stops only at its host (D51), and the
+   two workspace repositories at their root user or their static site (Phase 22).
+7. **Smaller changes.** A pm2 start with an ecosystem file in JSON starts the file it names (D49). The pipeline keeps the
+   lockfile's real name for the audit, installs the manager by version and integrity before the install, and runs the
+   tests through it; the Dockerfile lint and the build read a workspace member from the repository root. `pins.py` gains
+   `scripts_ok` for a package whose skipped install script is harmless, and names each pin in its messages.
+8. **Documents** (21.6). The contract page's Node.js table, refusals and section 1b (the managers, builds, TypeScript,
+   workspaces, install scripts); CLAUDE-CHAT; the operator skill and its reference (the skill zip on claude.ai needs
+   re-uploading); the roadmap's Phase 21 status and its "later" list; the handoff.
+
+Tests: 924 pass (11 new, on top of 1.22.5; the survey fixtures were recorded again with the lockfiles and configuration
+files the reader now fetches, 4 MB gzipped); ruff clean; hadolint 2.15.1 through Docker reports only informational notes
+on the rendered Node.js images (consecutive `RUN` lines), nothing that blocks. No package manager ran, and nothing from
+the sampled repositories was executed.
+
+
 # 1.22.5: no package manager in the platform's Python image
 
 Found on 2026-10-20 in the live exercise of Phase 20. `django-static`, the trial's Django project, was built on

@@ -160,6 +160,11 @@ assumes" and section 1b):
 
 - It needs `package.json`; its `package-lock.json` is checked entry by entry, and without one the pull request carries
   `apps/NAME/package-lock.json`, made by the platform with every install script off and nothing younger than three days.
+  Since 1.23.0 (roadmap Phase 21) a `pnpm-lock.yaml`, `yarn.lock` or `bun.lock` is installed by its own manager, frozen
+  and with every install script off; a service that must be built first (Next.js, NestJS, SvelteKit with adapter-node, a
+  `build` script, TypeScript) is built in a build stage of the platform's image and started by node on the built file;
+  one package of a workspace installs from the root's lockfile; and the packages whose install script Cloud Run needs
+  (`sharp` below 0.33, `canvas`, `better-sqlite3` and the like) are drafted into `build.scripts` for the merge to approve.
 - No package's install script runs, except those the contract lists under `build.scripts`. The pull request says why its
   list is what it is ("none run: onnxruntime-node@1.30.0: its postinstall only downloads the CUDA libraries..."), and a
   person who adds one is approving that package's code.

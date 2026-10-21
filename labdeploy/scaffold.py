@@ -1292,22 +1292,199 @@ def python_platform_dockerfile(spec, locked, facts=None):
                 PORT=spec.port, CMD=json.dumps(start_command(spec.build.entrypoint)))
 
 
+# The package managers the platform installs by version and checksum (docs/ROADMAP.md 21.1), never through Corepack (Node.js
+# 25 and later no longer ship it): pnpm, Yarn 2+ (its npm package @yarnpkg/cli-dist), Yarn 1 and Bun's Linux x64 binary
+# (@oven/bun-linux-x64, the package the bun package's own install script would fetch), each from the npm registry at the
+# integrity it published, installed with scripts off and checked against that integrity before it runs. The weekly pin
+# refresh keeps each on the newest release of its line at least seven days old (labdeploy/pins.py). Resolved 2026-10-20.
+MANAGER_PINS = {
+    "pnpm": ("12.12.1", "sha512-t/mJNMCx8ppl9dpS8tf5lOf6rVc//d3qFJf7Tcta7AUVkO58fZWjgXK0v64QOluD7fLuhm4Rcxwsr6lgY2EKxQ=="),  # published 2026-10-11
+    "yarn": ("4.18.1", "sha512-EH+A4TxAtBWXKE0DGQxW9Bo9crXHLJ73mfxjTQJuv8XonNWWTpei8BQ5JjczHJNU9GROTycwMFn8iOvRIZXUcA=="),  # published 2026-09-24
+    "yarn1": ("1.22.22", "sha512-prL3kGtyG7o9Z9Sv8IPfBNrWTDmXB4Qbes8A9rEzt6wkJV8mUvoirjU0Mp3GGAU06Y0XQyA3/2/RQFVuK7MTfg=="),  # published 2024-03-09
+    "bun": ("1.4.3", "sha512-RArgnpjeXjaGzjp5h7Rs89cUYJutO8IyqR3itE8OBaBzEt8KNm2jp/YozxBHq4eFovwrQLryeSwTAcmiT+zcoA=="),  # published 2026-10-10
+}
+# The npm package each manager comes from, and the file node runs for it (the wrapper the platform writes calls that file).
+MANAGER_PACKAGES = {"pnpm": ("pnpm", "bin/pnpm.cjs", "node"), "yarn": ("@yarnpkg/cli-dist", "bin/yarn.js", "node"), "yarn1": ("yarn", "bin/yarn.js", "node"),
+                    "bun": ("@oven/bun-linux-x64", "bin/bun", "")}
+NODE_CONFIG_FILES = ("tsconfig.json", "tsconfig.base.json", "tsconfig.build.json", "next.config.js", "next.config.mjs", "next.config.ts", "next.config.cjs",
+                     "svelte.config.js", "nest-cli.json", ".yarnrc.yml", "pnpm-workspace.yaml")
+
+
+def pinned_package_check(name, version, folder):
+    """JavaScript that exits 4 unless the package `name` installed in `folder` is `version` with the integrity given as its
+    first argument, read from the lockfile npm wrote there. An empty first argument holds the version only: npm itself
+    checked the tarball against the integrity the registry publishes (a packageManager release without a sha512)."""
+    return (f"const e = (require('{folder}/package-lock.json').packages || {{}})['node_modules/{name}'] || {{}}; "
+            f"if (e.version !== '{version}' || !e.integrity || (process.argv[1] && e.integrity !== process.argv[1])) {{ console.error('{name} ' + e.version + "
+            "' does not match its pinned version and integrity'); process.exit(4); }")
+
+
+def manager_release(manager, release=None):
+    """(version, integrity) a manager is installed at: the repository's packageManager release when the reader chose it
+    (integrity "" when the field carries no sha512: the registry's integrity, which npm checks, holds it), else the pin."""
+    if release and re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", str(release.get("version") or "")):
+        integrity = release.get("integrity") or ""
+        if integrity and not re.fullmatch(r"sha512-[A-Za-z0-9+/]{86}==", integrity):
+            raise ValueError("packageManager's hash is not a sha512 the platform can check")
+        return release["version"], integrity
+    return MANAGER_PINS[manager]
+
+
+def manager_command(manager, folder):
+    """How the manager installed in `folder` is run: node on its command-line file, or Bun's binary itself."""
+    package, bin_path, runner = MANAGER_PACKAGES[manager]
+    return f"{runner} {folder}/node_modules/{package}/{bin_path}".strip()
+
+
+def manager_install_lines(manager, folder, wrapper=True, release=None):
+    """Shell lines that install a package manager into `folder` by version and integrity, with every script off, and check
+    it against that integrity. With `wrapper`, `folder`/bin/<pnpm|yarn|bun> is written for the pipeline's PATH; the image
+    runs the command-line file directly (manager_command). npm needs nothing."""
+    if manager == "npm":
+        return []
+    package, bin_path, runner = MANAGER_PACKAGES[manager]
+    version, integrity = manager_release(manager, release)
+    lines = [f"mkdir -p {folder}/bin",
+             f"echo '{{\"private\": true}}' > {folder}/package.json",
+             f"cd {folder} && npm install --no-audit --no-fund --ignore-scripts --loglevel=error {package}@{version} >&2 && cd - > /dev/null",
+             f"node -e {shlex.quote(pinned_package_check(package, version, folder))} {shlex.quote(integrity)}"]
+    if not runner:
+        lines.append(f"chmod +x {folder}/node_modules/{package}/{bin_path}")
+    if wrapper:
+        command = "yarn" if manager == "yarn1" else manager
+        lines += [f"printf '%s\\n' '#!/bin/sh' 'exec {manager_command(manager, folder)} \"$@\"' > {folder}/bin/{command}", f"chmod +x {folder}/bin/{command}"]
+    return lines
+
+
+def image_command(manager, text, folder="/opt/manager"):
+    """A manager command as the image runs it: the manager's name replaced by its installed file (npm stays npm)."""
+    word = "yarn" if manager == "yarn1" else manager
+    if manager == "npm" or not text.startswith(word + " "):
+        return text
+    return manager_command(manager, folder) + text[len(word):]
+
+
+def node_facts(folder, path="", line="24"):
+    """What a Node.js build needs to know about a checkout (21.1 to 21.4): the manager its lockfile names, where that lockfile
+    is (the service's folder, or the workspace root above it), the manager's commands, and the build plan. `folder` is the
+    checkout root when `path` names a service inside a workspace, else the service's folder; `line` the Node.js line."""
+    from . import node as nodejs
+    root = Path(folder)
+    service = root / path if path else root
+    lockfile, where = None, service
+    for candidate in (service, root):
+        found = next((name for name in (*nodejs.LOCKFILES, *nodejs.MANAGER_LOCKFILES) if (candidate / name).is_file()), None)
+        if found:
+            lockfile, where = found, candidate
+            break
+    manager = nodejs.MANAGER_LOCKFILES.get(lockfile, "npm") if lockfile else "npm"
+    if manager == "yarn" and "__metadata:" not in (where / "yarn.lock").read_text(errors="replace"):
+        manager = "yarn1"
+    try:
+        package = json.loads((service / "package.json").read_text(errors="replace")) if (service / "package.json").is_file() else {}
+    except ValueError:
+        package = {}
+    package = package if isinstance(package, dict) else {}
+    texts = {name: (service / name).read_text(errors="replace") for name in NODE_CONFIG_FILES if (service / name).is_file()}
+    scripts = package.get("scripts") if isinstance(package.get("scripts"), dict) else {}
+    start = nodejs.start_words(scripts["start"])[0] if isinstance(scripts.get("start"), str) else None
+    plan = nodejs.build_plan(package, lambda item: (service / item).exists(), texts, manager, line, start_words=(start or {}).get("words"))
+    if plan.get("copy"):
+        plan["copy"] = [item for item in plan["copy"] if item.startswith(".next/") or (service / item).exists()]
+    commands = nodejs.MANAGER_COMMANDS[manager]
+    release = None
+    if manager != "npm":
+        for candidate in (package, json.loads((root / "package.json").read_text(errors="replace")) if path and (root / "package.json").is_file() else None):
+            spec = nodejs.manager_spec(candidate if isinstance(candidate, dict) else None)
+            if spec and spec["manager"] == manager:
+                release = {"version": spec["version"], "integrity": spec["integrity"] or ""}
+                break
+    version, integrity = manager_release(manager, release) if manager != "npm" else ("", "")
+    return {"manager": manager, "lockfile": lockfile, "lock_dir": where.relative_to(root).as_posix() if where != root else ".",
+            "member": path if where == root and path else "", "frozen": commands["frozen"], "production": commands["production"],
+            "prune": commands["prune"], "rebuild": commands["rebuild"], "run": commands["run"], "test": commands["run"] + " test", "title": commands["title"],
+            "plan": plan, "version": version, "integrity": integrity, "release": release}
+
+
+def node_platform_dockerfile(spec, facts):
+    """The platform's own Dockerfile for a Node.js contract. npm without a build: the single stage of the drafted Dockerfile.
+    Otherwise templates/repo/Dockerfile.node.platform: node:<line>-trixie-slim by digest; the manager the lockfile names,
+    installed by version and integrity (21.1); a build stage with the development dependencies, the build and the prune
+    (21.2, 21.3), or a workspace installed and pruned to one package (21.4); the final image with the production
+    dependencies alone and no package manager; a numeric non-root user; node itself as the command, the start the contract
+    names (build.entrypoint) being the one the build makes."""
+    from . import node as nodejs
+    manager, plan, member = facts["manager"], facts.get("plan") or {}, facts.get("member") or ""
+    commands = nodejs.MANAGER_COMMANDS[manager]
+    build_words = plan.get("build")
+    if manager == "npm" and not build_words and not member:
+        text = node_dockerfile({"node": spec.node, "port": spec.port, "command": start_command(spec.build.entrypoint),
+                                "lockfile": facts.get("lockfile") or "package-lock.json", "scripts": spec.build.scripts})
+        image = f"node:{spec.node}-slim by its multi-architecture index digest, resolved {NODE_IMAGES_RESOLVED}"
+        body = text[re.search(r"(?m)^FROM ", text).start():].replace("# Only what .dockerignore lets in is copied.",
+                                                                      "# Only what passed the platform's deny-list was copied into this build context.")
+        return ("# Made by Fast Deploy at build time from the contract (build.recipe: platform, docs/ROADMAP.md 13.3); never committed.\n"
+                f"# {image}.\n" + body)
+    run = lambda text: image_command(manager, text)  # noqa: E731 - a one-line rename for readability below
+    manager_lines = ""
+    if manager != "npm":
+        package, bin_path, runner = MANAGER_PACKAGES[manager]
+        version, integrity = manager_release(manager, facts.get("release"))
+        steps = ["echo '{\"private\": true}' > package.json",
+                 f"npm install --no-audit --no-fund --ignore-scripts --loglevel=error {package}@{version} >&2",
+                 f"node -e {shlex.quote(pinned_package_check(package, version, '/opt/manager'))} {shlex.quote(integrity)}"]
+        if not runner:
+            steps.append(f"chmod +x /opt/manager/node_modules/{package}/{bin_path}")
+        manager_lines = (f"# {commands['title']} {version}, the manager the lockfile names (docs/ROADMAP.md 21.1), installed by version and integrity "
+                         "with scripts off, never through Corepack.\nWORKDIR /opt/manager\nRUN " + " \\\n && ".join(steps) + "\n")
+    workdir = f"/app/{member}" if member else "/app"
+    install = run(commands["frozen"] if build_words else commands["production"])
+    if member and manager == "pnpm":
+        install += f" --filter ./{member}..."
+    rebuild = ""
+    if spec.build.scripts:
+        rebuild = f"RUN {run(commands['rebuild'])} " + " ".join(spec.build.scripts) + "\n"
+        if member:
+            rebuild = f"WORKDIR {workdir}\n{rebuild}WORKDIR /app\n"
+    install_lines = (f"# The lockfile installed frozen, with every install script off{'; only build.scripts runs its own afterwards' if spec.build.scripts else ''}.\n"
+                     f"RUN {install}\n{rebuild}")
+    build_lines = ""
+    if build_words:
+        words = run(" ".join(build_words)) if build_words[0] in ("npm", "pnpm", "yarn", "bun") else " ".join(build_words)
+        build_lines = (f"# The build (docs/ROADMAP.md 21.2): {plan.get('why') or 'the build script'}. NODE_ENV is unset here, so the development "
+                       "dependencies the build needs are there; the image below sets it.\n"
+                       + (f"WORKDIR {workdir}\n" if member else "") + f"RUN {words}\n")
+    if member and manager == "pnpm":
+        prune_lines = ("# One package out of the workspace (21.4): pnpm deploy copies it with its production dependencies alone.\n"
+                       f"WORKDIR /app\nRUN {run(f'pnpm --filter ./{member} deploy --prod --legacy /out')}\n")
+        final_copy, final_workdir = "COPY --from=build /out /app\n", "/app"
+    elif plan.get("copy"):
+        prune_lines = ""
+        copies = []
+        for item in plan["copy"]:
+            target = "/app" if item == ".next/standalone" else f"/app/{item}"
+            copies.append(f"COPY --from=build {workdir}/{item} {target}\n")
+        final_copy, final_workdir = "".join(copies), "/app"
+    else:
+        prune_lines = ("# The development dependencies leave before the image is made (21.2).\n"
+                       + ("WORKDIR /app\n" if member and build_words else "") + f"RUN {run(commands['prune'])}\n") if build_words else ""
+        final_copy, final_workdir = "COPY --from=build /app /app\n", workdir
+    return fill(template("Dockerfile.node.platform"), NODE=spec.node, RESOLVED=NODE_IMAGES_RESOLVED, DIGEST=NODE_IMAGES[spec.node],
+                MANAGER=manager_lines, INSTALL=install_lines, BUILD=build_lines, PRUNE=prune_lines, FINAL_COPY=final_copy, WORKDIR=final_workdir,
+                PORT=spec.port, CMD=json.dumps(start_command(spec.build.entrypoint)))
+
+
 def platform_dockerfile(spec, locked, lockfile="package-lock.json", facts=None):
     """The platform's own Dockerfile for a contract with build.recipe: platform: the drafted Dockerfile's steps (python:X.Y-slim
     or node:<line>-trixie-slim by digest, dependencies before the code, a numeric non-root user) with the contract's entrypoint as
     its command. `locked` says whether a Python service has requirements.lock; `lockfile` names a Node.js service's lock;
-    `facts` (build_facts) says what a Python build context lists and holds."""
+    `facts` (build_facts or node_facts) says what the build context lists and holds."""
     if spec.build.recipe != "platform" or not spec.build.entrypoint:
         raise ValueError("The platform makes a Dockerfile only for build.recipe: platform with build.entrypoint")
     if spec.runtime != "node-http":
         return python_platform_dockerfile(spec, locked, facts)
-    text = node_dockerfile({"node": spec.node, "port": spec.port, "command": start_command(spec.build.entrypoint), "lockfile": lockfile,
-                            "scripts": spec.build.scripts})
-    image = f"node:{spec.node}-slim by its multi-architecture index digest, resolved {NODE_IMAGES_RESOLVED}"
-    body = text[re.search(r"(?m)^FROM ", text).start():].replace("# Only what .dockerignore lets in is copied.",
-                                                                  "# Only what passed the platform's deny-list was copied into this build context.")
-    return ("# Made by Fast Deploy at build time from the contract (build.recipe: platform, docs/ROADMAP.md 13.3); never committed.\n"
-            f"# {image}.\n" + body)
+    facts = facts or {"manager": "npm", "lockfile": lockfile, "plan": {}, "member": ""}
+    return node_platform_dockerfile(spec, facts)
 
 
 def node_lockfile(folder):
@@ -1315,26 +1492,32 @@ def node_lockfile(folder):
     return next((name for name in ("npm-shrinkwrap.json", "package-lock.json") if (Path(folder) / name).is_file()), None)
 
 
-def render_build(app_dir, out_dir, spec):
+def render_build(app_dir, out_dir, spec, path=""):
     """Copy the service's files into a fresh build context through the deny-list, then write the platform's Dockerfile beside
-    them. Symbolic links are left out, so nothing outside the service's folder can enter. Returns the copied paths."""
+    them. Symbolic links are left out, so nothing outside the service's folder can enter. With `path`, `app_dir` is the
+    repository root and the service lives in that folder of it (build.context: repository, a workspace member, 21.4).
+    Returns the copied paths."""
     import shutil
     source, target = Path(app_dir).resolve(strict=True), Path(out_dir)
+    path = clean_path(path)
+    if path and not (source / path / "package.json").is_file():
+        raise ValueError(f"The service's folder {path} holds no package.json")
     target.mkdir(parents=True, exist_ok=False)
     copied = []
-    for path in sorted(source.rglob("*")):
-        relative = path.relative_to(source).as_posix()
-        if path.is_symlink() or not path.is_file() or excluded(relative):
+    for item in sorted(source.rglob("*")):
+        relative = item.relative_to(source).as_posix()
+        if item.is_symlink() or not item.is_file() or excluded(relative):
             continue
         (target / relative).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, target / relative)
+        shutil.copyfile(item, target / relative)
         copied.append(relative)
     if spec.runtime == "node-http":
-        lockfile = node_lockfile(target)
-        if not (target / "package.json").is_file() or lockfile is None:
-            raise ValueError("The service needs package.json and a lockfile (package-lock.json or npm-shrinkwrap.json), and the contract names "
-                             "no lock the platform made")
-        (target / "Dockerfile").write_text(platform_dockerfile(spec, True, lockfile))
+        facts = node_facts(target, path)
+        service = target / path if path else target
+        if not (service / "package.json").is_file() or facts["lockfile"] is None:
+            raise ValueError("The service needs package.json and a lockfile (package-lock.json, npm-shrinkwrap.json, pnpm-lock.yaml, yarn.lock or "
+                             "bun.lock, its own or its workspace root's), and the contract names no lock the platform made")
+        (target / "Dockerfile").write_text(platform_dockerfile(spec, True, facts["lockfile"], facts))
         return copied
     locked = (target / "requirements.lock").is_file()
     if not locked and not (target / "requirements.txt").is_file():
@@ -1410,9 +1593,20 @@ def main(argv=None):
     build.add_argument("app_dir")
     build.add_argument("out_dir")
     build.add_argument("--spec", required=True)
+    build.add_argument("--path", default="", help="the service's folder inside app_dir, when app_dir is the repository root (build.context: repository)")
     show = commands.add_parser("platform-dockerfile", help="print the platform's Dockerfile for a contract")
     show.add_argument("app_dir")
     show.add_argument("--spec", required=True)
+    show.add_argument("--path", default="")
+    facts_command = commands.add_parser("node-facts", help="print, as KEY=value lines for the shell, how a Node.js service installs, builds and tests")
+    facts_command.add_argument("app_dir")
+    facts_command.add_argument("--path", default="")
+    facts_command.add_argument("--node", default="24")
+    install = commands.add_parser("manager-install", help="print the shell lines that install a package manager by version and integrity")
+    install.add_argument("manager")
+    install.add_argument("folder")
+    install.add_argument("--version", default="", help="an exact release (package.json's packageManager), else the platform's pin")
+    install.add_argument("--integrity", default="", help="the sha512 integrity packageManager carries, if any")
     commands.add_parser("descriptor", help="print the buildpacks' project descriptor")
     commands.add_parser("deny-dockerignore", help="print the deny-list .dockerignore for a repository without one")
     args = parser.parse_args(argv)
@@ -1423,10 +1617,37 @@ def main(argv=None):
         if args.command == "deny-dockerignore":
             print(deny_dockerignore(), end="")
             return 0
+        if args.command == "manager-install":
+            if args.manager not in MANAGER_PINS and args.manager != "npm":
+                raise ValueError(f"{args.manager} is not a package manager the platform installs (pnpm, yarn, yarn1, bun)")
+            if not re.fullmatch(r"[A-Za-z0-9_./-]+", args.folder):
+                raise ValueError("the folder is a plain path")
+            release = {"version": args.version, "integrity": args.integrity} if args.version else None
+            print("\n".join(manager_install_lines(args.manager, args.folder, release=release)))
+            return 0
+        if args.command == "node-facts":
+            facts = node_facts(args.app_dir, clean_path(args.path), args.node if args.node in NODE_IMAGES else "24")
+            plan = facts["plan"]
+            if plan.get("problem"):
+                raise ValueError(plan["problem"])
+            for key in ("manager", "lockfile", "lock_dir", "member", "frozen", "production", "rebuild", "run", "test", "title", "version"):
+                value = str(facts[key] or "")
+                if not re.fullmatch(r"[A-Za-z0-9 _./@=:-]*", value):
+                    raise ValueError(f"{key} holds characters the build cannot pass on")
+                print(f"{key.upper()}={shlex.quote(value)}")
+            if facts["integrity"] and not re.fullmatch(r"sha512-[A-Za-z0-9+/]{86}==", facts["integrity"]):
+                raise ValueError("the manager's integrity is not a sha512")
+            print(f"INTEGRITY={shlex.quote(facts['integrity'] or '')}")
+            print(f"BUILD={shlex.quote(' '.join(plan.get('build') or []))}")
+            print(f"START={shlex.quote(' '.join(plan.get('start') or []))}")
+            return 0
         spec = parse_spec(Path(args.spec).read_text())
         if args.command == "render-build":
-            copied = render_build(args.app_dir, args.out_dir, spec)
+            copied = render_build(args.app_dir, args.out_dir, spec, args.path)
             print(f"Build context: {len(copied)} files copied through the platform's deny-list, and the platform's Dockerfile", file=sys.stderr)
+        elif spec.runtime == "node-http":
+            path = clean_path(args.path)
+            print(platform_dockerfile(spec, True, node_lockfile(args.app_dir) or "package-lock.json", node_facts(args.app_dir, path, spec.node)), end="")
         else:
             lock = os.environ.get("PLATFORM_LOCK")
             locked = (Path(args.app_dir) / "requirements.lock").is_file() or bool(lock and Path(lock).is_file())
