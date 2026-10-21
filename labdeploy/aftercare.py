@@ -280,15 +280,32 @@ def recent_reports(plans, now=None, hours=24):
 ERROR_LINES_CAP = 200  # error log lines read per application a day: enough to say "200 or more"
 
 
-def service_day(observer, target, application, environment):
-    """One application's last day as the digest counts it: server errors, the uptime check, and error log lines."""
+SLOW_START_SECONDS = 10  # a day whose slowest start passed this is named in the digest (docs/ROADMAP.md 25.5)
+
+
+def service_day(observer, target, application, environment, now=None):
+    """One application's last day as the digest counts it: server errors, requests refused (429), the uptime check, error
+    log lines, and its container starts."""
     metrics = observer.metrics(target, 1440)
     lines = observer.logs(target, 1440, "ERROR", ERROR_LINES_CAP)
-    return {"application": application, "environment": environment, "server_errors": int(metrics.get("server_errors") or 0),
-            "uptime": metrics.get("uptime_checks_passed"), "error_lines": len(lines), "error_lines_capped": len(lines) >= ERROR_LINES_CAP,
-            "requests": metrics.get("requests")}
+    day = {"application": application, "environment": environment, "server_errors": int(metrics.get("server_errors") or 0),
+           "uptime": metrics.get("uptime_checks_passed"), "error_lines": len(lines), "error_lines_capped": len(lines) >= ERROR_LINES_CAP,
+           "requests": metrics.get("requests")}
+    if callable(getattr(observer, "refused_requests", None)):
+        day["refused"] = observer.refused_requests(target, 1440)
+    if callable(getattr(observer, "starts", None)):
+        end = datetime.datetime.fromtimestamp(now or time.time(), datetime.UTC)
+        day["starts"] = observer.starts(target, end - datetime.timedelta(days=1), end)
+    return day
 
 
 def troubled(day):
-    """Whether one application's day needs a person to look."""
-    return bool(day.get("server_errors") or day.get("error_lines") or (day.get("uptime") is not None and day["uptime"] < UPTIME_FLOOR))
+    """Whether one application's day needs a person to look: server errors, refused requests, error lines, a missed uptime check."""
+    return bool(day.get("server_errors") or day.get("refused") or day.get("error_lines")
+                or (day.get("uptime") is not None and day["uptime"] < UPTIME_FLOOR))
+
+
+def slow_starts(days):
+    """The applications whose slowest container start of the day passed SLOW_START_SECONDS, slowest first."""
+    found = [day for day in days if (day.get("starts") or {}).get("slowest_s") and day["starts"]["slowest_s"] > SLOW_START_SECONDS]
+    return sorted(found, key=lambda day: -day["starts"]["slowest_s"])

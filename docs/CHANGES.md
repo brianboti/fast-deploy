@@ -1,3 +1,46 @@
+# 1.28.0: faster starts and the failures nobody saw (Phase 25)
+
+From the review of 2026-10-21 (`docs/RESEARCH-2026-10-21-scaling.md`), which asked which scaling algorithms are worth
+using, how long zero to one takes, and whether every way a service can fail is watched. Its answers: no new algorithm
+(Cloud Run's own scaler fits the lab, and every cleverer family needs traffic patterns the lab does not have); five of
+the five seconds a typical cold start took were mostly the platform's own probe; and 11 of 46 failure modes went unseen.
+
+1. **The start-up probe tries every second** (25.1). Cloud Run tries the first probe as the container starts, before
+   anything listens, and the next one a whole period later. With a five-second period, 14 applications of two languages
+   started in 5.0 to 5.2 seconds while two probed by a TCP connect started in 0.3 (30 days of
+   `container/startup_latencies`). Now one second between tries, one second to answer (Google's default), 60 tries:
+   the same one-minute window, about four seconds less per start. The developer contract says so.
+2. **Startup CPU boost** (25.2): every release asks for it (`--cpu-boost`). gcloud turns it on only for services it
+   creates, and Terraform creates these, so none had it. Google measured starts up to half shorter; it bills the extra
+   CPU for the start only, about $0.0004 per 15-second start.
+3. **Requests refused** (25.3). A new alert, "SERVICE: requests refused" (ERROR), on any 429 in the request log: Cloud Run's
+   request metric leaves out requests refused at the instance limit ("Excludes requests ... when maximum number of
+   instances is reached"), so neither the server-errors alert nor the objective saw people turned away. "At maximum
+   instances" now fires at the contract's own maximum (at least 2) instead of a fixed 3 that a default application never
+   reached; roots take it at their next render. The health view and the digest count refused requests too.
+4. **Google's own incidents** (25.4). The foundation enables the Service Health API and alerts on Personalized Service
+   Health's new incidents in the region (WARNING: "a rollback will not help"); the digest names them; the runbook's
+   incident procedure asks "is it Google?" first.
+5. **The digest's day** (25.5): requests refused, the slowest starts above ten seconds, and quotas above 80 percent of
+   their limit (the quotas Google reports; Cloud Run's instance quota is not among them).
+6. **Access changed outside the pipeline** (25.6). The foundation alerts on any `SetIamPolicy` in the Admin Activity audit
+   log not made by the pipeline's apply identity: a role granted by hand or a service made public was invisible to the
+   drift check. `access_change_quiet_members` leaves out the operator's own foundation applies when wanted.
+
+All three new log filters and the probe's facts were checked read-only against the real projects before the change. Not
+built, for later: a floor under the right-sizing proposals, per-dependency alerts, a weekly scan of serving images, a
+domain's uptime check.
+
+Upgrade steps: merge; approve production's root apply when the Infrastructure apply asks (the refused alert); apply the
+foundation in each project (`scripts/apply-foundation.sh lab-deploy-staging-f29a`, then production's); update the
+machine; re-pin applications with their own workflows so their releases use the new probe and the boost (the platform
+pipeline's applications take them at their next release); re-render an application's root (`propose_infrastructure`)
+to move its "at maximum instances" threshold.
+
+Tests: 1,022 pass (8 new, `tests/test_phase25.py`); ruff and zizmor clean; `terraform validate` passes for the foundation,
+a staging root and a production root.
+
+
 # 1.27.0: cost between Mondays (Phase 24)
 
 Roadmap Phase 24 (docs/ROADMAP.md 24.1 to 24.4, decisions D62 and D63 at their defaults), stacked on 1.26.0 (#146). The

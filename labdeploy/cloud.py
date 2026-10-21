@@ -82,6 +82,41 @@ def secret_reader(name, token, client=None, ttl=3600, clock=time.time):
     return read
 
 
+def distribution_summary(dists):
+    """Count, mean, 95th percentile and slowest bucket (seconds) of Cloud Monitoring distributions with the same buckets."""
+    def bounds(options):
+        if "exponentialBuckets" in options:
+            spec = options["exponentialBuckets"]
+            return [float(spec["scale"]) * float(spec["growthFactor"]) ** index for index in range(int(spec["numFiniteBuckets"]) + 1)]
+        if "linearBuckets" in options:
+            spec = options["linearBuckets"]
+            return [float(spec["offset"]) + float(spec["width"]) * index for index in range(int(spec["numFiniteBuckets"]) + 1)]
+        return [float(value) for value in options["explicitBuckets"]["bounds"]]
+    edges = bounds(dists[0]["bucketOptions"])
+    counts = [0] * (len(edges) + 1)
+    total, weighted = 0, 0.0
+    for dist in dists:
+        n = int(dist.get("count", 0))
+        total += n
+        weighted += float(dist.get("mean", 0)) * n
+        for index, value in enumerate(dist.get("bucketCounts", [])):
+            if index < len(counts):
+                counts[index] += int(value)
+
+    def upper(index):
+        return edges[index] if index < len(edges) else edges[-1] * 2
+    target, seen, p95 = 0.95 * total, 0, None
+    for index, value in enumerate(counts):
+        if value and seen + value >= target:
+            low = 0.0 if index == 0 else edges[index - 1]
+            p95 = low + (upper(index) - low) * ((target - seen) / value)
+            break
+        seen += value
+    slowest = max((upper(index) for index, value in enumerate(counts) if value), default=0.0)
+    return {"starts": total, "mean_s": round(weighted / total / 1000, 1) if total else None,
+            "p95_s": None if p95 is None else round(p95 / 1000, 1), "slowest_s": round(slowest / 1000, 1)}
+
+
 class Observer:
     def __init__(self, config, client=None, runner=None):
         self.account = config.observer.service_account
@@ -315,6 +350,85 @@ class Observer:
             if not token:
                 return {"requests": found, "truncated": truncated}
             body = {**body, "pageToken": token}
+
+    # ---- for the daily digest (docs/ROADMAP.md 25.3 to 25.5): refused requests, starts, Google's incidents, quotas
+    def refused_requests(self, target, minutes=1440, cap=200):
+        """How many requests the service answered 429 in the window (Cloud Run's "no available instance" or the application's
+        own refusal), from the request log: Cloud Run's request metric leaves out requests refused at the instance limit."""
+        since = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(minutes=minutes)).isoformat(timespec="seconds").replace("+00:00", "Z")
+        body = {"resourceNames": [f"projects/{target.project_id}"], "orderBy": "timestamp desc", "pageSize": cap,
+                "filter": (f'resource.type="cloud_run_revision" AND resource.labels.service_name="{target.service}" AND '
+                           f'logName="projects/{target.project_id}/logs/run.googleapis.com%2Frequests" AND httpRequest.status=429 AND timestamp>="{since}"')}
+        response = self.client.post("https://logging.googleapis.com/v2/entries:list", json=body, headers={"Authorization": "Bearer " + self.token()})
+        response.raise_for_status()
+        return len(response.json().get("entries", []))
+
+    def starts(self, target, start, end):
+        """The service's container starts in a window from Cloud Run's start-up distribution: how many, and the 95th percentile
+        and the slowest bucket in seconds; None when no instance started."""
+        params = {"filter": f'metric.type="run.googleapis.com/container/startup_latencies" AND resource.type="cloud_run_revision" AND '
+                            f'resource.labels.service_name="{target.service}"',
+                  "interval.startTime": start.isoformat().replace("+00:00", "Z"), "interval.endTime": end.isoformat().replace("+00:00", "Z"),
+                  "aggregation.alignmentPeriod": f"{max(60, int((end - start).total_seconds()))}s", "aggregation.perSeriesAligner": "ALIGN_DELTA",
+                  "aggregation.crossSeriesReducer": "REDUCE_SUM"}
+        series = self.get(f"https://monitoring.googleapis.com/v3/projects/{target.project_id}/timeSeries", **params).get("timeSeries", [])
+        dists = [point["value"]["distributionValue"] for item in series for point in item.get("points", []) if "distributionValue" in point.get("value", {})]
+        dists = [dist for dist in dists if int(dist.get("count", 0))]
+        if not dists:
+            return None
+        return distribution_summary(dists)
+
+    def google_incidents(self, project_id, minutes=1440):
+        """Google's incidents that Personalized Service Health wrote to this project's log in the window, newest first."""
+        since = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(minutes=minutes)).isoformat(timespec="seconds").replace("+00:00", "Z")
+        body = {"resourceNames": [f"projects/{project_id}"], "orderBy": "timestamp desc", "pageSize": 50,
+                "filter": (f'logName="projects/{project_id}/logs/servicehealth.googleapis.com%2Factivity" AND '
+                           f'jsonPayload.category="INCIDENT" AND timestamp>="{since}"')}
+        response = self.client.post("https://logging.googleapis.com/v2/entries:list", json=body, headers={"Authorization": "Bearer " + self.token()})
+        response.raise_for_status()
+        seen, found = set(), []
+        for entry in response.json().get("entries", []):
+            payload = entry.get("jsonPayload") or {}
+            key = payload.get("eventId") or payload.get("title")
+            if key in seen:
+                continue  # one line per incident: its updates are later entries of the same event
+            seen.add(key)
+            found.append({"title": str(payload.get("title") or "an incident")[:200], "state": payload.get("state"),
+                          "detailed_state": payload.get("detailedState"), "relevance": payload.get("relevance"),
+                          "locations": list(payload.get("impactedLocations") or [])[:5], "at": entry.get("timestamp")})
+        return found
+
+    QUOTA_SHARE = 0.8  # Google's recommended alerting rule for quotas: usage above 80 percent of the limit
+
+    def quota_pressure(self, project_id):
+        """The allocation quotas of this project above 80 percent of their limit, from the quota metrics Google exposes (only
+        services that report consumer quotas appear; Cloud Run's instance quota does not)."""
+        end = datetime.datetime.now(datetime.UTC)
+        start = end - datetime.timedelta(hours=6)
+
+        def latest(metric):
+            found = {}
+            params = {"filter": f'metric.type="serviceruntime.googleapis.com/quota/{metric}" AND resource.type="consumer_quota"',
+                      "interval.startTime": start.isoformat().replace("+00:00", "Z"), "interval.endTime": end.isoformat().replace("+00:00", "Z")}
+            for item in self.get(f"https://monitoring.googleapis.com/v3/projects/{project_id}/timeSeries", **params).get("timeSeries", []):
+                key = ((item.get("resource") or {}).get("labels", {}).get("service"), (item.get("metric") or {}).get("labels", {}).get("quota_metric"))
+                points = item.get("points") or []
+                if not points:
+                    continue
+                value = points[0].get("value", {})
+                number = float(value.get("int64Value", value.get("doubleValue", 0)))
+                found.setdefault(key, []).append(number)
+            return found
+        usage, limits = latest("allocation/usage"), latest("limit")
+        pressed = []
+        for key, used in usage.items():
+            bounds = [value for value in limits.get(key, []) if value > 0]
+            if not bounds:
+                continue
+            share = max(used) / min(bounds)
+            if share >= self.QUOTA_SHARE:
+                pressed.append({"service": key[0], "quota": key[1], "usage": max(used), "limit": min(bounds), "share": round(share, 3)})
+        return sorted(pressed, key=lambda item: -item["share"])
 
     def month_spend(self, table, projects, now=None):
         """Each project's spend this month and its forecast, from the billing export (docs/ROADMAP.md 24.2)."""

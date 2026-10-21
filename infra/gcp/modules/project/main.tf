@@ -16,7 +16,7 @@ locals {
 }
 
 resource "google_project_service" "apis" {
-  for_each           = toset(["run.googleapis.com", "artifactregistry.googleapis.com", "iam.googleapis.com", "iamcredentials.googleapis.com", "sts.googleapis.com", "storage.googleapis.com", "monitoring.googleapis.com", "recommender.googleapis.com", "pubsub.googleapis.com", "firestore.googleapis.com", "iap.googleapis.com", "aiplatform.googleapis.com"])
+  for_each           = toset(["run.googleapis.com", "artifactregistry.googleapis.com", "iam.googleapis.com", "iamcredentials.googleapis.com", "sts.googleapis.com", "storage.googleapis.com", "monitoring.googleapis.com", "recommender.googleapis.com", "pubsub.googleapis.com", "firestore.googleapis.com", "iap.googleapis.com", "aiplatform.googleapis.com", "servicehealth.googleapis.com"])
   service            = each.value
   disable_on_destroy = false
 }
@@ -212,6 +212,68 @@ resource "google_monitoring_notification_channel" "alert_webhook" {
   type         = "webhook_tokenauth"
   labels       = { url = var.alert_webhook_url }
   depends_on   = [google_project_service.apis]
+}
+
+# Google's side and access changes (docs/ROADMAP.md 25.4, 25.6). Personalized Service Health writes Google's incidents
+# that concern this project to its log; an alert on a new one in this region (or a global one) tells the operator it is
+# Google, not the application, which changes what to do. Free, and recommended by Cloud Run's monitoring page.
+resource "google_monitoring_alert_policy" "google_incident" {
+  display_name = "Google Cloud: an incident in ${var.region}"
+  combiner     = "OR"
+  conditions {
+    display_name = "Personalized Service Health reports a new incident here"
+    condition_matched_log {
+      filter = "logName=\"projects/${var.project_id}/logs/servicehealth.googleapis.com%2Factivity\" AND resource.type=\"servicehealth.googleapis.com/Event\" AND labels.\"servicehealth.googleapis.com/new_event\"=\"true\" AND jsonPayload.category=\"INCIDENT\" AND jsonPayload.impactedLocations=~\"${var.region}|global\""
+    }
+  }
+  notification_channels = concat(google_monitoring_notification_channel.alert_email[*].id, google_monitoring_notification_channel.alert_webhook[*].id)
+  severity              = "WARNING"
+  user_labels           = { lab-deploy-managed = "true", lab-deploy-environment = var.environment }
+  documentation {
+    subject   = "[${var.environment}] Google reports an incident in ${var.region}"
+    content   = "Google's Personalized Service Health reports an incident that may touch this project. Errors or slowness now are likely Google's: rolling back a release will not help. Follow it on the Service Health page of the console and status.cloud.google.com, and ask Claude for today's digest (docs/RUNBOOK.md, \"An incident\")."
+    mime_type = "text/markdown"
+  }
+  alert_strategy {
+    notification_rate_limit {
+      period = "3600s"
+    }
+    auto_close = "86400s"
+  }
+  depends_on = [google_project_service.apis]
+}
+# Access granted or changed by anyone but the pipeline: a role on a service, a bucket, a secret or the project, or a service
+# made public. The drift check sees only the members Terraform manages, so a grant made beside them in the console was
+# invisible; the Admin Activity audit log, always on and free, records every one. An operator's own foundation apply raises
+# it too, once an hour at most: that is expected.
+resource "google_monitoring_alert_policy" "access_changed" {
+  display_name = "Lab Deploy: access changed outside the pipeline"
+  combiner     = "OR"
+  conditions {
+    display_name = "SetIamPolicy by an identity other than the platform's apply identity"
+    condition_matched_log {
+      filter = join(" AND ", concat([
+        "logName=\"projects/${var.project_id}/logs/cloudaudit.googleapis.com%2Factivity\"",
+        "protoPayload.methodName:\"SetIamPolicy\"",
+        "NOT protoPayload.authenticationInfo.principalEmail:\"lab-deploy-infra-\"",
+        "severity!=ERROR",
+      ], [for member in var.access_change_quiet_members : "protoPayload.authenticationInfo.principalEmail!=\"${member}\""]))
+    }
+  }
+  notification_channels = concat(google_monitoring_notification_channel.alert_email[*].id, google_monitoring_notification_channel.alert_webhook[*].id)
+  severity              = "ERROR"
+  user_labels           = { lab-deploy-managed = "true", lab-deploy-environment = var.environment }
+  documentation {
+    subject   = "[${var.environment}] access changed outside the pipeline"
+    content   = "Someone or something other than the platform's pipeline changed who may use a resource in this project (an IAM policy). If it was you applying the foundation, nothing to do. Otherwise open Logs Explorer at the time of this alert (protoPayload.methodName:SetIamPolicy) to see who and what, and put the code's version back (docs/RUNBOOK.md, \"Drift reported\")."
+    mime_type = "text/markdown"
+  }
+  alert_strategy {
+    notification_rate_limit {
+      period = "3600s"
+    }
+    auto_close = "1800s"
+  }
 }
 
 # Billing export: Google writes the export (enabled once in the Billing console) into this dataset; the weekly

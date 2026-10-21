@@ -326,10 +326,9 @@ class CloudRun:
         # Cloud Run gates traffic on this startup probe (up to 60 s of grace) before the platform's own probes run: the
         # health route when the contract names one, else a TCP connect to the port (docs/ROADMAP.md 13.4).
         if spec.health_path:
-            probe = (f"httpGet.path={spec.health_path},httpGet.port={spec.port},"
-                     "initialDelaySeconds=0,periodSeconds=5,timeoutSeconds=3,failureThreshold=12")
+            probe = f"httpGet.path={spec.health_path},httpGet.port={spec.port},{STARTUP_PROBE_TIMING}"
         else:
-            probe = f"tcpSocket.port={spec.port},initialDelaySeconds=0,periodSeconds=5,timeoutSeconds=3,failureThreshold=12"
+            probe = f"tcpSocket.port={spec.port},{STARTUP_PROBE_TIMING}"
         extra = []
         # The contract's command and args replace the image's ENTRYPOINT and CMD (gcloud takes comma-separated lists; the model
         # refuses commas inside a word). Without them the image's own start command runs.
@@ -347,6 +346,10 @@ class CloudRun:
         service_flags = ["--revision-suffix", suffix, "--no-traffic", "--tag=candidate", "--ingress=all",
                          "--min-instances", str(spec.scaling.minimum), "--max-instances", str(spec.scaling.maximum),
                          "--concurrency", str(spec.concurrency), f"--timeout={spec.timeout_seconds}", "--cpu-throttling",
+                         # Startup CPU boost (docs/ROADMAP.md 25.2): twice the CPU while an instance starts and for ten seconds
+                         # after, billed for the start only; Google measured starts up to half shorter. gcloud turns it on only
+                         # for services it creates, and Terraform creates these, so it is asked for at every release.
+                         "--cpu-boost",
                          *[flag for flag in extra if flag.startswith("--update-labels=")], *self.egress_flags(spec), *self.volume_flags(spec)]
         container_flags = [flag for flag in extra if not flag.startswith("--update-labels=")]
         names = self.container_names()
@@ -370,7 +373,7 @@ class CloudRun:
         # D51, 22.1: two containers in one instance share its network. Nginx is the ingress container (the only one with a
         # port), started after the app's own startup probe passes; it forwards every request to the app on the loopback.
         listen = proxy_port(spec)
-        proxy_probe = f"tcpSocket.port={listen},initialDelaySeconds=0,periodSeconds=5,timeoutSeconds=3,failureThreshold=12"
+        proxy_probe = f"tcpSocket.port={listen},{STARTUP_PROBE_TIMING}"
         self.run(self.command("deploy", self.service, *service_flags,
             "--container=proxy", f"--image={NGINX_IMAGE}", f"--port={listen}", "--command=sh", "--args=-c," + proxy_script(spec),
             f"--cpu={PROXY_CPU}", f"--memory={PROXY_MEMORY_MIB}Mi", "--depends-on=app", "--startup-probe", proxy_probe,
@@ -517,6 +520,12 @@ class CloudRun:
         return False
 
 
+# The startup probe's timing (docs/ROADMAP.md 25.1). Cloud Run tries the first probe as the container starts, before
+# anything listens, and the next one a whole period later: with a five-second period (until 1.27.0) nearly every cold start
+# of every application measured 5.0 to 5.2 s, while the same applications probed by a TCP connect started in 0.3 s
+# (30 days of container/startup_latencies, docs/RESEARCH-2026-10-21-scaling.md section 3). One second between tries,
+# one second to answer (Google's default), and 60 tries keep the same 60-second window to start.
+STARTUP_PROBE_TIMING = "initialDelaySeconds=0,periodSeconds=1,timeoutSeconds=1,failureThreshold=60"
 TERMINAL = {"succeeded", "traffic_restored", "recovered", "rolled_back"}
 # A runner lost while baking leaves the new revision serving without its verdict: recovery restores the previous split.
 RECOVERABLE = {"preparing", "migrating", "deploying", "promoting", "baking", "rolling_back", "rollback_failed_manual_recovery_required"}

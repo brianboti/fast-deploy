@@ -615,6 +615,17 @@ day that the issue still hears from the controller and fails, which GitHub email
    billing account; Google sets the thresholds from your spending and suggests watching a month before changing them.
    Then record it (`cost_anomaly_detection: true`, the settings page's switch) so the digest stops reminding.
 
+## 7r. Google's incidents and access changes (1.28.0)
+
+The foundation enables the Service Health API and adds two alerts to each project: **Google reports an incident in
+us-central1** (Personalized Service Health, free) and **access changed outside the pipeline** (the Admin Activity audit
+log, always on and free). Apply the foundation in each project after the merge (`scripts/apply-foundation.sh PROJECT`).
+The access alert also fires for your own foundation applies; to leave them out, add to the project's tfvars:
+
+```hcl
+access_change_quiet_members = ["you@example.com"]
+```
+
 ## 7k. The weekly drift check
 
 `.github/workflows/infra-drift.yml` plans every application root against the live infrastructure on Mondays at 07:37 UTC

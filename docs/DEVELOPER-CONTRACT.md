@@ -320,9 +320,10 @@ Required:
 
 - Listen on `0.0.0.0` at the port in `platform.yaml` (default 8080), which Cloud Run also passes as `PORT`. Nothing
   else may be assumed about the network; Cloud Run terminates TLS, the container speaks plain HTTP/1.
-- Start fast and answer the health path as soon as the app can serve. The platform's startup probe hits that path;
-  Cloud Run's hard limit is four minutes, the lab's expectation is a few seconds. Do heavy initialization once in
-  global scope or lazily, never per request.
+- Start fast and answer the health path as soon as the app can serve. The platform's startup probe hits that path every
+  second and waits one second for an answer, for up to a minute (since 1.28.0; startup CPU boost gives the instance twice
+  its CPU while it starts); Cloud Run's hard limit is four minutes, the lab's expectation is a few seconds. Do heavy
+  initialization once in global scope or lazily, never per request.
 - Run as a non-root user with an explicit UID (`USER 65532:65532`); Cloud Run runs the container as root when the
   user does not exist. No `sudo`, no setuid binaries.
 - Exec-form `CMD ["uvicorn", ...]` so the server is PID 1 and receives signals. On shutdown Cloud Run sends `SIGTERM`
