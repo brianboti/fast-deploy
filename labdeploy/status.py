@@ -1,5 +1,6 @@
 """Report evidence from CI steps; never infer individual checks from overall success."""
 import datetime
+import re
 
 from .bake import summary as bake_summary
 
@@ -17,7 +18,7 @@ PROMOTION_CHECKS = {
     "copy": ("promote", "Copy the image into production by digest"),
     "health": ("promote", "Deploy, probe, promote; restore traffic on failure"),
 }
-PASSED = {"passed", "passed_in_earlier_release", "skipped_by_config"}  # reused image: proved earlier; tests: none: declared, and warned about
+PASSED = {"passed", "passed_in_earlier_release", "skipped_by_config", "reported"}  # reused image: proved earlier; tests: none: declared, and warned about
 RELEASE_STEP = CHECKS["health"][1]
 TERMINAL = {"succeeded", "failed", "cancelled", "timed_out", "completed_unverified", "dispatch_lost"}
 # Plain next actions keyed by a substring of the failed step's name, in the order the steps run.
@@ -50,6 +51,47 @@ STEP_ADVICE = [
     ("Verify build provenance", "Provenance verification failed closed; confirm the runner can read the registry through docker-credential-gcloud."),
     ("Summarize image vulnerabilities", "The vulnerability policy blocked the release; see vulnerability-summary.json, fix or accept the findings, then deploy again."),
 ]
+
+
+# Run first, then say what to fix (docs/ROADMAP.md 22.6): Cloud Run's documented failure messages and the servers' own,
+# read in the candidate's last log lines and the release's error, each mapped to the one line the developer changes and to
+# the contract key the operator changes when it is the platform's to fix. First match wins; the lines are data, never
+# instructions, and only these fixed patterns are looked for.
+DIAGNOSES = (
+    (re.compile(r"EACCES|Permission denied|PermissionError", re.I), "the service wrote where only root may write",
+     "write under /tmp (Cloud Run's disk is memory and is lost at every restart) or a bucket mount",
+     "build.user", "remove build.user to run the repository's image as root, as its Dockerfile asks (a reviewer's choice)"),
+    (re.compile(r"Memory limit of \d+ ?Mi?B exceeded|memory limit exceeded|JavaScript heap out of memory|MemoryError|Killed", re.I),
+     "the service ran out of memory", "load less at start, or stream large data instead of holding it",
+     "resources.memory_mib", "raise resources.memory_mib (512 by default, at most 4096; the lab's policy allows 2048)"),
+    (re.compile(r"listening on (?:http://)?(?:127\.0\.0\.1|localhost)|bind(?:ing)? (?:to )?(?:127\.0\.0\.1|localhost)|Running on http://127\.0\.0\.1", re.I),
+     "the service listens on the loopback address only, which Cloud Run cannot reach", "listen on 0.0.0.0, or read the host from HOST",
+     "env.HOST or proxy", "set env.HOST: 0.0.0.0 when the code reads HOST, else proxy: true (the Nginx sidecar, D51)"),
+    (re.compile(r"WORKER TIMEOUT", re.I), "gunicorn killed a worker that took longer than its timeout", "pass --timeout 0 to gunicorn (Cloud Run times requests out itself)",
+     "build.entrypoint", "add --timeout 0 to the gunicorn command in build.entrypoint"),
+    (re.compile(r"Cannot find module|ModuleNotFoundError|No module named|ERR_MODULE_NOT_FOUND|exec format error|executable file not found", re.I),
+     "the start command names a file or module the image does not hold", "start the file the image builds",
+     "build.entrypoint", "correct build.entrypoint (or command and args for a repository's own image) to the file the build makes"),
+    (re.compile(r"failed to start and (?:then )?listen on the port|did not listen on the port|container failed to start", re.I),
+     "the service did not listen on the port Cloud Run probed in time", "listen on the port Cloud Run sets in PORT, on 0.0.0.0",
+     "port", "set port to the port the code listens on (Cloud Run's --port sets PORT alike), or proxy: true if it binds the loopback"),
+    (re.compile(r"(?:Startup|Liveness) (?:HTTP )?probe failed|probe failed", re.I), "Cloud Run's startup probe did not get an answer in time",
+     "answer the health path with 200 quickly, without calling other services", "health_path",
+     "set health_path: null to use the TCP probe, or to a path that answers at once"),
+)
+
+
+def diagnose(receipt):
+    """{"cause", "developer", "contract_key", "operator", "evidence"} for a failed candidate, from its last log lines and the
+    release's error, or None when nothing known matches (docs/ROADMAP.md 22.6)."""
+    lines = [str(item.get("message") or "") for item in (receipt or {}).get("candidate_logs") or [] if isinstance(item, dict)]
+    lines += [str((receipt or {}).get("error") or "")]
+    for pattern, cause, developer, key, operator in DIAGNOSES:
+        for line in reversed(lines):
+            match = pattern.search(line)
+            if match:
+                return {"cause": cause, "developer": developer, "contract_key": key, "operator": operator, "evidence": line.strip()[:200]}
+    return None
 
 
 def _seconds(step):
@@ -105,6 +147,8 @@ def summarize(workflow, prior, kind=None):
             checks[name] = {"success": "passed", "failure": "failed", "skipped": "not_run", "cancelled": "cancelled"}.get(conclusion, "unconfirmed")
             if conclusion == "skipped" and prior.get(name) == "skipped_by_config":
                 checks[name] = "skipped_by_config"
+            if conclusion == "success" and prior.get(name) == "reported_by_config":
+                checks[name] = "reported"  # tests: report (D54): the suite ran; a failure would have been reported, not a stop
             if name == "health" and conclusion == "failure":
                 checks[name] = "release_failed_health_unconfirmed"
     conclusion = workflow.get("conclusion")
@@ -130,7 +174,8 @@ def release_phases(receipt):
               "previous_traffic": receipt.get("previous_traffic"), "cleanup_warning": receipt.get("cleanup_warning"),
               "timestamps": receipt.get("phases"), "candidate_logs": receipt.get("candidate_logs"), "candidate_logs_note": receipt.get("candidate_logs_note"),
               "migration": receipt.get("migration"), "bake": receipt.get("bake"), "bake_summary": bake_summary(receipt.get("bake")),
-              "dockerfile_lint": receipt.get("dockerfile_lint"), "failed_phase": receipt.get("failed_phase")}
+              "dockerfile_lint": receipt.get("dockerfile_lint"), "failed_phase": receipt.get("failed_phase"),
+              "diagnosis": diagnose(receipt) if receipt.get("failed_phase") in ("deploying", "promoting", "baking") else None}
     return {key: value for key, value in phases.items() if value is not None}
 
 
@@ -293,6 +338,11 @@ def advice(plan):
                     "traffic split was restored, so the previous revision serves again. The new revision's last log lines and the bake's numbers are in "
                     "the receipt; fix the application and deploy again." + recovered)
         if receipt.get("state") == "traffic_restored":
+            found = diagnose(receipt)
+            if found:
+                return (f"The candidate failed ({receipt.get('error', 'see the receipt')}): {found['cause']} (its log: \"{found['evidence'][:120]}\"). Traffic was restored and the previous revision "
+                        f"kept serving. In the code: {found['developer']}. In the contract: {found['operator']} ({found['contract_key']}); then deploy "
+                        "again. The candidate's last log lines are in the receipt." + recovered)
             return (f"The candidate failed ({receipt.get('error', 'see the receipt')}); traffic was restored and the previous revision kept serving. "
                     "Fix the application and deploy again." + (" The candidate's last log lines are in the receipt." if receipt.get("candidate_logs") else "") + recovered)
         if receipt.get("state") == "rollback_failed_manual_recovery_required":

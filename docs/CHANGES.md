@@ -1,3 +1,57 @@
+# 1.24.0: run it, then say what to fix (Phase 22)
+
+Roadmap Phase 22 (docs/ROADMAP.md 22.1 to 22.6, decisions D49, D51, D52, D54 and D55 at their defaults), from the research
+review of 2026-10-20 (`docs/RESEARCH-2026-10-20.md`, sections 5 and 7.3), stacked on 1.23.0 (#140). What the source
+builders do with nothing, try the convention, and what they do not, say exactly why the first revision failed. Contracts
+that use none of the new keys hash and release as before. The pipeline template changes again; Terraform does not.
+Built and checked locally; the live exercise listed under Phase 22 has not run yet.
+
+1. **The proxy sidecar** (22.1, D51). A Node.js service that listens on `127.0.0.1` or `localhost` and reads no variable
+   for it, or Fastify started without `host`, is drafted `proxy: true` instead of refused. The release then deploys two
+   containers: the platform's Nginx (the official image, pinned by its index digest and followed by the weekly refresh)
+   as the ingress container on 8080 (8081 when the service itself uses 8080), started after the app's own startup
+   probe passes, forwarding every request to the app's port on the loopback the containers share; its configuration is
+   made from two integers and nothing of the application's. The cost view counts its 1 vCPU and 256 MiB per instance,
+   billed as the app's, only while requests are served. A contract that says `proxy: false` keeps the old refusal, and
+   the note says listening on 0.0.0.0 remains the better fix.
+2. **An init, and chained starts** (22.2, D49). Every image the platform builds (Python, Node.js, static) starts under
+   tini 0.19.0, downloaded in a first stage by version and held to its SHA-256 (a new pin), so SIGTERM reaches the
+   service. A start script that chains `node` commands (`node migrate.js && node server.js`) runs as written under it;
+   chains through npm or a shell, and `concurrently`, stay refused. The Node.js platform image is now always the
+   multi-stage template (the npm case included).
+3. **The wrapper user** (22.3, D52). A repository's own Dockerfile whose final image runs as root is no longer refused for
+   code nobody has reviewed: the reader drafts `build.user: 65532`, the build adds a stage on top of the image (written on
+   the runner, never in the repository) that sets that user, and the Dockerfile policy reports the root user instead of
+   refusing it. A reviewer who accepts root removes the line. `build.user` applies to `build.recipe: repository` only.
+4. **Static sites** (22.4, D55). A front-end site with a `build` script (Vite, Create React App, Vue CLI, Parcel, Astro,
+   Gatsby, Docusaurus, Eleventy, SvelteKit with adapter-static) is drafted `runtime: static` with `build.output`, and
+   `exposure: lab-members` is required (public stays refused). The platform's static image
+   (`templates/repo/Dockerfile.static`) installs with the lockfile's manager and scripts off, runs the build, and serves
+   the output with Caddy (the controller machine's release, now pinned in two places) under tini, as user 65532, with
+   the admin endpoint off and unknown paths falling back to `index.html`. The pipeline runs a site's audit, install and
+   tests as a Node.js service's.
+5. **`tests: report`** (22.5, D54). A suite that names Playwright, Cypress, Selenium, Puppeteer, `db:seed`, Docker,
+   testcontainers or a database URL is drafted `tests: report`: it runs and is counted, and a failure is a warning in the
+   run's summary, never a stop. The plan and the status say "ran and reported, not a gate".
+6. **The diagnosis** (22.6). When a candidate fails, the release status reads its last log lines for Cloud Run's
+   documented messages and the servers' own (EACCES, the memory limit, a loopback bind, gunicorn's WORKER TIMEOUT, a
+   missing module, "failed to start and listen on the port", a failed startup probe) and says the cause, the line the
+   developer changes and the contract key the operator changes (`build.user`, `resources.memory_mib`, `env.HOST` or
+   `proxy`, `build.entrypoint`, `port`, `health_path`). Nothing known matched: it says so and guesses nothing.
+7. **The survey**: **19 accepted and 18 refusals**, from 13 and 28 at 1.23.0 (3 and 60 at 1.21.0). New: FastAPI's
+   full-stack template, Miguel Grinberg's microblog, Wagtail's bakery demo, Google's own Cloud Run Python sample and the
+   RealWorld Express app (their root images wrapped), and Fastify's demo (behind the proxy). Each of the 14 left needs one
+   answer from a person.
+8. **Documents.** The contract page's tables, refusals, the code-nobody-reviewed table and the reference; the roadmap's
+   Phase 22 status; CLAUDE-CHAT; the operator skill (the zip on claude.ai needs re-uploading); the handoff.
+
+Checked: 943 tests pass (19 new); ruff clean; hadolint 2.15.1 through Docker passes the new images with no finding. Four
+small images of my own, no dependencies and nothing from any sampled repository, were built and run on the laptop: tini
+was PID 1, a chained start ran and its last command got SIGTERM (the container stopped at once), the service ran as 65532,
+Caddy served a built site with its single-page fallback, and the pinned Nginx with the generated configuration forwarded
+a request to a service on the loopback.
+
+
 # 1.23.0: Node.js builds and managers (Phase 21)
 
 Roadmap Phase 21 (docs/ROADMAP.md 21.1 to 21.6, decision D53 at its default), from the research review of 2026-10-20

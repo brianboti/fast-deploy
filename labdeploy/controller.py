@@ -1087,6 +1087,9 @@ class Controller:
         if spec.tests == "none":
             plan["checks"]["tests"] = "skipped_by_config"
             plan["warnings"].append("platform.yaml declares tests: none, so nothing checks this app's behaviour before a release; only the health probe guards it.")
+        if spec.tests == "report":
+            plan["checks"]["tests"] = "reported_by_config"
+            plan["warnings"].append("The contract declares tests: report: the suite runs and is counted, and a failure is reported in the run, never a stop.")
         if spec.secrets:
             plan["warnings"].append("References secrets " + ", ".join(f"{app.service}-{name}" for name in spec.secrets) + "; each must exist in Secret Manager with an enabled version.")
         derived = needs_env(spec, app.target.project_id, app.target.region)
@@ -1167,6 +1170,9 @@ class Controller:
         if spec.tests == "none":
             plan["checks"]["tests"] = "skipped_by_config"
             plan["warnings"].append("The contract declares tests: none, so nothing checks this app's behaviour before a release; only the health probe guards it.")
+        if spec.tests == "report":
+            plan["checks"]["tests"] = "reported_by_config"
+            plan["warnings"].append("The contract declares tests: report: the suite runs and is counted, and a failure is reported in the run, never a stop.")
         if spec.health_path is None:
             plan["warnings"].append("No health route: Cloud Run's TCP startup probe gates the start, and the HTTP health probe is off.")
         if spec.secrets:
