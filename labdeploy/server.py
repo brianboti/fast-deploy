@@ -2,8 +2,6 @@ import contextlib
 import contextvars
 import datetime
 import functools
-import hashlib
-import hmac
 import inspect
 import logging
 import os
@@ -20,13 +18,13 @@ from mcp.types import ToolAnnotations
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
-from . import __version__, chat
+from . import __version__, chat, settings
 from .cloud import Observer
 from .config import LiveConfig, load_config
 from .controller import Controller, Store
 from .cost import PRICING
 from .github import GitHub, explain
-from .oauth import PUBLIC_PATHS, Provider, mount
+from .oauth import PUBLIC_PATHS, Provider, find_principal, mount
 from .scheduler import Scheduler
 
 log = logging.getLogger("labdeploy")
@@ -224,7 +222,10 @@ class Authenticate:
             client_address.reset(address)
 
     async def gate(self, scope, receive, send, client):
-        if self.oauth is not None and (scope["path"] in PUBLIC_PATHS or scope["path"].startswith("/.well-known/")):
+        # The OAuth endpoints are reached before Claude has a token, and the settings page signs its visitors in itself with
+        # an operator token (labdeploy/settings.py): both pass on the per-client budget instead of a bearer token.
+        public = self.oauth is not None and (scope["path"] in PUBLIC_PATHS or scope["path"].startswith("/.well-known/"))
+        if public or settings.is_settings_path(scope["path"]):
             allowed, retry_after = self.limits.public.allow(client)
             if not allowed:
                 return await JSONResponse({"error": "Too many requests"}, status_code=429, headers={"Retry-After": str(retry_after)})(scope, receive, send)
@@ -234,8 +235,7 @@ class Authenticate:
         scheme, _, token = authorization.partition(" ")
         # RFC 9110 authentication schemes are case-insensitive; the token itself is compared by hash.
         token = token.strip() if scheme.lower() == "bearer" else ""
-        digest = hashlib.sha256(token.encode()).hexdigest()
-        principal = next((p for p in self.config.principals if token and hmac.compare_digest(digest, p.token_sha256)), None)
+        principal = find_principal(self.config, token)
         if principal is None and token and self.oauth is not None:
             principal = await run_in_threadpool(self.oauth.authenticate, token)
         if principal is None:
@@ -577,6 +577,7 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
 
     if oauth is not None:
         mount(app, oauth, limits.failures)  # must precede the catch-all MCP mount
+    app.router.routes.extend(settings.routes(config, store, limits.failures))  # the settings page, ahead of the MCP mount too
     app.mount("/", mcp.streamable_http_app())
     return app
 

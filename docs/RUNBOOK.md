@@ -295,10 +295,25 @@ is no open SSH port: `scripts/machine.sh` goes through Identity-Aware Proxy, and
 | Restart the controller | `scripts/machine.sh restart` |
 | Update the platform it runs | after the merge, `scripts/machine.sh update $(git rev-parse origin/main)`: only a commit on main installs, and the previous one comes back if the new one does not answer within a minute. With `platform_updates` on, the machine does this by itself (section "After a release") |
 | Run its startup script again | `scripts/machine.sh startup`, after a foundation apply changed the script: what is already right stays, and Caddy restarts for a second |
-| Change its configuration | `scripts/machine.sh config-get /tmp/machine.yaml`, edit, `scripts/machine.sh config-put /tmp/machine.yaml`: checked before it goes; principals, applications and settings apply at once, `oauth` and `github_app` changes need `restart` |
+| Change its configuration | In the browser at `https://MACHINE/settings` (below). The fallback, when the page cannot be reached: `scripts/machine.sh config-get /tmp/machine.yaml`, edit, `scripts/machine.sh config-put /tmp/machine.yaml`: checked before it goes; principals, applications and settings apply at once, `oauth` and `github_app` changes need `restart` |
 | Back up now, or drill | `scripts/machine.sh backup`, `scripts/machine.sh drill` |
 | Forget a retired application | `scripts/machine.sh unregister APP`, after `scripts/decommission.sh APP --yes` (section "Retire an application") |
 | Hold it while a laptop takes over | `scripts/machine.sh stop` (not even a reboot starts it); `scripts/machine.sh start` releases the hold |
+
+**Change its configuration.** Open `https://MACHINE/settings` (the machine's address or DNS name, as in Claude's
+connector) and sign in with an operator token whose principal has `applications: ["*"]` and `can_deploy`; anyone else is
+refused. The sign-in lasts an hour (`settings_session_seconds`), and a restart, a rotated token or a removed principal ends
+it. Five tabs: Applications (each application's cost ceiling, auto-deploy, auto-merge, bake, viewers and infrastructure
+settings; for one onboarding registered they go under `application_settings`), Platform (the auto-deploy interval, the
+watchdog webhook, the spend caps you recorded, backups, `platform_updates`), People (principals, a new token shown once),
+Production (reviewers, rollout, bake) and Advanced (the whole file; the only place for `database`, `oauth` and
+`github_app`, which need `restart`). Every save shows the change as a diff first and writes nothing until you confirm;
+pausing, provenance `unavailable`, rotating a token and removing a person also ask you to type the name. The confirm step
+checks the file exactly as the controller does, replaces it in one step, keeps the previous one in
+`/var/lib/fast-deploy/history/` (the last twenty), copies it to `gs://BUCKET/machine/config.yaml` and records a
+`configuration` event; the controller applies it at once. The page does not touch contracts, Terraform roots, GitHub
+environments or secrets: it links to them. Comments in the file are not kept, and a `config-put` made while a change waits
+for its confirm step makes that step refuse.
 
 Docker is on the machine only for the lock files onboarding compiles (decision D27); it starts when first used, and its
 containers can reach neither the metadata server (the machine's identity) nor any private address.
@@ -699,8 +714,9 @@ Services, Credentials). To add someone, add `user:name@example.edu` to the app's
 
 ## Rotate credentials
 
-- **Operator token**: `python -m labdeploy.cli token`, replace the hash in the configuration (on the machine through
-  `scripts/machine.sh config-get` and `config-put`; on a laptop in `config.local.yaml`), sign in again in Claude. Every
+- **Operator token**: on the People tab of `https://MACHINE/settings`, rotate it (the new token is shown once); or
+  `python -m labdeploy.cli token` and replace the hash in the configuration (on the machine through
+  `scripts/machine.sh config-get` and `config-put`; on a laptop in `config.local.yaml`). Sign in again in Claude. Every
   session of the old token ends.
 - **GitHub App key** (the machine): on the App's page generate a new private key, then
   `gcloud secrets versions add FAST_DEPLOY_GITHUB_APP_KEY --project PROJECT --data-file=KEY.pem`, delete the file, and
