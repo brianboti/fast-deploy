@@ -1,4 +1,4 @@
-# 1.29.2: the audit trail for limited identities
+# 1.29.3: the audit trail for limited identities
 
 Found on 2026-10-21 while the release before this one (cost and controller state for limited identities) was built.
 `list_events` and `GET /events` gave a deployer whose token does not list `"*"` every event of every application, with
