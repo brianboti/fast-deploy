@@ -1,3 +1,17 @@
+# 1.31.3: the apply identity may say who passes IAP; the plan is checked by main's rules
+
+Two more findings from `sophia-bettercare`'s first `exposure: lab-members` apply in staging on 2026-10-21:
+
+- The apply switched the proxy on and then was refused `iap.webServices.getIamPolicy`: neither `roles/run.admin` nor
+  `roles/resourcemanager.projectIamAdmin` reaches the proxy's policy on a service, so the viewers, the release probe and a
+  wake identity could never be let through. The foundation gives the apply identity a custom role,
+  `labDeployIapAccessManager`, with only `iap.webServices.getIamPolicy` and `iap.webServices.setIamPolicy` (no proxy
+  settings, unlike `roles/iap.admin`). Apply the foundation in each project once.
+- The plan workflow's policy check said "the rules on main", but `python3 -m` puts the working directory (the pull
+  request's checkout) before `PYTHONPATH`, so a pull request that changed `labdeploy/infra.py` was checked by its own rules,
+  and a re-run after 1.31.2 merged still used the old ones. The four steps that read `platform-main` now run
+  `python3 -P -m`.
+
 # 1.31.2: a Cloud Run service's creator is a record; IAP's own OAuth client, as staging needs it
 
 Found while turning Identity-Aware Proxy on for `sophia-bettercare` (BetterCare) on 2026-10-21, the first time a service of

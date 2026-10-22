@@ -100,13 +100,15 @@ jobs:
           terraform plan -input=false -lock=false -no-color -out=tfplan
           terraform show -json tfplan > plan.json
           terraform show -no-color tfplan > plan.txt
+      # -P: `python3 -m` would put the working directory (this pull request's checkout) before PYTHONPATH, so a pull request
+      # that changes labdeploy/infra.py was checked by its own rules (found 2026-10-21: a re-run kept the old ones).
       - name: Check the plan against the platform's policies (the rules on main)
         id: policy
         env:
           PYTHONPATH: platform-main
         run: |
           set +e
-          python3 -m labdeploy.infra check "infra/gcp/apps/$APP/plan.json"
+          python3 -P -m labdeploy.infra check "infra/gcp/apps/$APP/plan.json"
           echo "status=$?" >> "$GITHUB_OUTPUT"
       # The comment opens with the approval block the code renders from the plan (counts, reversibility, idle floor,
       # exposure) and the identifiers a reviewer can follow: this pull request, its head commit and this run.
@@ -118,7 +120,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          PYTHONPATH=platform-main python3 -m labdeploy.infra summary "infra/gcp/apps/$APP/plan.json" "$APP" "infra/gcp/apps/$APP/plan.txt" \
+          PYTHONPATH=platform-main python3 -P -m labdeploy.infra summary "infra/gcp/apps/$APP/plan.json" "$APP" "infra/gcp/apps/$APP/plan.txt" \
             --pull-request "$NUMBER" --head-sha "$HEAD_SHA" --run-url "$RUN_URL" > comment.md
           marker="<!-- lab-deploy-infra:$APP -->"
           existing=$(gh api "repos/$REPOSITORY/issues/$NUMBER/comments" --paginate --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n 1)
@@ -194,7 +196,7 @@ jobs:
           PYTHONPATH: platform-main
         run: |
           set +e
-          python3 -m labdeploy.infra check "infra/gcp/apps-production/$APP/plan.json"
+          python3 -P -m labdeploy.infra check "infra/gcp/apps-production/$APP/plan.json"
           echo "status=$?" >> "$GITHUB_OUTPUT"
       # The comment opens with the approval block the code renders from the plan (counts, reversibility, idle floor,
       # exposure) and the identifiers a reviewer can follow: this pull request, its head commit and this run.
@@ -206,7 +208,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          PYTHONPATH=platform-main python3 -m labdeploy.infra summary "infra/gcp/apps-production/$APP/plan.json" "production-$APP" "infra/gcp/apps-production/$APP/plan.txt" \
+          PYTHONPATH=platform-main python3 -P -m labdeploy.infra summary "infra/gcp/apps-production/$APP/plan.json" "production-$APP" "infra/gcp/apps-production/$APP/plan.txt" \
             --pull-request "$NUMBER" --head-sha "$HEAD_SHA" --run-url "$RUN_URL" > comment.md
           marker="<!-- lab-deploy-infra:production-$APP -->"
           existing=$(gh api "repos/$REPOSITORY/issues/$NUMBER/comments" --paginate --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n 1)
