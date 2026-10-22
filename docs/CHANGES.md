@@ -2,10 +2,11 @@
 
 Found by the readiness check on 2026-10-22: the daily digest and the "a release did worse" alerts had never reached anyone.
 At each message the controller listed the platform repository's open issues, did not find "Fast Deploy: today", opened it
-again, and GitHub refused the comment (403): six empty issues (#149 to #170) and no digest. The App's installation most
-likely has no **Issues** permission: `docs/SETUP.md`'s one-click link for making the App never asked for it (the list
-beside it did since 1.27.0). Without it the listing shows pull requests only and a comment on an issue is refused, yet
-GitHub still let the App open the issue.
+again, and GitHub refused the comment (403): six empty issues (#149 to #170) and no digest. The App's installation has
+no **Issues** permission (its page lists metadata read, and actions, administration, code, environments, pull requests
+and workflows read and write): `docs/SETUP.md`'s one-click link for making the App never asked for it (the list beside it
+did since 1.27.0). Without it the listing shows pull requests only and a comment on an issue is refused, yet GitHub still
+let the App open the issue.
 
 - The controller now reads what the App's installation may do from the token GitHub gives it. Without Issues: read and
   write it opens nothing and says, in the digest's delivery record and the watchdog, exactly what to add and accept.
