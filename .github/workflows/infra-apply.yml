@@ -104,17 +104,26 @@ jobs:
       - name: Apply exactly that plan
         run: |
           cd "infra/gcp/apps/$APP"
-          if ! terraform apply -input=false -no-color tfplan; then
-            # Google's APIs are eventually consistent: a service created seconds earlier is "not found" to the uptime
-            # check (seen on the first apply of a new application), a fresh grant takes a while to reach every API.
-            # Plan again after a minute, under the same policy, and apply once more; a real problem fails twice.
-            echo "::warning::The apply failed; planning again in 60 seconds and applying once more."
-            sleep 60
+          # Google's APIs are eventually consistent: a service created seconds earlier is "not found" to the uptime
+          # check (seen on the first apply of a new application), a fresh grant takes a while to reach every API.
+          # Plan again after a minute, under the same policy, and apply once more; a real problem fails twice.
+          # One error is waited out longer: a custom role the foundation made minutes earlier "does not exist in the
+          # resource's hierarchy" until IAM has spread it (labDeployJobReader on 2026-10-22, still refused 3 minutes
+          # after it was made). For that error alone the plan and apply are tried again after 1, 1 and 2 more minutes:
+          # five minutes of waiting in all. Any other failure stops at the second try.
+          PAUSES=(60 60 60 120)
+          TRIES=0
+          until terraform apply -input=false -no-color tfplan 2>&1 | tee apply.log; do
+            if [ "$TRIES" -ge "${#PAUSES[@]}" ] || { [ "$TRIES" -ge 1 ] && ! grep -q "does not exist in the resource's hierarchy" apply.log; }; then
+              exit 1
+            fi
+            echo "::warning::The apply failed; planning again in ${PAUSES[$TRIES]} seconds and applying once more."
+            sleep "${PAUSES[$TRIES]}"
+            TRIES=$((TRIES + 1))
             terraform plan -input=false -no-color -out=tfplan
             terraform show -json tfplan > plan.json
             PYTHONPATH="$GITHUB_WORKSPACE" python3 -m labdeploy.infra check plan.json
-            terraform apply -input=false -no-color tfplan
-          fi
+          done
           terraform output -json > outputs.json
       - name: Publish the outputs to the application's GitHub environment
         env:
@@ -166,17 +175,26 @@ jobs:
       - name: Apply exactly that plan
         run: |
           cd "infra/gcp/apps-production/$APP"
-          if ! terraform apply -input=false -no-color tfplan; then
-            # Google's APIs are eventually consistent: a service created seconds earlier is "not found" to the uptime
-            # check (seen on the first apply of a new application), a fresh grant takes a while to reach every API.
-            # Plan again after a minute, under the same policy, and apply once more; a real problem fails twice.
-            echo "::warning::The apply failed; planning again in 60 seconds and applying once more."
-            sleep 60
+          # Google's APIs are eventually consistent: a service created seconds earlier is "not found" to the uptime
+          # check (seen on the first apply of a new application), a fresh grant takes a while to reach every API.
+          # Plan again after a minute, under the same policy, and apply once more; a real problem fails twice.
+          # One error is waited out longer: a custom role the foundation made minutes earlier "does not exist in the
+          # resource's hierarchy" until IAM has spread it (labDeployJobReader on 2026-10-22, still refused 3 minutes
+          # after it was made). For that error alone the plan and apply are tried again after 1, 1 and 2 more minutes:
+          # five minutes of waiting in all. Any other failure stops at the second try.
+          PAUSES=(60 60 60 120)
+          TRIES=0
+          until terraform apply -input=false -no-color tfplan 2>&1 | tee apply.log; do
+            if [ "$TRIES" -ge "${#PAUSES[@]}" ] || { [ "$TRIES" -ge 1 ] && ! grep -q "does not exist in the resource's hierarchy" apply.log; }; then
+              exit 1
+            fi
+            echo "::warning::The apply failed; planning again in ${PAUSES[$TRIES]} seconds and applying once more."
+            sleep "${PAUSES[$TRIES]}"
+            TRIES=$((TRIES + 1))
             terraform plan -input=false -no-color -out=tfplan
             terraform show -json tfplan > plan.json
             PYTHONPATH="$GITHUB_WORKSPACE" python3 -m labdeploy.infra check plan.json
-            terraform apply -input=false -no-color tfplan
-          fi
+          done
           terraform output -json > outputs.json
       - name: Publish the outputs to the application's GitHub environment
         env:

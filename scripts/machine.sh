@@ -20,6 +20,8 @@
 #   scripts/machine.sh start             release the hold and start it
 #   scripts/machine.sh unregister APP    the controller forgets an onboarded application (after scripts/decommission.sh);
 #                                        its plans and audit events stay as history
+#   scripts/machine.sh forget-onboarding APP
+#                                        drop an onboarding record that registered nothing (a stray call's leftover)
 #   scripts/machine.sh ssh               a shell on the machine
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -90,6 +92,10 @@ case "$COMMAND" in
     APP=${2:?usage: scripts/machine.sh unregister APP}
     [[ "$APP" =~ ^[a-z][a-z0-9-]{0,40}$ ]] || { echo "APP is the application's name as list_applications shows it"; exit 1; }
     as_controller "unregister $APP" ;;
+  forget-onboarding)
+    APP=${2:?usage: scripts/machine.sh forget-onboarding APP}
+    [[ "$APP" =~ ^[a-z][a-z0-9-]{0,40}$ ]] || { echo "APP is the onboarding's name, as get_onboarding_status shows it"; exit 1; }
+    as_controller "forget-onboarding $APP" ;;
   ssh)
     gcloud compute ssh "$NAME" --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap ;;
   *)

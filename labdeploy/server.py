@@ -1,6 +1,7 @@
 import contextlib
 import contextvars
 import datetime
+import difflib
 import functools
 import inspect
 import logging
@@ -13,6 +14,7 @@ import httpx
 import pydantic
 from fastapi import FastAPI
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.concurrency import run_in_threadpool
@@ -107,6 +109,54 @@ def audited(store, record=True):
         wrapper.lab_deploy_audited = True  # tests/test_phase12.py refuses any registered tool without it
         return wrapper
     return decorate
+
+
+def closest(name, choices):
+    """The argument a misnamed one most likely meant: a near spelling (applicaton) or one it starts like (app_id, repo)."""
+    near = difflib.get_close_matches(name, choices, n=1, cutoff=0.6)
+    stem = name.lower().split("_")[0]
+    return near[0] if near else next((choice for choice in choices if len(stem) >= 3 and choice.startswith(stem)), None)
+
+
+def unknown_arguments(tool, valid, arguments):
+    """None when the tool takes every argument given; else one sentence that names the others, what each most likely
+    meant, and the arguments the tool does take."""
+    unknown = [name for name in arguments if name not in valid]
+    if not unknown:
+        return None
+    named = [f"{name} (did you mean {guess}?)" if (guess := closest(name, valid)) else name for name in unknown]
+    listed = named[0] if len(named) == 1 else ", ".join(named[:-1]) + " and " + named[-1]
+    takes = f"it takes {', '.join(valid)}" if valid else "it takes no arguments"
+    return f"{tool} has no argument{'s' if len(unknown) > 1 else ''} {listed}; {takes}. Nothing was done: ask again with those names."
+
+
+class StrictMCP(FastMCP):
+    """The MCP server, refusing an argument a tool does not take before the tool runs. The SDK drops one unread: on
+    2026-10-22 `app_id` (for `application`) was ignored, the onboarding took the folder's name, and stopped on another
+    application's."""
+
+    def __init__(self, *args, store=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.audit_store = store
+
+    async def list_tools(self):
+        """Each tool's input schema says it too: no property but the ones it lists."""
+        tools = await super().list_tools()
+        for listed in tools:
+            listed.inputSchema = {**listed.inputSchema, "additionalProperties": False}
+        return tools
+
+    async def call_tool(self, name, arguments):
+        tool = self._tool_manager.get_tool(name)
+        problem = tool and unknown_arguments(name, list(tool.parameters.get("properties", {})), arguments or {})
+        if problem:
+            if self.audit_store is not None:
+                principal, subject = identity.get(None), (arguments or {}).get("application")
+                self.audit_store.record_event("tool", name=name, identity=principal.name if principal is not None else None,
+                                              client=client_address.get(), application=subject if isinstance(subject, str) else None,
+                                              outcome="error", duration_ms=0, detail=problem)
+            raise ToolError(problem)
+        return await super().call_tool(name, arguments)
 
 
 def attach_log_file(path):
@@ -265,8 +315,8 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
     observer = observer_factory(config) if config.observer else None
     controller = Controller(config, adapter, store, observer)
     started = time.time()
-    mcp = FastMCP("Fast Deploy", instructions=INSTRUCTIONS, stateless_http=True, json_response=True,
-                  transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=config.allowed_hosts, allowed_origins=[]))
+    mcp = StrictMCP("Fast Deploy", store=store, instructions=INSTRUCTIONS, stateless_http=True, json_response=True,
+                    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=config.allowed_hosts, allowed_origins=[]))
     mcp._mcp_server.version = __version__  # the handshake reports Fast Deploy's version, not the SDK's
     plain_errors = audited(store)
     quiet = audited(store, record=False)

@@ -466,6 +466,7 @@ is no open SSH port: `scripts/machine.sh` goes through Identity-Aware Proxy, and
 | Change its configuration | In the browser at `https://MACHINE/settings` (below). The fallback, when the page cannot be reached: `scripts/machine.sh config-get /tmp/machine.yaml`, edit, `scripts/machine.sh config-put /tmp/machine.yaml`: checked before it goes; principals, applications and settings apply at once, `oauth` and `github_app` changes need `restart` |
 | Back up now, or drill | `scripts/machine.sh backup`, `scripts/machine.sh drill` |
 | Forget a retired application | `scripts/machine.sh unregister APP`, after `scripts/decommission.sh APP --yes` (section "Retire an application") |
+| Drop a stray onboarding record | `scripts/machine.sh forget-onboarding APP`: an onboarding that stopped before it registered anything (for example one started under another application's name); one that registered its application is refused, and `unregister` forgets both |
 | Hold it while a laptop takes over | `scripts/machine.sh stop` (not even a reboot starts it); `scripts/machine.sh start` releases the hold |
 
 **Watch it.** `https://MACHINE/settings` opens on its Monitor section (since 1.28.0): Overview (what needs you first,

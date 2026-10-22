@@ -716,7 +716,8 @@ binary_authorization = "enforced"   # in staging.tfvars or production.tfvars; "o
 
 Apply the foundation in each project after the merge (`scripts/apply-foundation.sh STAGING_PROJECT`, then
 `scripts/apply-foundation.sh PROD_PROJECT production`). It adds the roles `labDeployJobGuard` (cancel a job's execution) and
-`labDeployJobReader` (read how a job's runs ended; since 1.31.6, apply it before any root with jobs),
+`labDeployJobReader` (read how a job's runs ended; since 1.31.6, apply it before any root with jobs: since 1.31.7 the
+pipeline's apply waits up to five minutes for Google to spread a role made just before),
 gives the cap's role the same permission, and publishes `controller_members`: the machine's identity in staging, and in
 production the identities of `viewer_members` (the staging machine). Then re-render the roots of applications whose
 contracts declare `jobs` or `wake` (`propose_infrastructure`; production roots through `add_production`) and merge, and
