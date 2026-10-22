@@ -1,3 +1,13 @@
+# 1.31.4: a page for people's uptime check accepts the health path's 200
+
+Found the first night `sophia-bettercare` ran behind Identity-Aware Proxy (2026-10-21): its uptime check failed every
+probe while the service answered normally, and `get_service_health` said it "may not be reachable". Google's checker,
+sent without a token, reached the health path through the proxy and got 200 in all three regions, where a visitor gets
+the redirect to Google sign-in; the check accepted only 3XX, the answer the platform had assumed (docs/RESEARCH-2026-10-21.md
+said nothing official settles it). A page for people's check now accepts 2XX and 3XX: either proves the front door is up,
+and the release probes still prove the page at every release. A merge applies the module change to every application
+root; only lab-members applications change.
+
 # 1.31.3: the apply identity may say who passes IAP; the plan is checked by main's rules
 
 Two more findings from `sophia-bettercare`'s first `exposure: lab-members` apply in staging on 2026-10-21:

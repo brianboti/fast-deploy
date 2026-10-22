@@ -555,7 +555,8 @@ uses the Google-managed client and creates nothing on the Credentials page (foun
    publishes the client id to every application root through the remote state.
 4. For an existing application: set `IAP_CLIENT_ID` in its `staging` environment (onboarding does this for new ones),
    render its root again and merge; the pipeline switches the proxy on, grants the viewers and the release probe, and
-   changes the uptime check to accept the sign-in redirect. The next release's probes sign in through the proxy.
+   changes the uptime check to go without a token and accept the health path's 200 or the sign-in redirect (Google's
+   checker gets 200 through the proxy). The next release's probes sign in through the proxy.
 
 What the runner enforces: a release whose `platform.yaml` disagrees with the service's proxy state stops before anything
 changes ("render and merge the infrastructure first"), so the switch is only ever flipped by the pipeline.

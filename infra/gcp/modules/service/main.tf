@@ -335,8 +335,9 @@ resource "google_monitoring_uptime_check_config" "health" {
     port           = 443
     use_ssl        = true # certificate validation (validate_ssl) is only offered for plain-URL checks, not Cloud Run targets
     request_method = "GET"
-    # Programs: the Monitoring service agent signs in with an identity token. People's pages: the proxy answers the
-    # unauthenticated check with a redirect to Google sign-in, which proves the front door is up; the release probes
+    # Programs: the Monitoring service agent signs in with an identity token. People's pages: the check goes without
+    # one; Google's checker reached the health path through the proxy and got 200 in every region (staging, 2026-10-21),
+    # where a visitor gets the redirect to Google sign-in. Either answer proves the front door is up; the release probes
     # prove the page itself at every release.
     dynamic "service_agent_authentication" {
       for_each = local.pages_for_people ? [] : [1]
@@ -345,10 +346,10 @@ resource "google_monitoring_uptime_check_config" "health" {
       }
     }
     dynamic "accepted_response_status_codes" {
-      for_each = local.pages_for_people || !var.health_probe ? [1] : []
+      for_each = local.pages_for_people ? ["STATUS_CLASS_2XX", "STATUS_CLASS_3XX"] : (var.health_probe ? [] : ["STATUS_CLASS_ANY"])
       content {
-        # People's pages answer the check with a sign-in redirect; a service without a health route with whatever / says.
-        status_class = local.pages_for_people ? "STATUS_CLASS_3XX" : "STATUS_CLASS_ANY"
+        # People's pages: the health path's 200 or the sign-in redirect; a service without a health route: whatever / says.
+        status_class = accepted_response_status_codes.value
       }
     }
   }
