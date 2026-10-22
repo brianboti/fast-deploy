@@ -115,6 +115,11 @@ class Store:
             db.execute("DELETE FROM onboardings WHERE id=?", (app_id,))
         return bool(removed)
 
+    def forget_onboarding(self, app_id):
+        """Drop an onboarding record alone (`lab-deploy forget-onboarding`, which first makes sure it registered nothing)."""
+        with self.connect() as db:
+            return bool(db.execute("DELETE FROM onboardings WHERE id=?", (app_id,)).rowcount)
+
     def registered_applications(self):
         with self.connect() as db:
             return {row[0]: json.loads(row[1]) for row in db.execute("SELECT id, payload FROM applications ORDER BY created").fetchall()}
@@ -990,10 +995,17 @@ class Controller:
         for app_id, app in self.config.applications.items():
             onboarding = self.store.onboarding(app_id)
             if onboarding and onboarding.get("state") != "complete":
-                # Its workflows may not exist yet, so the other checks would only fail; say what is actually wrong.
-                problems.append(f"{app_id}: onboarding is not finished ({onboarding.get('state')} at {onboarding.get('blocked_at') or onboarding.get('state')}); "
-                                f"call onboard_application again, or remove it with `lab-deploy unregister {app_id}`")
-                continue
+                if onboarding.get("repository", "").lower() != app.repository.lower() or onboarding.get("path", "") != app.path:
+                    # Another repository's onboarding stopped under this name (a misnamed call on 2026-10-22): it registered
+                    # nothing, so unregistering would retire the wrong application, and this one's own checks still run.
+                    problems.append(f"{app_id}: an onboarding of {onboarding.get('repository')} stopped under this name ({onboarding.get('state')} at "
+                                    f"{onboarding.get('blocked_at') or onboarding.get('state')}) and registered nothing; drop it with "
+                                    f"`lab-deploy forget-onboarding {app_id}`")
+                else:
+                    # Its workflows may not exist yet, so the other checks would only fail; say what is actually wrong.
+                    problems.append(f"{app_id}: onboarding is not finished ({onboarding.get('state')} at {onboarding.get('blocked_at') or onboarding.get('state')}); "
+                                    f"call onboard_application again, or remove it with `lab-deploy unregister {app_id}`")
+                    continue
             try:
                 for workflow, health in (self.schedule_health(app) or {}).items():
                     problems.extend(f"{app_id}: {workflow}: {problem}" for problem in health.get("problems", []))

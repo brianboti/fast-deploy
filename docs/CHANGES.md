@@ -1,3 +1,33 @@
+# 1.31.7: a role just made is waited out, and a tool refuses an argument it does not take
+
+Found by the CodeSurgeon deploy on 2026-10-22.
+
+**A new custom role outran the apply's one retry.** The staging foundation made `labDeployJobReader` at about 15:10 UTC,
+#163 was merged at 15:12, and its apply of `jobs-demo` failed twice: Google answered that the role "does not exist in the
+resource's hierarchy" while IAM had not spread it yet, past the one retry a minute later. Dispatched again by hand a few
+minutes later, it passed. The pipeline's apply (both jobs, staging and production) now waits out that one error: it plans
+again, checks the plan against the policy and applies after 1, 1, 1 and 2 minutes, five minutes of waiting in all. Any
+other failure still gets the one retry after a minute and then fails. `scripts/apply-foundation.sh` makes custom roles
+and grants some of them in the same apply, so it waits out the same error the same way (and Google's "API not ready" once,
+as before). Tests run both scripts against a fake Terraform.
+
+**A tool dropped an argument it does not take.** `onboard_application` was called with `app_id` (its argument is
+`application`): the MCP library dropped it unread, the onboarding took the folder's name, `demo`, and stopped on the
+application `demo`, leaving a blocked onboarding record with nothing to remove it. Every tool now refuses an argument it
+does not take before anything runs, in a sentence that names it, what it most likely meant and the arguments the tool
+takes ("onboard_application has no argument app_id (did you mean application?); it takes repository, application, ...").
+The refusal is in the audit trail, and each tool's input schema now says that no other argument is allowed, which
+changed every tool's checksum in `schema/tools.sha256.json` (nothing else in them changed).
+
+- `lab-deploy forget-onboarding APP` (on the machine: `scripts/machine.sh forget-onboarding APP`) drops an onboarding record
+  that registered nothing. One that registered its application is refused: `unregister` forgets both.
+- The watchdog and the digest told the operator to `lab-deploy unregister demo` for that record, which would have retired
+  the real application, and skipped that application's own checks. A record from another repository under an
+  application's name is now reported as such, with `forget-onboarding`, and the application's checks still run.
+
+**For Brian.** After the machine runs 1.31.7: `scripts/machine.sh forget-onboarding demo` drops the stray record (for
+`brianboti/codesurgeon` at `demo`, blocked at registering); the application `demo` is untouched.
+
 # 1.31.6: a service reads how its jobs' runs ended
 
 Found by Phase 27's live exercise on 2026-10-21. The test application started its worker job (the job-level executor grant

@@ -60,6 +60,10 @@ def build_parser():
     g = commands.add_parser("unregister", help="forget an onboarded application (its entry and onboarding record); plans stay as history")
     g.add_argument("app")
     g.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
+    fo = commands.add_parser("forget-onboarding", help="drop an onboarding record that registered nothing (a stray call's leftover); one that "
+                                                        "registered its application is refused: `unregister` forgets both")
+    fo.add_argument("app")
+    fo.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
     u = commands.add_parser("update-workflows", help="open pull requests that pin registered apps' workflows to a platform commit")
     u.add_argument("--config", default=None, help="controller configuration (default: $LAB_CONFIG or config.local.yaml)")
     u.add_argument("--all", action="store_true", help="every registered application")
@@ -127,6 +131,29 @@ def decommission_steps(app_id, app, needs=None, note=None, registered=False, sib
          f"In {app.repository}: disable or delete {', '.join(app.workflows.values())} and the {app.environment} environment, and revoke the platform "
          "credential's access to the repository."),
     ]
+
+
+def forget_onboarding(store, applications, app_id):
+    """Drop an onboarding record that registered nothing: on 2026-10-22 a misnamed argument onboarded brianboti/codesurgeon
+    under the folder's name, demo, which stopped on the application demo. One that registered its application is refused."""
+    record = store.onboarding(app_id)
+    if record is None:
+        raise ValueError(f"No onboarding record called {app_id}")
+    where = record["repository"] + (f" at {record['path']}" if record.get("path") else "")
+    app = applications.get(app_id)
+    if "registering" in record.get("steps", {}) or (app is not None and app.repository.lower() == record["repository"].lower()
+                                                    and app.path == record.get("path", "")):
+        raise ValueError(f"The onboarding record {app_id} ({where}) registered its application: `lab-deploy decommission {app_id}` lists what "
+                         f"it made, and `lab-deploy unregister {app_id}` forgets both")
+    store.forget_onboarding(app_id)
+    stopped = f"blocked at {record.get('blocked_at')}" if record.get("state") == "blocked" else record.get("state")
+    message = f"Forgot the onboarding record {app_id} ({where}, {stopped}); it had registered nothing."
+    if app is not None:
+        message += f" The application {app_id} ({app.repository}) is untouched."
+    contract = record.get("steps", {}).get("contract") or {}
+    if contract.get("url") and "contract_on_main" not in record.get("steps", {}):
+        message += f" Its contract pull request {contract['url']} stays open: close it on GitHub if nobody wants it."
+    return message
 
 
 def update_workflows(config, github, app_ids, platform_sha=None):
@@ -312,6 +339,18 @@ def run(parser, args):
             parser.error(f"No onboarded application called {args.app}")
         print(f"Unregistered {args.app}: its entry and onboarding record are gone; its plans and audit events stay as history. "
               "Its cloud resources are untouched: `lab-deploy decommission` lists them first.")
+    elif args.command == "forget-onboarding":
+        import os
+
+        from .config import Application, load_config
+        from .controller import Store
+        config = load_config(args.config or os.environ.get("LAB_CONFIG", "config.local.yaml"))
+        store = Store(config.database)
+        registered = {app_id: Application.model_validate(entry) for app_id, entry in store.registered_applications().items()}
+        try:
+            print(forget_onboarding(store, {**registered, **config.applications}, args.app))
+        except ValueError as exc:
+            parser.error(str(exc))
     elif args.command == "infra":
         from .infra import main as infra_main
         if args.infra_command == "check":

@@ -162,12 +162,13 @@ def test_the_plan_is_checked_by_the_rules_on_main_not_the_pull_requests_own():
 
 
 def test_the_apply_tries_once_more_after_a_minute_under_the_same_policy():
+    # Since 1.31.7 one error is tried longer (tests/test_fixes_1317.py runs the step); any other still gets one more try.
     step = Path(".github/workflows/infra-apply.yml").read_text()
     step = step[step.index("- name: Apply exactly that plan"):step.index("- name: Publish the outputs")]
-    retry = step[step.index("if ! terraform apply"):step.index("fi\n")]
-    assert "sleep 60" in retry and retry.count("terraform apply") == 2 and "terraform plan" in retry
+    retry = step[step.index("until terraform apply"):step.index("done\n")]
+    assert "PAUSES=(60 60 60 120)" in step and 'sleep "${PAUSES[$TRIES]}"' in retry and "terraform plan" in retry
     assert 'PYTHONPATH="$GITHUB_WORKSPACE" python3 -m labdeploy.infra check plan.json' in retry
-    assert retry.index("labdeploy.infra check") < retry.rindex("terraform apply")
+    assert retry.index("terraform plan") < retry.index("labdeploy.infra check")  # checked before the loop applies it again
 
 
 def test_onboarding_accepts_the_apply_dispatched_again_after_the_cause_was_fixed(tmp_path):

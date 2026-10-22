@@ -219,9 +219,10 @@ def test_the_foundation_script_keeps_staging_values_out_of_production(tmp_path):
     assert 'Rename infra/gcp/project/terraform.tfvars to staging.tfvars first' in script
     assert 'gcloud services enable cloudresourcemanager.googleapis.com serviceusage.googleapis.com --project "$PROJECT"' in script  # a new project
     assert script.index("gcloud services enable") > script.index("names another project_id")  # only once the settings file names this project
-    # a new project's first apply: only Google's "API not ready yet" is waited out, once, then the rest is planned and applied
-    assert 'grep -q "has not been used in project" "$LOG"' in script and script.count("sleep 60") == 1
-    assert script.count("run apply -input=false -no-color project.tfplan") == 2
+    # a new project's first apply: Google's "API not ready yet" is waited out once, then the rest is planned and applied
+    # (and, since 1.31.7, a custom role not spread yet for up to five minutes: tests/test_fixes_1317.py runs both)
+    assert 'grep -q "has not been used in project" "$LOG" && (( TRIES == 1 ))' in script
+    assert script.count("run apply -input=false -no-color project.tfplan") == 1 and "until run apply" in script
     assert '-var-file="$VARS" -var="environment=$ENVIRONMENT"' in script and 'prefix = "INFRA_PRODUCTION_" if os.environ["MODE"] == "production"' in script
     if shutil.which("zsh"):
         work = tmp_path / "repo"

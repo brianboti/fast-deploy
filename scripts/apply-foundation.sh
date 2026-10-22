@@ -64,15 +64,25 @@ else
 fi
 # A new project's first apply switches on APIs and uses them seconds later, before Google has them ready ("has not been
 # used in project ... or it is disabled"); found with the production project on 2026-10-18, where 6 of 104 resources
-# stopped. Only that error is waited out, once: a minute later the rest of the same configuration is planned and applied.
+# stopped. That error is waited out once: a minute later the rest of the same configuration is planned and applied.
+# A custom role this apply makes and grants at once (the pipeline's) can likewise "not exist in the resource's hierarchy"
+# until IAM has spread it (an application's grant of labDeployJobReader, made 3 minutes earlier, on 2026-10-22): that
+# error is waited out after 1, 1, 1 and 2 minutes. Any other failure stops at once.
 LOG=$(mktemp)
-if ! run apply -input=false -no-color project.tfplan 2>&1 | tee "$LOG"; then
-  if ! grep -q "has not been used in project" "$LOG"; then rm -f "$LOG" project.tfplan; exit 1; fi
-  echo "Google is still switching on the APIs this apply enabled (a new project's first apply); the rest follows in a minute."
-  sleep 60
+PAUSES=(60 60 60 120)
+TRIES=0
+until run apply -input=false -no-color project.tfplan 2>&1 | tee "$LOG"; do
+  TRIES=$((TRIES + 1))
+  if grep -q "has not been used in project" "$LOG" && (( TRIES == 1 )); then
+    echo "Google is still switching on the APIs this apply enabled (a new project's first apply); the rest follows in a minute."
+  elif grep -q "does not exist in the resource's hierarchy" "$LOG" && (( TRIES <= ${#PAUSES} )); then
+    echo "Google has not spread a custom role this apply made yet; the rest follows in $PAUSES[TRIES] seconds."
+  else
+    rm -f "$LOG" project.tfplan; exit 1
+  fi
+  sleep "$PAUSES[TRIES]"
   run plan -input=false -no-color -var-file="$VARS" -var="environment=$ENVIRONMENT" -out=project.tfplan | grep -E "^  # |^Plan:|^No changes" || true
-  run apply -input=false -no-color project.tfplan
-fi
+done
 rm -f "$LOG"
 run output -json > outputs.json
 MODE="$MODE" python3 - <<'PY'
