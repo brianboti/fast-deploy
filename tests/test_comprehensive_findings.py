@@ -129,6 +129,27 @@ def test_the_apply_identity_may_write_log_alert_notification_rules_and_nothing_w
     assert "role    = google_project_iam_custom_role.log_alert_writer[0].name" in pipeline
 
 
+def test_the_apply_identity_may_say_who_passes_identity_aware_proxy_and_nothing_wider():
+    """Found on 2026-10-21: the first lab-members apply in staging was refused iap.webServices.getIamPolicy."""
+    pipeline = Path("infra/gcp/modules/project/pipeline.tf").read_text()
+    role = pipeline[pipeline.index('resource "google_project_iam_custom_role" "iap_access_manager"'):]
+    role = role[:role.index("\n}")]
+    assert 'role_id     = "labDeployIapAccessManager"' in role
+    assert sorted(re.findall(r'"(iap\.[a-zA-Z.]+)"', role)) == ["iap.webServices.getIamPolicy", "iap.webServices.setIamPolicy"]
+    assert "role    = google_project_iam_custom_role.iap_access_manager[0].name" in pipeline
+    assert '"roles/iap.admin"' not in pipeline
+
+
+def test_the_plan_is_checked_by_the_rules_on_main_not_the_pull_requests_own():
+    """`python3 -m` puts the working directory (the pull request's checkout) before PYTHONPATH; -P keeps it out."""
+    workflow = Path(".github/workflows/infra-plan.yml").read_text()
+    lines = workflow.splitlines()
+    uses_main = [i for i, line in enumerate(lines) if "labdeploy.infra" in line
+                 and ("PYTHONPATH=platform-main" in line or any("PYTHONPATH: platform-main" in above for above in lines[max(0, i - 6):i]))]
+    assert len(uses_main) == 4
+    assert all("python3 -P -m labdeploy.infra" in lines[i] for i in uses_main)
+
+
 def test_the_apply_tries_once_more_after_a_minute_under_the_same_policy():
     step = Path(".github/workflows/infra-apply.yml").read_text()
     step = step[step.index("- name: Apply exactly that plan"):step.index("- name: Publish the outputs")]

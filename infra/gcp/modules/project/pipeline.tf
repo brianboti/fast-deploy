@@ -154,6 +154,23 @@ resource "google_project_iam_member" "infra_apply_log_alerts" {
   role    = google_project_iam_custom_role.log_alert_writer[0].name
   member  = "serviceAccount:${google_service_account.infra_apply[0].email}"
 }
+# Pages for people (exposure: lab-members): an application root lets its viewers, its release probe and its wake identity
+# through Identity-Aware Proxy on its own service, which reads and writes the proxy's policy on that service. run.admin and
+# projectIamAdmin cover neither, so the first lab-members apply in staging was refused (2026-10-21). Only these two: no
+# proxy settings (the OAuth client stays the operator's, docs/SETUP.md 7h), unlike roles/iap.admin.
+resource "google_project_iam_custom_role" "iap_access_manager" {
+  count       = local.pipeline_enabled ? 1 : 0
+  role_id     = "labDeployIapAccessManager"
+  title       = "Lab Deploy IAP access manager"
+  description = "Lets an application root say who may pass Identity-Aware Proxy on its own Cloud Run service"
+  permissions = ["iap.webServices.getIamPolicy", "iap.webServices.setIamPolicy"]
+}
+resource "google_project_iam_member" "infra_apply_iap_access" {
+  count   = local.pipeline_enabled ? 1 : 0
+  project = var.project_id
+  role    = google_project_iam_custom_role.iap_access_manager[0].name
+  member  = "serviceAccount:${google_service_account.infra_apply[0].email}"
+}
 # A custom domain in production (docs/ROADMAP.md 16.6, the service module's domain.tf): the apply identity builds the load
 # balancer (loadBalancerAdmin reads instances and networks but changes neither) and its Cloud Armor policy (only the
 # policy permissions, not securityAdmin's firewall rules); the plan identity reads the two kinds of resource that
