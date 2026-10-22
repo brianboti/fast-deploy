@@ -147,7 +147,7 @@ Create the App once, on the account that owns the repositories. The quickest way
 filled in through its URL (name, homepage, no webhook, only on this account, and exactly the permissions below):
 
 ```text
-https://github.com/settings/apps/new?name=fast-deploy-YOUR-ACCOUNT&url=https%3A%2F%2Fgithub.com%2FOWNER%2Ffast-deploy&public=false&webhook_active=false&actions=write&administration=write&contents=write&environments=write&metadata=read&pull_requests=write&workflows=write
+https://github.com/settings/apps/new?name=fast-deploy-YOUR-ACCOUNT&url=https%3A%2F%2Fgithub.com%2FOWNER%2Ffast-deploy&public=false&webhook_active=false&actions=write&administration=write&contents=write&environments=write&issues=write&metadata=read&pull_requests=write&workflows=write
 ```
 
 Check the page and click **Create GitHub App**. By hand it is:
@@ -159,9 +159,10 @@ Check the page and click **Create GitHub App**. By hand it is:
    **Environments** read and write (its variables too), **Issues** read and write (since 1.26.0: the daily digest is a
    comment on one issue of the platform repository), **Metadata** read-only, **Pull requests** read and write,
    **Workflows** read and write. No **Variables** (the controller never writes repository-level variables), and no
-   organization or account permissions. An App made before 1.26.0: add **Issues** read and write in its settings
-   (Permissions & events), then accept the new permission on the installation (the account's Settings, Applications,
-   Configure); until then the digest is kept and sent to the webhook only, and the watchdog says so.
+   organization or account permissions. An App made before 1.31.5 (the link above left Issues out until then): add
+   **Issues** read and write in its settings (Permissions & events), then accept the new permission on the installation
+   (the account's Settings, Applications, Configure); until then the digest is kept and sent to the webhook only, the
+   controller opens no issue, and the watchdog says so.
 4. Where can this GitHub App be installed: **Only on this account**. Its **App ID** is at the top of its General page.
 5. **Install App** on the account: all repositories, or the platform repository and every application repository.
 6. **The key**, once the foundation apply has created the secret: in the App's settings, **Credentials**, **Key pairs**,

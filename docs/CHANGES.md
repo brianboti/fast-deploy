@@ -1,3 +1,27 @@
+# 1.31.5: the daily digest reaches its issue, or opens none
+
+Found by the readiness check on 2026-10-22: the daily digest and the "a release did worse" alerts had never reached anyone.
+At each message the controller listed the platform repository's open issues, did not find "Fast Deploy: today", opened it
+again, and GitHub refused the comment (403): six empty issues (#149 to #170) and no digest. The App's installation most
+likely has no **Issues** permission: `docs/SETUP.md`'s one-click link for making the App never asked for it (the list
+beside it did since 1.27.0). Without it the listing shows pull requests only and a comment on an issue is refused, yet
+GitHub still let the App open the issue.
+
+- The controller now reads what the App's installation may do from the token GitHub gives it. Without Issues: read and
+  write it opens nothing and says, in the digest's delivery record and the watchdog, exactly what to add and accept.
+- It keeps the number of the issue it opened or found, from the moment it opens it, and uses that issue while it is open
+  and GitHub does not list another one: a refused comment never leads to a second issue, after a restart too. A person
+  who closes it gets a new one at the next message.
+- The listing is read past its first page (up to 1,000 open issues and pull requests).
+- The Controller watch workflow counted the issue's update time, which a new empty issue reset each day, so it never
+  failed. It now counts the digest's comments of the last two days on every open digest issue.
+- `docs/SETUP.md` section 4: the App's link asks for Issues: read and write.
+- The digest's line on a Google incident said "in [, ', a, f, r": Service Health writes `impactedLocations` as one text
+  that looks like a list, and the controller read it letter by letter. It now reads the places from that text.
+
+To do once: give the App **Issues: read and write** and accept it on the installation (section 4), then close the empty
+duplicates and keep one. The next digest goes to the issue left open.
+
 # 1.31.4: a page for people's uptime check accepts the health path's 200
 
 Found the first night `sophia-bettercare` ran behind Identity-Aware Proxy (2026-10-21): its uptime check failed every

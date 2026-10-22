@@ -431,7 +431,7 @@ def test_the_setup_guide_creates_the_app_with_exactly_the_permissions_the_contro
     link = re.search(r"https://github.com/settings/apps/new\?\S+", guide).group(0)
     permissions = dict(part.split("=", 1) for part in link.split("?", 1)[1].split("&") if "=" in part)
     assert {key: value for key, value in permissions.items() if value in ("read", "write")} == {
-        "actions": "write", "administration": "write", "contents": "write", "environments": "write", "metadata": "read",
-        "pull_requests": "write", "workflows": "write"}
+        "actions": "write", "administration": "write", "contents": "write", "environments": "write", "issues": "write", "metadata": "read",
+        "pull_requests": "write", "workflows": "write"}  # issues: the digest's issue (1.27.0); the link lacked it until 1.31.5
     assert permissions["public"] == "false" and permissions["webhook_active"] == "false"
     assert "**Credentials**, **Key pairs**,\n   **New key**" in guide

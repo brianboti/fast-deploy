@@ -99,6 +99,8 @@ class Store:
             db.execute("CREATE TABLE IF NOT EXISTS platform_updates (id TEXT PRIMARY KEY, updated REAL NOT NULL, payload TEXT NOT NULL)")
             # The daily digest (docs/ROADMAP.md D60), one per UTC day, with where it was sent.
             db.execute("CREATE TABLE IF NOT EXISTS digests (day TEXT PRIMARY KEY, created REAL NOT NULL, payload TEXT NOT NULL)")
+            # The issue the digest and the alerts are posted to, per platform repository, kept from the moment it is opened.
+            db.execute("CREATE TABLE IF NOT EXISTS digest_issues (repository TEXT PRIMARY KEY, updated REAL NOT NULL, payload TEXT NOT NULL)")
             db.execute("PRAGMA journal_mode=WAL")  # readers never block the scheduler's and the request handlers' writes
 
     # ---- applications registered by onboarding, and the onboarding records themselves
@@ -168,6 +170,15 @@ class Store:
         with self.connect() as db:
             db.execute("INSERT OR REPLACE INTO digests VALUES (?, ?, ?)", (day, time.time(), json.dumps(record)))
             db.execute("DELETE FROM digests WHERE created < ?", (time.time() - 90 * 86_400,))
+
+    def digest_issue(self, repository):
+        with self.connect() as db:
+            row = db.execute("SELECT payload FROM digest_issues WHERE repository=?", (repository.lower(),)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_digest_issue(self, repository, issue):
+        with self.connect() as db:
+            db.execute("INSERT OR REPLACE INTO digest_issues VALUES (?, ?, ?)", (repository.lower(), time.time(), json.dumps(issue)))
 
     def digest(self, day=None):
         """The digest of one UTC day, or the newest one; None when there is none."""
@@ -536,6 +547,7 @@ class Controller:
     def __init__(self, config, github, store, observer=None):
         self._cache = {}
         self._onboarding_lock = threading.Lock()
+        self._issue_lock = threading.Lock()  # the digest and an alert at the same moment open one issue, not two
         self.config, self.github, self.store, self.observer = config, github, store, observer
         self.started = time.time()
         self.contracts = Contracts(self)
@@ -1095,20 +1107,49 @@ class Controller:
                          "by email. A release that did worse than the one before is posted at once. Written by code; nothing here acts.")
 
     def post_issue(self, text):
-        """A comment on the platform repository's digest issue, opened the first time; {"channel", "ok", "error" or "url"}."""
+        """A comment on the platform repository's digest issue, opened the first time; {"channel", "ok", "error" or "url"}.
+        A GitHub App whose installation may not write issues opens nothing. Found on 2026-10-22: the App opened the issue,
+        GitHub refused the comment and never listed the issue back, so each message left one more empty issue (six)."""
         platform = getattr(self.config, "platform", None)
         find, create, comment = (getattr(self.github, name, None) for name in ("find_issue", "create_issue", "comment_issue"))
         if platform is None:
             return {"channel": "issue", "ok": False, "error": "platform.repository is not set in the controller configuration"}
         if not all(callable(item) for item in (find, create, comment)):
             return {"channel": "issue", "ok": False, "error": "this GitHub adapter cannot write issues"}
+        repository = platform.repository
         try:
-            issue = find(platform.repository, self.DIGEST_ISSUE) or create(platform.repository, self.DIGEST_ISSUE, self.DIGEST_ISSUE_BODY)
-            made = comment(platform.repository, issue["number"], text)
+            reader = getattr(self.github, "permissions", None)
+            granted = reader(repository) if callable(reader) else None
+            if granted is not None and granted.get("issues") != "write":
+                return {"channel": "issue", "ok": False, "error": (
+                    f"the GitHub App's installation may not write issues on {repository} (Issues: {granted.get('issues') or 'no access'}). "
+                    "Add Issues: read and write in the App's settings (Permissions & events), then accept the new permission on the "
+                    "installation (Settings, Applications, Configure); docs/SETUP.md section 4")}
+            with self._issue_lock:
+                issue = self.digest_issue(repository, find, create)
+            made = comment(repository, issue["number"], text)
         except Exception as exc:  # noqa: BLE001 - a channel that fails is reported, never fatal
-            note = explain(exc, platform.repository) or str(exc)[:200]
+            note = explain(exc, repository) or str(exc)[:200]
             return {"channel": "issue", "ok": False, "error": note[:300]}
         return {"channel": "issue", "ok": True, "issue": issue["number"], "url": made.get("url") or issue.get("url")}
+
+    def digest_issue(self, repository, find, create):
+        """The open "Fast Deploy: today" issue: the one GitHub lists, else the one the controller opened or found before while
+        it is open, else a new one. Its number is kept before anything is written to it, so a comment GitHub refuses never
+        leads to a second issue."""
+        issue = find(repository, self.DIGEST_ISSUE)
+        if issue is None:
+            kept, read = self.store.digest_issue(repository), getattr(self.github, "issue", None)
+            if kept and callable(read):
+                again = read(repository, kept["number"])
+                issue = again if again and again.get("open") else None
+            elif kept:
+                issue = kept  # an adapter that cannot read one issue: the kept number stands
+        if issue is None:
+            issue = create(repository, self.DIGEST_ISSUE, self.DIGEST_ISSUE_BODY)
+        if (self.store.digest_issue(repository) or {}).get("number") != issue["number"]:
+            self.store.save_digest_issue(repository, {"number": issue["number"], "url": issue.get("url")})
+        return issue
 
     def announce(self, text):
         """Say something now, on every channel there is: the digest issue and the webhook (a release that did worse)."""
