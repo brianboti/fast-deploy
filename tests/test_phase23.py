@@ -14,6 +14,7 @@ from labdeploy import aftercare, chat
 from labdeploy.cloud import Observer
 from labdeploy.config import Config
 from labdeploy.controller import Controller, Store
+from labdeploy.github import AppInstallations, GitHub
 from labdeploy.status import diagnose
 
 DAY = 86_400
@@ -259,6 +260,101 @@ def test_a_digest_that_reaches_no_one_becomes_a_watchdog_problem(tmp_path):
     assert not sent["ok"] and "Issues: read and write" in sent["error"]
 
 
+# ---- 1.31.5: six empty "Fast Deploy: today" issues and no digest delivered (2026-10-22)
+def test_a_refused_comment_never_leads_to_a_second_issue(tmp_path):
+    cfg = config(tmp_path, platform={"repository": "lab/platform"})
+    request = httpx.Request("POST", "https://api.github.com/repos/lab/platform/issues/7/comments")
+    gh, opened, comments, refuse = FakeGitHub(), [], [], [True]
+    gh.find_issue = lambda repository, title: None  # live: the App's listing never showed the issues it had opened
+    gh.create_issue = lambda repository, title, body: opened.append(len(opened) + 7) or {"number": opened[-1], "url": f"u/{opened[-1]}"}
+    gh.issue = lambda repository, number: {"number": number, "url": f"u/{number}", "open": number not in closed}
+    closed = set()
+
+    def comment(repository, number, body):
+        if refuse[0]:
+            raise httpx.HTTPStatusError("403", request=request, response=httpx.Response(403, request=request))
+        return comments.append((number, body)) or {"url": f"u/{number}#c"}
+    gh.comment_issue = comment
+    c = Controller(cfg, gh, Store(cfg.database))
+    first = c.post_issue("the digest")
+    assert not first["ok"] and "Issues: read and write" in first["error"] and opened == [7]
+    assert not c.post_issue("an alert")["ok"] and opened == [7]  # the kept issue, not one more
+    refuse[0] = False
+    assert c.post_issue("the next digest") == {"channel": "issue", "ok": True, "issue": 7, "url": "u/7#c"}
+    assert Controller(cfg, gh, Store(cfg.database)).post_issue("after a restart")["issue"] == 7 and opened == [7]
+    closed.add(7)  # a person closed it: the next message opens a new one and keeps that
+    assert c.post_issue("again")["issue"] == 8 and c.post_issue("and again")["issue"] == 8 and opened == [7, 8]
+    gh.find_issue = lambda repository, title: {"number": 5, "url": "u/5"}  # one GitHub lists wins
+    assert c.post_issue("listed")["issue"] == 5 and c.store.digest_issue("Lab/Platform") == {"number": 5, "url": "u/5"}
+
+
+def test_an_app_that_may_not_write_issues_opens_none_and_says_what_to_change(tmp_path):
+    cfg = config(tmp_path, platform={"repository": "lab/platform"})
+    gh = FakeGitHub()
+    gh.permissions = lambda repository: {"contents": "write", "pull_requests": "write", "metadata": "read"}
+    gh.find_issue = gh.create_issue = gh.comment_issue = lambda *a: pytest.fail("nothing is asked of GitHub's issues")
+    sent = Controller(cfg, gh, Store(cfg.database)).post_issue("the digest")
+    assert not sent["ok"] and "may not write issues on lab/platform (Issues: no access)" in sent["error"]
+    assert "Permissions & events" in sent["error"] and "accept the new permission on the installation" in sent["error"]
+    gh.permissions = lambda repository: {"issues": "read"}
+    assert "(Issues: read)" in Controller(cfg, gh, Store(cfg.database)).post_issue("x")["error"]
+    comments = []
+    gh.permissions = lambda repository: {"issues": "write"}
+    gh.find_issue = lambda repository, title: {"number": 3, "url": "u/3"}
+    gh.comment_issue = lambda repository, number, body: comments.append(number) or {"url": "u/3#c"}
+    assert Controller(cfg, gh, Store(cfg.database)).post_issue("x")["ok"] and comments == [3]
+
+
+def test_the_issue_listing_is_read_past_its_first_page_and_one_issue_by_number(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "github_pat_test")
+    pages = []
+
+    def handler(request):
+        path, params = request.url.path, request.url.params
+        if path == "/repos/lab/platform/issues":
+            pages.append(params["page"])
+            if params["page"] == "1":  # the newest hundred are all pull requests
+                return httpx.Response(200, json=[{"number": 300 - n, "title": "Fast Deploy: today", "pull_request": {}} for n in range(100)])
+            return httpx.Response(200, json=[{"number": 12, "title": "Something else"}, {"number": 9, "title": "Fast Deploy: today", "html_url": "u/9"}])
+        if path == "/repos/lab/platform/issues/9":
+            return httpx.Response(200, json={"number": 9, "state": "closed", "html_url": "u/9"})
+        if path == "/repos/lab/platform/issues/10":
+            return httpx.Response(410, json={"message": "This issue was deleted"})
+        if path == "/repos/lab/platform/issues/11":
+            return httpx.Response(200, json={"number": 11, "state": "open", "pull_request": {}})
+        if path == "/repos/lab/platform/issues/12":
+            return httpx.Response(404, json={"message": "Not Found"})
+        raise AssertionError(str(request.url))
+    gh = GitHub(httpx.Client(base_url="https://api.github.com", transport=httpx.MockTransport(handler)))
+    assert gh.find_issue("lab/platform", "Fast Deploy: today") == {"number": 9, "url": "u/9", "updated_at": None} and pages == ["1", "2"]
+    assert gh.find_issue("lab/platform", "Nothing like it") is None and pages[2:] == ["1", "2"]  # a short page is the last
+    assert gh.issue("lab/platform", 9) == {"number": 9, "url": "u/9", "open": False}
+    assert gh.issue("lab/platform", 10) is None and gh.issue("lab/platform", 11) is None
+    with pytest.raises(httpx.HTTPStatusError):
+        gh.issue("lab/platform", 12)  # what a credential that may not read issues is told: not a sign the issue is gone
+    assert gh.permissions("lab/platform") is None  # a fine-grained token does not say what it may do
+
+
+def test_the_app_keeps_what_github_says_its_installation_may_do(monkeypatch):
+    from test_phase15 import PRIVATE, client_for
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    minted = []
+
+    def handler(request):
+        if request.url.path.endswith("/installation"):
+            return httpx.Response(200, json={"id": 42}) if request.url.path == "/repos/lab/platform/installation" else httpx.Response(404, json={})
+        if request.url.path == "/app/installations/42/access_tokens":
+            minted.append(1)
+            return httpx.Response(201, json={"token": "ghs_1", "expires_at": "2026-10-27T00:00:00Z",
+                                             "permissions": {"contents": "write", "pull_requests": "write", "metadata": "read"}})
+        raise AssertionError(str(request.url))
+    app = AppInstallations("123456", lambda refresh=False: PRIVATE, client_for(handler), home_repository="lab/platform", clock=lambda: NOW)
+    gh = GitHub(client_for(handler), app)
+    assert gh.permissions("lab/platform") == {"contents": "write", "pull_requests": "write", "metadata": "read"}
+    assert gh.permissions("Lab/Platform") == gh.permissions("lab/platform") and len(minted) == 1  # the token's own record, kept with it
+    assert gh.permissions("someone/elsewhere") == {}  # not installed there: nothing
+
+
 def test_the_watchdog_leaves_its_findings_to_the_digest(tmp_path):
     cfg = config(tmp_path, notify_webhook_url="https://hooks.example/abc")
     c = Controller(cfg, FakeGitHub(), Store(cfg.database))
@@ -399,6 +495,7 @@ def test_promotions_say_how_they_ended_and_the_watch_checks_the_digest():
     assert "production rolled back" in notify and "promotion stopped" in notify
     watch = Path(".github/workflows/controller-watch.yml").read_text()
     assert "- cron: '17 16 * * *'" in watch and "issues: read" in watch and '"Fast Deploy: today"' in watch and "180000" in watch
+    assert "comments?since=$SINCE" in watch and "updatedAt" not in watch  # a comment counts; a new empty issue looked fresh (1.31.5)
     assert "github.event.schedule != '17 16 * * *'" in watch  # the half-hourly ping does not run on the daily check
     scheduler = Path("labdeploy/scheduler.py").read_text()
     assert '"release_reports": (controller.release_report_tick, lambda: 900, 180)' in scheduler and '"digest": (controller.digest_tick' in scheduler

@@ -144,6 +144,10 @@ class StaticToken:
     def token(self, repository=None, method="GET"):
         return self.value
 
+    def permissions(self, repository=None):
+        """A fine-grained token does not say what it may do; GitHub answers each refused request instead."""
+        return None
+
 
 class AppInstallations:
     """GitHub App installation tokens, one per repository (docs/ROADMAP.md D14, 15.1).
@@ -160,7 +164,7 @@ class AppInstallations:
     def __init__(self, app_id, private_key, client, home_repository=None, installation_id=None, clock=time.time):
         self.app_id, self.private_key, self.client = str(app_id), private_key, client
         self.home_repository, self.installation_id, self.clock = home_repository, installation_id, clock
-        self.installations, self.tokens = {}, {}
+        self.installations, self.tokens, self.granted = {}, {}, {}
         self.lock = threading.RLock()  # token() reads the home repository's token from inside itself
 
     def assertion(self, refresh=False):
@@ -213,7 +217,17 @@ class AppInstallations:
             expires = parse_expiration(data.get("expires_at"))
             until = (expires.timestamp() if expires else now + 3600) - TOKEN_MARGIN_SECONDS
             self.tokens[key] = (data["token"], until)
+            self.granted[key] = dict(data.get("permissions") or {})
             return data["token"]
+
+    def permissions(self, repository=None):
+        """What the installation may do on a repository, as GitHub listed it with the token ({"issues": "write", ...}); empty
+        where the App is not installed. A permission added in the App's settings counts only once the installation accepts it."""
+        repository = repository or self.home_repository
+        with self.lock:
+            self.token(repository)
+            installation = self.installation(repository)
+            return dict(self.granted.get((installation, repository.lower()), {})) if installation is not None else {}
 
 
 def environment_credentials():
@@ -270,6 +284,11 @@ class GitHub:
             raise ValueError("No GitHub credential: set github_app in the controller configuration (docs/SETUP.md section 4) or a fine-grained "
                              "GITHUB_TOKEN on the controller host")
         return self.environment
+
+    def permissions(self, repository):
+        """What the credential may do on a repository when it can say (a GitHub App's installation), else None."""
+        reader = getattr(self.credentials(), "permissions", None)
+        return reader(repository) if callable(reader) else None
 
     def token(self, path=None, method="GET"):
         """The credential for one call: on a GitHub App, the installation token of the repository the path names."""
@@ -519,12 +538,33 @@ class GitHub:
     def issue_comments(self, repository, number):
         return [item.get("body", "") for item in self.request("GET", f"/repos/{repository}/issues/{number}/comments", params={"per_page": 100}).json()]
 
+    ISSUE_PAGES = 10
+
     def find_issue(self, repository, title):
-        """The newest open issue (not a pull request) with exactly this title: {number, url, updated_at}, or None."""
-        for item in self.request("GET", f"/repos/{repository}/issues", params={"state": "open", "per_page": 100, "sort": "created", "direction": "desc"}).json():
-            if item.get("title") == title and "pull_request" not in item:
-                return {"number": item["number"], "url": item.get("html_url"), "updated_at": item.get("updated_at")}
+        """The newest open issue (not a pull request) with exactly this title: {number, url, updated_at}, or None. The listing
+        mixes pull requests in, so it is read page by page, up to 1,000 open issues and pull requests."""
+        for page in range(1, self.ISSUE_PAGES + 1):
+            params = {"state": "open", "per_page": 100, "sort": "created", "direction": "desc", "page": page}
+            items = self.request("GET", f"/repos/{repository}/issues", params=params).json()
+            for item in items:
+                if item.get("title") == title and "pull_request" not in item:
+                    return {"number": item["number"], "url": item.get("html_url"), "updated_at": item.get("updated_at")}
+            if len(items) < 100:
+                return None
         return None
+
+    def issue(self, repository, number):
+        """One issue by its number: {number, url, open}; None when it was deleted (410), moved (301) or is a pull request. A 404
+        is raised: GitHub answers it to a credential that may not read issues, whose issue may well still be there."""
+        try:
+            item = self.request("GET", f"/repos/{repository}/issues/{int(number)}").json()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (301, 410):
+                return None
+            raise
+        if "pull_request" in item:
+            return None
+        return {"number": item["number"], "url": item.get("html_url"), "open": item.get("state") == "open"}
 
     def create_issue(self, repository, title, body):
         item = self.request("POST", f"/repos/{repository}/issues", json={"title": title, "body": body}).json()

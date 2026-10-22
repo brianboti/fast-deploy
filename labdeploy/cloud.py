@@ -117,6 +117,16 @@ def distribution_summary(dists):
             "p95_s": None if p95 is None else round(p95 / 1000, 1), "slowest_s": round(slowest / 1000, 1)}
 
 
+def impacted_locations(value, limit=5):
+    """The places a Personalized Service Health incident names. Its log writes them as one text that looks like a Python
+    list ("['us-east1', 'australia-southeast2']"), not as an array: read as a list, it gave the digest "in [, ', a, f, r"."""
+    if isinstance(value, (list, tuple)):
+        items = [str(item) for item in value]
+    else:
+        items = str(value or "").strip().strip("[]").split(",")
+    return [name for name in (item.strip().strip("'\"").strip() for item in items) if name][:limit]
+
+
 class Observer:
     def __init__(self, config, client=None, runner=None):
         self.account = config.observer.service_account
@@ -448,7 +458,7 @@ class Observer:
             seen.add(key)
             found.append({"title": str(payload.get("title") or "an incident")[:200], "state": payload.get("state"),
                           "detailed_state": payload.get("detailedState"), "relevance": payload.get("relevance"),
-                          "locations": list(payload.get("impactedLocations") or [])[:5], "at": entry.get("timestamp")})
+                          "locations": impacted_locations(payload.get("impactedLocations")), "at": entry.get("timestamp")})
         return found
 
     QUOTA_SHARE = 0.8  # Google's recommended alerting rule for quotas: usage above 80 percent of the limit

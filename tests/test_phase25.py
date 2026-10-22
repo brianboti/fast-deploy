@@ -9,7 +9,7 @@ from conftest import TARGET, FakeGitHub
 from test_phase23 import NOW, FakeObserver, config
 
 from labdeploy import aftercare, chat
-from labdeploy.cloud import Observer, distribution_summary
+from labdeploy.cloud import Observer, distribution_summary, impacted_locations
 from labdeploy.controller import Controller, Store
 from labdeploy.models import AppSpec
 from labdeploy.release import STARTUP_PROBE_TIMING, CloudRun
@@ -111,6 +111,19 @@ def test_refused_requests_googles_incidents_and_quotas_are_read_as_documented():
                           "locations": ["us-central1"], "at": "t2"}]  # one line per incident, its newest state
     assert found.quota_pressure("test-project") == [{"service": "monitoring.googleapis.com", "quota": "monitoring.googleapis.com/alertPolicies/count",
                                                      "usage": 430.0, "limit": 500.0, "share": 0.86}]
+
+
+def test_an_incidents_locations_are_read_from_the_text_service_health_writes():
+    # Live (2026-10-22): impactedLocations is one text that looks like a Python list, and the digest said "in [, ', a, f, r".
+    def handler(request):
+        event = {"eventId": "e1", "title": "Vertex AI errors", "state": "ACTIVE", "impactedLocations": "['africa-south1', 'us-central1']"}
+        return httpx.Response(200, json={"entries": [{"jsonPayload": event, "timestamp": "t"}]})
+    incidents = observer(handler).google_incidents("test-project")
+    assert incidents[0]["locations"] == ["africa-south1", "us-central1"]
+    assert impacted_locations(["us-east1"]) == ["us-east1"] and impacted_locations(None) == [] and impacted_locations("[]") == []
+    assert impacted_locations("us-east1, global") == ["us-east1", "global"] and len(impacted_locations(str([f"r{n}" for n in range(9)]))) == 5
+    record = {"day": "2026-10-22", "google": incidents}
+    assert "Google reports an incident (active): Vertex AI errors, in africa-south1, us-central1." in chat.digest(record)
 
 
 # ---- 25.3 to 25.5 in the digest and the health view
