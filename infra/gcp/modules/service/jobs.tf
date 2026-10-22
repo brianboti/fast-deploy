@@ -56,12 +56,16 @@ resource "google_cloud_run_v2_job_iam_member" "job_runtime" {
   role     = "roles/run.jobsExecutorWithOverrides"
   member   = local.runtime
 }
-resource "google_cloud_run_v2_job_iam_member" "job_runtime_viewer" {
-  for_each = var.jobs
-  location = var.region
-  name     = google_cloud_run_v2_job.job[each.key].name
-  role     = "roles/run.viewer"
-  member   = local.runtime
+# How a run ended (its execution, its task's exit code) is read through the foundation's labDeployJobReader on the project:
+# Cloud Run checks those reads on the project, not on the job (refused on 2026-10-21 with a job-level viewer grant), and takes
+# no IAM condition on a resource's name. So the service can also read the runs of the project's other jobs (their names,
+# counts, exit codes and the variables each run was given), never a secret's value or any other setting. The foundation
+# makes the role: apply it before a root with jobs.
+resource "google_project_iam_member" "job_runtime_reader" {
+  count   = length(var.jobs) > 0 ? 1 : 0
+  project = var.project_id
+  role    = "projects/${var.project_id}/roles/labDeployJobReader"
+  member  = local.runtime
 }
 resource "google_service_account_iam_member" "job_runtime_act_as" {
   for_each           = var.jobs

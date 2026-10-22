@@ -1,3 +1,16 @@
+# 1.31.6: a service reads how its jobs' runs ended
+
+Found by Phase 27's live exercise on 2026-10-21. The test application started its worker job (the job-level executor grant
+works), and the run succeeded. But each wake after that was refused with 403 when the service read the run's execution
+and its task: the job-level viewer grant does not cover them, while the machine's project-level viewer does. Cloud Run
+takes no IAM condition on a resource's name, so the foundation now makes `labDeployJobReader`: run.executions.get and
+list, run.tasks.get and list, nothing else. The service module grants it on the project to a service that declares jobs,
+in place of the job-level viewer grant. Such a service can therefore read the runs of the project's other jobs too (their
+names, counts, exit codes and the variables each run was given), never a secret's value or any other setting.
+
+Apply the foundation before the roots with jobs: the role must exist when their grant is applied. The example's errors now
+carry Google's own message, which names the permission it refused.
+
 # 1.31.5: the daily digest reaches its issue, or opens none
 
 Found by the readiness check on 2026-10-22: the daily digest and the "a release did worse" alerts had never reached anyone.

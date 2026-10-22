@@ -204,6 +204,10 @@ role at job level); whether running a job needs act-as on its identity (the docs
 the self-made test image with BetterCare's lock; a wake through IAP with the probe's audience; the guard's cancel; the
 cap drill with a running execution.
 
+Found on 2026-10-21: the executor role granted on a job does start it with overrides, but `run.viewer` granted on the job
+does not let the caller read the job's executions or tasks (403), while the same role on the project does. Reading how a run
+ended therefore goes through a narrow project-level role, `labDeployJobReader` (1.31.6).
+
 ## 8. Sources
 
 1. Cloud Run REST, jobs.run: https://docs.cloud.google.com/run/docs/reference/rest/v2/projects.locations.jobs/run

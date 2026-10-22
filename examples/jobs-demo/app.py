@@ -185,8 +185,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.answer(202, {"queued": run_id})
             return self.answer(404, {"error": "not found"})
         except urllib.error.HTTPError as error:
-            # One JSON line per event on stdout, with a severity the platform's views read.
-            print(json.dumps({"severity": "ERROR", "message": f"{self.path}: Google API answered {error.code}"}), flush=True)
+            # One JSON line per event on stdout, with a severity the platform's views read; Google's own message says which
+            # permission or resource it refused.
+            detail = error.read().decode(errors="replace")[:300]
+            print(json.dumps({"severity": "ERROR", "message": f"{self.path}: Google API answered {error.code}: {detail}"}), flush=True)
             return self.answer(502, {"error": f"a Google API answered {error.code}"})
 
 

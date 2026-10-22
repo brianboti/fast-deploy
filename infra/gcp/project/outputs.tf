@@ -28,3 +28,4 @@ output "cost_controls" {
 }
 output "controller_members" { value = module.project.controller_members }
 output "job_guard_role" { value = module.project.job_guard_role }
+output "job_reader_role" { value = module.project.job_reader_role }
