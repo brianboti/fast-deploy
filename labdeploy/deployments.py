@@ -17,6 +17,7 @@ from .onboarding import STEPS
 from .status import TERMINAL, advice, release_phases, summarize
 
 POLL_SECONDS = 10
+ATTENTION = {"failed", "timed_out", "awaiting_approval", "completed_unverified", "dispatch_lost"}
 SETUP_LABELS = dict(
     zip(
         STEPS,
@@ -88,8 +89,8 @@ def step_state(item):
 class Deployments:
     def __init__(self, controller, clock=time.time):
         self.c, self.clock = controller, clock
-        self.lock = threading.RLock()
-        self.attempts = {}
+        self.lock = threading.RLock()  # the read budget and the per-plan locks only, never held across a provider call
+        self.attempts, self.locks = {}, {}
         with controller.store.connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS deployment_observations (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
 
@@ -107,25 +108,47 @@ class Deployments:
             row = db.execute("SELECT payload FROM deployment_observations WHERE id=?", (key,)).fetchone()
         return json.loads(row[0]) if row else {}
 
+    def saved_many(self, keys):
+        """Every saved observation of these plans in one query, by plan id."""
+        if not keys:
+            return {}
+        marks = ",".join("?" for _ in keys)  # only placeholders are interpolated; every value is bound
+        with self.c.store.connect() as db:
+            rows = db.execute(f"SELECT id, payload FROM deployment_observations WHERE id IN ({marks})", tuple(keys)).fetchall()  # noqa: S608
+        return {key: json.loads(payload) for key, payload in rows}
+
     def save(self, key, value):
         with self.c.store.connect() as db:
             db.execute("INSERT OR REPLACE INTO deployment_observations VALUES (?, ?)", (key, json.dumps(value)))
 
-    def observe(self, plan):
-        """A shared 10-second read budget; failures retain the last successful evidence and its age."""
-        key = plan["id"]
+    def due(self, key, now):
+        """Whether this plan's shared 10-second read budget allows a read now; taken when it does."""
         with self.lock:
-            now = self.clock()
-            saved = self.saved(key)
             if now - self.attempts.get(key, 0) < POLL_SECONDS:
-                return saved
+                return False
             self.attempts[key] = now
-            # Bound the in-memory budget map; persisted evidence is retained with deployment history.
+            # Bound the in-memory maps; persisted evidence is retained with deployment history.
             if len(self.attempts) > 2000:
                 self.attempts = {k: v for k, v in self.attempts.items() if now - v < 300}
-            terminal = plan["state"] in TERMINAL and plan["state"] != "completed_unverified"
-            if plan["state"] == "planned" or terminal:
-                saved.pop("workflow", None)  # the controller's final evidence wins over an older running snapshot
+                self.locks = {k: v for k, v in self.locks.items() if k in self.attempts or v.locked()}
+            return True
+
+    def observe(self, plan):
+        """A shared 10-second read budget; failures retain the last successful evidence and its age. One plan's reads never
+        wait on another's: only that plan's own lock is held across GitHub and Cloud Run."""
+        key = plan["id"]
+        with self.lock:
+            lock = self.locks.setdefault(key, threading.Lock())
+        with lock:
+            now = self.clock()
+            saved = self.saved(key)
+            if not self.due(key, now):
+                return saved
+            before = json.dumps(saved, sort_keys=True)
+            if plan["state"] == "planned" or plan["state"] in TERMINAL:
+                # Nothing to read on GitHub: the controller recorded the run's final evidence with the plan (Controller.refresh),
+                # and it wins over an older running snapshot.
+                saved.pop("workflow", None)
                 saved.pop("error", None)
             else:
                 try:
@@ -158,7 +181,8 @@ class Deployments:
                     saved.pop("health_error", None)
                 except Exception:  # noqa: BLE001 - health has its own independent freshness and failure state
                     saved["health_error"] = "Current Cloud Run status is unavailable."
-            self.save(key, saved)
+            if json.dumps(saved, sort_keys=True) != before:
+                self.save(key, saved)
             return saved
 
     @staticmethod
@@ -193,7 +217,7 @@ class Deployments:
                 return self.setup(setup)
         owner, plan = self.plan(principal, plan_id)
         observed = self.observe(plan)
-        if plan["state"] in TERMINAL - {"completed_unverified"}:
+        if plan["state"] in TERMINAL:
             observed = {k: v for k, v in observed.items() if k not in {"workflow", "error"}}
         workflow = observed.get("workflow") or plan.get("workflow") or {}
         state = plan["state"]
@@ -274,6 +298,7 @@ class Deployments:
         if state == "complete":
             for step in steps:
                 step["state"] = "done"
+        group = "failed" if state == "blocked" else "done" if state == "complete" else "running"
         links = [{"name": SETUP_LABELS.get(key, key), "url": url(value.get("url"))} for key, value in record.get("steps", {}).items() if isinstance(value, dict) and url(value.get("url"))]
         waiting = (record.get("steps", {}).get(current) or {}).get("waiting")
         return {
@@ -292,9 +317,9 @@ class Deployments:
             "current": SETUP_LABELS.get(current),
             "error": None,
             "next_action": clean(record.get("error") or waiting or "Setup continues in the background. Status is recorded about once a minute."),
-            "groups": [{"name": "First-time setup", "state": "running", "steps": steps}],
+            "groups": [{"name": "First-time setup", "state": group, "steps": steps}],
             "links": links,
-            "terminal": state == "blocked",
+            "terminal": state in {"blocked", "complete"},
             "checks": {},
             "events": [],
             "observer": False,
@@ -302,9 +327,11 @@ class Deployments:
 
     def listing(self, principal):
         plans = self.c.store.plans(applications=self.c.visible_apps(principal), limit=100)
+        observations = self.saved_many([plan["id"] for plan in plans])
+        now = self.clock()
         rows = []
         for plan in plans:
-            saved = self.saved(plan["id"])
+            saved = observations.get(plan["id"], {})
             state = plan["state"]
             if state not in TERMINAL and saved.get("state"):
                 state = saved["state"]
@@ -312,7 +339,12 @@ class Deployments:
                 {**plan, "label": LABELS.get(state, state), "state": state, "summary": clean(plan.get("summary")), "error": saved.get("error"), "href": f"/settings?tab=deployments&plan={plan['id']}"}
             )
         setups = [self.setup(r) for r in self.c.store.onboardings() if self.allowed(principal, r["application"]) and not r.get("plan_id")]
-        return {"rows": rows, "setups": setups, "now": self.clock()}
+        # In progress: runs not ended, plans not yet expired, setups still going. A run that ended unverified, a failed one or
+        # a blocked setup needs attention instead; a run waiting for approval is both.
+        active = sum(r["state"] not in TERMINAL and not (r["state"] == "planned" and r["expires_at"] < now) for r in rows)
+        active += sum(s["state"] not in {"blocked", "complete"} for s in setups)
+        attention = sum(r["state"] in ATTENTION for r in rows) + sum(s["state"] == "blocked" for s in setups)
+        return {"rows": rows, "setups": setups, "now": now, "counts": {"active": active, "attention": attention}}
 
 
 def safe_tree(value):

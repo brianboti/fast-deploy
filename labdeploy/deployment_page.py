@@ -153,11 +153,12 @@ SCRIPT = r"""
   const connection = document.getElementById('deployment-connection');
   const announcement = document.getElementById('deployment-announcement');
   if (!root) return;
-  let busy = false, timer, errors = 0, stopped = false;
+  // finished: the deployment ended, so nothing polls by itself; Refresh now still asks once.
+  let busy = false, timer, errors = 0, stopped = false, finished = root.dataset.terminal === 'true';
   let previous = root.dataset.state;
   function schedule() {
     clearTimeout(timer);
-    if (!stopped && !document.hidden) timer = setTimeout(update, Math.min(60000, 10000 * 2 ** errors));
+    if (!stopped && !finished && !document.hidden) timer = setTimeout(update, Math.min(60000, 10000 * 2 ** errors));
   }
   async function update() {
     if (busy || stopped || document.hidden) return;
@@ -191,7 +192,9 @@ SCRIPT = r"""
       if (data.state !== previous) announcement.textContent = data.label;
       previous = data.state;
       errors = 0;
-      connection.textContent = data.error ? 'Provider connection interrupted · showing last known progress' : 'Automatic updates on · page checked ' + new Date().toLocaleTimeString();
+      finished = data.terminal === true;
+      connection.textContent = data.error ? 'Provider connection interrupted · showing last known progress' :
+        (finished ? 'Finished · automatic updates off · checked ' : 'Automatic updates on · page checked ') + new Date().toLocaleTimeString();
     } catch (_) {
       errors = Math.min(errors + 1, 3);
       connection.textContent = 'Connection interrupted · progress may be out of date · retrying automatically';
@@ -201,9 +204,9 @@ SCRIPT = r"""
     }
   }
   document.getElementById('deployment-refresh')?.addEventListener('click', update);
-  document.addEventListener('visibilitychange', () => {clearTimeout(timer); if (!document.hidden) update();});
+  document.addEventListener('visibilitychange', () => {clearTimeout(timer); if (!document.hidden && !finished) update();});
   window.addEventListener('pagehide', () => {stopped = true; clearTimeout(timer);});
-  window.addEventListener('pageshow', event => {if(event.persisted){stopped=false;update();}});
+  window.addEventListener('pageshow', event => {if(event.persisted){stopped=false; if(!finished) update();}});
   schedule();
 })();
 """
@@ -448,8 +451,7 @@ def detail(data):
 
 def listing(data):
     rows = data["rows"]
-    active = sum(r["state"] not in {"succeeded", "failed", "cancelled", "timed_out", "dispatch_lost"} for r in rows) + len(data["setups"])
-    needs = sum(r["state"] in {"failed", "timed_out", "awaiting_approval", "completed_unverified", "dispatch_lost"} for r in rows)
+    active, needs = data["counts"]["active"], data["counts"]["attention"]
     head = (
         '<div class="d-top"><div><div class="d-eyebrow">Your delivery workspace</div><h1>Deployments</h1><p>Follow every app from first setup to a running release.</p></div><div class="d-tools">'
         + link("/settings?tab=connections", "Set up an app", True)
@@ -487,12 +489,15 @@ def listing(data):
 def page(frame, data, query):
     endpoint = "/settings/deployment/status" + ("?" + urlencode(query) if query else "")
     body = detail(data) if query else listing(data)
+    terminal = bool(query and data.get("terminal"))
     inner = (
         f'<style>{STYLE}</style><div class="deployment"><div class="d-tools" style="justify-content:space-between;margin-bottom:20px">'
-        '<span class="d-live"><span class="d-dot" aria-hidden="true"></span><span id="deployment-connection">Automatic updates every 10 seconds</span></span>'
+        '<span class="d-live"><span class="d-dot" aria-hidden="true"></span><span id="deployment-connection">'
+        + ("Finished · automatic updates off" if terminal else "Automatic updates every 10 seconds") + "</span></span>"
         '<button class="btn ghost" id="deployment-refresh" type="button">Refresh now</button></div>'
         '<div id="deployment-announcement" class="d-announcement" role="status" aria-live="polite"></div>'
-        f'<div id="deployment-content" data-state="{ui.esc(data.get("state", "list"))}" data-endpoint="{ui.esc(endpoint)}">{body}</div>'
+        f'<div id="deployment-content" data-state="{ui.esc(data.get("state", "list"))}" data-terminal="{str(terminal).lower()}" '
+        f'data-endpoint="{ui.esc(endpoint)}">{body}</div>'
         "<noscript><p>Automatic updates need JavaScript. Reload this page to see the latest status.</p></noscript></div>"
         '<script src="/settings/deployment/script.js" defer></script>'
     )

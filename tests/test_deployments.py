@@ -4,6 +4,7 @@ import copy
 import datetime
 import hashlib
 import json
+import threading
 import time
 import types
 
@@ -16,6 +17,7 @@ from labdeploy import deployment_page, settings
 from labdeploy.config import Config, LiveConfig, Principal
 from labdeploy.controller import Controller, Store
 from labdeploy.deployments import Deployments, clean, url
+from labdeploy.onboarding import STEPS
 
 
 def iso(at):
@@ -214,3 +216,116 @@ def test_waits_and_terminal_states_remain_distinct(system, status, conclusion, e
     if status == "waiting":
         assert "Reviewers: owner" in deployment_page.detail(data)
     assert github.calls == 0
+
+
+# ---- 1.31.8: the review of #175
+
+def plan_of(plan_id, state="dispatched", expires_in=780):
+    return {"id": plan_id, "application": "demo", "repository": "lab/demo", "sha": "b" * 40, "expires_at": time.time() + expires_in,
+            "target": TARGET, "checks": {}, "state": state}
+
+
+def test_one_plan_s_slow_github_read_never_holds_up_another_and_a_second_viewer_waits_for_it(system):
+    c, github, monitor, reader, clock = system
+    c.store.add("operator", plan_of("run-2"), "dispatched")
+    entered, release, reads = threading.Event(), threading.Event(), []
+    original = github.status
+
+    def status(app, plan):
+        reads.append(plan["id"])
+        if plan["id"] == "run-1":
+            entered.set()
+            assert release.wait(5)
+        return original(app, plan)
+
+    github.status = status
+    viewers = [threading.Thread(target=monitor.detail, args=(reader, "run-1")) for _ in range(2)]
+    viewers[0].start()
+    assert entered.wait(5)
+    viewers[1].start()
+    try:
+        other = []
+        reader_two = threading.Thread(target=lambda: other.append(monitor.detail(reader, "run-2")))
+        reader_two.start()
+        reader_two.join(5)
+        assert other and other[0]["state"] == "running"  # done while run-1's read was still waiting on GitHub
+    finally:
+        release.set()
+        for viewer in viewers:
+            viewer.join(5)
+    assert reads.count("run-1") == 1  # the second viewer of run-1 had the first one's answer, not a read of its own
+
+
+def test_a_finished_plan_is_not_read_on_github_and_an_unchanged_observation_is_not_written_again(system, monkeypatch):
+    c, github, monitor, reader, clock = system
+    writes = []
+    save = monitor.save
+    monkeypatch.setattr(monitor, "save", lambda key, value: writes.append(key) or save(key, value))
+    monitor.detail(reader, "run-1")
+    assert github.reads == 1 and len(writes) == 1
+    for state in ("failed", "completed_unverified"):
+        owner, plan = c.store.fetch("run-1")
+        plan.update(state=state, timeline=[{"step": "Build image", "job": "build", "status": "completed", "conclusion": "failure", "seconds": 43}])
+        c.store.finish(owner, plan, state)
+        for _ in range(3):
+            clock[0] += 11
+            assert monitor.detail(reader, "run-1")["state"] == state
+    assert github.reads == 1  # nothing read on GitHub once the controller recorded the end, unverified or not
+    assert len(writes) == 2  # once while running, once to drop the running snapshot; never again for the same evidence
+
+
+def test_a_finished_deployment_stops_polling_but_can_still_be_refreshed(system):
+    c, github, monitor, reader, clock = system
+    c.store.add("operator", plan_of("run-2"), "dispatched")
+    owner, plan = c.store.fetch("run-1")
+    plan.update(state="failed", timeline=[{"step": "Build image", "job": "build", "status": "completed", "conclusion": "failure", "seconds": 43}])
+    c.store.finish(owner, plan, "failed")
+    failures = types.SimpleNamespace(allow=lambda host: (True, 0))
+    app = FastAPI(routes=settings.routes(c.config, c.store, failures, c))
+    with TestClient(app, base_url="https://testserver") as client:
+        client.post("/settings/sign-in", data={"token": "reader-token"}, follow_redirects=False)
+        assert client.get("/settings/deployment/status?plan=run-1").json()["terminal"] is True
+        assert client.get("/settings/deployment/status?plan=run-2").json()["terminal"] is False
+        assert client.get("/settings/deployment/status").json()["terminal"] is False  # the list keeps updating
+        finished = client.get("/settings?tab=deployments&plan=run-1").text
+        assert 'data-terminal="true"' in finished and "automatic updates off" in finished and 'id="deployment-refresh"' in finished
+        assert 'data-terminal="false"' in client.get("/settings?tab=deployments&plan=run-2").text
+    script = deployment_page.SCRIPT
+    assert "finished = root.dataset.terminal === 'true'" in script and "finished = data.terminal === true" in script
+    assert "if (!stopped && !finished && !document.hidden) timer = setTimeout(update" in script  # no timer once finished
+    assert "if (busy || stopped || document.hidden) return;" in script  # but Refresh now still asks
+    assert "addEventListener('click', update)" in script
+
+
+def test_the_list_reads_every_observation_at_once_and_counts_only_what_is_still_going(system, monkeypatch):
+    c, github, monitor, reader, clock = system
+    everyone = Principal(name="operator", token_sha256="0" * 64, applications=["*"])
+    c.store.add("operator", plan_of("planned-new", "planned", 600), "planned")
+    c.store.add("operator", plan_of("planned-expired", "planned", -10), "planned")
+    c.store.add("operator", plan_of("unverified", "completed_unverified"), "completed_unverified")
+    c.store.add("operator", plan_of("failed", "failed"), "failed")
+    for name, state in (("going", "infrastructure"), ("stuck", "blocked"), ("done", "complete")):
+        c.store.save_onboarding(name, {"application": name, "repository": f"lab/{name}", "state": state, "blocked_at": "planning", "steps": {}})
+    monitor.detail(everyone, "run-1")
+
+    def one_by_one(key):
+        raise AssertionError("one query for the whole list")
+
+    monkeypatch.setattr(monitor, "saved", one_by_one)
+    data = monitor.listing(everyone)
+    assert {row["id"]: row["state"] for row in data["rows"]}["run-1"] == "running"  # the saved observation was read
+    # going: run-1, planned-new and the setup under way; attention: unverified, failed and the blocked setup
+    assert data["counts"] == {"active": 3, "attention": 3}
+    page = deployment_page.listing(data)
+    assert "<span>In progress / prepared</span><strong>3</strong>" in page and "<span>Needs attention</span><strong>3</strong>" in page
+
+
+def test_a_setup_that_stopped_or_finished_reads_as_such_and_stops_polling(system):
+    c, github, monitor, reader, clock = system
+    blocked = monitor.setup({"application": "demo", "state": "blocked", "blocked_at": STEPS[3], "steps": {}})
+    assert blocked["groups"][0]["state"] == "failed" and blocked["terminal"]
+    done = monitor.setup({"application": "demo", "state": "complete", "steps": {}})
+    assert done["groups"][0]["state"] == "done" and done["terminal"]
+    assert {step["state"] for step in done["groups"][0]["steps"]} == {"done"}
+    going = monitor.setup({"application": "demo", "state": STEPS[2], "steps": {}})
+    assert going["groups"][0]["state"] == "running" and not going["terminal"]

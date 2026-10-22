@@ -735,6 +735,14 @@ A job whose `base` names another application needs that application onboarded an
 repository is read with the platform's GitHub App when it is installed, else `APPS_READ_TOKEN`, else the run's own token,
 which reaches public repositories only.
 
+## 7v. Choosing a project in Connections (1.31.8)
+
+**Check this project** (docs/CONNECTIONS.md) reads the project's two infrastructure service accounts as the controller
+itself. Apply the foundation after the merge (`scripts/apply-foundation.sh STAGING_PROJECT`): it adds the role
+`labDeployFoundationReader` (`iam.serviceAccounts.get` only) on those two accounts for the machine. Any other project the
+screen should accept needs the machine in its `viewer_members`, as production and a project of an application's own
+already have it (sections 7n and 7s), and its foundation applied again. Custom roles and grants cost nothing.
+
 ## 7k. The weekly drift check
 
 `.github/workflows/infra-drift.yml` plans every application root against the live infrastructure on Mondays at 07:37 UTC

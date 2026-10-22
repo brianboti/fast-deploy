@@ -61,6 +61,29 @@ resource "google_service_account" "infra_apply" {
   display_name = "Lab Deploy infrastructure pipeline: apply"
   depends_on   = [google_project_service.apis]
 }
+# "Check this project" in the controller's Connections screen (docs/CONNECTIONS.md) reads these two accounts as the
+# controller itself, to see that this project has a foundation. The machine holds only the observer's viewer roles, and
+# none of them reads a service account, so every check was refused until 1.31.8. Only this one permission (no keys, no
+# policies), only on these two accounts, for the machine of this project and for viewer_members (the machine of another
+# project that may choose this one; the observer's bucketViewer there already covers the state bucket's metadata).
+resource "google_project_iam_custom_role" "foundation_reader" {
+  count       = local.pipeline_enabled ? 1 : 0
+  role_id     = "labDeployFoundationReader"
+  title       = "Lab Deploy foundation reader"
+  description = "Reads the infrastructure pipeline's two service accounts, so the controller can see that the foundation exists; nothing else"
+  permissions = ["iam.serviceAccounts.get"]
+}
+locals {
+  # Keyed by a name known at plan time: the machine's own email is not known before its first apply.
+  foundation_readers = merge({ for member in var.viewer_members : member => member },
+  local.controller_enabled ? { controller = "serviceAccount:${google_service_account.controller[0].email}" } : {})
+}
+resource "google_service_account_iam_member" "foundation_readers" {
+  for_each           = local.pipeline_enabled ? { for pair in setproduct(keys(local.foundation_readers), ["plan", "apply"]) : "${pair[0]} ${pair[1]}" => pair } : {}
+  service_account_id = each.value[1] == "plan" ? google_service_account.infra_plan[0].name : google_service_account.infra_apply[0].name
+  role               = google_project_iam_custom_role.foundation_reader[0].name
+  member             = local.foundation_readers[each.value[0]]
+}
 resource "google_service_account_iam_member" "infra_plan_federation" {
   count              = local.pipeline_enabled ? 1 : 0
   service_account_id = google_service_account.infra_plan[0].name

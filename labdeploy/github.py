@@ -304,11 +304,18 @@ class GitHub:
         return self.credentials().token(f"{match.group(1)}/{match.group(2)}" if match else None, method)
 
     def check_access(self, repository):
+        """The repository selection in Connections (docs/CONNECTIONS.md), before any call: a repository outside it is not read
+        or changed, so it cannot be checked or onboarded. A registered application's own repositories stay reachable, so its
+        status, the follow job and a rollback keep working; Controller.require_active stops its new plans and dispatches."""
         config = self.access_config
-        if config is None or getattr(config, "connections", None) is None or config.connections.repositories is None:
+        connections = getattr(config, "connections", None)
+        if connections is None:
             return
-        platform = config.platform.repository.lower() if config.platform else None
-        if repository.lower() != platform and repository.lower() not in config.connections.repositories:
+        platform = getattr(config, "platform", None)
+        if connections.permits(repository, platform.repository if platform else None):
+            return
+        registered = {name.lower() for app in config.applications.values() for name in (app.repository, pipeline_of(app))}
+        if repository.lower() not in registered:
             raise ValueError(f"Access to {repository} is disabled in Connections. Select it there before continuing.")
 
     @staticmethod
