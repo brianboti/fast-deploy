@@ -181,6 +181,20 @@ def test_who_last_changed_an_alert_policy_is_a_record_not_a_reference_to_the_pla
     assert rules["ok"] == [] and rules["bad"] == ["platform_identities_untouched"]
 
 
+def test_who_made_a_cloud_run_service_is_a_record_not_a_reference_to_the_platform():
+    """Found on 2026-10-21: turning Identity-Aware Proxy on for sophia-bettercare was refused, because Cloud Run records the
+    apply identity as the service's creator. The same service still may not run as, or name, a platform identity."""
+    made = {"labels": {"lab-deploy-app": "demo"}, "creator": "lab-deploy-infra-apply@p.iam.gserviceaccount.com",
+            "last_modifier": "demo-deploy@p.iam.gserviceaccount.com", "iap_enabled": True}
+    plan = {"resource_changes": [
+        change("ok", "google_cloud_run_v2_service", ["update"], {**made, "template": [{"service_account": "demo-runtime@p.iam.gserviceaccount.com"}]}),
+        change("job", "google_cloud_run_v2_job", ["update"], {**made, "template": [{"template": [{"service_account": "demo-fix@p.iam.gserviceaccount.com"}]}]}),
+        change("bad", "google_cloud_run_v2_service", ["update"], {**made, "template": [{"service_account": "lab-deploy-controller@p.iam.gserviceaccount.com"}]}),
+    ]}
+    rules = {v["address"]: sorted({x["rule"] for x in check_plan(plan) if x["address"] == v["address"]}) for v in plan["resource_changes"]}
+    assert rules["ok"] == [] and rules["job"] == [] and rules["bad"] == ["platform_identities_untouched"]
+
+
 def test_policy_refuses_public_members_powerful_roles_platform_identities_and_unknown_values():
     plan = {"resource_changes": [
         change("a", "google_storage_bucket_iam_member", ["create"], {"bucket": "x", "role": "roles/storage.objectViewer", "member": "allUsers"}),
