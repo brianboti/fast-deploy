@@ -140,6 +140,17 @@ def test_the_apply_identity_may_say_who_passes_identity_aware_proxy_and_nothing_
     assert '"roles/iap.admin"' not in pipeline
 
 
+def test_the_uptime_check_of_a_page_for_people_accepts_the_health_answer_and_the_sign_in_redirect():
+    """Found on 2026-10-21: behind Identity-Aware Proxy Google's checker got 200 from sophia-bettercare's health path in every
+    region, and a check accepting only 3XX failed every probe while the service was up."""
+    module = Path("infra/gcp/modules/service/main.tf").read_text()
+    check = module[module.index('resource "google_monitoring_uptime_check_config" "health"'):]
+    check = check[:check.index("\n}")]
+    assert 'for_each = local.pages_for_people ? ["STATUS_CLASS_2XX", "STATUS_CLASS_3XX"] : (var.health_probe ? [] : ["STATUS_CLASS_ANY"])' in check
+    assert "status_class = accepted_response_status_codes.value" in check
+    assert "for_each = local.pages_for_people ? [] : [1]" in check  # no token behind the proxy, the service agent's otherwise
+
+
 def test_the_plan_is_checked_by_the_rules_on_main_not_the_pull_requests_own():
     """`python3 -m` puts the working directory (the pull request's checkout) before PYTHONPATH; -P keeps it out."""
     workflow = Path(".github/workflows/infra-plan.yml").read_text()
