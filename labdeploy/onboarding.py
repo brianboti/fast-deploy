@@ -244,6 +244,14 @@ def describe(record):
     return view
 
 
+def application_name(repository, path="", app_id=None, as_is=False):
+    """Resolve the name identically for the setup review and the actual onboarding."""
+    folder = path.rsplit("/", 1)[-1] if path else None
+    if not app_id and as_is and folder and folder.lower() in GENERIC_FOLDERS:
+        app_id = slug_of(f"{repository.split('/')[1]}-{folder}") or folder
+    return slug(app_id or folder or repository.split("/")[1])
+
+
 class Onboarder:
     def __init__(self, controller):
         self.c = controller
@@ -284,11 +292,7 @@ class Onboarder:
         _ = self.settings  # fail early when the block is missing
         repository = normalize_repository(repository)
         path = normalize_path(path)
-        folder = path.rsplit("/", 1)[-1] if path else None
-        if not app_id and as_is and folder and folder.lower() in GENERIC_FOLDERS:
-            # Found live: llm-debate-agent's backend/ would have become a service called "backend".
-            app_id = slug_of(f"{repository.split('/')[1]}-{folder}") or folder
-        app_id = slug(app_id or folder or repository.split("/")[1])
+        app_id = application_name(repository, path, app_id, as_is)
         record = self.c.store.onboarding(app_id)
         if record is None:
             record = {"application": app_id, "repository": repository, "path": path, "principal": principal.name, "auto_deploy": bool(auto_deploy),

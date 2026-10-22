@@ -255,6 +255,7 @@ class GitHub:
         self.client = client or github_client()
         self.app_credentials = credentials  # the configured GitHub App; GITHUB_TOKEN in the environment still wins
         self.environment = None
+        self.access_config = None
 
     @classmethod
     def from_config(cls, config, client=None):
@@ -263,7 +264,9 @@ class GitHub:
         client = client or github_client()
         app = getattr(config, "github_app", None)
         if app is None:
-            return cls(client)
+            instance = cls(client)
+            instance.access_config = config
+            return instance
         from .cloud import GoogleToken, secret_reader
         if app.private_key_secret:
             key = secret_reader(app.private_key_secret, GoogleToken())
@@ -271,7 +274,9 @@ class GitHub:
             path = app.private_key_file
             key = lambda refresh=False: Path(path).read_text()  # noqa: E731 - a one-line key source
         platform = getattr(config, "platform", None)
-        return cls(client, AppInstallations(app.app_id, key, client, home_repository=platform.repository if platform else None))
+        instance = cls(client, AppInstallations(app.app_id, key, client, home_repository=platform.repository if platform else None))
+        instance.access_config = config
+        return instance
 
     def credentials(self):
         if os.getenv("GITHUB_TOKEN"):
@@ -287,13 +292,24 @@ class GitHub:
 
     def permissions(self, repository):
         """What the credential may do on a repository when it can say (a GitHub App's installation), else None."""
+        self.check_access(repository)
         reader = getattr(self.credentials(), "permissions", None)
         return reader(repository) if callable(reader) else None
 
     def token(self, path=None, method="GET"):
         """The credential for one call: on a GitHub App, the installation token of the repository the path names."""
         match = REPOSITORY_PATH.match(path or "")
+        if match:
+            self.check_access(f"{match.group(1)}/{match.group(2)}")
         return self.credentials().token(f"{match.group(1)}/{match.group(2)}" if match else None, method)
+
+    def check_access(self, repository):
+        config = self.access_config
+        if config is None or getattr(config, "connections", None) is None or config.connections.repositories is None:
+            return
+        platform = config.platform.repository.lower() if config.platform else None
+        if repository.lower() != platform and repository.lower() not in config.connections.repositories:
+            raise ValueError(f"Access to {repository} is disabled in Connections. Select it there before continuing.")
 
     @staticmethod
     def headers(token):

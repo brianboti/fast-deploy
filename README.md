@@ -10,6 +10,12 @@ A working first implementation of the lab deployment platform: Claude calls auth
 
 ## What is implemented
 
+- A visual **Deployments** workspace with automatic updates, real workflow steps, elapsed and remaining work, independently
+  checked Cloud Run readiness and traffic, activity, reports, and provider log links. Missing or stale evidence stays explicit;
+  time remaining is not guessed. See [docs/DEPLOYMENT-VISIBILITY.md](docs/DEPLOYMENT-VISIBILITY.md).
+- Browser account setup at **Configure → Connections**: connect Google accounts, select a verified staging destination,
+  inspect GitHub installation grants and restrict repository access, then check and start application onboarding from the
+  same screen. Google sign-in requires a one-time OAuth client setup; see [docs/CONNECTIONS.md](docs/CONNECTIONS.md).
 - Conservative repository analysis and automatic generation of `platform.yaml` with review questions.
 - Optional draft onboarding PRs. Existing config is never overwritten or auto-merged.
 - Strict schema and deterministic policy checks; unknown fields and unsupported workloads fail closed.

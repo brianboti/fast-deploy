@@ -312,6 +312,8 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
     config = config if isinstance(config, LiveConfig) else LiveConfig(config, config_path)
     store = Store(config.database)
     adapter = github or GitHub.from_config(config)
+    if isinstance(adapter, GitHub):
+        adapter.access_config = config
     observer = observer_factory(config) if config.observer else None
     controller = Controller(config, adapter, store, observer)
     started = time.time()
@@ -583,6 +585,8 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
         finally:
             if scheduler["thread"] is not None:
                 scheduler["thread"].stop()
+            if getattr(controller, "browser_connections", None) is not None:
+                controller.browser_connections.close()
 
     app = FastAPI(title="Fast Deploy", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.mcp = mcp  # the tool list, for the description checksums (labdeploy/toolpin.py) and the wrapper test
