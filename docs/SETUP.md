@@ -528,16 +528,29 @@ approve. `onboarding.auto_merge: false` keeps every merge for a person, whoever 
 
 ## 7h. Pages for people (Identity-Aware Proxy)
 
-Applications with `exposure: lab-members` get Google's Identity-Aware Proxy directly on their Cloud Run service. One
-step is manual because a project without an organization cannot create the proxy's OAuth client programmatically:
+Applications with `exposure: lab-members` get Google's Identity-Aware Proxy directly on their Cloud Run service. The
+project needs an OAuth client of its own, made by hand once. IAP's Google-managed client serves only users inside an
+organization and no programs (the release probes are programs), and a project without an organization cannot create a
+client programmatically (`gcloud iap oauth-brands` refuses it). Turning IAP on from a Cloud Run service's **Security** tab
+uses the Google-managed client and creates nothing on the Credentials page (found in staging on 2026-10-21).
 
-1. In the console, open any Cloud Run service of the project (the demo), **Security**, choose **Require authentication**
-   and **Identity-Aware Proxy (IAP)**, then **Auto generate credentials** and deploy the change. This creates the
-   project's OAuth brand (External) and client and applies them to IAP at the project level. Then switch that service back
-   (`gcloud run services update SERVICE --region REGION --no-iap`) unless its `platform.yaml` says `lab-members`.
-2. Read the client id (APIs & Services, Credentials; the id ends in `.apps.googleusercontent.com`; the secret stays where
-   it is) and put it in the foundation's `terraform.tfvars` as `iap_client_id` and in the controller configuration under
-   `onboarding.iap_client_id`; list the lab's accounts under `onboarding.default_viewers` (`user:name@example.edu`).
+1. In the console's **Google Auth Platform**: **Branding**, **Get started**, the app's name and support address,
+   audience **External**, **Create**. Under **Audience**, **Test users**, add every account that will sign in (the app
+   stays in Testing). Under **Clients**, **Create client**, type **Web application**, **Create**, and keep the client
+   secret it shows (download the JSON). Open the client again and add the authorized redirect URI
+   `https://iap.googleapis.com/v1/oauth/clientIds/CLIENT_ID:handleRedirect` with its own id. Then give the client to IAP
+   for the whole project from a terminal of your own (the secret is typed unseen and no file is kept):
+
+   ```bash
+   printf 'Client ID: '; read -r ID; printf 'Client secret: '; read -rs SECRET; echo; F=$(mktemp); printf 'accessSettings:\n  oauthSettings:\n    clientId: %s\n    clientSecret: %s\n' "$ID" "$SECRET" > "$F"; gcloud iap settings set "$F" --project=PROJECT > /dev/null && echo "IAP now uses the custom client"; rm -f "$F"; unset ID SECRET
+   ```
+
+   `gcloud iap settings get --project=PROJECT` then names the client id (and only a hash of the secret). A service whose
+   proxy was turned on by hand is switched back with `gcloud beta run services update SERVICE --region REGION --no-iap`
+   (the GA track has no `--no-iap`) unless its `platform.yaml` says `lab-members`.
+2. Put the client id (it ends in `.apps.googleusercontent.com`; it is not a secret) in the foundation's `staging.tfvars` as
+   `iap_client_id` and in the controller configuration under `onboarding.iap_client_id`; list the lab's accounts under
+   `onboarding.default_viewers` (`user:name@example.edu`).
 3. Apply the foundation (`scripts/apply-foundation.sh`): it enables the IAP API, creates the IAP service agent and
    publishes the client id to every application root through the remote state.
 4. For an existing application: set `IAP_CLIENT_ID` in its `staging` environment (onboarding does this for new ones),

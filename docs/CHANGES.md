@@ -1,3 +1,18 @@
+# 1.31.2: a Cloud Run service's creator is a record; IAP's own OAuth client, as staging needs it
+
+Found while turning Identity-Aware Proxy on for `sophia-bettercare` (BetterCare) on 2026-10-21, the first time a service of
+staging went to `exposure: lab-members`:
+
+- The policy refused the plan (`platform_identities_untouched`) because Cloud Run records the apply identity that made the
+  service in its `creator`, and an update's plan carries that field. `creator` and `last_modifier` are now read as records
+  Google writes, like an alert policy's `creation_record` (1.25.3): the first update of any service or job itself was
+  refused until now. A service that runs as or names a platform identity is still refused.
+- `docs/SETUP.md` 7h described the console wrongly: the Cloud Run Security tab now turns IAP on with Google's managed OAuth
+  client, which serves only an organization's users and no programs, and creates nothing on the Credentials page. The
+  step now makes the project's own client (Branding External, test users, a Web client and IAP's redirect URI) and gives
+  it to IAP with `gcloud iap settings set`, the secret typed unseen. A proxy turned on by hand is switched off with
+  `gcloud beta run services update --no-iap`: the GA track has no such flag.
+
 # 1.31.1: the release workflow may be read past 64 KiB
 
 Found by Phase 27's live exercise on 2026-10-21: onboarding stopped at "add the release workflows" with "Repository input

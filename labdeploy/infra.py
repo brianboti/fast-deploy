@@ -65,7 +65,9 @@ PLATFORM_IDENTITIES = ("lab-deploy-infra-", "lab-deploy-observer", "lab-deploy-s
 # Fields Google writes itself to say who changed a resource and when (an alert policy's creation_record and
 # mutation_record name the apply identity that made it): a record, never a grant or a reference the root makes, so the
 # identity rule does not read them (found on 2026-10-21: the first update of existing alert policies was refused).
-RECORDED_BY_GOOGLE = ("creation_record", "mutation_record")
+# A Cloud Run service's or job's creator and last_modifier are the same kind of record: the apply identity creates every
+# service, so the first update of a service itself (turning Identity-Aware Proxy on, 2026-10-21) was refused.
+RECORDED_BY_GOOGLE = ("creation_record", "mutation_record", "creator", "last_modifier")
 BROAD_ROLES = ("roles/owner", "roles/editor")
 GITHUB_API = "https://api.github.com"
 
