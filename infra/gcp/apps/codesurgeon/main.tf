@@ -32,7 +32,7 @@ module "service" {
   latency_alert_ms             = 2000
   instance_alert_count         = 2
   exposure                     = "lab-members"
-  viewers                      = ["user:boti.brian1@gmail.com", "user:mail.mboti@gmail.com"]
+  viewers                      = ["user:boti.brian1@gmail.com", "user:fatemehhaji1998@gmail.com", "user:mail.mboti@gmail.com"]
   needs                        = { buckets = ["runs", "state"], topics = [], database = "none", migrate = [] }
   project_number               = data.terraform_remote_state.project.outputs.project_number
   image_vulnerability_scanning = data.terraform_remote_state.project.outputs.image_vulnerability_scanning
