@@ -29,19 +29,23 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
+import httpx
+import jwt
 import pydantic
 import yaml
 from starlette.concurrency import run_in_threadpool
-from starlette.responses import RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
-from . import __version__
+from . import __version__, deployment_page
 from . import monitor_page as pages
 from . import settings_page as view
 from .config import Application, Config, PlatformUpdates, ProductionSettings, with_settings
+from .connections import BrowserConnections
 from .controller import copy_to_bucket
+from .deployments import Deployments
 from .infra import DEFAULT_SETTINGS
 from .models import UniqueLoader
 from .monitor import Monitor
@@ -453,6 +457,14 @@ def routes(config, store, failures, controller=None, jobs=None):
     `controller` the controller whose records and observer the Monitor section reads; `jobs` the background jobs' state."""
     sessions, pending, write_lock = Sessions(store), Pending(), threading.Lock()
     monitor = Monitor(controller, jobs) if controller is not None else None
+    deployments = Deployments(controller) if controller is not None else None
+    connections = BrowserConnections(config, controller.github if controller is not None else None)
+    if controller is not None:
+        controller.browser_connections = connections
+    google_cookie = "__Host-fast-deploy-google"
+
+    def callback_cookie(value="", seconds=0):
+        return f"{google_cookie}={value}; Max-Age={seconds}; Path=/; Secure; HttpOnly; SameSite=Lax"
 
     def registry():
         return {app_id: Application.model_validate(entry) for app_id, entry in store.registered_applications().items()}
@@ -499,6 +511,7 @@ def routes(config, store, failures, controller=None, jobs=None):
         principal = principal_for(config, subject, credential)
         if principal is None:
             sessions.close(session_id)
+            connections.forget(session_id)
             return None, "Your sign-in ended: its token was rotated or its principal removed. Sign in again."
         return Visit(principal, session_id, sessions.sign("csrf:" + session_id)), None
 
@@ -511,7 +524,11 @@ def routes(config, store, failures, controller=None, jobs=None):
         return None
 
     def context(visit, state):
-        return view.Context(visit, state, registry(), store.productions(), last_written(store, config.path), __version__)
+        snapshot = connections.snapshot(visit.session_id)
+        if snapshot.get("review") and snapshot["review"]["config_sha"] != state.sha:
+            snapshot["review"] = None
+            snapshot["notice"] = "Settings changed. Check the repository again to review the current destination and permissions."
+        return view.Context(visit, state, registry(), store.productions(), last_written(store, config.path), __version__, snapshot)
 
     async def show(request):
         refused = guard(request)
@@ -527,7 +544,15 @@ def routes(config, store, failures, controller=None, jobs=None):
             return view.refusal(frame(visit), tab)
         app = request.query_params.get("app") or None if tab == "applications" else None
         state = await run_in_threadpool(read, config.path)
-        return view.tab_page(context(visit, state), tab, app)
+        ctx = context(visit, state)
+        if tab == "connections":
+            ctx.connections["step"] = request.query_params.get("step")
+        if tab == "connections" and request.query_params.get("onboarding") and controller:
+            try:
+                ctx.connections["onboarding"] = await run_in_threadpool(controller.onboarding_status, visit.principal, request.query_params["onboarding"])
+            except ValueError as exc:
+                ctx.connections["error"] = str(exc)
+        return view.tab_page(ctx, tab, app)
 
     def monitor_view(visit, tab, params):
         """One Monitor view, scoped to the applications the signed-in token may see."""
@@ -536,6 +561,11 @@ def routes(config, store, failures, controller=None, jobs=None):
             return view.shell(shown, tab, view.head(MONITOR[tab], "") + view.callout("gray", "Monitor needs the controller itself.",
                                                                                       "<p>This page was mounted without one.</p>"))
         try:
+            if tab == "deployments":
+                query = deployment_query(params)
+                data = deployments.detail(principal, **query) if query else deployments.listing(principal)
+                public_query = {"onboarding" if k == "application" else "plan": v for k, v in query.items()}
+                return deployment_page.page(shown, data, public_query)
             if tab == "health" and params.get("app"):
                 data = monitor.health(principal, params["app"], params.get("env") or "staging", params.get("range") or "24h", params.get("logs") == "1")
                 return pages.health(shown, data)
@@ -554,6 +584,40 @@ def routes(config, store, failures, controller=None, jobs=None):
                     else str(exc))
             return view.shell(shown, tab, view.head(MONITOR[tab], "") + view.callout("gray", text, f'<p><a href="{PREFIX}?tab=overview">Open the '
                                                                                                     "overview</a>.</p>"), 404)
+
+    def deployment_query(params):
+        if params.get("plan"):
+            return {"plan_id": params["plan"]}
+        if params.get("onboarding"):
+            return {"application": params["onboarding"]}
+        return {}
+
+    async def deployment_status(request):
+        # This route observes only: no dispatch, approval, retry, or cloud mutation.
+        refused = guard(request)
+        if refused:
+            return refused
+        visit, _ = visitor(request)
+        headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+        if visit is None:
+            return JSONResponse({"error": "Sign in again."}, status_code=401, headers=headers)
+        if deployments is None:
+            return JSONResponse({"error": "Deployment monitoring is unavailable."}, status_code=503, headers=headers)
+        query = deployment_query(request.query_params)
+        try:
+            data = await run_in_threadpool(deployments.detail, visit.principal, **query) if query else await run_in_threadpool(deployments.listing, visit.principal)
+        except ValueError:
+            return JSONResponse({"error": "Deployment not found or not available to your account."}, status_code=404, headers=headers)
+        if request.url.path.endswith("/report"):
+            return JSONResponse(data, headers={**headers, "Content-Disposition": 'attachment; filename="deployment-report.json"'})
+        body = deployment_page.detail(data) if query else deployment_page.listing(data)
+        return JSONResponse({"html": body, "state": data.get("state", "list"), "label": data.get("label", "Deployment list updated"),
+                             "error": data.get("error")}, headers=headers)
+
+    async def deployment_script(request):
+        if not host_allowed(request):
+            return Response(status_code=400)
+        return Response(deployment_page.SCRIPT, media_type="text/javascript", headers={"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"})
 
     async def sign_in(request):
         refused = guard(request)
@@ -602,6 +666,7 @@ def routes(config, store, failures, controller=None, jobs=None):
         found = sessions.find(request.cookies.get(COOKIE))
         if found is not None:  # signing out is the one change a forged form could make, and SameSite=Strict stops that too
             sessions.close(found[0])
+            connections.forget(found[0])
         return RedirectResponse(PREFIX, status_code=303, headers={"Cache-Control": "no-store", "Set-Cookie": clear_cookie()})
 
     async def change(request):
@@ -617,12 +682,15 @@ def routes(config, store, failures, controller=None, jobs=None):
         app = subject(tab, form)
         if state.config is None and tab != "advanced":
             return view.tab_page(ctx, tab, app, status=409)
-        result = prepare(visit, state, apps, tab, app, form)
+        result = await run_in_threadpool(prepare, visit, state, apps, tab, app, form)
         if isinstance(result, dict):  # problems: the tab again, with the submitted values and each problem next to its field
             return view.tab_page(ctx, tab, app, form, result, 400)
         old, new, change_ = result
         if change_ is None:
-            return view.nothing_page(ctx, tab, back_to(tab, app))
+            back = back_to(tab, app)
+            if tab == "connections":
+                back += "&step=" + ("google" if form.get("form") == "destination" else "github")
+            return view.nothing_page(ctx, tab, back)
         if old is not None:
             lines_ = unified(old, new)
         else:  # the file on disk did not load: compare its text
@@ -640,8 +708,15 @@ def routes(config, store, failures, controller=None, jobs=None):
                 return {"": yaml_problem(exc) if isinstance(exc, yaml.YAMLError) else str(exc)}
         else:
             candidate = copy.deepcopy(state.data)
-            builder = {"applications": change_applications, "platform": change_platform, "people": change_people, "production": change_production}[tab]
-            outcome = builder(candidate, state.config, apps, form, which, found)
+            if tab == "connections":
+                try:
+                    change_connections(candidate, state.config, form, which, connections, visit.session_id)
+                except (ValueError, httpx.HTTPError, KeyError, OSError, jwt.PyJWTError, subprocess.SubprocessError) as exc:
+                    return {"": connection_error(exc)}
+                outcome = None
+            else:
+                builder = {"applications": change_applications, "platform": change_platform, "people": change_people, "production": change_production}[tab]
+                outcome = builder(candidate, state.config, apps, form, which, found)
             if outcome:
                 token, ends = outcome
         new_config, invalid = validate(candidate, apps)  # even after a field that did not read, so every problem shows at once
@@ -652,7 +727,11 @@ def routes(config, store, failures, controller=None, jobs=None):
         if old is not None and old == new:
             return old, new, None
         keys = changed_keys(old, new) if old is not None else ["the whole file"]
-        return old, new, Change(visit.session_id, tab, state.sha, HEADER + dump(new), keys, ends, token, time.time() + PENDING_SECONDS, back_to(tab, app))
+        back = back_to(tab, app)
+        if tab == "connections":
+            step = "github" if which == "repositories" else "google"
+            back += "&step=" + step
+        return old, new, Change(visit.session_id, tab, state.sha, HEADER + dump(new), keys, ends, token, time.time() + PENDING_SECONDS, back)
 
     async def confirm(request):
         visit, form = await posted(request)
@@ -696,7 +775,86 @@ def routes(config, store, failures, controller=None, jobs=None):
         store.record_event("configuration", name=change_.tab, identity=visit.principal.name, client=host, application=only_app, outcome="ok", detail=detail)
         return {"keys": change_.keys, "kept": kept, "reloaded": reloaded, "notes": config.error, "copied": copied, "failed": failed, "token": change_.token}
 
-    return [Route(PREFIX, show, methods=["GET"]), Route(f"{PREFIX}/sign-in", sign_in, methods=["POST"]),
+    async def connection_action(request):
+        visit, form = await posted(request)
+        if visit is None:
+            return form
+        error, notice, redirect = None, None, None
+        try:
+            action = form.get("action")
+            if action == "google-connect":
+                redirect = connections.start_google(visit.session_id)
+            elif action == "google-projects":
+                await run_in_threadpool(connections.projects, visit.session_id, str(form.get("account", "")))
+            elif action == "google-disconnect":
+                key = str(form.get("account", ""))
+                connections.account(visit.session_id, key)
+                with connections.lock:
+                    connections.accounts.pop(key, None)
+                notice = "Account disconnected from this session. Saved destinations and running apps are unchanged."
+            elif action == "github-refresh":
+                await run_in_threadpool(connections.refresh_github, visit.session_id)
+                notice = "GitHub access refreshed. Select repositories below and save your selection."
+            elif action == "check-repository":
+                state = await run_in_threadpool(read, config.path)
+                if state.config is None or controller is None:
+                    raise ValueError("Fix the controller configuration before checking an application.")
+                await run_in_threadpool(connections.review_repository, controller, visit.principal, visit.session_id, form, state.sha)
+            elif action == "start-application":
+                state = await run_in_threadpool(read, config.path)
+                if state.config is None or controller is None:
+                    raise ValueError("Fix the controller configuration before starting an application.")
+                result = await run_in_threadpool(connections.start_application, controller, visit.principal, visit.session_id,
+                                                str(form.get("review", "")), state.sha)
+                return RedirectResponse(f"{PREFIX}?" + urlencode({"tab": "deployments", "onboarding": result["application"]}), status_code=303)
+            else:
+                raise ValueError("Choose a connection action from this page.")
+        except (ValueError, httpx.HTTPError, KeyError, OSError, jwt.PyJWTError, subprocess.SubprocessError) as exc:
+            error = connection_error(exc)
+        if redirect:
+            return RedirectResponse(redirect, status_code=303, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+                                    "Set-Cookie": callback_cookie(f"{visit.session_id}.{sessions.sign(visit.session_id)}", 600)})
+        ctx = context(visit, await run_in_threadpool(read, config.path))
+        ctx.connections.update(error=error)
+        if notice:
+            ctx.connections["notice"] = notice
+        return view.tab_page(ctx, "connections", submitted=form, status=400 if error else 200)
+
+    async def google_callback(request):
+        refused = guard(request)
+        if refused:
+            return refused
+        # The normal session cookie is Strict. Only this short-lived Lax cookie crosses the provider redirect.
+        signed = sessions.find(request.cookies.get(google_cookie))
+        principal = principal_for(config, signed[1], signed[2]) if signed else None
+        headers = {"Set-Cookie": callback_cookie(), "Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+        if not signed or principal is None or not qualifies(principal):
+            return view.message_page("Sign in again", "Sign in to this app, then reconnect your Google account.", 401, headers)
+        try:
+            key = await run_in_threadpool(connections.finish_google, signed[0], request.query_params.get("state", ""),
+                                          request.query_params.get("code", ""), request.query_params.get("error"))
+        except (ValueError, httpx.HTTPError, KeyError, OSError, jwt.PyJWTError, subprocess.SubprocessError) as exc:
+            from .connections_page import problem
+            return view.message_page("Google connection did not finish", problem(connection_error(exc))
+                                     + f'<p><a href="{PREFIX}?tab=connections&step=google">Back to account selection</a></p>', 400, headers)
+        store.record_event("connection", name="google", identity=principal.name, outcome="connected")
+        note = ""
+        try:
+            await run_in_threadpool(connections.projects, signed[0], key)
+        except (ValueError, httpx.HTTPError, KeyError, OSError) as exc:
+            from .connections_page import problem
+            note = '<p>Account connected, but the project list did not load. Try refreshing it on the next screen.</p>' + problem(connection_error(exc))
+        # A direct provider -> callback -> settings redirect can suppress the Strict session cookie for the whole
+        # redirect chain. A same-site link on this page reliably resumes the original session without weakening it.
+        return view.message_page("Google account connected", note + f'<p><a class="btn primary" href="{PREFIX}?tab=connections&step=google">Next: choose a project</a></p>',
+                                 200, headers)
+
+    return [Route(PREFIX, show, methods=["GET"]),
+            Route(f"{PREFIX}/deployment/status", deployment_status, methods=["GET"]),
+            Route(f"{PREFIX}/deployment/report", deployment_status, methods=["GET"]),
+            Route(f"{PREFIX}/deployment/script.js", deployment_script, methods=["GET"]),
+            Route(f"{PREFIX}/connections/action", connection_action, methods=["POST"]),
+            Route(f"{PREFIX}/connections/google/callback", google_callback, methods=["GET"]), Route(f"{PREFIX}/sign-in", sign_in, methods=["POST"]),
             Route(f"{PREFIX}/sign-out", sign_out, methods=["POST"]), Route(f"{PREFIX}/change", change, methods=["POST"]),
             Route(f"{PREFIX}/confirm", confirm, methods=["POST"])]
 
@@ -871,3 +1029,78 @@ def change_production(candidate, config, registry, form, which, found):
     put(block, "rollout", rollout, current.rollout, field_default(ProductionSettings, "rollout"))
     put(block, "bake_seconds", number(form, "production.bake_seconds", found, required=True), current.bake_seconds, field_default(ProductionSettings, "bake_seconds"))
     return None
+
+
+def connection_error(error):
+    """Provider error bodies, request URLs and credentials must never appear in a settings page."""
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        if status == 401:
+            return "The provider rejected this connection. Reconnect your account or ask the administrator to renew the server credential."
+        if status == 403:
+            return "Access was refused. Check account permissions, enabled Google APIs and the GitHub App grant, then refresh."
+        if status == 404:
+            return "A required resource was not found. Check repository access and ask the administrator to finish the Fast Deploy foundation in the selected project."
+        return f"The provider could not complete the request (HTTP {status}). Try again shortly."
+    if isinstance(error, httpx.HTTPError):
+        return "The provider could not be reached. Your saved settings are unchanged; try again shortly."
+    if isinstance(error, OSError | KeyError | jwt.PyJWTError | subprocess.SubprocessError):
+        return "The connection could not be read. Ask the server administrator to check its provider setup."
+    return str(error)
+
+
+def change_connections(candidate, config, form, which, connections, session):
+    preferences = candidate.setdefault("connections", {})
+    if which == "google-setup":
+        preferences["google_client_id"] = str(form.get("connections.google_client_id", "")).strip() or None
+    elif which == "github-setup":
+        candidate["github_app"] = {
+            "app_id": str(form.get("github_app.app_id", "")).strip(),
+            "private_key_secret": str(form.get("github_app.private_key_secret", "")).strip(),
+        }
+    elif which == "repositories":
+        # A forged or stale checkbox cannot grant access to a repository the credential does not expose.
+        catalog = connections.refresh_github(session)
+        available = {repo["name"].lower() for repo in catalog["repositories"]}
+        selected = {str(repo).lower() for repo in form.getlist("repositories")}
+        if selected - available:
+            raise ValueError("Some selected repositories are no longer visible on GitHub. Refresh access and select again.")
+        if config.platform and config.platform.repository.lower() not in available:
+            raise ValueError("The platform repository must be accessible on GitHub. Install the App on it, then refresh.")
+        preferences["repositories"] = sorted(selected)
+    elif which == "destination":
+        project = connections.destination(session, str(form.get("account", "")), str(form.get("project", "")))
+        if config.production and config.production.project_id == project["id"]:
+            raise ValueError("This is the production project. Choose a different project for staging.")
+        current = config.onboarding
+        if current and current.project_id == project["id"]:
+            candidate["onboarding"]["project_number"] = project["number"]
+        else:
+            # Never carry a previous project's buckets, image, billing table or proxy identity into a new project.
+            # Shared infrastructure workflows must point at the same foundation before new applications can use it.
+            if config.platform is None:
+                raise ValueError("Set the platform repository before choosing a deployment destination.")
+            for key, expected in (
+                ("INFRA_APPLY_SERVICE_ACCOUNT", f'lab-deploy-infra-apply@{project["id"]}.iam.gserviceaccount.com'),
+                ("INFRA_PLAN_SERVICE_ACCOUNT", f'lab-deploy-infra-plan@{project["id"]}.iam.gserviceaccount.com'),
+                ("INFRA_APPLY_WIF_PROVIDER", f'projects/{project["number"]}/locations/global/workloadIdentityPools/lab-deploy-platform/providers/github-apply'),
+                ("INFRA_PLAN_WIF_PROVIDER", f'projects/{project["number"]}/locations/global/workloadIdentityPools/lab-deploy-platform/providers/github-plan'),
+            ):
+                try:
+                    result = connections.github.request("GET", f"/repos/{config.platform.repository}/actions/variables/{key}").json()
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code == 403:
+                        raise ValueError("The GitHub connection needs Variables: read on the platform repository to verify a new destination. "
+                                         "Have the administrator grant it on GitHub, then refresh access.") from None
+                    raise
+                if result.get("value") != expected:
+                    raise ValueError("The platform’s infrastructure workflow still points to another project. Ask the administrator to configure "
+                                     "its foundation and GitHub infrastructure variables for this project, then try again.")
+            candidate["onboarding"] = {"project_id": project["id"], "project_number": project["number"], "region": "us-central1"}
+            if current:
+                for key in ("auto_merge", "default_viewers", "own_projects"):
+                    candidate["onboarding"][key] = getattr(current, key)
+                candidate["onboarding"]["own_projects"] = {name: own.model_dump() for name, own in current.own_projects.items()}
+        preferences["google_account"] = project["email"]
+    else:
+        raise ValueError("Choose a setup form from Connections.")

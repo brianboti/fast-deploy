@@ -653,10 +653,10 @@ class Controller:
         return found
 
     # ---- one sentence: a repository that follows the contract becomes a running service
-    def onboard(self, principal, repository, app_id=None, auto_deploy=False, path=None, as_is=False):
+    def onboard(self, principal, repository, app_id=None, auto_deploy=False, path=None, as_is=False, until=None):
         from .onboarding import Onboarder
         with self._onboarding_lock:
-            return Onboarder(self).start(principal, repository, app_id, auto_deploy, path, as_is=as_is)
+            return Onboarder(self).start(principal, repository, app_id, auto_deploy, path, as_is=as_is, until=until)
 
     def onboard_all(self, principal, repository, auto_deploy=False):
         """"Deploy everything in REPO" (docs/ROADMAP.md D56, 20.5): one onboarding as it is per service the repository holds,
@@ -1657,6 +1657,11 @@ class Controller:
 
     def require_active(self, app_id):
         """Plans and dispatches stop while the operator has paused everything or this app; reads keep working."""
+        allowed = self.config.connections.repositories
+        repository = self.config.applications[app_id].repository.lower()
+        platform = self.config.platform.repository.lower() if self.config.platform else None
+        if allowed is not None and repository != platform and repository not in allowed:
+            raise ValueError(f"Access to {repository} is disabled in Connections. Select it there before deploying.")
         if self.config.paused:
             raise ValueError("Deployments are paused by the operator (paused: true in the controller configuration); reads still work")
         if self.config.applications[app_id].paused:

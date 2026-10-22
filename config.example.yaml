@@ -1,5 +1,10 @@
 live_dispatch: false
 database: deployments.db
+# Browser account selection (Configure → Connections); see docs/CONNECTIONS.md.
+# The Google client secret lives only in LAB_GOOGLE_CLIENT_SECRET on the server.
+# connections:
+#   google_client_id: "YOUR_CLIENT.apps.googleusercontent.com"
+#   repositories: ["YOUR_ORG/app"]  # local restriction, plus the platform repository; null keeps existing access
 # Where this platform's code lives; lets update_app_workflows regenerate app workflows against its commits.
 # platform:
 #   repository: YOUR_ORG/lab-deploy

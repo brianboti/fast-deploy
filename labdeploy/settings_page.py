@@ -22,20 +22,21 @@ from .oauth import PAGE_HEADERS
 PREFIX = "/settings"
 # The sidebar's two groups: Monitor (labdeploy/monitor_page.py), open to every signed-in principal for the applications it
 # may see, and Configure, the controller's own file, for an identity that sees every application and may deploy.
-MONITOR = {"overview": "Overview", "health": "Health", "releases": "Releases", "cost": "Cost", "activity": "Activity"}
-TABS = {"applications": "Applications", "platform": "Platform", "people": "People", "production": "Production", "advanced": "Advanced"}
+MONITOR = {"overview": "Overview", "deployments": "Deployments", "health": "Health", "releases": "Release history", "cost": "Cost", "activity": "Activity"}
+TABS = {"connections": "Connections", "applications": "Applications", "platform": "Platform", "people": "People", "production": "Production", "advanced": "Advanced"}
 KILL_SWITCH = "all applications"  # what the operator types to turn the controller-wide pause on or off
 GITHUB = "https://github.com/"
 MISSING = object()
 
 INTRO = {
+    "connections": "Connect your accounts, choose repositories and set the destination for new applications.",
     "applications": "Each application's release switches, cost ceiling, viewers and alerts. Its contract, infrastructure and secrets change "
                     "elsewhere; each application's page links to them.",
     "platform": "The controller itself: updates after a platform release, the auto-deploy check, backups, the watchdog's webhook and the "
                 "spend caps you recorded.",
     "people": "Who may use Fast Deploy, through Claude and through this page. Each person signs in with a token of their own.",
     "production": "Who approves a promotion to production, and how visitors move to the new version.",
-    "advanced": "The whole configuration file as YAML: the only place for database, oauth and github_app.",
+    "advanced": "The whole configuration file as YAML. For account and repository setup, use Connections.",
 }
 
 # Each infrastructure setting in words: label, help, unit.
@@ -49,6 +50,8 @@ INFRA = {
     "instance_alert_count": ("Alert on instances", "When this many instances or more run for five minutes.", "instances"),
 }
 LABELS = {
+    "connections": "connections", "repositories": "allowed repositories", "google_client_id": "Google sign-in client",
+    "google_account": "account used to select the destination", "project_id": "Google Cloud project", "project_number": "Google Cloud project number",
     "cost_ceiling_usd": "cost ceiling", "auto_deploy": "auto-deploy", "auto_merge": "auto-merge", "bake_seconds": "watch after release",
     "viewers": "viewers", "paused": "state", "provenance": "provenance", "infra": "infrastructure settings", "applications": "applications",
     "can_deploy": "may deploy", "may_merge_own_requests": "self-merge", "token_sha256": "token", "name": "name", "machine": "the machine installs",
@@ -78,6 +81,7 @@ def masked(data):
 # ---- icons: small inline SVG, stroked with the text colour
 
 PATHS = {
+    "connections": '<path d="m10 13 4-4M8 16l-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0M16 8l1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0"/>',
     "applications": '<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/>'
                     '<rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/>',
     "platform": '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>',
@@ -190,6 +194,33 @@ border-bottom:1.5px solid var(--secondary);transform:translateY(-70%) rotate(45d
 background:radial-gradient(circle closest-side,#fff 0 86%,rgba(255,255,255,0) 94%) 3px 50%/16px 16px no-repeat,#D4D4D4;transition:background .15s}
 .switch:checked{background:radial-gradient(circle closest-side,#fff 0 86%,rgba(255,255,255,0) 94%) calc(100% - 3px) 50%/16px 16px no-repeat,#111}
 .switch:focus-visible{outline:none;box-shadow:var(--ring)}
+.connections .btn{white-space:normal;height:auto;min-height:36px;padding:8px 14px;text-align:center}
+.connections .card-body>form+.btn{margin-top:8px}
+.connections .card-body{overflow-wrap:anywhere}
+.connections .repository-choice{grid-template-columns:minmax(0,1fr) auto;align-items:center}
+.connections .repository-choice input{width:20px;height:20px;cursor:pointer}
+.connections{line-height:1.6}
+.connections .page-head h1{font-size:26px;line-height:1.4}
+.connections .help{color:#656565;line-height:1.6;max-width:none}
+.connections .setup-step>summary{display:flex;align-items:center;gap:14px;padding:20px;list-style:none;cursor:pointer}
+.connections .setup-step>summary>span:nth-child(2){flex:1;min-width:0}
+.connections .step-number{display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;background:#F2F3F5;flex:none}
+.connections .setup-step[open]{border-color:#BCC9E8;box-shadow:0 0 0 1px #E8EDFA}
+.connections .setup-step[open] .step-number{background:#253D78;color:white}
+.connections .step-caption{display:block;font-size:12px;color:#656565;font-weight:400;overflow-wrap:anywhere}
+.connections .step-toggle{color:#666}.connections .setup-step[open] .step-toggle{transform:rotate(180deg)}
+.connections .card-body{padding:8px 24px 24px}.connections .card-body>p{margin-bottom:12px}
+.connections .extra-options{padding:14px 0;border-top:1px solid var(--line);margin-top:14px}
+.connections .extra-options>summary{cursor:pointer;color:#414F6B;font-weight:500;padding:6px 0}
+.connections .extra-options[open]>summary{margin-bottom:12px}
+.connections .row{grid-template-columns:minmax(0,1fr);gap:8px}
+.connections .repository-choice,.connections .switch-row{grid-template-columns:minmax(0,1fr) auto}
+.connections input[type=text],.connections select{height:44px;font-size:14px}
+.connections input[type=text],.connections .mono,.connections code{direction:ltr;text-align:left;unicode-bidi:plaintext}
+.connections #repository,.connections select[name=project]{direction:ltr;text-align:left}
+.connections .btn{min-height:44px}.connections .actions{justify-content:flex-start;flex-wrap:wrap}
+.connections .strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px}
+@media (max-width:480px){body:has(.connections,.deployment) .who .name{display:none}body:has(.connections,.deployment) .mark span{white-space:nowrap}}
 .invalid input,.invalid select,.invalid textarea,.invalid .affix{border-color:var(--red)}
 .invalid .affix input{border:0}
 .field-error{color:#B91C1C;font-size:13px}
@@ -406,6 +437,7 @@ class Context:
     productions: dict  # each application's production, registered by add_production
     last: dict | None  # who last wrote the file, and when
     version: str
+    connections: dict | None = None
 
     configure = True  # only an identity that may change the configuration gets a Context
 
@@ -613,12 +645,18 @@ def shell(ctx, tab, inner, status=200, headers=None, title=None):
     the configuration, who is signed in, and the screen itself."""
     groups = [("monitor", "Monitor", MONITOR)] + ([("configure", "Configure", TABS)] if ctx.configure else [])
     sections = []
+    guided = tab in {"connections", "deployments"}
+    labels = {"Monitor": "Your apps", "Configure": "Settings", "overview": "Overview", "health": "App health", "releases": "Release history", "deployments": "Deployments",
+              "cost": "Costs", "activity": "Activity", "connections": "Accounts & setup", "applications": "My apps", "platform": "Service settings",
+              "people": "People", "production": "Production", "advanced": "Advanced settings"}
     for key, label, entries in groups:
         links = []
         for name, words in entries.items():
+            words = labels.get(name, words) if guided else words
             count = f'<span class="count">{ctx.count}</span>' if name == "applications" and ctx.count is not None else ""
             current = ' aria-current="page"' if name == tab else ""
-            links.append(f'<a href="{PREFIX}?tab={name}"{current}>{icon(name)}<span>{words}</span>{count}</a>')
+            links.append(f'<a href="{PREFIX}?tab={name}"{current}>{icon("releases" if name == "deployments" else name)}<span>{words}</span>{count}</a>')
+        label = labels.get(label, label) if guided else label
         sections.append(f'<div class="nav-section"><p class="nav-group" id="nav-{key}">{label}</p>'
                         f'<div class="nav-links" role="group" aria-labelledby="nav-{key}">{"".join(links)}</div></div>')
     side = (f'<aside class="side"><a class="mark" href="{PREFIX}">{MARK}<span>Fast Deploy</span></a>'
@@ -627,7 +665,7 @@ def shell(ctx, tab, inner, status=200, headers=None, title=None):
             f'<span class="version">Fast Deploy {esc(ctx.version)}</span>'
             f'<form method="post" action="{PREFIX}/sign-out"><input type="hidden" name="csrf" value="{esc(ctx.visit.csrf)}">'
             f'<button class="btn secondary" type="submit">{icon("signout")}Sign out</button></form></div></aside>')
-    return document(title or f"{MONITOR.get(tab) or TABS.get(tab, 'Settings')} · Fast Deploy",
+    return document(title or f"{labels[tab] if guided else MONITOR.get(tab) or TABS.get(tab, 'Settings')} · Fast Deploy",
                     f'<div class="shell">{side}<main class="main"><div class="content">{inner}</div></main></div>', status, headers)
 
 
@@ -943,7 +981,7 @@ def advanced_tab(ctx, submitted=None, found=None):
     text = form.submitted.get("text", "") if form.submitted is not None else ctx.state.text
     loads = chip("The file loads", "ok") if ctx.config is not None else chip("The file does not load", "bad")
     body = head("Advanced", esc(INTRO["advanced"]), loads + chip("database, oauth, github_app need a restart", "plain") + kill_chip(ctx) + last_written(ctx)) + bag.summary()
-    note = callout("amber", "Read this before you save.", "<p><code>database</code>, <code>oauth</code> and <code>github_app</code> change only here and "
+    note = callout("amber", "Read this before you save.", "<p>Changes to <code>database</code>, <code>oauth</code> and <code>github_app</code> "
                    "need a restart: <code>scripts/machine.sh restart</code>. The page writes the file as the controller reads it, so comments and "
                    "formatting are not kept; the previous file stays in <code>history/</code>.</p>")
     errors = bag.take("text")
@@ -966,6 +1004,9 @@ def tab_page(ctx, tab, app=None, submitted=None, found=None, status=200):
         inner = advanced_tab(ctx, submitted, found)
     elif ctx.config is None:
         inner = broken(ctx, tab)
+    elif tab == "connections":
+        from .connections_page import page
+        inner = page(ctx, submitted, found)
     elif tab == "platform":
         inner = platform_tab(ctx, submitted, found)
     elif tab == "people":
@@ -1014,8 +1055,8 @@ def split(key):
         return parts[1] if len(parts) == 3 else None, ["confirm"]
     if parts and parts[0] == "new":
         return "new person", parts[1:]
-    if parts and parts[0] in ("production", "platform_updates", "cloud_run_spend_caps") and len(parts) > 1:
-        return LABELS[parts[0]], parts[1:]
+    if parts and parts[0] in ("production", "platform_updates", "cloud_run_spend_caps", "connections", "onboarding", "github_app") and len(parts) > 1:
+        return LABELS.get(parts[0], {"connections": "Connections", "onboarding": "New applications", "github_app": "GitHub connection"}.get(parts[0])), parts[1:]
     return None, parts
 
 
@@ -1059,6 +1100,11 @@ def default_of(key):
 
 
 def shown(value, field):
+    if field == "repositories":
+        if value is MISSING or value is None:
+            return "GitHub access (no local restriction)"
+        if value == []:
+            return "platform repository only"
     if value is MISSING or value is None:
         return "not set" if field != "cost_ceiling_usd" else "no ceiling"
     if field == "paused" and isinstance(value, bool):
@@ -1133,6 +1179,9 @@ def diff_class(line):
 
 
 def review_page(ctx, tab, back, change, change_id, old, new, diff_lines, minutes):
+    if tab == "connections":
+        from .connections_page import settings_review
+        return settings_review(ctx, back, change, change_id, old, new, diff_lines)
     items = []
     for what, key, was, now in change_lines(old, new, change.keys):
         values = (f'<span class="new">{esc(was)}</span>' if now is None else
@@ -1146,7 +1195,7 @@ def review_page(ctx, tab, back, change, change_id, old, new, diff_lines, minutes
         warnings.append(f"Every session of {name} ends: Claude's and this page's.")
     if ctx.visit.principal.name in change.ends:
         warnings.append("That includes yours: after the new token is shown, sign in again.")
-    if tab == "advanced" and any(key.split(".")[0] in ("database", "oauth", "github_app") for key in change.keys):
+    if any(key.split(".")[0] in ("database", "oauth", "github_app") for key in change.keys):
         warnings.append("database, oauth and github_app changes need a restart: scripts/machine.sh restart.")
     count = len(change.keys)
     body = head("Review the change", f"{count} setting{'s' if count != 1 else ''} would change. Nothing is written until you confirm.",
@@ -1160,11 +1209,17 @@ def review_page(ctx, tab, back, change, change_id, old, new, diff_lines, minutes
              f'line{"s" if changed != 1 else ""} · token hashes and the webhook shortened</span></summary><pre class="diff">{rendered}</pre></details>')
     body += (f'<form method="post" action="{PREFIX}/confirm"><input type="hidden" name="csrf" value="{esc(ctx.visit.csrf)}">'
              f'<input type="hidden" name="change" value="{esc(change_id)}"><div class="actions">'
-             f'<a class="btn secondary" href="{esc(back)}">Cancel</a><button class="btn primary" type="submit">Write the file</button></div></form>')
+             f'<a class="btn secondary" href="{esc(back)}">Cancel</a><button class="btn primary" type="submit">'
+             + ('Save settings' if tab == 'connections' else 'Write the file') + '</button></div></form>')
     return shell(ctx, tab, body)
 
 
 def nothing_page(ctx, tab, back):
+    if tab == "connections":
+        from .connections_page import next_step
+        step = "github" if "step=google" in back else "application-setup"
+        body = head("These choices are already saved", "You can continue without saving again.") + next_step(step, "Continue setup")
+        return shell(ctx, tab, '<div class="connections">' + body + '</div>')
     body = (head("Review the change", "Nothing would change.") + callout("gray", "Nothing would change.", "<p>The file already says this.</p>")
             + f'<div class="actions" style="justify-content:flex-start"><a class="btn secondary" href="{esc(back)}">Back</a></div>')
     return shell(ctx, tab, body)
@@ -1199,6 +1254,9 @@ def outcome_body(outcome, framed=True):
 
 
 def result_page(ctx, tab, back, outcome):
+    if tab == "connections":
+        from .connections_page import settings_result
+        return settings_result(ctx, back, outcome)
     where = back.split("app=", 1)[1] if "app=" in back else TABS[tab]
     body = head("Written", "The configuration file has changed.") + outcome_body(outcome)
     body += (f'<div class="actions" style="justify-content:flex-start"><a class="btn secondary" href="{esc(back)}">{icon("back")}Back to '
@@ -1230,7 +1288,7 @@ def sign_in_page(minutes, error="", status=200, headers=None):
 
 
 def message_page(title, text, status=200, headers=None, action=""):
-    body = (f'<div class="center"><div class="card">{MARK}<h1>{esc(title)}</h1><p class="lede">{text}</p>{action}</div></div>')
+    body = (f'<div class="center"><div class="card">{MARK}<h1>{esc(title)}</h1><div class="lede">{text}</div>{action}</div></div>')
     return document(f"{title} · Fast Deploy", body, status, headers)
 
 

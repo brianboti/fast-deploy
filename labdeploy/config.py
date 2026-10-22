@@ -335,6 +335,21 @@ class ApplicationSettings(StrictModel):
 PROJECT_ID = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
 
 
+class Connections(StrictModel):
+    """Browser setup preferences. Credentials remain on the server; repository restrictions apply to its API calls."""
+    google_client_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._-]+\.apps\.googleusercontent\.com$")
+    google_account: str | None = None  # attribution for choosing the destination, never a deployment credential
+    repositories: list[str] | None = None  # None preserves existing access; [] permits only the platform repository
+
+    @model_validator(mode="after")
+    def repositories_valid(self):
+        if self.repositories is not None:
+            if any(not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) for repo in self.repositories):
+                raise ValueError("Select repositories as owner/name")
+            self.repositories = sorted(set(repo.lower() for repo in self.repositories))
+        return self
+
+
 class Config(StrictModel):
     applications: dict[str, Application]
     principals: list[Principal]
@@ -343,6 +358,7 @@ class Config(StrictModel):
     platform_updates: PlatformUpdates | None = None  # None: after a release, the machine and the re-pins stay manual
     observer: ObserverIdentity | None = None
     github_app: GitHubApp | None = None
+    connections: Connections = Field(default_factory=Connections)
     oauth: OAuth | None = None
     onboarding: Onboarding | None = None
     production: ProductionSettings | None = None
