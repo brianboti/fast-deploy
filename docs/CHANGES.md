@@ -1,3 +1,40 @@
+# 1.31.9: a release a room can follow, stage by stage
+
+Asked for a live demo: the Deployments page did update every 10 seconds, but a release read as a list of about 60 GitHub
+steps ("Set up job", checkouts, cleanups), and the part people come to see, the new version starting beside the old one,
+the switch of visitors and the five-minute watch, was one step that stayed "in progress" for six minutes.
+
+**The release journey.** A release's page now shows eleven stages in plain words, each lit by evidence: check the
+request, safety checks on the code, the tests, the libraries, the build, upload and sign, the image scan, the new version
+started beside the old one, visitors moved, the watch with real traffic, the result recorded. Every GitHub step belongs
+to exactly one stage (a step no stage names goes with the next named step of its job, which it prepares), and each stage
+opens to show its exact steps and times. A stage the workflow does not have is left out; a stage after a failure says it
+did not run.
+
+**The one long step, split by Cloud Run.** While "Deploy, probe, promote" runs, the page reads the service every
+10 seconds instead of 30: the new revision present with no share means it started and is being health-checked; a share
+means visitors are moving; everyone on it means the watch began, and the service's own change time says when, so the
+watch shows a bar counting to its window. The first sighting of each is kept and never moved. After the run, the
+release receipt's own phase times replace what was seen from outside. No stage is lit by a timer.
+
+**Who gets the visitors.** A bar shows the previous version's share and this release's, from Cloud Run, sliding when it
+changes, with one sentence on what it means now.
+
+**The top of the page** says where the release is ("Now: Run the tests."), counts stages instead of steps, keeps an
+elapsed clock running between reads (set to the server's clock), and says how long this application's releases usually
+take: the median of its last successful ones, at most eight, shown from three.
+
+**It no longer stops on "confirming".** A run GitHub reports finished is followed until the controller has recorded it
+(the follow job does within a minute), so the page ends on "Live." with the receipt's times rather than on "Workflow
+passed · confirming release".
+
+**Full screen.** A button hides the sidebar and the technical panels, enlarges the stages, and brings each new stage to
+the middle of the screen, for a room watching on a projector. Movement stops for people who ask their system for less
+motion.
+
+Promotions, rollbacks and first-time setups keep the step list they had. Everything is read-only, as before: the page
+never dispatches, approves or changes the cloud.
+
 # 1.31.8: checking a project works, and leaving a repository out stops only new work
 
 Found by a review of #175 (guided connections and the live deployment dashboard, merged on 2026-10-22 without a version of
