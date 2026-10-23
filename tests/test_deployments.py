@@ -555,3 +555,22 @@ def test_the_script_animates_only_what_changed_and_the_page_honours_reduced_moti
     script, style = deployment_page.SCRIPT, deployment_page.STYLE
     assert "dataset.stageState" in script and "classList.add('d-just')" in script and "strokeDasharray" in script
     assert "@media(prefers-reduced-motion:reduce)" in style and "d-car" in style and "@keyframes d-pop" in style
+
+
+# ---- 1.31.11: why a stage is there and what happens if it fails, closed until opened
+
+def test_why_and_if_it_fails_are_closed_sections_that_keep_their_state_across_refreshes(system):
+    c, github, monitor, reader, clock = system
+    now = clock[0]
+    github.result["jobs"] = [
+        {"name": "build", "status": "in_progress",
+         "steps": [{"name": "Validate dispatch inputs", "status": "completed", "conclusion": "success", "started_at": iso(now - 300), "completed_at": iso(now - 290)},
+                   {"name": "Run unit tests", "status": "in_progress", "started_at": iso(now - 100)}]}]
+    page = deployment_page.detail(monitor.detail(reader, "run-1"))
+    # one closed section in the spotlight and one under every stage, each with an id the refresh script keeps open
+    assert '<details class="d-more" id="now-why-tests">' in page and '<details class="d-more" id="stage-why-request">' in page
+    assert "<details class=\"d-more\" id=\"stage-why-tests\" open" not in page and "Why it is here · If it fails</summary>" in page
+    # the text is still there, inside the section, and next to the GitHub steps
+    assert "One failing test stops the release. Visitors never see the change." in page
+    assert '<div class="d-links"><details class="d-more" id="stage-why-request">' in page and 'id="stage-steps-request"' in page
+    assert "details[id]" in deployment_page.SCRIPT
