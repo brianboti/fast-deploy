@@ -212,6 +212,15 @@ STYLE = """
 .deployment .d-why .w-why i{background:#e2effa;color:#145e93}
 .deployment .d-why .w-fail i{background:#fde9d7;color:#9a4b12}
 .deployment .d-why .w-done i{background:#eef2f5;color:#8796a1}
+.deployment details.d-more{margin-top:14px}
+.deployment details.d-more>summary{padding:0;display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:#145e93;cursor:pointer}
+.deployment details.d-more>summary:after{content:'+';margin-left:2px;color:inherit}
+.deployment details.d-more[open]>summary:after{content:'−'}
+.deployment details.d-more>summary:hover{text-decoration:underline}
+.deployment details.d-more .d-why{margin-top:10px}
+.deployment .d-links{display:flex;flex-wrap:wrap;gap:4px 20px;align-items:baseline;margin-top:8px}
+.deployment .d-links>details{margin-top:0}
+.deployment .d-links>details[open]{flex-basis:100%}
 .deployment .d-now-card .btn.primary{margin-top:16px}
 
 /* the watch: a bar that fills over the window, under a line that keeps beating while the new version is watched */
@@ -299,7 +308,8 @@ STYLE = """
 .deployment .d-stage.s-not_run{opacity:.6}
 .deployment .d-stage p{margin:0;font-size:13.5px;color:#41535f}
 .deployment .d-stage .d-now{color:#145e93;font-weight:600;margin-top:6px}
-.deployment .d-stage .d-why{margin-top:10px;padding-top:10px;gap:6px;border-top-color:#e3eaee}
+.deployment .d-stage .d-why{margin-top:8px;padding-top:8px;gap:6px;border-top-color:#e3eaee}
+.deployment .d-stage details.d-more>summary{font-size:12px;font-weight:500;color:var(--quiet)}
 .deployment .d-stage .d-why div{font-size:12.5px;color:#55666f}
 .deployment .d-stage .d-why i{width:18px;height:18px;font-size:10px;border-radius:5px;margin-top:1px}
 .deployment .d-stage .d-why div{grid-template-columns:18px minmax(0,1fr)}
@@ -688,8 +698,9 @@ def guide(stage, bake=0):
     return short, what.replace("{minutes}", minutes_words(bake)), why, fail
 
 
-def why_block(why, fail, done=False, compact=False):
-    """Why a stage is there and what happens if it fails, as two short labelled lines."""
+def why_block(why, fail, done=False, compact=False, ident=""):
+    """Why a stage is there and what happens if it fails, as two short labelled lines, closed until someone opens them. The id
+    lets the page keep it open across its automatic refresh."""
     if not why and not fail:
         return ""
     rows = ""
@@ -698,7 +709,8 @@ def why_block(why, fail, done=False, compact=False):
     if fail:
         rows += (f'<div class="{"w-done" if done else "w-fail"}"><i aria-hidden="true">!</i>'
                  f'<span><b>If it fails</b>{ui.esc(fail)}</span></div>')
-    return f'<div class="d-why">{rows}</div>'
+    return (f'<details class="d-more" id="{ui.esc(ident)}"><summary id="{ui.esc(ident)}-summary">Why it is here · If it fails</summary>'
+            f'<div class="d-why">{rows}</div></details>')
 
 
 def watch_visual(stage, now, big=False):
@@ -765,7 +777,7 @@ def now_panel(data):
             body += move_visual(current, data)
         if current["key"] == "watch" and current["state"] == "running":
             body += watch_visual(current, now, big=True)
-        body += why_block(why, fail)
+        body += why_block(why, fail, ident=f"now-why-{current['key']}")
         clock_html = f'<div class="d-now-clock"><strong>{ticking(current.get("started_at"), now, "…")}</strong><span>So far</span></div>'
     elif state in {"succeeded", "rolled_back"} and data.get("terminal"):
         cls, eyebrow, title = "n-live", "Finished", "The new version is live" if state == "succeeded" else "Visitors were sent back"
@@ -834,7 +846,7 @@ def journey_panel(data):
             extra += f'<p class="d-now">{stage["share"]:g}% of visitors are on the new version.</p>'
         if key == "watch" and state == "running":
             extra += watch_visual(stage, now)
-        extra += why_block(why, fail, done=state in {"done", "skipped"}, compact=True)
+        more = why_block(why, fail, done=state in {"done", "skipped"}, compact=True, ident=f"stage-why-{key}")
         steps = stage.get("steps") or []
         if steps:
             items = "".join(
@@ -843,8 +855,11 @@ def journey_panel(data):
                 f'<span title="{ui.esc(step["name"])}">{ui.esc(step_name(step["name"]))}</span>'
                 f'<time>{duration(step["finished_at"] - step["started_at"]) if step.get("started_at") and step.get("finished_at") else ""}</time></li>'
                 for step in steps)
-            extra += (f'<details id="stage-steps-{key}"><summary id="stage-steps-summary-{key}">{len(steps)} GitHub step{"s" if len(steps) != 1 else ""}</summary>'
-                      f'<ul class="d-substeps">{items}</ul></details>')
+            more += (f'<details id="stage-steps-{key}"><summary id="stage-steps-summary-{key}">{len(steps)} GitHub step{"s" if len(steps) != 1 else ""}</summary>'
+                     f'<ul class="d-substeps">{items}</ul></details>')
+        if more:
+            # The two closed sections side by side; an open one takes the whole width.
+            extra += f'<div class="d-links">{more}</div>'
         current = ' aria-current="step"' if state in {"running", "next"} else ""
         marked = pill("running" if state == "next" else state, STAGE_WORDS.get(state, state)) if state in {"running", "next", "failed", "cancelled"} else ""
         rows.append(
@@ -855,7 +870,7 @@ def journey_panel(data):
     segments = "".join(f'<span class="s-{ui.esc(stage["state"])}" title="{ui.esc(stage["title"])}"></span>' for stage in stages)
     return (f'<section class="d-panel d-journey" data-now="{now:.0f}"><div class="d-panel-head d-journey-head"><div><h2>Release journey</h2>'
             '<p>Every stage turns green when GitHub or Google Cloud reports it. The times are real, not estimates. '
-            'Under each stage: what it does, why it is there, and what happens if it fails.</p></div>'
+            'Open “Why it is here” under a stage to see why it is there and what happens if it fails.</p></div>'
             f'<span class="d-count">{done} of {len(stages)} done</span></div><div class="d-segments" aria-hidden="true">{segments}</div>'
             f'<ol class="d-stages">{"".join(rows)}</ol></section>')
 
