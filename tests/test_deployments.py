@@ -495,3 +495,63 @@ def test_full_screen_and_the_live_clocks_are_in_the_same_origin_script(system):
     assert "setInterval(tick, 1000)" in script and "dataset.since" in script and "offset = stamp ? Number(stamp.dataset.now)" in script
     assert "scrollIntoView" in script and "prefers-reduced-motion" in script
     assert "html.d-present .side{display:none}" in deployment_page.STYLE
+
+
+# ---- 1.31.10: the live release page, drawn for a room
+
+def test_the_live_page_has_the_track_the_spotlight_and_every_stage_s_three_plain_lines(system):
+    c, github, monitor, reader, clock = system
+    now = clock[0]
+    github.result["jobs"] = [
+        {"name": "build", "status": "in_progress",
+         "steps": [{"name": "Validate dispatch inputs", "status": "completed", "conclusion": "success", "started_at": iso(now - 300), "completed_at": iso(now - 290)},
+                   {"name": "Run unit tests", "status": "in_progress", "started_at": iso(now - 100)}]}]
+    page = deployment_page.detail(monitor.detail(reader, "run-1"))
+    # the track: one node a stage, grouped, each a link to its row, the current one marked
+    assert 'class="d-track"' in page and "Check the change" in page and "Go live" in page
+    assert 'href="#stage-tests"' in page and 'class="t-running in-flow ' in page and 'data-stage="track-tests" data-stage-state="running"' in page
+    # the spotlight says what the stage does, why it is there and what happens if it fails, in plain words
+    assert "Happening now" in page and "own automated tests run on a clean machine" in page
+    assert "Why it is here" in page and "If it fails" in page and "One failing test stops the release. Visitors never see the change." in page
+    # the journey carries the same three lines under every stage, and marks each row for the page's one-time effects
+    assert page.count("Why it is here") >= 3 and 'data-stage="request" data-stage-state="done"' in page
+    assert 'data-ring="stages"' in page and 'class="d-pill running"' in page
+
+
+def test_the_spotlight_follows_the_release_from_the_start_to_live_and_names_a_stop(system):
+    c, github, monitor, reader, clock = system
+    now = clock[0]
+    github.result["jobs"] = [
+        {"name": "build", "status": "completed", "conclusion": "success",
+         "steps": [{"name": "Run unit tests", "status": "completed", "conclusion": "success", "started_at": iso(now - 300), "completed_at": iso(now - 290)}]},
+        {"name": "deploy", "status": "in_progress",
+         "steps": [{"name": "Deploy, probe, promote; restore traffic on failure", "status": "in_progress", "started_at": iso(now - 120)}]}]
+    c.observer = types.SimpleNamespace(service=lambda target: {"ready": True, "url": "https://demo.example.com", "updated_at": iso(now - 60),
+                                                               "traffic": [{"revision": "old", "percent": 65, "plan_id": "other"}, {"revision": "new", "percent": 35, "plan_id": "run-1"}]})
+    page = deployment_page.detail(monitor.detail(reader, "run-1"))
+    assert "Move visitors to the new version" in page and 'class="d-move"' in page and "35%" in page and 'class="d-flow"' in page
+    assert "Visitors on the new version" in page and "<animateMotion" in page
+    c.observer = types.SimpleNamespace(service=lambda target: {"ready": True, "url": "https://demo.example.com", "updated_at": iso(now - 50),
+                                                               "traffic": [{"revision": "new", "percent": 100, "plan_id": "run-1"}]})
+    clock[0] += 11
+    page = deployment_page.detail(monitor.detail(reader, "run-1"))
+    assert 'class="d-beat"' in page and "For 5 minutes the platform watches" in page and "100%" in page
+    owner, plan = c.store.fetch("run-1")
+    plan.update(state="succeeded", workflow={**github.result, "status": "completed", "conclusion": "success"}, receipt={"state": "succeeded", "revision": "new"})
+    c.store.finish(owner, plan, "succeeded")
+    page = deployment_page.detail(monitor.detail(reader, "run-1"))
+    assert "The new version is live" in page and "Open the app" in page and 'class="d-board b-live"' in page
+    # a failed test: the board says what the stop means, the spotlight what the stage does and what to do now
+    github.result["jobs"] = [{"name": "build", "status": "completed", "conclusion": "failure",
+                              "steps": [{"name": "Run unit tests", "status": "completed", "conclusion": "failure", "started_at": iso(now - 300), "completed_at": iso(now - 290)}]}]
+    plan.update(state="failed", workflow=github.result, receipt={})
+    c.store.finish(owner, plan, "failed")
+    page = deployment_page.detail(monitor.detail(reader, "run-1"))
+    assert "Stopped at: Run the tests." in page and "Stopped here" in page and "What this stage does" in page and 'class="d-board b-stop"' in page
+    assert 'class="t-not_run' in page
+
+
+def test_the_script_animates_only_what_changed_and_the_page_honours_reduced_motion():
+    script, style = deployment_page.SCRIPT, deployment_page.STYLE
+    assert "dataset.stageState" in script and "classList.add('d-just')" in script and "strokeDasharray" in script
+    assert "@media(prefers-reduced-motion:reduce)" in style and "d-car" in style and "@keyframes d-pop" in style
