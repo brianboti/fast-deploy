@@ -1,3 +1,29 @@
+# 1.31.10: the live release page, drawn for a room
+
+Asked to make the Deployments page, and above all its live part, visual, dynamic and easy to read, with every stage
+explained in plain words.
+
+**The board.** The top of a release's page is one board: a progress ring that slides to each new count, a status pill whose
+dot ripples while the release goes on, the one sentence that says where it is, four figures (elapsed, stages done, the
+usual length, the share of visitors on the new version) and, under them, the track.
+
+**The track.** Every stage as a node on one line, grouped into "Check the change", "Build and sign", "Go live" and
+"Record". A finished node is green, the one happening now pulses with a turning ring and animated flow entering it, a
+failed one is red, and nodes after a failure fade. Each node links to its row in the journey.
+
+**The spotlight.** One card for the stage that matters right now: a big elapsed clock, what the stage is doing, why it is
+there and what happens if it fails. While the new version starts or takes visitors it shows two boxes (the previous version,
+this release) with the visitors moving across; while it is watched, a beating line over a bar that fills to the window.
+After the end it says "The new version is live" with a button to the app; after a failure, what the stage does and what to
+do now.
+
+**Who gets the visitors.** A picture: the visitors on the left, the previous version and this release on the right, a lane
+to each, with traffic moving along the lanes that carry any, then the sliding bar and one sentence.
+
+**The journey.** Under every stage: what it does, why it is here, what happens if it fails, in short plain sentences, and
+its GitHub steps on request. A stage that just finished or just started gets a one-time pop and flash when the page
+refreshes; one that stays as it was gets none. Everything honours "reduce motion", works at phone width and in Full screen.
+
 # 1.31.9: a release a room can follow, stage by stage
 
 Asked for a live demo: the Deployments page did update every 10 seconds, but a release read as a list of about 60 GitHub
