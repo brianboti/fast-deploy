@@ -12,11 +12,13 @@ import time
 import types
 from urllib.parse import urlparse
 
-from . import aftercare
+from . import aftercare, journey
 from .onboarding import STEPS
 from .status import TERMINAL, advice, release_phases, summarize
 
 POLL_SECONDS = 10
+HEALTH_SECONDS = 30
+TYPICAL_SECONDS = 300
 ATTENTION = {"failed", "timed_out", "awaiting_approval", "completed_unverified", "dispatch_lost"}
 SETUP_LABELS = dict(
     zip(
@@ -90,7 +92,7 @@ class Deployments:
     def __init__(self, controller, clock=time.time):
         self.c, self.clock = controller, clock
         self.lock = threading.RLock()  # the read budget and the per-plan locks only, never held across a provider call
-        self.attempts, self.locks = {}, {}
+        self.attempts, self.locks, self.typicals = {}, {}, {}
         with controller.store.connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS deployment_observations (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
 
@@ -167,7 +169,9 @@ class Deployments:
                 except Exception:  # noqa: BLE001 - provider outages are status, never a reason to lose the last observation
                     saved["error"] = "GitHub could not be reached. The last known progress is shown; deployment may still be running."
             target = plan.get("target") or {}
-            if self.c.observer is not None and target and now - saved.get("health_attempt_at", 0) >= 30:
+            # While a run goes on, Cloud Run is read as often as GitHub: the switch of visitors is what people watch for.
+            cadence = POLL_SECONDS if plan["state"] not in TERMINAL else HEALTH_SECONDS
+            if self.c.observer is not None and target and now - saved.get("health_attempt_at", 0) >= cadence:
                 saved["health_attempt_at"] = now
                 try:
                     service = self.c.observer.service(types.SimpleNamespace(**target))
@@ -175,9 +179,12 @@ class Deployments:
                         "ready": service.get("ready"),
                         "url": url(service.get("url")),
                         "at": now,
+                        "updated_at": stamp(service.get("updated_at")),
                         "traffic": [{"revision": clean(t.get("revision")), "percent": t.get("percent"), "plan_id": clean(t.get("plan_id"))}
                                     for t in service.get("traffic") or []],
                     }
+                    if plan["state"] not in TERMINAL:
+                        saved["cloud"] = journey.cloud_evidence(saved.get("cloud"), key, saved["health"], now)
                     saved.pop("health_error", None)
                 except Exception:  # noqa: BLE001 - health has its own independent freshness and failure state
                     saved["health_error"] = "Current Cloud Run status is unavailable."
@@ -247,6 +254,10 @@ class Deployments:
                 status = "failed" if "failed" in states else "done" if states <= {"done", "skipped"} else "unknown"
                 groups.append({"name": name, "state": status, "url": None, "steps": items})
         current = next((s["name"] for g in groups for s in g["steps"] if s["state"] == "running"), None)
+        kind = plan.get("kind") or "release"
+        phases = safe_tree(release_phases(receipt))
+        bake = int(plan.get("bake_seconds") if plan.get("bake_seconds") is not None else 300)
+        stages = journey.stages(groups, observed.get("cloud"), phases, bake, state, now) if kind == "release" else None
         target = plan.get("target") or {}
         events = [{"at": e["at"], "text": LABELS.get(e["event"], clean(e["event"]))} for e in self.c.store.events(owner, plan["id"])]
         events = sorted(events + observed.get("transitions", []), key=lambda item: item["at"])[-100:]
@@ -255,7 +266,7 @@ class Deployments:
             "application": plan["application"],
             "state": state,
             "label": LABELS.get(state, clean(state)),
-            "kind": plan.get("kind") or "release",
+            "kind": kind,
             "repository": plan.get("repository"),
             "sha": plan.get("sha"),
             "message": clean((plan.get("commit") or {}).get("message")),
@@ -279,13 +290,44 @@ class Deployments:
             "pending": workflow.get("pending") or [],
             "events": events,
             "next_action": clean(advice({**plan, **evidence, "state": state})),
-            "phases": safe_tree(release_phases(receipt)),
+            "phases": phases,
+            "stages": stages,
+            "cloud": observed.get("cloud") or {},
+            "bake_seconds": bake,
+            "typical": self.typical(plan["application"]) if stages else None,
             "report": safe_tree(plan.get("release_report")),
             "recovery": safe_tree(plan.get("recovery_run")),
-            "terminal": state in (TERMINAL - {"completed_unverified"}) | {"rolled_back"},
+            # Ended once the controller has recorded it: a run GitHub reports finished is still followed until the receipt and the
+            # checks are in (the follow job records them within a minute), so the page never stops on "confirming".
+            "terminal": plan["state"] in TERMINAL - {"completed_unverified"} or bool(plan.get("rolled_back")),
             "setup": self.setup(setup) if setup else None,
         }
         return result
+
+    def typical(self, application):
+        """How long this application's successful releases usually take, from GitHub's start to the recorded end; worked out
+        again every five minutes at most, from at most its eight newest."""
+        with self.lock:
+            cached = self.typicals.get(application)
+            if cached and self.clock() - cached[0] < TYPICAL_SECONDS:
+                return cached[1]
+        durations = []
+        for summary in self.c.store.plans(applications=[application], limit=60):
+            if summary["kind"] != "release" or summary["state"] != "succeeded":
+                continue
+            found = self.c.store.fetch(summary["id"])
+            plan = found[1] if found else {}
+            workflow = plan.get("workflow") or {}
+            began = stamp(workflow.get("run_started_at") or workflow.get("created_at"))
+            ended = stamp((plan.get("outcome") or {}).get("completed_at"))
+            if began and ended and ended > began:
+                durations.append(ended - began)
+            if len(durations) == 8:
+                break
+        value = journey.typical(durations)
+        with self.lock:
+            self.typicals[application] = (self.clock(), value)
+        return value
 
     def setup(self, record):
         state = record["state"]
