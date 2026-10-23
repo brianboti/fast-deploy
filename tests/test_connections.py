@@ -1,16 +1,18 @@
 """Account selection, real provider protocols with mock HTTP, and enforced repository boundaries."""
 import copy
 import json
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
 import yaml
+from conftest import TARGET
 from starlette.datastructures import FormData
 from test_settings import confirm, sign_in, submit, tab
 from test_settings import site as settings_site
 
-from labdeploy.config import Config, LiveConfig
+from labdeploy.config import Config, Connections, LiveConfig
 from labdeploy.connections import GOOGLE_SCOPE, BrowserConnections, github_catalog
 from labdeploy.github import AppInstallations, GitHub, StaticToken
 from labdeploy.settings import change_connections
@@ -87,7 +89,7 @@ def test_projects_are_live_and_destination_checks_billing_and_foundation(browser
     with pytest.raises(ValueError, match="can access"):
         service.destination("session", key, "forged-project")
     result = service.destination("session", key, "target-project")
-    assert result == {"id": "target-project", "number": "123456", "name": "Research", "email": "person@example.com"}
+    assert result == {"id": "target-project", "number": "123456", "name": "Research", "email": "person@example.com", "region": None}
     assert any("lab-deploy-infra-apply" in str(call.url) for call in calls)
     assert any("target-project-tfstate" in str(call.url) for call in calls)
     service.forget("session")
@@ -456,3 +458,139 @@ def test_destination_refuses_unready_foundation(browser, billing, disabled, expe
     with pytest.raises(ValueError, match=expected):
         service.destination("session", key, "target-project")
     assert service.config.onboarding is None
+
+
+# ---- 1.31.8: the review of #175
+
+def test_the_foundation_lets_the_server_read_its_two_identities_and_nothing_more():
+    """Mocked Google cannot catch a missing grant, so the grant itself is checked: one permission, on the two accounts only."""
+    pipeline = Path("infra/gcp/modules/project/pipeline.tf").read_text()
+    role = pipeline[pipeline.index('resource "google_project_iam_custom_role" "foundation_reader"'):]
+    role = role[:role.index("\n}\n")]
+    assert 'permissions = ["iam.serviceAccounts.get"]' in role
+    grant = pipeline[pipeline.index('resource "google_service_account_iam_member" "foundation_readers"'):]
+    grant = grant[:grant.index("\n}\n")]
+    assert "google_service_account.infra_plan[0].name" in grant and "google_service_account.infra_apply[0].name" in grant
+    assert "google_project_iam_custom_role.foundation_reader[0].name" in grant
+    readers = pipeline[pipeline.index("foundation_readers = merge("):]
+    readers = readers[:readers.index("\n}\n")]
+    assert "var.viewer_members" in readers and "google_service_account.controller[0].email" in readers
+    # The state bucket's metadata: the machine's observer roles here, and viewer_members' in another project.
+    main = Path("infra/gcp/modules/project/main.tf").read_text()
+    assert '"roles/storage.bucketViewer"' in main[main.index("observer_roles ="):main.index("observer_roles =") + 400]
+    assert "labDeployFoundationReader" in Path("docs/CONNECTIONS.md").read_text()
+
+
+@pytest.mark.parametrize("status,expected", [(403, "server's own Google identity has no access to target-project"),
+                                             (404, "target-project has no Fast Deploy foundation yet")])
+def test_a_refused_foundation_check_says_whose_access_is_missing(browser, status, expected):
+    service, calls = browser
+    key = connect(service)
+    original = service.client
+
+    def response(request):
+        if "serviceAccounts/" in request.url.path:
+            return httpx.Response(status, text="sensitive-provider-body")
+        return original.send(request)
+
+    service.client = httpx.Client(transport=httpx.MockTransport(response))
+    with pytest.raises(ValueError, match=expected) as refused:
+        service.destination("session", key, "target-project")
+    assert "sensitive-provider-body" not in str(refused.value)
+
+
+def test_one_rule_decides_the_repository_selection():
+    assert Connections().permits("anyone/anything")
+    chosen = Connections(repositories=["Lab/App"])
+    assert chosen.permits("lab/app") and chosen.permits("LAB/APP") and not chosen.permits("lab/other")
+    assert chosen.permits("Lab/Platform", "lab/platform") and not chosen.permits("lab/platform")
+    assert Connections(repositories=[]).permits("lab/platform", "Lab/Platform") and not Connections(repositories=[]).permits("lab/app")
+
+
+def test_a_registered_app_outside_the_selection_is_still_read_but_a_new_repository_is_not(monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    calls = []
+    client = httpx.Client(base_url="https://api.github.com", transport=httpx.MockTransport(lambda r: calls.append(r) or httpx.Response(200, json={})))
+    adapter = GitHub(client, StaticToken("secret"))
+    adapter.access_config = LiveConfig(Config(applications={"demo": {"repository": "Lab/Demo", "service": "demo", "target": TARGET}}, principals=[],
+                                              platform={"repository": "lab/platform"}, connections={"repositories": []}))
+    adapter.request("GET", "/repos/lab/demo/actions/runs/1")  # its status and the follow job
+    adapter.request("POST", "/repos/lab/demo/actions/workflows/recover-gcp.yml/dispatches")  # its rollback
+    with pytest.raises(ValueError, match="disabled in Connections"):
+        adapter.request("GET", "/repos/lab/new-app/contents/app.py")  # not registered: not read, so it cannot be checked or onboarded
+    assert len(calls) == 2
+
+
+def test_a_registered_app_outside_the_selection_rolls_back_but_starts_nothing_new(tmp_path):
+    from test_phase2_release import make, release
+    c, p, gh = make(tmp_path)
+    release(c, p, gh, "1" * 40, "demo-r1")
+    release(c, p, gh, "2" * 40, "demo-r2")
+    c.config.connections.repositories = []
+    for refused in (lambda: c.plan(p, "demo"), lambda: c.deploy_latest(p, "demo"), lambda: c.promote(p, "demo")):
+        with pytest.raises(ValueError, match="disabled in Connections"):
+            refused()
+    record = c.rollback(p, "demo")
+    assert record["kind"] == "rollback" and gh.dispatched[-1][0] == "recover-gcp.yml"
+    assert record["id"][:8] in c.follow_tick()  # the follow job still reads it
+    assert c.status(p, record["id"])["application"] == "demo"
+
+
+def test_new_onboarding_and_workflow_pull_requests_need_the_repository_chosen(tmp_path):
+    from test_onboarding import make as onboarding
+    from test_workflows import PlatformAware
+    from test_workflows import config as workflows_config
+
+    from labdeploy.controller import Controller, Store
+    cfg = workflows_config(tmp_path, connections={"repositories": []})
+    c = Controller(cfg, PlatformAware(), Store(cfg.database))
+    with pytest.raises(ValueError, match="disabled in Connections"):
+        c.update_workflows(cfg.principals[0], "demo")
+    c, principal, github = onboarding(tmp_path / "onboarding")
+    c.config.connections.repositories = []
+    for refused in (lambda: c.onboard(principal, "https://github.com/lab/new-app"), lambda: c.onboard_all(principal, "lab/new-app"),
+                    lambda: c.import_contract(principal, "lab/new-app")):
+        with pytest.raises(ValueError, match="disabled in Connections"):
+            refused()
+    assert c.store.onboardings() == []
+
+
+@pytest.mark.parametrize("previous,bucket,expected", [
+    ("us-east1", {}, "us-east1"),                                                # nothing says otherwise: the region stays
+    ("us-east1", {"location": "US", "locationType": "multi-region"}, "us-east1"),
+    ("us-east1", {"location": "US-WEST1", "locationType": "region"}, "us-west1"),  # the new foundation's own region
+    (None, {}, "us-central1"),
+])
+def test_a_new_destination_keeps_the_region_unless_its_foundation_says_otherwise(browser, previous, bucket, expected):
+    service, calls = browser
+    key = connect(service)
+    original = service.client
+
+    def response(request):
+        if request.url.path.endswith("target-project-tfstate"):
+            return httpx.Response(200, json=bucket)
+        return original.send(request)
+
+    service.client = httpx.Client(transport=httpx.MockTransport(response))
+    data = {**service.config.model_dump(), "platform": {"repository": "lab/platform"}}
+    if previous:
+        data["onboarding"] = {"project_id": "previous-project", "project_number": "999999", "region": previous}
+    config = Config.model_validate(data)
+    service.github = GitHub(httpx.Client(base_url="https://api.github.com", transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"value":
+            ("projects/123456/locations/global/workloadIdentityPools/lab-deploy-platform/providers/github-"
+             if "WIF" in request.url.path else "lab-deploy-infra-") + ("apply" if "APPLY" in request.url.path else "plan")
+            + ("" if "WIF" in request.url.path else "@target-project.iam.gserviceaccount.com")}))), StaticToken("test"))
+    candidate = config.model_dump()
+    change_connections(candidate, config, FormData({"account": key, "project": "target-project"}), "destination", service, "session")
+    assert Config.model_validate(candidate).onboarding.region == expected
+
+
+def test_the_guide_names_the_setup_options_the_screen_shows():
+    import inspect
+
+    from labdeploy import connections_page
+    source, guide = inspect.getsource(connections_page), Path("docs/CONNECTIONS.md").read_text()
+    for label in ("Standard app — initial approval needed", "App already prepared for deployment"):
+        assert f'"{label}"' in source and f"“{label}”" in guide
+    assert "Keep the repository unchanged" not in guide and "existing, reviewed deployment settings" not in guide

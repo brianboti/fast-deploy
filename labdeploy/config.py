@@ -349,6 +349,12 @@ class Connections(StrictModel):
             self.repositories = sorted(set(repo.lower() for repo in self.repositories))
         return self
 
+    def permits(self, repository, platform=None):
+        """The one rule of the selection (docs/CONNECTIONS.md): none saved keeps the credential's own access; a saved list
+        allows those repositories and the platform repository, which is always needed."""
+        name = repository.lower()
+        return self.repositories is None or name in self.repositories or (platform is not None and name == platform.lower())
+
 
 class Config(StrictModel):
     applications: dict[str, Application]

@@ -291,6 +291,7 @@ class Onboarder:
             raise ValueError("Identity has read-only access")
         _ = self.settings  # fail early when the block is missing
         repository = normalize_repository(repository)
+        self.c.require_selected(repository)
         path = normalize_path(path)
         app_id = application_name(repository, path, app_id, as_is)
         record = self.c.store.onboarding(app_id)

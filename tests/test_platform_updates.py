@@ -388,6 +388,11 @@ def test_what_github_blocks_needs_a_person_after_an_hour_and_a_refused_merge_at_
     assert c.store.platform_update("workflows:demo")["waiting"].startswith("a person: GitHub refused the merge")
 
 
+def test_an_app_whose_repository_is_not_chosen_in_connections_gets_no_re_pin(tmp_path):
+    c, github, now = make(tmp_path, updates={"machine": False, "delay_minutes": 60}, connections={"repositories": []})
+    assert c.updates.workflows_step() == {"demo": "not chosen in Connections: its workflows are left as they are"} and github.opened == []
+
+
 def test_paused_switched_off_or_a_fixed_platform_commit_keeps_everything_manual(tmp_path):
     c, github, now = make(tmp_path, updates={"delay_minutes": 0, "quiet_minutes": 0}, paused=True)
     assert c.platform_updates_tick() == {"state": "paused"}

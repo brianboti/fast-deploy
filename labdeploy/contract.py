@@ -229,6 +229,7 @@ class Contracts:
         locks) under apps/<service>/ in the platform repository. Returns the reader's answer and the pull request."""
         if "*" not in principal.applications or not principal.can_deploy:
             raise ValueError("Importing a contract needs an identity that may onboard: applications: ['*'] with can_deploy")
+        self.c.require_selected(repository)
         view = self.inspect(repository, path, name)
         result = view["read"]
         if result["refusals"] or result["spec"] is None:

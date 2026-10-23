@@ -1,3 +1,49 @@
+# 1.31.8: checking a project works, and leaving a repository out stops only new work
+
+Found by a review of #175 (guided connections and the live deployment dashboard, merged on 2026-10-22 without a version of
+its own). Its 1,211 tests passed, but they stand in for Google, so they could not see the first problem.
+
+**"Check this project" was always refused.** The server reads the chosen project's two infrastructure service accounts as
+itself, and the machine's identity holds only the observer's viewer roles, none of which reads a service account: Google
+answered 403 every time. The foundation now makes `labDeployFoundationReader`, one permission (`iam.serviceAccounts.get`),
+and grants it on those two accounts only (no keys, no policies, no other account) to the machine of the project and to
+the identities in its `viewer_members`. Another project the screen should accept needs the machine in its
+`viewer_members`, as production and a project of an application's own already have it. A refusal now says what it means:
+the server's own Google identity has no access to that project, the person's Google account is fine, and how to fix it.
+A missing foundation says so too. Granting a role was chosen over checking the project another way: the person's
+read-only Google sign-in cannot read service accounts at all, and the project's access policy, which it can read, shows
+grants, not whether the two accounts exist and are switched on.
+
+**Leaving a repository out of the selection stopped too much.** Taking a registered application's repository out of
+**GitHub access** blocked its status, the follow job that records how a release ended, and its rollback. Now that
+application keeps working for reads, cancelling a run and rolling back (staging and production). What stops: checking or
+onboarding a repository that is not chosen, importing its contract, and new plans, releases, promotions and workflow-update
+pull requests (the automatic re-pins skip it too). The rule that decides is written once (`Connections.permits`), where
+three copies had been.
+
+**The dashboard.**
+
+- One deployment's slow GitHub or Cloud Run read no longer holds up every other deployment's page: each deployment has its
+  own lock, and a second person watching the same one waits for the read under way instead of starting another.
+- A deployment the controller has recorded as ended (unverified included) is never read on GitHub again, and an
+  observation is written to the database only when it changed.
+- A finished deployment's page stops checking by itself every 10 seconds; **Refresh now** still works.
+- The list reads all saved observations in one query instead of one per row. "In progress / prepared" leaves out plans
+  that expired unused and setups that finished or stopped; a release that ended unverified and a stopped setup count only
+  under "Needs attention".
+- A first-time setup that stopped shows as failed, one that finished as done, and both pages stop checking by themselves.
+
+**Choosing a new project kept no region.** It always wrote `us-central1`. It now keeps the previous region, unless the new
+project's Terraform state bucket sits in a single region, which is then used.
+
+**The guide** (docs/CONNECTIONS.md) names the two setup options as the screen shows them: "Standard app — initial approval
+needed" and "App already prepared for deployment".
+
+**For Brian.** After merging: apply the staging foundation (`scripts/apply-foundation.sh STAGING_PROJECT`, docs/SETUP.md
+7v), then update the machine. Only after that apply can **Check this project** pass, and that live check is the one proof
+the grant works, since the tests stand in for Google. Production's next foundation apply grants the same read to the
+staging machine (it is in production's `viewer_members`); the screen still refuses production. Nothing here costs money.
+
 # 1.31.7: a role just made is waited out, and a tool refuses an argument it does not take
 
 Found by the CodeSurgeon deploy on 2026-10-22.

@@ -612,7 +612,7 @@ def routes(config, store, failures, controller=None, jobs=None):
             return JSONResponse(data, headers={**headers, "Content-Disposition": 'attachment; filename="deployment-report.json"'})
         body = deployment_page.detail(data) if query else deployment_page.listing(data)
         return JSONResponse({"html": body, "state": data.get("state", "list"), "label": data.get("label", "Deployment list updated"),
-                             "error": data.get("error")}, headers=headers)
+                             "error": data.get("error"), "terminal": bool(data.get("terminal"))}, headers=headers)
 
     async def deployment_script(request):
         if not host_allowed(request):
@@ -1096,7 +1096,11 @@ def change_connections(candidate, config, form, which, connections, session):
                 if result.get("value") != expected:
                     raise ValueError("The platform’s infrastructure workflow still points to another project. Ask the administrator to configure "
                                      "its foundation and GitHub infrastructure variables for this project, then try again.")
-            candidate["onboarding"] = {"project_id": project["id"], "project_number": project["number"], "region": "us-central1"}
+            candidate["onboarding"] = {"project_id": project["id"], "project_number": project["number"]}
+            # The region stays what it was unless the new project's foundation says otherwise (its state bucket's region).
+            region = project.get("region") or (current.region if current else None)
+            if region:
+                candidate["onboarding"]["region"] = region
             if current:
                 for key in ("auto_merge", "default_viewers", "own_projects"):
                     candidate["onboarding"][key] = getattr(current, key)

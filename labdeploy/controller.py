@@ -665,6 +665,7 @@ class Controller:
         from .onboarding import Onboarder, normalize_repository
         if "*" not in principal.applications or not principal.can_deploy:
             raise ValueError("Onboarding every service of a repository needs an identity that may onboard: applications: ['*'] with can_deploy")
+        self.require_selected(normalize_repository(repository))
         seen = self.contracts.inspect(normalize_repository(repository), "")
         found = [entry["path"] for entry in seen["services"]]
         view = {"repository": seen["repository"], "services": found, "onboardings": []}
@@ -1655,13 +1656,17 @@ class Controller:
             raise ValueError("Identity has read-only access; reads still work, and a deploying identity (can_deploy) is the operator's to grant")
         return self.config.applications[app_id]
 
-    def require_active(self, app_id):
-        """Plans and dispatches stop while the operator has paused everything or this app; reads keep working."""
-        allowed = self.config.connections.repositories
-        repository = self.config.applications[app_id].repository.lower()
-        platform = self.config.platform.repository.lower() if self.config.platform else None
-        if allowed is not None and repository != platform and repository not in allowed:
-            raise ValueError(f"Access to {repository} is disabled in Connections. Select it there before deploying.")
+    def require_selected(self, repository):
+        """New onboarding, plans and dispatches need a repository chosen in Connections (docs/CONNECTIONS.md)."""
+        platform = self.config.platform.repository if self.config.platform else None
+        if not self.config.connections.permits(repository, platform):
+            raise ValueError(f"Access to {repository} is disabled in Connections. Select it there before deploying; reads and rollbacks still work.")
+
+    def require_active(self, app_id, rollback=False):
+        """Plans and dispatches stop while the operator has paused everything or this app; reads keep working. A rollback
+        also works for an application whose repository is no longer chosen in Connections: it only moves traffic back."""
+        if not rollback:
+            self.require_selected(self.config.applications[app_id].repository)
         if self.config.paused:
             raise ValueError("Deployments are paused by the operator (paused: true in the controller configuration); reads still work")
         if self.config.applications[app_id].paused:
@@ -2102,6 +2107,7 @@ class Controller:
         if app.central:
             return {"application": app_id, "platform_commit": None, "current_pin": None, "pull_request": None,
                     "note": "This application is taken as it is: the platform repository's own pipeline releases it, so it has no workflows to update."}
+        self.require_selected(app.repository)  # a pull request in its repository
         if not allow_writes and not self.config.live_dispatch:
             raise ValueError("Writes are disabled (live_dispatch: false); enable them, or run the command on the controller host")
         sha = platform_sha or platform.commit or self.github.branch_head(platform.repository, platform.branch)
@@ -2693,7 +2699,7 @@ class Controller:
         app = self.app(principal, app_id, write=True)
         if not principal.can_deploy:
             raise ValueError("Identity has read-only access")
-        self.require_active(app_id)
+        self.require_active(app_id, rollback=True)
         production, platform = self.config.production, self.config.platform
         if production is None or platform is None or app.production is None:
             raise ValueError(f"{app_id} has no production yet: ask for add_production first")
@@ -2785,7 +2791,7 @@ class Controller:
     def rollback(self, principal, app_id):
         """Move traffic back to the split that served before the live release, through the recovery workflow. No build."""
         app = self.app(principal, app_id, write=True)
-        self.require_active(app_id)
+        self.require_active(app_id, rollback=True)
         if not self.config.live_dispatch:
             raise ValueError("Dispatch is disabled (live_dispatch: false); nothing can be rolled back from here")
         live = self.store.latest_success(app_id)

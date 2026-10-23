@@ -210,20 +210,35 @@ class BrowserConnections:
             raise ValueError("Enable billing for this project in Google Cloud, then select it again.")
         # Verify the foundation's existence. This does not assert permission to deploy: workflow/IAM checks still run.
         # IAM's get endpoint does not accept cloud-platform.read-only. Use the server's existing identity instead of
-        # asking a person for the full cloud-platform scope just to choose a project.
+        # asking a person for the full cloud-platform scope just to choose a project. That identity reads the two accounts
+        # through the foundation's labDeployFoundationReader grant and the bucket through the observer's bucketViewer.
         try:
             auth = {"Authorization": "Bearer " + self.foundation_token()}
         except ValueError:
             raise ValueError("The server cannot verify this project’s deployment setup. Ask its administrator to connect the server’s Google identity.") from None
         for url in (f"https://iam.googleapis.com/v1/projects/{project_id}/serviceAccounts/lab-deploy-infra-apply@{project_id}.iam.gserviceaccount.com",
                     f"https://iam.googleapis.com/v1/projects/{project_id}/serviceAccounts/lab-deploy-infra-plan@{project_id}.iam.gserviceaccount.com"):
-            data = json_response(self.client.get(url, headers=auth))
+            data = self.foundation_read(url, auth, project_id)
             if data.get("disabled"):
                 raise ValueError("This project's deployment identity is disabled. Ask its administrator to restore the Fast Deploy foundation.")
         bucket = self.config.onboarding.state_bucket if self.config.onboarding and self.config.onboarding.project_id == project_id else None
         bucket = bucket or f"{project_id}-tfstate"
-        json_response(self.client.get(f"https://storage.googleapis.com/storage/v1/b/{bucket}", headers=auth))
-        return {**project, "email": account["email"]}
+        state = self.foundation_read(f"https://storage.googleapis.com/storage/v1/b/{bucket}", auth, project_id)
+        # The foundation's state lives in its region (docs/SETUP.md); a dual- or multi-region bucket says nothing about it.
+        region = str(state.get("location", "")).lower() if state.get("locationType") == "region" else ""
+        return {**project, "email": account["email"], "region": region if re.fullmatch(r"[a-z]+-[a-z]+[0-9]", region) else None}
+
+    def foundation_read(self, url, auth, project_id):
+        """One read as the server's own identity, with Google's refusal in plain words: the browser account is not the one asking."""
+        response = self.client.get(url, headers=auth)
+        if response.status_code == 403:
+            raise ValueError(f"This server's own Google identity has no access to {project_id}, so it cannot see that project's Fast Deploy "
+                             "foundation. Your Google account is fine. Ask the administrator to add the server's identity to that project's "
+                             "viewer_members and apply its foundation (docs/CONNECTIONS.md), then check again.")
+        if response.status_code == 404:
+            raise ValueError(f"{project_id} has no Fast Deploy foundation yet (its deployment identities or its Terraform state bucket are "
+                             "missing). Ask the administrator to set it up (docs/SETUP.md), then check again.")
+        return json_response(response)
 
     def refresh_github(self, session):
         self.cleanup()
@@ -242,9 +257,7 @@ class BrowserConnections:
         return {"google_ready": self.google_ready(), "accounts": accounts, "github": catalog["data"] if catalog else None, "review": review}
 
     def repository_allowed(self, repository):
-        selected = self.config.connections.repositories
-        platform = self.config.platform.repository.lower() if self.config.platform else None
-        if selected is not None and repository.lower() != platform and repository.lower() not in selected:
+        if not self.config.connections.permits(repository, self.config.platform.repository if self.config.platform else None):
             raise ValueError("Select and save this repository in GitHub access before continuing.")
         return repository
 

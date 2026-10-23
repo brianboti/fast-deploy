@@ -347,6 +347,8 @@ class PlatformUpdates:
                 onboarding = self.c.store.onboarding(app_id)
                 if app.paused:
                     results[app_id] = "paused"
+                elif not self.c.config.connections.permits(app.repository, self.c.config.platform.repository):
+                    results[app_id] = "not chosen in Connections: its workflows are left as they are"
                 elif onboarding and onboarding.get("state") != "complete":
                     results[app_id] = f"onboarding ({onboarding.get('state')}) adds its workflows"
                 elif record.get("target") == target and record.get("state") in SETTLED:

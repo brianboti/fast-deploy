@@ -8,15 +8,15 @@ The screen uses plain English and three expandable steps. The relevant step open
 
 1. **Choose your Google account** — connect an account, select a project and choose **Check this project**. Projects load automatically after sign-in. Review the selection, then save. A saved project can be reused without signing in again.
 2. **Choose GitHub access** — load the available code, select what this app may access and choose **Review and save access**. GitHub account grants still happen on GitHub through the labelled link. The platform repository remains required. Saving offers a button to continue to the app check.
-3. **Check and launch** — choose the app code or paste its GitHub link, then **Check app**. The default method needs an initial human approval. The app name, app folder and pre-prepared mode are under **More options**. After a successful check, review the summary and choose **Start app setup**. The status page explains any approval needed and links to the GitHub proposal.
+3. **Check and launch** — choose the app code or paste its GitHub link, then **Check app**. The default setup option, “Standard app — initial approval needed”, needs an initial human approval. The app name, app folder and the other setup option, “App already prepared for deployment”, are under **More options**. After a successful check, review the summary and choose **Start app setup**. The status page explains any approval needed and links to the GitHub proposal.
 
 Confirmation and saved-result screens show short summaries with exact configuration changes available under **Technical details**. Provider diagnostics remain available under **View error details**, alongside a plain explanation. They never include provider response bodies or credentials.
 
-“Keep the repository unchanged” creates a contract proposal in the platform repository. A person must merge that proposal before deployment continues. “Use the repository’s existing, reviewed deployment settings” uses the existing onboarding process and its auto-merge policy. The browser does not bypass checks, approval separation, paused releases, or the production approval process.
+“Standard app — initial approval needed” leaves the app's repository unchanged and creates a contract proposal in the platform repository. A person must merge that proposal before deployment continues. “App already prepared for deployment” uses the repository's own reviewed deployment settings, through the existing onboarding process and its auto-merge policy. The browser does not bypass checks, approval separation, paused releases, or the production approval process.
 
 The Google account chooser selects a project; it does not replace the deployment service accounts. Browser Google tokens are read-only, kept only in server memory, and expire within an hour. They are removed on disconnect, sign-out, or server shutdown. A saved destination remains selected after the browser connection expires. Connecting an account here does not make it a viewer of deployed apps; use each application's **Who may open its pages** setting for that.
 
-The destination is for **new staging applications**. Existing applications retain their registered target. Production remains separate. Switching the shared foundation is an administrator operation: finish that setup before choosing a different default project. This page does not migrate existing services or create a billing account, a project, or the foundation.
+The destination is for **new staging applications**. Existing applications retain their registered target. Choosing a different project keeps the previous region, unless that project's Terraform state bucket sits in one region, which is then used. Production remains separate. Switching the shared foundation is an administrator operation: finish that setup before choosing a different default project. This page does not migrate existing services or create a billing account, a project, or the foundation.
 
 ## One-time Google sign-in setup
 
@@ -34,7 +34,12 @@ This is separate from the existing Claude connector's OAuth server.
 
 The requested scopes are `openid`, `email`, `cloud-platform.read-only`, and `cloud-billing.readonly`. There is no offline refresh token. The account needs permission to see the intended project and its billing-enabled status. Google may require consent-app verification or test-user registration depending on your audience and scopes.
 
-For foundation checks, the **server's existing Google identity** reads the two infrastructure service accounts and Terraform state bucket. IAM's service-account endpoint does not accept the browser's read-only cloud scope, so the browser never requests full cloud management access merely to select a project. The server must already be authorized to read those resources.
+For foundation checks, the **server's existing Google identity** reads the two infrastructure service accounts and Terraform state bucket. IAM's service-account endpoint does not accept the browser's read-only cloud scope, so the browser never requests full cloud management access merely to select a project. The server must already be authorized to read those resources:
+
+- **The service accounts.** The foundation grants the custom role `labDeployFoundationReader` (one permission, `iam.serviceAccounts.get`) on `lab-deploy-infra-plan` and `lab-deploy-infra-apply` only: no keys, no policies, no other account. In the controller's own project it goes to the machine's identity (`lab-deploy-controller`).
+- **The state bucket.** The machine's observer roles include `roles/storage.bucketViewer`, which reads the bucket's settings, never its files.
+
+**Another project** needs the same access before it can be chosen: add the controller machine's identity, `serviceAccount:lab-deploy-controller@CONTROLLER_PROJECT.iam.gserviceaccount.com`, to that project's `viewer_members` (its foundation's tfvars) and apply its foundation (`scripts/apply-foundation.sh`). That grants both. Until then **Check this project** says that the server's own Google identity has no access to that project; the browser account is not the problem.
 
 Before accepting a different default project, Fast Deploy also verifies all four platform repository variables against that project's foundation:
 
@@ -59,7 +64,7 @@ The optional `connections.repositories` list is a second restriction on the cont
 - A list: permit only those repositories, plus the configured platform repository, which remains required.
 - `[]`: permit the platform repository only.
 
-The restriction applies to repository API calls and new release plans/dispatches, including applications whose pipeline lives in the platform repository. It applies after saving without restarting. It does not cancel running GitHub workflows, stop deployed services, or revoke grants on GitHub. Use GitHub's **Manage access** link to change the upstream grant itself.
+The restriction stops new work in a repository that is not chosen: checking it, onboarding it, importing its contract, and new plans, releases, promotions and workflow-update pull requests for an application registered from it, including applications whose pipeline lives in the platform repository. An application already registered keeps working for everything else: its status, the dashboard, the follow job that records how a release ended, cancelling a run, and rolling back in staging or production. The controller still reads that repository for those. It applies after saving without restarting. It does not cancel running GitHub workflows, stop deployed services, or revoke grants on GitHub. Use GitHub's **Manage access** link to change the upstream grant itself.
 
 ## Review and session boundaries
 
