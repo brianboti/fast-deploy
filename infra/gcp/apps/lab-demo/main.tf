@@ -31,8 +31,8 @@ module "service" {
   error_alert_count            = 5
   latency_alert_ms             = 2000
   instance_alert_count         = 4
-  exposure                     = "authenticated"
-  viewers                      = []
+  exposure                     = "lab-members"
+  viewers                      = ["user:boti.brian1@gmail.com", "user:mail.mboti@gmail.com"]
   promotion_readers            = ["lab-demo-deploy@fast-deploy-prod-c602.iam.gserviceaccount.com"]
   needs                        = { buckets = ["uploads"], topics = ["events"], database = "none", migrate = [] }
   project_number               = data.terraform_remote_state.project.outputs.project_number
@@ -46,4 +46,5 @@ module "service" {
   cap_operator_role            = data.terraform_remote_state.project.outputs.cap_operator_role
   iap_client_id                = try(data.terraform_remote_state.project.outputs.iap_client_id, "")
   kms_key_ring                 = try(data.terraform_remote_state.project.outputs.kms_key_ring, "")
+  binary_authorization         = try(data.terraform_remote_state.project.outputs.binary_authorization, null)
 }
