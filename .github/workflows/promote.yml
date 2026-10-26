@@ -135,7 +135,7 @@ jobs:
     # No cloud credentials and no environment: the inputs and the reviewed specification are checked, and the approval block
     # is written to this run's summary, where the reviewer reads it before approving the promote job.
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -221,6 +221,19 @@ jobs:
           assert spec.name == os.environ["APPLICATION"], "the specification names another service"
           assert spec_hash(spec) == os.environ["SPEC_HASH"], "Spec hash mismatch"
           PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.operation == 'promote'
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.commit_sha }}
+          token: ${{ steps.app-token.outputs.token || secrets.APPS_READ_TOKEN || github.token }}
+          persist-credentials: false
+          path: source
+      - name: Fresh source secret admission
+        if: inputs.operation == 'promote'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        run: python -m labdeploy.secret_admission --source source --output bundle/source-secret-admission.json
       - name: Write the approval block
         env:
           PYTHONPATH: ${{ github.workspace }}/platform
@@ -403,6 +416,11 @@ jobs:
           python -m labdeploy.promotion jobs --image-prefix "$GCP_REGION-docker.pkg.dev/$GCP_PROJECT_ID/$REGISTRY_NAME/$SERVICE"
           echo "JOB_IMAGES_FILE=$GITHUB_WORKSPACE/job-images.json" >> "$GITHUB_ENV"
       # 14.8: production's own attestor, after the staging provenance was verified and a reviewer approved.
+      - name: Fresh secret admission for promoted images
+        if: inputs.operation == 'promote'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        run: python -m labdeploy.secret_admission --image "$IMAGE_DIGEST" --jobs job-images.json --output bundle/secrets-admission.json
       - name: Attest the image for Binary Authorization
         if: inputs.operation == 'promote'
         env:

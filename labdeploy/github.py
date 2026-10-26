@@ -830,8 +830,19 @@ class GitHub:
         if run_id:
             run = self.request("GET", f"/repos/{repository}/actions/runs/{int(run_id)}").json()
         else:
-            runs = self.request("GET", f"/repos/{repository}/actions/workflows/{workflow}/runs", params={"event": "workflow_dispatch", "per_page": 100}).json()["workflow_runs"]
-            run = next((r for r in runs if r.get("display_title") == title), None)
+            matches = []
+            # Only runs created since the plan can carry its id; GitHub returns at most 1,000 filtered runs.
+            since = {"created": ">=" + datetime.datetime.fromtimestamp(plan["expires_at"] - 900 - 300, datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")} \
+                if plan.get("expires_at") else {}
+            for page in range(1, 11):
+                runs = self.request("GET", f"/repos/{repository}/actions/workflows/{workflow}/runs",
+                                    params={"event": "workflow_dispatch", "per_page": 100, "page": page, **since}).json()["workflow_runs"]
+                matches.extend(r for r in runs if r.get("display_title") == title)
+                if len(runs) < 100:
+                    break
+            if len(matches) > 1:
+                return {"status": "not_visible_yet", "note": "Multiple workflow runs name this operation; reconcile before another mutation."}
+            run = next(iter(matches), None)
         if run is None:
             return {"status": "not_visible_yet", "note": "Do not redispatch; inspect GitHub Actions if this persists."}
         # The unique plan id in the run title is the identity. The head SHA is the branch tip the workflow ran on, which

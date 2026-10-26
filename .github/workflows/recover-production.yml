@@ -1,0 +1,112 @@
+name: Recover production
+run-name: recovery-${{ inputs.plan_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      application:
+        description: Registered production application
+        required: true
+        type: string
+      plan_id:
+        description: Interrupted release identity (32 hex characters)
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  applications:
+    # Production roots are reviewed registry data, including repository-owned applications.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    env:
+      ONLY: ${{ inputs.application }}
+      RECOVERY_PLAN_ID: ${{ inputs.plan_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: List the applications
+        id: list
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RECOVERY_PLAN_ID" =~ ^[a-f0-9]{32}$ ]]
+          [[ "$ONLY" =~ ^[a-z][a-z0-9-]{1,19}[a-z0-9]$ ]]
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, pathlib, re
+          apps = sorted(p.parent.name for p in pathlib.Path("infra/gcp/apps-production").glob("*/main.tf") if re.fullmatch(r"[a-z][a-z0-9-]{1,19}[a-z0-9]", p.parent.name))
+          only = os.environ["ONLY"]
+          if only:
+              assert only in apps, f"no production root for {only}"
+              apps = [only]
+          print("matrix=" + json.dumps(apps))
+          PY
+  recover:
+    needs: applications
+    if: github.ref == 'refs/heads/main' && needs.applications.outputs.matrix != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        application: ${{ fromJSON(needs.applications.outputs.matrix) }}
+    # The same queue as the application's releases, so a recovery never runs beside its own deploy.
+    concurrency:
+      group: gcp-production-${{ matrix.application }}
+      cancel-in-progress: false
+      queue: max  # waiting runs wait; one never cancels a waiting release of the same service
+    environment: production-recovery-${{ matrix.application }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+      REGISTRY_NAME: ${{ vars.ARTIFACT_REPOSITORY }}
+      PROBE_SERVICE_ACCOUNT: ${{ vars.PROBE_SERVICE_ACCOUNT }}
+      DEPLOY_SERVICE_ACCOUNT: ${{ vars.DEPLOY_SERVICE_ACCOUNT }}
+      WIF_PROVIDER: ${{ vars.WIF_PROVIDER }}
+      RECOVERY_BUCKET: ${{ vars.RECOVERY_BUCKET }}
+      RECOVERY_ONLY: 'true'
+      RECOVERY_PLAN_ID: ${{ inputs.plan_id }}
+    steps:
+      # Never check out or execute code from the triggering workflow or the application.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: platform
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --require-hashes -r platform/requirements.lock
+      - name: Require recovery enablement
+        env:
+          ENABLED: ${{ vars.AUTOMATIC_RECOVERY_ENABLED }}
+        run: test "$ENABLED" = "true"
+      - name: Validate configured recovery destination
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        run: python -m labdeploy.target
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.RECOVERY_WIF_PROVIDER }}
+          service_account: ${{ vars.RECOVERY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      - name: Recover interrupted release from durable journal
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        run: python -m labdeploy.release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: recovery-receipt-${{ matrix.application }}
+          path: recovery-receipt.json
+          if-no-files-found: warn
+          retention-days: 30

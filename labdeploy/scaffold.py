@@ -21,6 +21,7 @@ import yaml
 
 from .analyzer import TEST_PATH, analyze
 from .models import AppSpec, draft_dump
+from .resolution_protocol import ResolutionPending
 
 TEMPLATES = Path(__file__).resolve().parent.parent / "templates" / "repo"
 PYTHONS = get_args(AppSpec.model_fields["python"].annotation)
@@ -597,6 +598,11 @@ def lock_container(python_version):
 
 def docker_runner(args, stdin, timeout=900):
     """Run a command with text on stdin and return its stdout; raises when it fails or when Docker is not installed."""
+    raise ValueError("Local dependency execution is disabled; configure remote workers or supply a reviewed lockfile")
+
+
+def local_docker_runner(args, stdin, timeout=900):
+    """The controller's own Docker, used only under `resolver_local_fallback` (an operator's recorded exception to ISO-001)."""
     return subprocess.run(args, input=stdin, capture_output=True, text=True, check=True, timeout=timeout).stdout
 
 
@@ -610,6 +616,8 @@ def compile_lock(requirements_text, python_version=DEFAULT_PYTHON, runner=docker
         return {"text": None, "command": command, "error": "requirements.txt is empty"}
     try:
         output = runner(lock_container(python_version), requirements_text)
+    except ResolutionPending:
+        raise
     except FileNotFoundError:
         return {"text": None, "command": command, "error": "Docker is not installed on this machine"}
     except subprocess.CalledProcessError as exc:
@@ -685,6 +693,8 @@ def node_lock(package_text, line, runner=docker_runner, path=""):
         return {"text": None, "command": command, "error": "package.json is missing or is not valid JSON"}
     try:
         output = runner(node_lock_container(line), package_text)
+    except ResolutionPending:
+        raise
     except FileNotFoundError:
         return {"text": None, "command": command, "error": "Docker is not installed on this machine"}
     except subprocess.CalledProcessError as exc:
@@ -1632,6 +1642,8 @@ def export_uv_lock(pyproject_text, uv_lock_text, python_version=DEFAULT_PYTHON, 
             archive.addfile(info, io.BytesIO(data))
     try:
         output = runner(export_container(python_version, dev), base64.b64encode(buffer.getvalue()).decode())
+    except ResolutionPending:
+        raise
     except FileNotFoundError:
         return {"text": None, "error": "Docker is not installed on this machine"}
     except subprocess.CalledProcessError as exc:

@@ -1,0 +1,44 @@
+name: Contract admission
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  contracts:
+    name: Validate contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: candidate
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+          path: policy
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install trusted validator dependencies
+        working-directory: policy
+        run: python -m pip install --require-hashes -r requirements.lock
+      - name: Validate submitted data with the base policy
+        working-directory: policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f labdeploy/contractcheck.py ]; then
+            python -m labdeploy.contractcheck --root ../candidate/apps --previous apps
+          else
+            # One-time introduction: the base branch predates this validator.
+            # Require this check in branch protection after this bootstrap change merges.
+            echo "Base policy predates contract admission; bootstrap validation follows." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Validate candidate policy compatibility
+        working-directory: candidate
+        # This job has no secrets or deployment identity. Submitted contracts are never executed.
+        run: python -m labdeploy.contractcheck --root apps --previous ../policy/apps

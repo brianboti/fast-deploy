@@ -198,8 +198,8 @@ def central_deploy(template_text):
           ref: PLATFORM_COMMIT
           persist-credentials: false
           path: platform
-""") != 3:
-        raise ValueError("The deploy template no longer checks the platform out three times (base, build and deploy jobs)")
+""") != 4:
+        raise ValueError("The deploy template no longer checks the platform out four times (base, build, deploy and source admission jobs)")
     t = t.replace("""          repository: PLATFORM_REPOSITORY
           ref: PLATFORM_COMMIT
           persist-credentials: false
@@ -233,6 +233,10 @@ def central_deploy(template_text):
         with:
           name: release-bundle
           path: bundle
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: source-secret-admission
+          path: bundle/source-admission
       # Reuse: the reviewed configuration comes from the commit itself; the image was built and attested by an earlier run.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: inputs.image_digest != ''
@@ -262,6 +266,10 @@ def central_deploy(template_text):
         with:
           name: release-bundle
           path: bundle
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: source-secret-admission
+          path: bundle/source-admission
 """ + READ_CONTRACT + """      # Reuse: the reviewed configuration is the contract; the image was built and attested by an earlier run.
       - name: Validate dispatch inputs for reuse
         if: inputs.image_digest != ''
@@ -307,4 +315,19 @@ def central_deploy(template_text):
             raise ValueError(f"{placeholder} is left in the central deploy workflow")
     if "PLATFORM_REPOSITORY" in t or "PLATFORM_COMMIT" in t:
         raise ValueError("The central deploy workflow must not pin a platform commit: it is the platform")
+    t = _swap(t, """      # Fresh source admission includes reused images; no application code is executed here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit_sha }}
+          persist-credentials: false
+          path: app
+""", TOKEN_STEPS + """      # Fresh source admission includes reused images; no application code is executed here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.commit_sha }}
+          token: @APP_READER@
+          persist-credentials: false
+          path: app
+""".replace("@APP_READER@", APP_READER))
     return "# Generated from templates/deploy-gcp.yml by labdeploy.workflows.central_deploy; a test keeps them equal. Never edit by hand.\n" + t

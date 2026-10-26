@@ -249,7 +249,8 @@ def test_the_pipeline_plans_applies_and_watches_production_roots_with_production
     assert "lab-deploy-infra:production-$APP" in json.dumps(plan["jobs"]["plan-production"])
     assert drift["jobs"]["report"]["needs"] == ["roots", "plan", "plan-production"]
     ci = Path(".github/workflows/ci.yml").read_text()
-    assert ci.count("for root in project apps/*/ apps-production/*/; do") == 2 and ci.count("shopt -s nullglob") == 2
+    assert ci.count("for root in project apps/*/ apps-production/*/ modules/resolver/ modules/recovery-supervisor/; do") == 2 \
+        and ci.count("shopt -s nullglob") == 2
     assert re.search(r"infra/gcp/apps-production/\*\*", Path(".github/workflows/infra-plan.yml").read_text())
 
 

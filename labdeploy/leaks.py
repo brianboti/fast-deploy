@@ -1,8 +1,8 @@
 """Committed secrets, found by TruffleHog in the checkout and in the built image (docs/ROADMAP.md 14.2).
 
 TruffleHog writes one JSON object per finding and, when it can, verifies the credential against its provider: a verified
-finding is a key that works right now. For code nobody has reviewed (D35: trust `unknown`) a verified finding stops the
-release; for the lab's own code it is reported loudly, like every unverified finding. The values TruffleHog found never
+finding is a key that works right now. A verified finding stops every new release, regardless of source review.
+Unverified findings are reported separately. The values TruffleHog found never
 leave this module: the annotations and the summary name the detector, the file, the line and the layer, nothing else.
 
     python -m labdeploy.leaks REPORT.jsonl --trust unknown|reviewed --where checkout|image [--strip PREFIX] [--json OUT]
@@ -12,6 +12,9 @@ import json
 import os
 import sys
 from pathlib import Path
+
+POLICY_VERSION = "SEC-001/v1"
+MAX_REPORT_BYTES = 32 * 1024 * 1024
 
 # Where an image holds what the application installed rather than wrote: packages, the system's own files, the buildpacks'
 # layers, a Node.js service's node_modules and the Yarn the official node images carry. An unconfirmed finding there is a
@@ -25,20 +28,29 @@ def third_party(path):
     return any(marker in path if marker.endswith(("-packages/", "node_modules/")) else path.startswith(marker) for marker in THIRD_PARTY)
 
 
-def findings(lines, strip=""):
+def findings(lines, strip="", *, strict=False):
     """The findings of a TruffleHog JSON report, without the secrets: detector, verified, file, line, layer."""
     found = []
-    for raw in lines:
+    for number, raw in enumerate(lines, 1):
         raw = raw.strip()
-        if not raw.startswith("{"):
+        if not raw:
             continue
         try:
             item = json.loads(raw)
         except ValueError:
+            if strict:
+                raise ValueError(f"Invalid secret scan output at line {number}") from None
             continue
-        if not isinstance(item, dict) or "DetectorName" not in item:
+        if not isinstance(item, dict) or not isinstance(item.get("DetectorName"), str) or type(item.get("Verified")) is not bool:
+            if strict:
+                raise ValueError(f"Invalid secret finding at line {number}")
             continue
-        data = ((item.get("SourceMetadata") or {}).get("Data") or {})
+        metadata = item.get("SourceMetadata") or {}
+        data = (metadata.get("Data") or {}) if isinstance(metadata, dict) else {}
+        if not isinstance(data, dict):
+            if strict:
+                raise ValueError(f"Invalid secret metadata at line {number}")
+            data = {}
         source = next((value for value in data.values() if isinstance(value, dict)), {})
         path = str(source.get("file") or "")
         if strip and path.startswith(strip):
@@ -55,10 +67,11 @@ def findings(lines, strip=""):
 
 
 def decide(found, trust):
-    """(blocking, lines for people): verified findings block code nobody has reviewed."""
+    """Source review never exempts a working credential from the release gate."""
+    if trust not in ("unknown", "reviewed"):
+        raise ValueError("Unknown source trust")
     verified = [item for item in found if item["verified"]]
-    blocking = bool(verified) and trust == "unknown"
-    return blocking, verified
+    return bool(verified), verified
 
 
 def escape(text, property=False):
@@ -74,7 +87,15 @@ def main(argv=None):
     parser.add_argument("--strip", default="", help="a path prefix to remove so files read as the repository names them")
     parser.add_argument("--json", help="write the summary here (no secret values)")
     args = parser.parse_args(argv)
-    found = findings(Path(args.report).read_text(errors="replace").splitlines(), args.strip)
+    try:
+        report = Path(args.report)
+        if report.stat().st_size > MAX_REPORT_BYTES:
+            raise ValueError("Secret scan output exceeds its size limit")
+        found = findings(report.read_text().splitlines(), args.strip, strict=True)
+    except (OSError, UnicodeError, ValueError):
+        # Never include the parser exception or source line: it may contain the credential.
+        print("::error title=Secret scan::Required scan output is missing, oversized or invalid; admission refused", file=sys.stderr)
+        return 2
     blocking, verified = decide(found, args.trust)
     installed = [item for item in found if not item["verified"] and third_party(item["file"])]
     for item in found:
@@ -88,14 +109,14 @@ def main(argv=None):
               f"{escape(f'{state} in {where}' + (' (layer ' + item['layer'][:19] + ')' if item.get('layer') else ''))}")
     line = (f"Secret scan of the {args.where} ({args.trust}): {len(found)} finding{'s' if len(found) != 1 else ''}, {len(verified)} verified"
             + (f", {len(installed)} unconfirmed in installed packages or system files" if installed else "")
-            + ("; verified keys stop a release of code nobody has reviewed" if blocking else ""))
+            + ("; verified keys stop every new release" if blocking else ""))
     print(line)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
             summary.write(line + "\n")
     if args.json:
-        Path(args.json).write_text(json.dumps({"where": args.where, "trust": args.trust, "findings": found, "blocking": blocking,
-                                               "installed": len(installed)}, indent=2) + "\n")
+        Path(args.json).write_text(json.dumps({"policy_version": POLICY_VERSION, "where": args.where, "trust": args.trust, "findings": found, "blocking": blocking,
+                                             "installed": len(installed)}, indent=2) + "\n")
     if blocking:
         many = len(verified) != 1
         print(f"::error title=Secret scan::{len(verified)} working credential{'s' if many else ''} in the {args.where}: remove "

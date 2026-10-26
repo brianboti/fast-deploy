@@ -1,0 +1,136 @@
+{
+  "schema": 1,
+  "observed_on": "2026-10-26",
+  "evidence_class": "local declarations only",
+  "baseline_commit": "570509884cbd43fcc19b7f10a94ecc9af5a2e8ae",
+  "working_tree_has_uncommitted_implementation": true,
+  "contracts": [
+    {
+      "application": "lab-demo-two",
+      "path": "apps/lab-demo-two/platform.yaml",
+      "source": {
+        "repository": "brianboti/lab-demo-two",
+        "commit": "b09b399490dba5450fcbc7ae4cc6b06b6964dae2"
+      },
+      "present_locks": [
+        "requirements-test.lock",
+        "requirements.lock"
+      ],
+      "live_workflow_pin": "unknown"
+    },
+    {
+      "application": "llm-debate-backend",
+      "path": "apps/llm-debate-backend/platform.yaml",
+      "source": {
+        "repository": "brianboti/llm-debate-agent",
+        "path": "backend",
+        "commit": "884b8c2a2699e2ee24f140477c70ca9c1ad14b7b"
+      },
+      "present_locks": [
+        "requirements-test.lock",
+        "requirements.lock"
+      ],
+      "live_workflow_pin": "unknown"
+    },
+    {
+      "application": "node-bare",
+      "path": "apps/node-bare/platform.yaml",
+      "source": {
+        "repository": "brianboti/fast-deploy-node-trial",
+        "path": "node-bare",
+        "commit": "00b11f642b1a2c4b46361382b92e59c6d3e8b55e"
+      },
+      "present_locks": [],
+      "live_workflow_pin": "unknown"
+    },
+    {
+      "application": "node-docker",
+      "path": "apps/node-docker/platform.yaml",
+      "source": {
+        "repository": "brianboti/fast-deploy-node-trial",
+        "path": "node-docker",
+        "commit": "ebc300226eed7682013b1cef0da8c562b706abee"
+      },
+      "present_locks": [],
+      "live_workflow_pin": "unknown"
+    },
+    {
+      "application": "node-nolock",
+      "path": "apps/node-nolock/platform.yaml",
+      "source": {
+        "repository": "brianboti/fast-deploy-node-trial",
+        "path": "node-nolock",
+        "commit": "00b11f642b1a2c4b46361382b92e59c6d3e8b55e"
+      },
+      "present_locks": [
+        "package-lock.json"
+      ],
+      "live_workflow_pin": "unknown"
+    },
+    {
+      "application": "node-onnx",
+      "path": "apps/node-onnx/platform.yaml",
+      "source": {
+        "repository": "brianboti/fast-deploy-node-trial",
+        "path": "node-onnx",
+        "commit": "00b11f642b1a2c4b46361382b92e59c6d3e8b55e"
+      },
+      "present_locks": [],
+      "live_workflow_pin": "unknown"
+    },
+    {
+      "application": "node-procfile",
+      "path": "apps/node-procfile/platform.yaml",
+      "source": {
+        "repository": "brianboti/fast-deploy-node-trial",
+        "path": "node-procfile",
+        "commit": "00b11f642b1a2c4b46361382b92e59c6d3e8b55e"
+      },
+      "present_locks": [],
+      "live_workflow_pin": "unknown"
+    }
+  ],
+  "staging_roots": [
+    "infra/gcp/apps/codesurgeon",
+    "infra/gcp/apps/jobs-demo",
+    "infra/gcp/apps/lab-bare",
+    "infra/gcp/apps/lab-demo",
+    "infra/gcp/apps/lab-demo-two",
+    "infra/gcp/apps/lab-notebook",
+    "infra/gcp/apps/llm-debate-backend",
+    "infra/gcp/apps/mono-admin",
+    "infra/gcp/apps/mono-api",
+    "infra/gcp/apps/node-bare",
+    "infra/gcp/apps/node-docker",
+    "infra/gcp/apps/node-nolock",
+    "infra/gcp/apps/node-onnx",
+    "infra/gcp/apps/node-procfile",
+    "infra/gcp/apps/sophia",
+    "infra/gcp/apps/sophia-bettercare"
+  ],
+  "production_roots": [
+    "infra/gcp/apps-production/lab-demo"
+  ],
+  "release_paths": [
+    "central staging",
+    "repository-owned staging",
+    "image reuse",
+    "production promotion",
+    "application job images",
+    "explicit rollback",
+    "staging recovery",
+    "opt-in production recovery"
+  ],
+  "unknown_live_evidence": [
+    "application workflow/platform pins",
+    "branch protection and independent reviewers",
+    "effective WIF and inherited IAM",
+    "Binary Authorization enforcement",
+    "broker-only launch IAM",
+    "worker firewall/proxy enforcement",
+    "backup and replication freshness",
+    "alert recipients and delivery",
+    "runner-loss recovery and restore times"
+  ],
+  "accountable_owner": "platform operator must assign named people before pilot"
+}

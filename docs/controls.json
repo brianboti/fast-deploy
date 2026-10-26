@@ -1,0 +1,159 @@
+{
+  "schema": 1,
+  "as_of": "2026-10-26",
+  "status": "implementation evidence; live verification pending",
+  "controls": [
+    {
+      "id": "SEC-001/v1",
+      "rule_and_enforcement": "A verified credential denies new admission for every trust classification, source checkout, service/job image, reuse and promotion. Failed/malformed scans deny.",
+      "limitations": "Blocking in upgraded workflows; old pinned application workflows need upgrades. No raw credential evidence. Recovery is a distinct action.",
+      "owner_and_evidence": "Security/platform; `leaks.py`, `secret_admission.py`, workflow jobs, sanitized admission artifacts and readiness policy tests",
+      "live_state": "unknown",
+      "live_verified_at": null
+    },
+    {
+      "id": "SEC-002",
+      "rule_and_enforcement": "Provenance binds pushed digests; release verifies GitHub or Cosign/KMS provenance.",
+      "limitations": "Implemented; operator exceptions and effective installation modes must be recorded.",
+      "owner_and_evidence": "Security; provenance receipts, workflow settings and KMS/IAM evidence",
+      "live_state": "unknown",
+      "live_verified_at": null
+    },
+    {
+      "id": "SEC-003",
+      "rule_and_enforcement": "Dependency/image/configuration scanning and SBOM production.",
+      "limitations": "Implemented; some scans are informational or conditional. A scan's presence is not proof of blocking.",
+      "owner_and_evidence": "Security; scanner reports, workflow variables, SBOM and vulnerability policy",
+      "live_state": "unknown",
+      "live_verified_at": null
+    },
+    {
+      "id": "SEC-004",
+      "rule_and_enforcement": "Binary Authorization uses reviewed attestors.",
+      "limitations": "Configurable; live enforcement is unknown.",
+      "owner_and_evidence": "Security/cloud; effective policy export and denial drill",
+      "live_state": "unknown",
+      "live_verified_at": null
+    },
+    {
+      "id": "POL-001",
+      "rule_and_enforcement": "Contracts constrain runtime, resource size, scaling, needs, exposure and permitted destinations.",
+      "limitations": "Blocking in planning/runners; protected policy review is an installation requirement.",
+      "owner_and_evidence": "Platform; models/enforce, production rules and negative tests",
+      "live_state": "unknown",
+      "live_verified_at": null
+    },
+    {
+      "id": "POL-002/v1",
+      "rule_and_enforcement": "Independent read-only CI validates central contract data and present locks; retirement requires a reviewed record.",
+      "limitations": "Implemented workflow; required-check configuration is unknown. A pull_request workflow runs the pull request's own copy, so a pull request that edits contracts.yml can weaken it: the check only binds with required code-owner review of .github/workflows/ (or a ruleset-required workflow). Source-owned locks remain checked by their pipeline.",
+      "owner_and_evidence": "Platform/repository admin; Contract admission check and branch-protection evidence",
+      "live_state": "unknown",
+      "live_verified_at": null
+    },
+    {
+      "id": "ID-001",
+      "rule_and_enforcement": "Per-principal application authorization and deployment capability.",
+      "limitations": "Local principals/OAuth implemented; enterprise identity lifecycle is deferred.",
+      "owner_and_evidence": "Identity owner; effective principal configuration, access tests and revocation drill",
+      "live_state": "unknown",
+      "live_verified_at": null
+    },
+    {
+      "id": "ID-002",
+      "rule_and_enforcement": "Cloud workload federation binds repository IDs, owner ID, main, environment and exact workflow.",
+      "limitations": "Terraform implemented; inherited access and actual trust must be inspected.",
+      "owner_and_evidence": "Cloud/security; WIF and IAM exports",
+      "live_state": "unknown",
+      "live_verified_at": null
+    },
+    {
+      "id": "REL-001",
+      "rule_and_enforcement": "Production copies immutable staging images, uses separate project/environment review and observed rollout steps.",
+      "limitations": "Implemented; full production gate is specified in PRODUCTION-GATE.md, not claimed as enforced.",
+      "owner_and_evidence": "Release owner; staging/promotion receipts and reviewer settings",
+      "live_state": "unknown",
+      "live_verified_at": null
+    },
+    {
+      "id": "OPS-001/v1",
+      "rule_and_enforcement": "Durable operation identity/events/outbox precede dispatch; one sender; stale local updates cannot overwrite newer plans.",
+      "limitations": "Single SQLite writer only; off-host intent enforcement requires `durable_intents`. No automatic resend after uncertainty.",
+      "owner_and_evidence": "Platform operations; ledger tests, witnessed intents and restart drill",
+      "live_state": "unknown",
+      "live_verified_at": null
+    },
+    {
+      "id": "OPS-002/v1",
+      "rule_and_enforcement": "Restore imports off-host intents as unknown and preserves job quota; admission remains fenced until reconciliation.",
+      "limitations": "CLI and import implemented; complete listing, old-writer fence and measured backup freshness require a drill.",
+      "owner_and_evidence": "Platform operations; restore evidence, consistent backup checksum and intent retention policy",
+      "live_state": "unknown",
+      "live_verified_at": null
+    },
+    {
+      "id": "OPS-003/v1",
+      "rule_and_enforcement": "Persistent due times and bounded scheduler lanes reserve follow-up, job guard, watchdog and backup capacity.",
+      "limitations": "In-process lanes; thread timeout cannot forcibly stop code. Provider calls and reconciliation pages are bounded.",
+      "owner_and_evidence": "Platform operations; scheduler lag/status, stall tests and pilot load measurements",
+      "live_state": "unknown",
+      "live_verified_at": null
+    },
+    {
+      "id": "REC-001/v1",
+      "rule_and_enforcement": "Checkpoint generations, heartbeat, exact request identity, pending mutations and conditional traffic updates constrain recovery.",
+      "limitations": "Unknown mutation/manual drift holds; cannot undo migrations or external side effects. etags are not a cross-resource fence.",
+      "owner_and_evidence": "Release operations; checkpoint, receipt and interrupted-run tests",
+      "live_state": "unknown",
+      "live_verified_at": null
+    },
+    {
+      "id": "REC-002/v1",
+      "rule_and_enforcement": "Independent supervisor waits for original runner completion and dispatches the same production queue.",
+      "limitations": "Opt-in infrastructure/workflow; GitHub outage requires manual recovery. Live timing and alert delivery unverified.",
+      "owner_and_evidence": "Release operations; supervisor settings, environment/WIF evidence and runner-loss drill",
+      "live_state": "unknown",
+      "live_verified_at": null
+    },
+    {
+      "id": "ISO-001/v1",
+      "rule_and_enforcement": "Dependency hooks execute only in disposable remote workers; controller Docker fallback disabled.",
+      "limitations": "Workers must be provisioned in separate project. Network/IAM containment needs adversarial live tests. Exception: `resolver_local_fallback: true` runs resolution in the controller's Docker until workers exist; off by default.",
+      "owner_and_evidence": "Platform/security; pinned worker images, build provenance, effective firewall/IAM and resolver tests",
+      "live_state": "unknown",
+      "live_verified_at": null
+    },
+    {
+      "id": "JOB-001/v1",
+      "rule_and_enforcement": "Registered workload identity, released image/spec, atomic UTC-day/concurrency reservation and idempotency key precede execution.",
+      "limitations": "Broker implemented; quota is only authoritative after callers lose all direct launch IAM. Unknown outcomes remain charged.",
+      "owner_and_evidence": "Application/platform owners; broker tests, IAM-denial drill and quota reconciliation",
+      "live_state": "unknown",
+      "live_verified_at": null
+    },
+    {
+      "id": "COST-001",
+      "rule_and_enforcement": "Compute estimates and optional ceilings reject excessive planned bounds; budget response closes managed workloads.",
+      "limitations": "Bounds exclude some costs. Notification delay, storage and already-running work prevent a hard zero-overshoot dollar guarantee.",
+      "owner_and_evidence": "FinOps/platform; measured bill, cap drill and alert owner",
+      "live_state": "unknown",
+      "live_verified_at": null
+    },
+    {
+      "id": "DATA-001",
+      "rule_and_enforcement": "Infrastructure policy guards destructive changes; backups and database recovery settings are declared.",
+      "limitations": "A traffic rollback does not restore data. Restore correctness and RPO are measured, not inferred.",
+      "owner_and_evidence": "Data owner; retention, backup/restore drills and change review",
+      "live_state": "unknown",
+      "live_verified_at": null
+    },
+    {
+      "id": "OBS-001",
+      "rule_and_enforcement": "Audit events, release receipts, runtime checks, logs, alerts and operational status expose outcomes.",
+      "limitations": "Alert recipients/delivery and retention unverified; not a compliance certification or achieved SLO.",
+      "owner_and_evidence": "Platform/on-call; alert tests, evidence retention and incident records",
+      "live_state": "unknown",
+      "live_verified_at": null
+    }
+  ]
+}

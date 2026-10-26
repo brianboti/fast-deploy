@@ -8,7 +8,9 @@ import time
 import types
 import uuid
 
-from . import aftercare
+import httpx
+
+from . import aftercare, operations
 from .analyzer import COMPOSE_FILES, FILES, analyze
 from .bake import MAX_BAKE_SECONDS
 from .config import Application, Principal, Production
@@ -16,15 +18,19 @@ from .contract import Contracts, contract_path
 from .cost import domain_floor, estimate, findings
 from .github import explain
 from .infra import BOOTSTRAP_IMAGE, PRODUCTION_ROOTS, PRODUCTION_WORKFLOWS, app_root, root_jobs
+from .jobbroker import Broker
 from .jobimages import base_of
 from .jobs import Keeper
 from .models import AppSpec, containment, enforce, job_egress, needs_env, parse_contract, parse_spec, spec_hash
+from .resolution_protocol import ResolutionPending
+from .resolver import Resolver
 from .rightsize import SETTINGS, apply_settings
 from .status import TERMINAL, advice, diagnose, release_phases, summarize
 from .updates import PlatformUpdates
 from .workflows import TEMPLATES, pinned_commit, render
 
 DISPATCHED = {"dispatched", "dispatch_unknown", "dispatching"}
+DISPATCH_GRACE_SECONDS = 120  # a dispatch being sent this recently is not lost merely because GitHub shows no run yet
 # How long a run that succeeded with a check not reported yet is read again (found on 2026-10-19: GitHub marked a
 # promotion's run completed while its job and steps still read in progress, and the promotion stayed unverified).
 RECHECK_SECONDS = 6 * 3600
@@ -102,6 +108,8 @@ class Store:
             # The issue the digest and the alerts are posted to, per platform repository, kept from the moment it is opened.
             db.execute("CREATE TABLE IF NOT EXISTS digest_issues (repository TEXT PRIMARY KEY, updated REAL NOT NULL, payload TEXT NOT NULL)")
             db.execute("PRAGMA journal_mode=WAL")  # readers never block the scheduler's and the request handlers' writes
+            db.execute("BEGIN IMMEDIATE")
+            operations.migrate(db)
 
     # ---- applications registered by onboarding, and the onboarding records themselves
     def register_application(self, app_id, entry):
@@ -214,6 +222,8 @@ class Store:
     def connect(self):
         # Commit or roll back exactly like sqlite3's own context manager, then always close the connection.
         db = sqlite3.connect(self.path, timeout=10)
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute("PRAGMA synchronous=FULL")
         try:
             with db:
                 yield db
@@ -222,48 +232,98 @@ class Store:
 
     def add(self, owner, plan, state="planned"):
         with self.connect() as db:
-            db.execute("INSERT INTO plans VALUES (?, ?, ?, ?)", (plan["id"], owner, state, json.dumps(plan)))
+            db.execute("INSERT INTO plans(id,owner,state,payload) VALUES (?, ?, ?, ?)", (plan["id"], owner, state, json.dumps(plan)))
             db.execute("INSERT INTO audit VALUES (?, ?, ?, ?)", (time.time(), owner, plan["id"], state))
+            operations.record(db, owner, plan, state)
 
     def mark(self, plan_id, **fields):
         """Annotate a stored plan without changing its state, for example when a later rollback supersedes it."""
         with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT payload FROM plans WHERE id=?", (plan_id,)).fetchone()
             if row is None:
                 return
             payload = {**json.loads(row[0]), **fields}
-            db.execute("UPDATE plans SET payload=? WHERE id=?", (json.dumps(payload), plan_id))
+            db.execute("UPDATE plans SET payload=?,version=version+1 WHERE id=?", (json.dumps(payload), plan_id))
 
     def get(self, owner, plan_id):
         with self.connect() as db:
-            row = db.execute("SELECT state,payload FROM plans WHERE id=? AND owner=?", (plan_id, owner)).fetchone()
+            row = db.execute("SELECT state,payload,version FROM plans WHERE id=? AND owner=?", (plan_id, owner)).fetchone()
         if row is None:
             raise ValueError("Plan not found for this identity; list_plans shows the plans it may see, or create a new plan")
-        return {**json.loads(row[1]), "state": row[0]}
+        return {**json.loads(row[1]), "state": row[0], "_store_revision": row[2]}
 
     def fetch(self, plan_id):
         """A plan by id regardless of who created it, with its owner; None when unknown."""
         with self.connect() as db:
-            row = db.execute("SELECT owner, state, payload FROM plans WHERE id=?", (plan_id,)).fetchone()
-        return (row[0], {**json.loads(row[2]), "state": row[1]}) if row else None
+            row = db.execute("SELECT owner, state, payload, version FROM plans WHERE id=?", (plan_id,)).fetchone()
+        return (row[0], {**json.loads(row[2]), "state": row[1], "_store_revision": row[3]}) if row else None
 
     def claim(self, owner, plan_id):
         with self.connect() as db:
-            changed = db.execute("UPDATE plans SET state='dispatching' WHERE id=? AND owner=? AND state='planned'", (plan_id, owner)).rowcount
+            changed = db.execute("UPDATE plans SET state='dispatching',version=version+1 WHERE id=? AND owner=? AND state='planned'", (plan_id, owner)).rowcount
             if changed:
                 db.execute("INSERT INTO audit VALUES (?, ?, ?, 'dispatching')", (time.time(), owner, plan_id))
+                operations.transition(db, plan_id, "dispatching")
         return bool(changed)
 
     def finish(self, owner, plan, state):
         """Store a plan's new state; a concurrent writer that got there first wins, so an outcome is recorded once."""
         with self.connect() as db:
-            before = db.execute("SELECT state FROM plans WHERE id=? AND owner=?", (plan["id"], owner)).fetchone()
+            db.execute("BEGIN IMMEDIATE")
+            before = db.execute("SELECT state, version FROM plans WHERE id=? AND owner=?", (plan["id"], owner)).fetchone()
             if before is None:
                 return False
-            changed = db.execute("UPDATE plans SET state=?,payload=? WHERE id=? AND owner=? AND state=?", (state, json.dumps(plan), plan["id"], owner, before[0])).rowcount
+            revision = plan.get("_store_revision", before[1])
+            payload = {key: value for key, value in plan.items() if key != "_store_revision"}
+            changed = db.execute("UPDATE plans SET state=?,payload=?,version=version+1 WHERE id=? AND owner=? AND version=?",
+                                 (state, json.dumps(payload), plan["id"], owner, revision)).rowcount
             if changed and before[0] != state:  # re-saving a record with more detail is not a new event
                 db.execute("INSERT INTO audit VALUES (?, ?, ?, ?)", (time.time(), owner, plan["id"], state))
+            if changed:
+                operations.transition(db, plan["id"], state)
+                plan["_store_revision"] = revision + 1
         return bool(changed)
+
+    def release_claim(self, owner, plan_id, state="planned"):
+        """Nothing was sent (the intent or a check failed first): give the claim back, or close a record that has no
+        planned state, so the queue holds no prepared action that will never be sent."""
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            action = db.execute("SELECT state FROM outbox WHERE operation_id=?", (plan_id,)).fetchone()
+            if action is not None and action[0] != "prepared":
+                return  # it may have been sent: reconciliation decides, never a give-back
+            changed = db.execute("UPDATE plans SET state=?,version=version+1 WHERE id=? AND owner=? AND state='dispatching'",
+                                 (state, plan_id, owner)).rowcount
+            if changed:
+                db.execute("DELETE FROM outbox WHERE operation_id=? AND state='prepared'", (plan_id,))
+                operations.transition(db, plan_id, state)
+                db.execute("INSERT INTO audit VALUES (?, ?, ?, ?)", (time.time(), owner, plan_id, state))
+
+    def recently_sent(self, plan_id, now=None, grace=DISPATCH_GRACE_SECONDS):
+        """True while a dispatch is still being prepared or sent: no run is visible yet, and that is not a loss."""
+        with self.connect() as db:
+            row = db.execute("SELECT updated FROM outbox WHERE operation_id=? AND state IN ('prepared','sending')", (plan_id,)).fetchone()
+        return row is not None and (now or time.time()) - row[0] < grace
+
+    def start_action(self, identifier):
+        """One sender only. An interrupted sending action is reconciled, never reclaimed for retry."""
+        with self.connect() as db:
+            changed = db.execute("UPDATE outbox SET state='sending',attempts=attempts+1,updated=? WHERE operation_id=? AND state='prepared'",
+                                 (time.time(), identifier)).rowcount
+        if not changed:
+            raise ValueError("Operation already sent or uncertain; reconcile before another mutation")
+
+    def recovery_mode(self, enabled=None):
+        with self.connect() as db:
+            if enabled is not None:
+                db.execute("INSERT OR REPLACE INTO operation_settings VALUES ('recovery_mode', ?)", ("true" if enabled else "false",))
+            return db.execute("SELECT value FROM operation_settings WHERE name='recovery_mode'").fetchone() == ("true",)
+
+    def operation_status(self):
+        with self.connect() as db:
+            rows = db.execute("SELECT state, COUNT(*), MIN(updated) FROM outbox WHERE state!='completed' GROUP BY state").fetchall()
+        return {"recovery_mode": self.recovery_mode(), "outbox": [{"state": state, "count": count, "oldest_at": oldest} for state, count, oldest in rows]}
 
     def plans(self, owner=None, applications=None, limit=100):
         """Plan summaries, newest first: one identity's own plans, or every plan of the given applications."""
@@ -293,7 +353,9 @@ class Store:
         with self.connect() as db:
             rows = db.execute("SELECT id, json_extract(payload, '$.application') FROM plans WHERE state IN ('dispatching', 'dispatched', 'dispatch_unknown') "
                               "OR (state = 'completed_unverified' AND json_extract(payload, '$.outcome.conclusion') = 'success' "
-                              "AND json_extract(payload, '$.outcome.recorded_at') > ?) ORDER BY rowid DESC LIMIT ?", (since, limit)).fetchall()
+                              "AND json_extract(payload, '$.outcome.recorded_at') > ?) "
+                              "ORDER BY COALESCE((SELECT checked FROM operation_checks WHERE id=plans.id),0),rowid LIMIT ?", (since, limit)).fetchall()
+            db.executemany("INSERT OR REPLACE INTO operation_checks VALUES (?,?)", [(row[0], now or time.time()) for row in rows])
         return [(row[0], row[1]) for row in rows]
 
     def dispatching(self, now=None):
@@ -555,9 +617,11 @@ class Controller:
         self._issue_lock = threading.Lock()  # the digest and an alert at the same moment open one issue, not two
         self.config, self.github, self.store, self.observer = config, github, store, observer
         self.started = time.time()
+        self.resolver = Resolver(self)
         self.contracts = Contracts(self)
         self.updates = PlatformUpdates(self)
         self.jobs = Keeper(self, observer, config)  # the clock and the guard of the jobs applications start (docs/ROADMAP.md D66, D70)
+        self.broker = Broker(self)
         self.refresh_registry()
 
     def refresh_registry(self):
@@ -614,7 +678,10 @@ class Controller:
 
     def job_guard_tick(self):
         """The guard (D70): cancel any job run beyond its contract's limits."""
-        return self.jobs.guard_tick()
+        result = self.jobs.guard_tick()
+        if self.config.job_broker is not None:
+            result["admissions"] = self.broker.tick()
+        return result
 
     def drift_for(self, principal):
         """The weekly drift check's result (drift_status) as this identity may see it: for one that sees only some
@@ -844,6 +911,10 @@ class Controller:
 
     FOLLOW_IDENTITY = "follow-up"
 
+    def resolver_tick(self):
+        self.resolver.tick()
+        return {"enabled": self.config.resolver is not None}
+
     def follow_tick(self, limit=10):
         """One pass: refresh every release still on its way, so its outcome is recorded even when nobody asks (an auto-deploy,
         an onboarding's first release, a release whose status Claude did not follow). The application list, the watchdog
@@ -851,6 +922,13 @@ class Controller:
         auto-deploy of the 15th had succeeded, and the list still showed the release before it)."""
         principal = Principal(name=self.FOLLOW_IDENTITY, token_sha256="0" * 64, applications=["*"], can_deploy=True)
         results = {}
+        with self.store.connect() as db:
+            cancellations = db.execute("SELECT id,request FROM operations WHERE kind='cancel' AND state IN ('dispatching','dispatch_unknown') LIMIT 10").fetchall()
+        for identifier, payload in cancellations:
+            previous = self.store.fetch(json.loads(payload)["from_plan"])
+            if previous and previous[1]["state"] in {"succeeded", "failed", "cancelled", "timed_out"}:
+                with self.store.connect() as db:
+                    operations.transition(db, identifier, "succeeded")
         for plan_id, app_id in self.store.in_flight(limit):
             if app_id not in self.config.applications:
                 continue  # an application unregistered since: its plans stay as history
@@ -2047,9 +2125,17 @@ class Controller:
         if node_service and package in texts and not any((f"{folder}/{name}" if folder else name) in paths for name in ("package-lock.json", "npm-shrinkwrap.json")) \
                 and self.config.live_dispatch:
             read = reader.read(paths, texts, folder)
-            lock = scaffold.node_lock(texts[package], read["spec"].node if read["spec"] else default_node(), path=folder)
+            try:
+                lock = scaffold.node_lock(texts[package], read["spec"].node if read["spec"] else default_node(), path=folder,
+                                          runner=self.resolver.runner(principal.name, {"repository": target.repository, "commit": sha, "path": folder}))
+            except ResolutionPending as pending:
+                return pending.view()
         elif requirements in texts and locked not in paths and self.config.live_dispatch:
-            lock = scaffold.compile_lock(texts[requirements], scaffold.detect(paths, texts, folder)["python"], path=folder)
+            try:
+                lock = scaffold.compile_lock(texts[requirements], scaffold.detect(paths, texts, folder)["python"], path=folder,
+                                             runner=self.resolver.runner(principal.name, {"repository": target.repository, "commit": sha, "path": folder}))
+            except ResolutionPending as pending:
+                return pending.view()
         # Before registration the repository's own name is the last resort for the service's name (after the folder and
         # pyproject.toml), so the draft is not left saying my-service.
         result = scaffold.draft_files(paths, texts, folder, name, lock_text=lock["text"], fallback_name=target.repository.split("/")[1])
@@ -2488,6 +2574,22 @@ class Controller:
                          "idle_floor_before_usd_month": before["idle_floor_usd_month"], "idle_floor_after_usd_month": after["idle_floor_usd_month"]},
                 "pull_request": pull_request}
 
+    def prepare_dispatch(self, owner, plan):
+        if self.config.operations_recovery_mode or self.store.recovery_mode():
+            raise ValueError("Controller is reconciling restored state; new mutations are paused")
+        with self.store.connect() as db:
+            identity = db.execute("SELECT owner,request_hash FROM operations WHERE id=?", (plan["id"],)).fetchone()
+        if identity != (owner, operations.digest(operations.request_of(plan))):
+            raise ValueError("Operation request changed after admission")
+        if self.config.durable_intents:
+            if not self.config.backup_bucket or self.observer is None:
+                raise ValueError("Durable dispatch requires an intent bucket and observer identity")
+            witness = {"schema": 1, "kind": "release", "owner": owner, "request": operations.request_of(plan),
+                       "request_hash": operations.digest(operations.request_of(plan))}
+            operations.Intents(self.config.backup_bucket, self.observer.token,
+                               prefix=self.config.backup_prefix + "/intents/v1").write(plan["id"], witness)
+        self.store.start_action(plan["id"])
+
     def deploy(self, principal, plan_id):
         plan = self.store.get(principal.name, plan_id)
         app = self.app(principal, plan["application"], write=True)
@@ -2523,6 +2625,12 @@ class Controller:
         self.cost_policy(app, spec)
         if not self.store.claim(principal.name, plan_id):
             return self.store.get(principal.name, plan_id)
+        plan = self.store.get(principal.name, plan_id)
+        try:
+            self.prepare_dispatch(principal.name, plan)
+        except Exception:
+            self.store.release_claim(principal.name, plan_id)  # nothing was sent: the same plan may be deployed again
+            raise
         try:
             result = self.github.dispatch(app, plan)
         except Exception:
@@ -2531,8 +2639,28 @@ class Controller:
             raise ValueError("Dispatch outcome unknown. Inspect GitHub before requesting another deployment.") from None
         plan["dispatch_result"] = result
         link_run(plan)
-        self.store.finish(principal.name, plan, "dispatched")
+        self.confirm_dispatched(principal.name, plan)
         return self.store.get(principal.name, plan_id)
+
+    def confirm_dispatched(self, owner, plan):
+        """GitHub accepted the dispatch. That beats a follow-up pass that found no run yet and called it lost; any other
+        newer state (the run already reported) stays."""
+        if self.store.finish(owner, plan, "dispatched"):
+            return
+        found = self.store.fetch(plan["id"])
+        if found and found[1]["state"] == "dispatch_lost":
+            self.store.finish(owner, {**plan, "_store_revision": found[1]["_store_revision"]}, "dispatched")
+
+    def send_record(self, owner, record):
+        """Store a promotion or rollback record and its intent before anything is sent; a failure before sending closes it."""
+        self.store.add(owner, record, "dispatching")
+        record = self.store.get(owner, record["id"])
+        try:
+            self.prepare_dispatch(owner, record)
+        except Exception:
+            self.store.release_claim(owner, record["id"], "dispatch_lost")
+            raise
+        return record
 
     def cancel(self, principal, plan_id):
         """Cancel the GitHub run of a dispatched plan; the recovery workflow restores traffic if the runner had started changing it."""
@@ -2542,12 +2670,49 @@ class Controller:
         if plan["state"] not in DISPATCHED or not run_id:
             raise ValueError(f"Plan is '{plan['state']}' and has no running workflow to cancel")
         production = plan.get("kind") in ("promotion", "production_rollback")
-        result = self.github.cancel_run(self.promotion_pipeline(plan) if production else app, run_id)
+        target = {"repository": self.promotion_pipeline(plan).repository if production else app.pipeline_repo, "run": run_id}
         with self.store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            earlier = db.execute("SELECT id, state FROM operations WHERE kind='cancel' AND json_extract(request, '$.from_plan')=? "
+                                 "ORDER BY created DESC, rowid DESC", (plan_id,)).fetchall()
+            if earlier and earlier[0][1] in ("dispatching", "succeeded"):
+                existing = earlier[0]
+            else:
+                # Cancelling a run is safe to repeat (GitHub answers 409 once it is cancelling), so an attempt that failed or
+                # whose answer was lost does not block another; one in flight does.
+                existing = None
+                cancel_id = operations.digest({"plan": plan_id, "run": run_id, "action": "cancel", "attempt": len(earlier)})[:32]
+                request = {"id": cancel_id, "kind": "cancel", "application": plan["application"], "environment": plan.get("environment", "staging"),
+                           "from_plan": plan_id, "target": target}
+                operations.record(db, owner, request, "dispatching")
+        if existing:
+            return {"id": plan_id, "cancel_operation": existing[0], "cancel_state": existing[1],
+                    "next_action": "Cancellation was already requested. Check release status in a minute."}
+        try:
+            self.prepare_dispatch(owner, request)
+        except Exception:
+            with self.store.connect() as db:
+                db.execute("DELETE FROM outbox WHERE operation_id=? AND state='prepared'", (cancel_id,))
+                operations.transition(db, cancel_id, "failed")  # nothing was sent
+            raise
+        try:
+            result = self.github.cancel_run(self.promotion_pipeline(plan) if production else app, run_id)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 409:
+                with self.store.connect() as db:
+                    operations.transition(db, cancel_id, "failed")
+                raise ValueError(f"GitHub refused the cancellation ({error.response.status_code}); ask again or cancel the run on GitHub") from None
+            result = {"cancel_requested": True, "workflow_run_id": int(run_id), "note": "GitHub was already cancelling or had finished the run"}
+        except Exception:
+            with self.store.connect() as db:
+                operations.transition(db, cancel_id, "dispatch_unknown")
+            raise ValueError("Cancellation request outcome is unknown; ask again in a minute, a repeated cancellation is harmless") from None
+        with self.store.connect() as db:
+            operations.transition(db, cancel_id, "succeeded")
             db.execute("INSERT INTO audit VALUES (?, ?, ?, 'cancel_requested')", (time.time(), owner, plan_id))
         status = self.refresh(principal, plan_id)
         status["cancel"] = result
-        status["next_action"] = ("Cancellation requested. GitHub stops the runner within a minute; the recovery workflow then restores traffic "
+        status["next_action"] = ("Cancellation requested. GitHub cancellation can take several minutes; recovery proceeds after the runner stops, restoring traffic "
                                  "if the release had started changing it. Ask for status again in a minute.")
         return status
 
@@ -2679,14 +2844,15 @@ class Controller:
             plan["readiness"] = self.readiness(app, spec)
             plan["warnings"] += [f"Readiness: {item['detail']}" for item in plan["readiness"] if not item["ok"]]
         plan["approval"] = promotion_approval(plan, principal.name)
+        plan = self.send_record(principal.name, plan)
         try:
             plan["dispatch_result"] = self.github.dispatch_promotion(platform.repository, plan)
         except Exception:
-            self.store.add(principal.name, plan, "dispatch_unknown")
+            self.store.finish(principal.name, plan, "dispatch_unknown")
             raise ValueError("Promotion dispatch outcome unknown: look for a Promote to production run titled with this plan id on the platform "
                              "repository before asking again.") from None
         link_run(plan)
-        self.store.add(principal.name, plan, "dispatched")
+        self.confirm_dispatched(principal.name, plan)
         self.store.record_event("promotion", name=app_id, identity=principal.name, application=app_id, outcome="dispatched",
                                 detail=f"staging {source['id'][:8]} {plan['source']['digest'][:19]}")
         return {**plan, "state": "dispatched", "next_action": advice({**plan, "state": "dispatched"})}
@@ -2722,13 +2888,14 @@ class Controller:
             "previous": self.previous_release(app_id, receipt["previous_traffic"]), "reviewers": list(production.reviewers),
             "layout": {"path": app.path, "workflow": "promote.yml", "github_environment": app.production.environment},
         }
+        record = self.send_record(principal.name, record)
         try:
             record["dispatch_result"] = self.github.dispatch_production_rollback(platform.repository, record)
         except Exception:
-            self.store.add(principal.name, record, "dispatch_unknown")
+            self.store.finish(principal.name, record, "dispatch_unknown")
             raise ValueError("Rollback dispatch outcome unknown: look for a run titled rollback- with this id among the platform repository's Promote to "
                              "production runs before asking again.") from None
-        self.store.add(principal.name, record, "dispatched")
+        self.confirm_dispatched(principal.name, record)
         self.store.record_event("production_rollback", name=app_id, identity=principal.name, application=app_id, outcome="dispatched",
                                 detail=f"undoes {live['id'][:8]}")
         return {**record, "state": "dispatched", "next_action": advice({**record, "state": "dispatched"})}
@@ -2807,12 +2974,13 @@ class Controller:
             "from_plan": live["id"], "from_revision": receipt.get("revision"), "to_traffic": receipt["previous_traffic"],
             "previous": self.previous_release(app_id, receipt["previous_traffic"]),
         }
+        record = self.send_record(principal.name, record)
         try:
             record["dispatch_result"] = self.github.dispatch_workflow(app, app.workflows["recover"], {"rollback_plan_id": live["id"]})
         except Exception:
-            self.store.add(principal.name, record, "dispatch_unknown")
+            self.store.finish(principal.name, record, "dispatch_unknown")
             raise ValueError("Rollback dispatch outcome unknown. Inspect GitHub before requesting it again.") from None
-        self.store.add(principal.name, record, "dispatched")
+        self.confirm_dispatched(principal.name, record)
         return {**record, "state": "dispatched",
                 "next_action": f"Rollback dispatched: traffic returns to {record['to_traffic']} within about a minute. Ask for status with this id."}
 
@@ -2858,6 +3026,10 @@ class Controller:
 
     def status(self, principal, plan_id, wait_seconds=0):
         """Current state of a plan; with wait_seconds it polls until the state changes, the run ends, or the wait is over."""
+        with self.store.connect() as db:
+            resolution = db.execute("SELECT id FROM resolutions WHERE id=? AND owner=?", (plan_id, principal.name)).fetchone()
+        if resolution:
+            return self.resolver.status(principal.name, plan_id)
         wait = min(max(int(wait_seconds or 0), 0), WAIT_LIMIT)
         deadline = time.time() + wait
         first = None
@@ -2877,7 +3049,7 @@ class Controller:
             plan["workflow"] = workflow
             link_run(plan)
             plan.update(summarize(workflow, plan["checks"], plan.get("kind")))
-            if plan["state"] == "awaiting_workflow" and self.dispatch_lost(plan):
+            if plan["state"] == "awaiting_workflow" and self.dispatch_lost(plan) and not self.store.recently_sent(plan_id):
                 plan["state"] = "dispatch_lost"
                 self.store.finish(owner, plan, "dispatch_lost")
             elif plan["state"] in TERMINAL:
