@@ -61,7 +61,7 @@ A working first implementation of the lab deployment platform: Claude calls auth
 | Item | First release |
 |---|---|
 | App | Python HTTP service, stateless, Dockerfile (or a `Procfile`) at the repository root or in the service's folder; several services per repository |
-| Branch/environment | Protected `main`, GCP `staging` |
+| Branch/environment | Protected `main`; GCP staging and explicitly registered production promotions |
 | Region | `us-central1` foundation |
 | Access | Authenticated Cloud Run; no public grants |
 | Resources | Up to 2 CPUs, 2048 MiB, 3 instances per revision |
@@ -69,10 +69,10 @@ A working first implementation of the lab deployment platform: Claude calls auth
 | Tests | Required, or `tests: none` declared with a warning on every plan |
 | Request timeout | `timeout_seconds`, up to 300 |
 | Needs | Buckets, Pub/Sub topics, a Firestore or private Cloud SQL database and a migration job declared under `needs`, provisioned through a reviewed Terraform root per application; GPUs rejected |
-| AWS/production | Rejected; not implemented |
+| AWS | Rejected; not implemented |
 | Rollout | Test candidate tag, switch traffic, probe again, then watch real traffic for five minutes (the bake) |
 | Rollback | Restore previous concrete traffic allocation; report failure honestly |
-| Interrupted release | Immediate recovery attempt on graceful termination; separate workflow reads durable checkpoint after runner loss |
+| Interrupted release | Generation-checked checkpoints and conditional restoration; production supervisor is opt-in and requires a live drill |
 | Cost | List-price bounds and findings in every plan; optional per-app ceiling on the compute bound plus the needs' floor; weekly measured right-sizing report; budget alert, a spending cap that closes ingress and stops databases at the budget line, Google's native Cloud Run spend cap as a second layer, and image cleanup in Terraform |
 
 The initial resource settings are starting defaults, not measurements. Dependencies, memory consumption, traffic, and data classification cannot be reliably inferred from source code alone. Nothing in this repository asserts suitability for real patient data.
@@ -185,8 +185,14 @@ You will need the target GitHub app repository, a repository for this platform c
 
 ## Later phases
 
-AWS adapter, production policy/approvals, automatic application of right-sizing proposals, container/secret scanning, SBOM and attestation verification, workload secret bindings, Cloud Deploy canary monitoring, enterprise OAuth, and a durable multi-instance job store are not included in this release. The code deliberately rejects unsupported deployment targets instead of treating them as successful.
+AWS, enterprise identity-provider sign-in, Cloud Deploy integration, automatic application of right-sizing proposals, and multiple active controller writers remain outside the supported architecture. Production promotion/review, secret and image scanning, SBOMs, provenance verification and workload secret bindings are implemented; their effective installation settings still need verification. The full company production gate is specified in [docs/PRODUCTION-GATE.md](docs/PRODUCTION-GATE.md).
 
 ## Operations and license
 
 `docs/DEVELOPER-CONTRACT.md` tells a developer what a repository must contain to be deployed. `docs/CLAUDE-CHAT.md` is the operator's daily reference for driving the platform from Claude chat: what to ask, what each tool does, what a normal release looks like and what the guardrails are. `skills/fast-deploy-operator` is the same knowledge as a skill for Claude chat (upload it once under Customize → Skills): when to ask before acting, how to read each status, which costs to show and how to tell a developer what their repository is missing. `docs/RUNBOOK.md` says who owns the platform, what to do when the laptop is off, how to restore the controller from the backup bucket, how to lift the spending cap and how to rotate credentials. The code is released under the MIT License (`LICENSE`).
+
+## Company-readiness implementation
+
+Phases 0 and 2 add universal verified-secret admission, independent contract CI, a durable operation ledger, bounded scheduler lanes, isolated asynchronous dependency resolution, authenticated job reservations, and opt-in independent production recovery. Local dependency execution is disabled; configure workers, supply reviewed lockfiles, or set `resolver_local_fallback: true` as a recorded, temporary exception until the workers exist.
+
+Read the [control catalog](docs/CONTROL-CATALOG.md), [implementation record](docs/READINESS-IMPLEMENTATION.md) and [rollout/restore instructions](docs/READINESS-ROLLOUT.md) before upgrading. New IAM, worker and recovery defaults are deliberately opt-in. Local tests are not evidence that a live installation meets the controls.

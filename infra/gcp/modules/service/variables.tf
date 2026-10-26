@@ -278,3 +278,9 @@ variable "job_guard_role" {
   default     = ""
   description = "The foundation's role for the controller's guard (labDeployJobGuard): cancels a job's execution; empty until the foundation has it."
 }
+
+variable "job_broker_enabled" {
+  type        = bool
+  default     = false
+  description = "After caller migration, remove direct job-launch and act-as grants and permit only controller admission."
+}

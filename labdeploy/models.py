@@ -558,7 +558,7 @@ def containment(spec: AppSpec, default_trust: str = "reviewed") -> dict:
     unknown = trust == "unknown"
     return {"trust": trust, "egress": egress, "execution_environment": "gen2" if unknown or spec.needs.mounts else "default",
             "vulnerability_gate": "blocks fixable critical and high findings" if unknown else "reports",
-            "secret_scan": "a working key stops the build" if unknown else "reports", "runs_as_root": "refused" if unknown else "reported"}
+            "secret_scan": "a working key stops the build", "runs_as_root": "refused" if unknown else "reported"}
 
 
 def draft_dump(spec: AppSpec) -> dict:

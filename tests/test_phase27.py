@@ -530,6 +530,7 @@ def test_a_job_is_updated_with_its_own_settings_and_nothing_of_the_services(tmp_
 def test_recovery_and_rollback_put_the_jobs_back(tmp_path):
     adapter = FakeRun()
     record = {"jobs": {"agent": {"image": "new", "previous": "old", "updated": True}, "checker": {"image": "new", "previous": "old"}}}
+    adapter.images["agent"] = "new"
     assert restore_jobs(adapter, record) == ["agent"] and adapter.images["agent"] == "old" and record["jobs"]["agent"]["restored"]
     assert restore_jobs(adapter, record) == []  # once only
     source = Path("labdeploy/release.py").read_text()

@@ -6,13 +6,14 @@ import functools
 import inspect
 import logging
 import os
+import re
 import threading
 import time
 from typing import Annotated, Any, Literal
 
 import httpx
 import pydantic
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
@@ -275,7 +276,8 @@ class Authenticate:
         # The OAuth endpoints are reached before Claude has a token, and the settings page signs its visitors in itself with
         # an operator token (labdeploy/settings.py): both pass on the per-client budget instead of a bearer token.
         public = self.oauth is not None and (scope["path"] in PUBLIC_PATHS or scope["path"].startswith("/.well-known/"))
-        if public or settings.is_settings_path(scope["path"]):
+        machine_route = re.fullmatch(r"/job-broker/runs(?:/[a-f0-9]{32})?", scope["path"]) is not None
+        if public or machine_route or settings.is_settings_path(scope["path"]):
             allowed, retry_after = self.limits.public.allow(client)
             if not allowed:
                 return await JSONResponse({"error": "Too many requests"}, status_code=429, headers={"Retry-After": str(retry_after)})(scope, receive, send)
@@ -557,6 +559,7 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
         found = {"version": __version__, "live_dispatch": config.live_dispatch, "oauth_sign_in": config.oauth is not None, "paused": config.paused,
                  "observer": config.observer.service_account if config.observer else None,
                  "auto_deploy": sorted(k for k, a in config.applications.items() if a.auto_deploy and k in visible),
+                 "operations": store.operation_status() if everything else None,
                  "background": controller.background_for(principal, scheduler["thread"].snapshot() if scheduler["thread"] is not None else None),
                  "paused_applications": sorted(k for k, a in config.applications.items() if a.paused and k in visible),
                  "configuration": {"path": getattr(config, "path", None), "reloaded_at": getattr(config, "reloaded_at", None), "error": getattr(config, "error", None)},
@@ -649,6 +652,36 @@ def build_app(config, github=None, config_path=None, observer_factory=Observer, 
     @app.get("/events")
     def events(limit: int = 50, application: str | None = None):
         return controller.events_for(identity.get(), limit, application)
+
+    @app.post("/job-broker/runs")
+    async def launch_job(request: Request):
+        try:
+            subject = await run_in_threadpool(controller.broker.authenticate, request.headers.get("authorization", ""))
+        except ValueError:
+            return JSONResponse({"error": "Workload authentication required"}, status_code=401)
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 16_384:
+                return JSONResponse({"error": "Request too large"}, status_code=413)
+        try:
+            import json
+            result = await run_in_threadpool(controller.broker.submit, subject, json.loads(body))
+        except (ValueError, httpx.HTTPError):
+            return JSONResponse({"error": "Job admission refused; check contract, quota and controller readiness"}, status_code=409)
+        return JSONResponse(result, status_code=202)
+
+    @app.get("/job-broker/runs/{operation_id}")
+    async def job_status(request: Request, operation_id: str):
+        try:
+            subject = await run_in_threadpool(controller.broker.authenticate, request.headers.get("authorization", ""))
+        except ValueError:
+            return JSONResponse({"error": "Workload authentication required"}, status_code=401)
+        try:
+            result = await run_in_threadpool(controller.broker.status, subject, operation_id)
+        except (ValueError, httpx.HTTPError):
+            return JSONResponse({"error": "Job operation unavailable"}, status_code=404)
+        return JSONResponse(result)
 
     if oauth is not None:
         mount(app, oauth, limits.failures)  # must precede the catch-all MCP mount

@@ -81,7 +81,7 @@ class Contracts:
         self.c = controller
         self.lock = threading.Lock()  # a release from a request and one from the scheduler never plan the same contract twice
         self._visibility = None
-        self.runner = scaffold.docker_runner  # the containers that make locks (D27); tests replace it
+        self.runner = None  # the containers that make locks (D27); tests replace it
 
     @property
     def platform(self):
@@ -167,7 +167,7 @@ class Contracts:
         """{path: text} of the locks the platform makes for a service: its dependencies (unless the repository has a lock of
         its own) and, when it has tests, the service with its test tools. Raises ValueError naming what failed."""
         spec, lock, tests = result["spec"], result["lock"], result["tests"]
-        files, app_lock, runner = {}, None, runner or self.runner
+        files, app_lock, runner = {}, None, runner or self.runner or scaffold.docker_runner
         if spec.runtime == "node-http":
             # D42: a repository without an npm lockfile is locked once here; its tests install from the same lock (npm ci
             # includes the development dependencies), so there is no second lock.
@@ -243,7 +243,12 @@ class Contracts:
                                  + "; give this service another name (application)")
             return {**view, "pull_request": None, "existing": existing["path"],
                     "note": f"The platform already keeps {existing['path']} for this service; nothing was imported again."}
-        files = self.lock_files(result, runner)
+        from .resolution_protocol import ResolutionPending
+        resolver = runner or self.runner or self.c.resolver.runner(principal.name, {"repository": view["repository"], "commit": view["head"], "path": view["path"]})
+        try:
+            files = self.lock_files(result, resolver)
+        except ResolutionPending as pending:
+            return pending.view()
         source = Source(repository=view["repository"], path=view["path"], commit=view["head"])
         header = (f"# Imported by Fast Deploy from {view['repository']}" + (f" ({view['path']})" if view["path"] else "")
                   + f" at {view['head'][:12]} on {time.strftime('%Y-%m-%d', time.gmtime())}, read as it is: the pull request that added\n"

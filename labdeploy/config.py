@@ -8,6 +8,7 @@ import yaml
 from pydantic import Field, model_validator
 
 from .models import StrictModel, UniqueLoader
+from .resolver import Settings as ResolverSettings
 from .target import Target
 
 # A service's folder inside its repository: relative, forward slashes, no hidden or parent segments, at most eight deep.
@@ -99,9 +100,10 @@ class Application(StrictModel):
             if self.production.target.project_id == self.target.project_id:
                 raise ValueError("Production lives in its own project, never in staging's (docs/ROADMAP.md D37)")
         check_viewers(self.viewers)
-        from .infra import DEFAULT_SETTINGS, SETTING_RANGES
+        from .infra import DEFAULT_SETTINGS, OPTIONAL_SETTINGS, SETTING_RANGES
+        accepted = {**DEFAULT_SETTINGS, **OPTIONAL_SETTINGS}
         for key, value in self.infra.items():
-            if key not in DEFAULT_SETTINGS or type(value) is not type(DEFAULT_SETTINGS[key]):
+            if key not in accepted or type(value) is not type(accepted[key]):
                 raise ValueError(f"infra.{key} is not a known setting of the right type ({', '.join(DEFAULT_SETTINGS)})")
             if key in SETTING_RANGES and not SETTING_RANGES[key][0] <= value <= SETTING_RANGES[key][1]:
                 raise ValueError(f"infra.{key} must be between {SETTING_RANGES[key][0]} and {SETTING_RANGES[key][1]}")
@@ -356,12 +358,30 @@ class Connections(StrictModel):
         return self.repositories is None or name in self.repositories or (platform is not None and name == platform.lower())
 
 
+class JobCaller(StrictModel):
+    application: str = Field(pattern=r"^[a-z][a-z0-9-]{1,30}$")
+    environment: Literal["staging", "production"] = "staging"
+
+
+class JobBroker(StrictModel):
+    audience: str = Field(pattern=r"^https://[A-Za-z0-9.-]+(?::[0-9]+)?(?:/[A-Za-z0-9/_-]*)?$")
+    subjects: dict[str, JobCaller] = Field(default_factory=dict)
+    max_active_per_job: int = Field(default=1, ge=1, le=4)
+
+    @model_validator(mode="after")
+    def service_subjects(self):
+        if any(not re.fullmatch(r"[0-9]{10,30}", subject) for subject in self.subjects):
+            raise ValueError("Job callers must use immutable Google service-account subject IDs")
+        return self
+
+
 class Config(StrictModel):
     applications: dict[str, Application]
     principals: list[Principal]
     application_settings: dict[str, ApplicationSettings] = Field(default_factory=dict)
     platform: Platform | None = None
     platform_updates: PlatformUpdates | None = None  # None: after a release, the machine and the re-pins stay manual
+    resolver: ResolverSettings | None = None
     observer: ObserverIdentity | None = None
     github_app: GitHubApp | None = None
     connections: Connections = Field(default_factory=Connections)
@@ -388,6 +408,12 @@ class Config(StrictModel):
     machine_url: str | None = Field(default=None, pattern=r"^https://[A-Za-z0-9.-]+$")
     log_file: str | None = None  # rotating controller log (requests, warnings); the audit trail itself lives in the database
     live_dispatch: bool = False
+    durable_intents: bool = False  # enable after provisioning immutable intent create/read access on backup_bucket
+    # Transitional exception to ISO-001 (docs/CONTROL-CATALOG.md): with no `resolver`, lockfiles are generated in Docker on the
+    # controller as before 1.32, so package code runs on the controller. Off by default; remove once the workers exist.
+    resolver_local_fallback: bool = False
+    operations_recovery_mode: bool = False  # restored installations must reconcile before enabling new work
+    job_broker: JobBroker | None = None
     # Google's native budget spend caps for Cloud Run that the operator has created (docs/SETUP.md 7i), by project id, in
     # USD a month. A record only: the cap lives in Cloud Billing; plans and the status name it, and warn where none exists.
     cloud_run_spend_caps: dict[str, float | int] = Field(default_factory=dict)

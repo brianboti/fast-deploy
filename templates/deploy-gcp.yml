@@ -772,11 +772,11 @@ jobs:
           retention-days: 3
           if-no-files-found: error
   deploy:
-    needs: build
+    needs: [build, source_admission]
     # !cancelled(), not always(): it still runs when build is skipped (a reused image), but a cancelled run cancels it.
     # With always() GitHub kept the job running after a cancel, and the release went on to promote (live, 2026-10-13).
     # The build must have succeeded, unless the plan reuses an image (then it was skipped on purpose).
-    if: ${{ !cancelled() && needs.build.result != 'failure' && needs.build.result != 'cancelled' && (inputs.image_digest != '' || needs.build.result == 'success') }}
+    if: ${{ !cancelled() && needs.source_admission.result == 'success' && needs.build.result != 'failure' && needs.build.result != 'cancelled' && (inputs.image_digest != '' || needs.build.result == 'success') }}
     runs-on: ubuntu-24.04
     # Twenty minutes for the release and its migration, plus up to fifteen for the bake (bake_seconds is at most 900).
     timeout-minutes: 35
@@ -817,6 +817,10 @@ jobs:
         with:
           name: release-bundle
           path: bundle
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: source-secret-admission
+          path: bundle/source-admission
       # Reuse: the reviewed configuration comes from the commit itself; the image was built and attested by an earlier run.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: inputs.image_digest != ''
@@ -1029,6 +1033,10 @@ jobs:
       # 14.8: Binary Authorization. With the provenance above verified, the release attests the image with the project's
       # attestor key; a service that opts in (every application's, once its root follows the foundation) runs nothing else
       # when the policy is enforced. A reused image was attested by the run that built it.
+      - name: Fresh secret admission for every image
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        run: python -m labdeploy.secret_admission --image "$IMAGE_DIGEST" --jobs job-images.json --output bundle/secrets-admission.json
       - name: Attest the image for Binary Authorization
         env:
           PYTHONPATH: ${{ github.workspace }}/platform
@@ -1144,3 +1152,37 @@ jobs:
               print("notification sent:", response.status)
           PY
 
+
+  source_admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: PLATFORM_REPOSITORY
+          ref: PLATFORM_COMMIT
+          persist-credentials: false
+          path: platform
+          token: ${{ secrets.PLATFORM_READ_TOKEN || github.token }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --require-hashes -r platform/requirements.lock
+      # Fresh source admission includes reused images; no application code is executed here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit_sha }}
+          persist-credentials: false
+          path: app
+      - name: Scan source for working credentials
+        env:
+          PYTHONPATH: ${{ github.workspace }}/platform
+        run: python -m labdeploy.secret_admission --source app --output admission/source.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: source-secret-admission
+          path: admission/source.json
+          if-no-files-found: error
+          retention-days: 30

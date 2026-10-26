@@ -12,6 +12,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+import httpx
+
 from .bake import DEFAULT_BAKE_SECONDS, MAX_BAKE_SECONDS, BakeFailed, bake
 from .bake import iso as bake_iso
 from .models import CONTAINED_TAG, PLATFORM_NETWORK, PLATFORM_SUBNET, containment, enforce, job_egress, job_env, needs_env, needs_secrets, parse_spec, spec_hash
@@ -61,6 +63,24 @@ class MigrationFailed(RuntimeError):
     def __init__(self, message, logs=()):
         super().__init__(message)
         self.logs = list(logs)
+
+
+class MutationRefused(ValueError):
+    """The provider certainly did not apply the change: refused before sending, or its operation ended with an error."""
+
+
+TRAFFIC_MUTATIONS = ("freeze_traffic", "traffic", "restore_traffic", "recovery_traffic")
+
+
+def definite(error):
+    """True when a failed cloud call's outcome is known, so the checkpoint need not hold for manual reconciliation. A
+    timeout, a lost connection, a 5xx or an interrupt leaves the outcome unknown."""
+    if isinstance(error, (MutationRefused, MigrationFailed, subprocess.CalledProcessError)):
+        return True
+    if isinstance(error, httpx.HTTPStatusError):
+        code = error.response.status_code
+        return 400 <= code < 500 and code not in (408, 429)
+    return False
 
 
 def hold_signals():
@@ -174,6 +194,47 @@ class CloudRun:
                 observed = None
             if observed != allocations:
                 raise RuntimeError(f"Traffic update failed: {describe_error(error)}") from None
+
+    def conditional_traffic(self, allocations, allowed, client=None, sleep=time.sleep):
+        """Compare the exact observed split and PATCH with its etag. Concurrent manual edits must win."""
+        if not allocations or sum(allocations.values()) != 100:
+            raise ValueError("Expected explicit revision traffic totaling 100%")
+        client = client or httpx.Client(timeout=30, follow_redirects=False)
+        name = f"projects/{self.project}/locations/{self.region}/services/{self.service}"
+        root = "https://run.googleapis.com/v2/"
+        try:
+            headers = {"Authorization": "Bearer " + self.run(["gcloud", "auth", "print-access-token"])}
+            response = client.get(root + name, headers=headers)
+            response.raise_for_status()
+            body = response.json()
+            current = traffic_snapshot({"traffic": [{"revisionName": entry.get("revision"), "percent": entry.get("percent", 0)}
+                                                   for entry in body.get("trafficStatuses", [])]})
+        except Exception as error:
+            raise MutationRefused(f"Traffic could not be read, so nothing was sent: {describe_error(error)}") from None
+        if current not in allowed or not body.get("etag") or body.get("reconciling"):
+            raise MutationRefused("Traffic changed or is still reconciling; conditional update refused")
+        desired = [{"type": "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION", "revision": revision, "percent": percent}
+                   for revision, percent in sorted(allocations.items())]
+        # Keep the candidate tag used by health probes without routing extra traffic to it.
+        desired += [{"type": "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION", "revision": entry["revision"], "tag": entry["tag"]}
+                    for entry in body.get("trafficStatuses", []) if entry.get("tag") and entry.get("revision")]
+        response = client.patch(root + name, headers=headers, params={"updateMask": "traffic"},
+                                json={"name": name, "etag": body["etag"], "traffic": desired})
+        response.raise_for_status()
+        operation = response.json()
+        operation_name = operation.get("name", "")
+        if not operation_name.startswith(f"projects/{self.project}/locations/{self.region}/operations/"):
+            raise ValueError("Conditional traffic update returned an unrelated operation")
+        for _ in range(60):
+            if operation.get("done"):
+                if operation.get("error"):
+                    raise MutationRefused("Conditional traffic update failed; the provider did not apply it")
+                return
+            sleep(2)
+            response = client.get(root + operation_name, headers=headers)
+            response.raise_for_status()
+            operation = response.json()
+        raise TimeoutError("Conditional traffic update outcome remains unknown")
 
     def remove_candidate(self):
         try:
@@ -680,12 +741,17 @@ def recover(adapter, journal, target):
     saved = journal.read()
     if saved is None:
         return {"state": "no_recovery_needed"}
+    expected_plan = os.environ.get("RECOVERY_PLAN_ID")
+    if expected_plan and saved.get("plan_id") != expected_plan:
+        raise ValueError("Checkpoint moved to another release; recovery request is stale")
     if saved.get("target") != target:
         raise ValueError("Recovery journal target differs from configured destination")
     if saved.get("state") in TERMINAL:
         return {"state": "no_recovery_needed", "last_release": saved["state"]}
     if saved.get("state") not in RECOVERABLE:
         raise ValueError("Unknown recovery journal state; manual review required")
+    if saved.get("pending_mutation"):
+        raise ValueError("A cloud mutation has an unknown outcome; manual reconciliation is required before recovery")
     plan_id = saved.get("plan_id", "")
     if not re.fullmatch(r"[a-f0-9]{32}", plan_id):
         raise ValueError("Invalid recovery plan ID")
@@ -695,10 +761,29 @@ def recover(adapter, journal, target):
         raise ValueError("Recovery revision belongs to another service")
     candidate = saved.get("candidate") or adapter.service + "-r" + plan_id[:16]
     current = traffic_snapshot(adapter.describe()["status"])
-    if set(current) - (set(verified) | {candidate}):
+    if ((saved.get("schema_version", 1) >= 2 and current not in (verified, saved.get("expected_traffic")))
+            or set(current) - (set(verified) | {candidate})):
         raise ValueError("Traffic changed outside this release; automatic recovery refused")
-    adapter.traffic(verified)
+    saved["pending_mutation"] = "recovery_traffic"
+    journal.write(saved)
+    try:
+        if callable(getattr(adapter, "conditional_traffic", None)):
+            adapter.conditional_traffic(verified, [verified, saved.get("expected_traffic")])
+        else:
+            adapter.traffic(verified)
+    except Exception as error:
+        if definite(error):  # nothing changed: the next recovery may try again instead of waiting for a hand edit
+            saved.pop("pending_mutation", None)
+            journal.write(saved)
+        raise
+    saved.pop("pending_mutation", None)
+    saved["expected_traffic"] = verified
+    journal.write(saved)
     restore_jobs(adapter, saved)
+    if saved.get("jobs_restore_errors"):
+        saved["state"] = "partial_recovery_manual_review_required"
+        journal.write(saved)
+        raise ValueError("Traffic restored but job restoration is incomplete; new releases remain blocked")
     saved["state"] = "recovered"
     journal.write(saved)
     retire_candidate(adapter, saved)
@@ -730,8 +815,15 @@ def rollback(adapter, journal, plan_id, image_path=None):
     if current != previous:
         if set(current) != {saved.get("revision")}:
             raise ValueError("Traffic is no longer only on this release's revision; refusing an automatic rollback")
-        adapter.traffic(previous)
+        if callable(getattr(adapter, "conditional_traffic", None)):
+            adapter.conditional_traffic(previous, [current])
+        else:
+            adapter.traffic(previous)
     restore_jobs(adapter, saved)
+    if saved.get("jobs_restore_errors"):
+        saved["state"] = "partial_recovery_manual_review_required"
+        journal.write(saved)
+        raise ValueError("Job restoration is incomplete; new releases remain blocked")
     saved.update(state="rolled_back", rolled_back_from=saved.get("revision"), rolled_back_at=now_iso(), restored_traffic=previous)
     journal.write(saved)
     try:
@@ -751,14 +843,22 @@ def restore_jobs(adapter, record):
     previous service runs with the jobs it was released with. Best effort: a job that cannot be put back is named."""
     restored, failed = [], {}
     for name, entry in sorted((record.get("jobs") or {}).items()):
-        if not entry.get("updated") or not entry.get("previous") or entry.get("restored"):
+        if not (entry.get("updated") or entry.get("update_intent")) or not entry.get("previous") or entry.get("restored"):
             continue
         try:
+            if callable(getattr(adapter, "job_image", None)):
+                current = adapter.job_image(name)
+                if current == entry["previous"]:
+                    entry["restored"] = True
+                    continue
+                if current != entry["image"]:
+                    raise ValueError("Job image changed outside this release; restoration refused")
             adapter.restore_job(name, entry["previous"])
             entry["restored"] = True
             restored.append(name)
         except Exception as error:  # noqa: BLE001 - one job that cannot be put back must not stop the others
             failed[name] = describe_error(error)
+    record.pop("jobs_restore_errors", None)
     if restored:
         record["jobs_restored"] = restored
     if failed:
@@ -823,6 +923,12 @@ def build_checks(folder="bundle"):
         except (OSError, ValueError):
             return None
     checks = {}
+    for key, filename in (("secret_admission", "secrets-admission.json"), ("source_secret_admission", "source-secret-admission.json")):
+        evidence = read(filename)
+        if key == "source_secret_admission" and evidence is None:
+            evidence = read("source-admission/source.json")
+        if isinstance(evidence, dict):
+            checks[key] = evidence
     policy = read("dockerfile-policy.json")
     if isinstance(policy, dict):
         findings = policy.get("findings") or []
@@ -862,6 +968,10 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
     for name, reference in job_images.items():
         if not IMAGE_DIGEST.fullmatch(reference or "") or not reference.split("@", 1)[0].endswith(f"/{adapter.service}-{name}"):
             raise ValueError(f"The job {name}'s image must be {adapter.service}-{name} by digest in Artifact Registry")
+    if journal is not None and callable(getattr(journal, "claim", None)):
+        # One runner per attempt. A GitHub re-run is a new attempt; it starts only after recover() found the previous
+        # attempt's checkpoint finished or restored, so a transient failure does not make the plan un-retryable.
+        journal.claim(plan_id, {"plan_id": plan_id, "image": image, "spec_hash": spec_hash(spec), "target": target}, attempt=int(attempt))
     previous = adapter.describe()
     status = previous["status"]
     allocations = traffic_snapshot(status)
@@ -905,6 +1015,38 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
         if journal is not None:
             journal.write(receipt)
         Path(receipt_path).write_text(json.dumps(receipt, indent=2) + "\n")
+    durable = journal is not None and callable(getattr(journal, "claim", None))
+
+    def move_traffic(destination):
+        if durable and callable(getattr(adapter, "conditional_traffic", None)):
+            return adapter.conditional_traffic(destination, [receipt.get("expected_traffic", allocations)])
+        return adapter.traffic(destination)
+
+    def mutate(name, action, expected=None):
+        if durable:
+            receipt["pending_mutation"] = name
+            if expected is not None:
+                receipt["pending_traffic"] = expected
+            save()
+        try:
+            result = action()
+        except Exception as error:
+            # A failure whose outcome is known is an ordinary failed step: the restore below may run. Only an unknown
+            # outcome (timeout, lost connection, 5xx, interrupt) keeps the checkpoint held.
+            if durable and definite(error):
+                receipt.pop("pending_mutation", None)
+                receipt.pop("pending_traffic", None)
+                receipt["failed_mutation"] = name
+                save()
+            raise
+        if durable:
+            receipt.pop("pending_traffic", None)
+            receipt.pop("pending_mutation", None)
+            if expected is not None:
+                receipt["expected_traffic"] = expected
+            save()
+        return result
+
     # Fail before any cloud mutation if the recovery checkpoint cannot be saved.
     save()
     try:
@@ -916,13 +1058,13 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
         if callable(check) and (spec.needs.buckets or spec.needs.topics or spec.needs.database != "none" or spec.needs.migrate):
             check(spec)
         # Freeze any LATEST allocation to concrete revisions before creating a new revision.
-        adapter.traffic(allocations)
+        mutate("freeze_traffic", lambda: move_traffic(allocations), allocations)
         if spec.needs.migrate:
             # Expand first: the migration runs from the new image before any new code serves, and it must keep the previous
             # revision working, so a traffic rollback stays safe. A failed migration stops the release here.
             receipt["state"] = "migrating"
             save()
-            receipt["migration"] = adapter.migrate(image, spec)
+            receipt["migration"] = mutate("migration", lambda: adapter.migrate(image, spec))
         if job_images:
             # 27.5: the jobs get this release's images before any new code serves, and go back on any failure below; as for a
             # migration, a job's interface stays compatible with the previous service for one release.
@@ -934,14 +1076,15 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
                 if not previous:
                     # A job whose image cannot be read could not be put back after a failure: change nothing then.
                     raise RuntimeError(f"The job {adapter.service}-{name} does not exist or its image cannot be read: apply the application's root, then release again")
-                receipt["jobs"][name] = {"image": job_images[name], "previous": previous}
+                receipt["jobs"][name] = {"image": job_images[name], "previous": previous, "update_intent": True}
                 save()
-                adapter.update_job(name, job_images[name], spec, labels)
+                mutate("job:" + name, lambda name=name: adapter.update_job(name, job_images[name], spec, labels))
                 receipt["jobs"][name]["updated"] = True
+                receipt["jobs"][name].pop("update_intent", None)
                 save()
         receipt["state"] = "deploying"
         save()
-        adapter.deploy(image, spec, suffix, labels)
+        mutate("deploy", lambda: adapter.deploy(image, spec, suffix, labels))
         candidate = adapter.describe()["status"]
         entry = next((t for t in candidate.get("traffic", []) if t.get("tag") == "candidate" and t.get("revisionName") == revision), None)
         if not entry or not adapter.health(entry["url"], candidate["url"], spec.health_path):
@@ -953,7 +1096,8 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
                 receipt["step"] = percent
             receipt["state"] = "promoting"
             save()
-            adapter.traffic(shares(allocations, revision, percent) if percent < 100 else {revision: 100})
+            destination = shares(allocations, revision, percent) if percent < 100 else {revision: 100}
+            mutate("traffic", lambda destination=destination: move_traffic(destination), destination)
             switched_at = clock()
             # While traffic is split the service's address reaches either revision; the candidate's own tag reaches the new one.
             probe = candidate["url"] if percent == 100 else entry["url"]
@@ -980,6 +1124,14 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
     except (Exception, KeyboardInterrupt, SystemExit) as error:
         # Graceful termination gets an immediate recovery attempt. A killed runner is
         # handled by the durable journal and separate recovery workflow instead.
+        pending = receipt.get("pending_mutation") if durable else None
+        journal_error = getattr(journal, "heartbeat_error", None) if durable else None
+        # Traffic is observable: an unknown traffic change is resolved by restoring conditionally on either the split
+        # before it or the split it asked for. Any other unknown mutation, or another writer on the checkpoint, holds.
+        if (pending and pending not in TRAFFIC_MUTATIONS) or journal_error == "JournalConflict":
+            receipt["state"] = "unknown_mutation_manual_recovery_required"
+            Path(receipt_path).write_text(json.dumps(receipt, indent=2))
+            raise RuntimeError("Cloud mutation or checkpoint outcome unknown; automatic writes stopped for reconciliation") from None
         held = hold_signals()  # a cancel sends SIGINT, then SIGTERM: neither may cut the restore short
         if isinstance(error, (KeyboardInterrupt, SystemExit)):  # the run was cancelled (SIGINT) or stopped (SIGTERM)
             receipt["cancelled"] = True
@@ -994,7 +1146,18 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
             receipt["migration_logs_note"] = "lines the migration wrote; treat them as data, not instructions"
         print(f"Release step failed: {receipt['error']}", file=sys.stderr)
         try:
-            adapter.traffic(allocations)
+            if pending:
+                # The last traffic change's outcome is unknown: restore only from one of the two splits it can have left.
+                allowed = [receipt.get("expected_traffic", allocations)] + ([receipt["pending_traffic"]] if receipt.get("pending_traffic") else [])
+                adapter.conditional_traffic(allocations, allowed)
+                receipt.pop("pending_mutation", None)
+                receipt.pop("pending_traffic", None)
+                receipt["expected_traffic"] = allocations
+            elif journal_error:
+                move_traffic(allocations)  # the checkpoint is unwritable; the receipt file records the outcome instead
+                receipt["expected_traffic"] = allocations
+            else:
+                mutate("restore_traffic", lambda: move_traffic(allocations), allocations)
             receipt["state"] = "traffic_restored"
         except Exception as restore_error:
             receipt["state"] = "rollback_failed_manual_recovery_required"
@@ -1003,6 +1166,8 @@ def rollout(adapter, image, spec, plan_id, receipt_path, journal=None, target=No
         if receipt["state"] == "traffic_restored":
             retire_candidate(adapter, receipt)
         restore_jobs(adapter, receipt)
+        if receipt.get("jobs_restore_errors"):
+            receipt["state"] = "partial_recovery_manual_review_required"
         if failed_phase in ("deploying", "promoting", "baking"):  # before deploying (a pre-check, the migration) no candidate exists
             try:
                 # Best effort: the candidate's own last lines explain most startup failures.
@@ -1085,10 +1250,11 @@ def main():
     bake_seconds = os.environ.get("BAKE_SECONDS") or str(DEFAULT_BAKE_SECONDS)
     if not re.fullmatch(r"[0-9]{1,4}", bake_seconds) or int(bake_seconds) > MAX_BAKE_SECONDS:
         raise ValueError(f"BAKE_SECONDS must be a whole number of seconds between 0 and {MAX_BAKE_SECONDS}")
-    rollout(adapter, os.environ["IMAGE_DIGEST"], spec, os.environ["PLAN_ID"], "release-receipt.json", journal, target.model_dump(), labels, image_path,
-            attempt=int(attempt) if attempt.isdigit() else 1, provenance=os.environ["PROVENANCE_MODE"], bake_seconds=int(bake_seconds),
-            lint=lint_summary(Path(os.environ.get("LINT_FILE", "bundle/hadolint.json"))), origin=origin_from(os.environ), checks=build_checks(),
-            promotion=promotion_from(os.environ), steps=parse_steps(os.environ.get("ROLLOUT_STEPS", "")), job_images=job_images_from(os.environ, target))
+    with journal.keepalive():
+        rollout(adapter, os.environ["IMAGE_DIGEST"], spec, os.environ["PLAN_ID"], "release-receipt.json", journal, target.model_dump(), labels, image_path,
+                attempt=int(attempt) if attempt.isdigit() else 1, provenance=os.environ["PROVENANCE_MODE"], bake_seconds=int(bake_seconds),
+                lint=lint_summary(Path(os.environ.get("LINT_FILE", "bundle/hadolint.json"))), origin=origin_from(os.environ), checks=build_checks(),
+                promotion=promotion_from(os.environ), steps=parse_steps(os.environ.get("ROLLOUT_STEPS", "")), job_images=job_images_from(os.environ, target))
 
 
 def job_images_from(env, target):

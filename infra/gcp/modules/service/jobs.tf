@@ -50,7 +50,7 @@ resource "google_cloud_run_v2_job" "job" {
 # A run with overrides cannot change a job's image, identity, size or network, so acting as the job's identity gives the
 # service nothing it could misuse; Cloud Run's documentation names that permission for creating and updating a job only.
 resource "google_cloud_run_v2_job_iam_member" "job_runtime" {
-  for_each = var.jobs
+  for_each = var.job_broker_enabled ? {} : var.jobs
   location = var.region
   name     = google_cloud_run_v2_job.job[each.key].name
   role     = "roles/run.jobsExecutorWithOverrides"
@@ -62,13 +62,13 @@ resource "google_cloud_run_v2_job_iam_member" "job_runtime" {
 # counts, exit codes and the variables each run was given), never a secret's value or any other setting. The foundation
 # makes the role: apply it before a root with jobs.
 resource "google_project_iam_member" "job_runtime_reader" {
-  count   = length(var.jobs) > 0 ? 1 : 0
+  count   = length(var.jobs) > 0 && !var.job_broker_enabled ? 1 : 0
   project = var.project_id
   role    = "projects/${var.project_id}/roles/labDeployJobReader"
   member  = local.runtime
 }
 resource "google_service_account_iam_member" "job_runtime_act_as" {
-  for_each           = var.jobs
+  for_each           = var.job_broker_enabled ? {} : var.jobs
   service_account_id = google_service_account.job[each.key].name
   role               = "roles/iam.serviceAccountUser"
   member             = local.runtime
@@ -160,4 +160,13 @@ resource "google_service_account_iam_member" "wake_token" {
   service_account_id = google_service_account.wake[0].name
   role               = "roles/iam.serviceAccountOpenIdTokenCreator"
   member             = each.value
+}
+
+# Enable only after callers have moved to authenticated admission and existing executions are accounted for.
+resource "google_cloud_run_v2_job_iam_member" "job_broker" {
+  for_each = var.job_broker_enabled ? { for pair in setproduct(keys(var.jobs), var.controller_members) : "${pair[0]} ${pair[1]}" => { job = pair[0], member = pair[1] } } : {}
+  location = var.region
+  name     = google_cloud_run_v2_job.job[each.value.job].name
+  role     = "roles/run.jobsExecutorWithOverrides"
+  member   = each.value.member
 }

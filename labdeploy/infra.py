@@ -44,6 +44,7 @@ DEFAULT_SETTINGS = {
     "latency_alert_ms": 2000,
     "instance_alert_count": 3,
 }
+OPTIONAL_SETTINGS = {"job_broker_enabled": False, "automatic_recovery_enabled": False}
 SETTING_RANGES = {
     "image_versions_to_keep": (1, 100),
     "image_retention_days": (1, 3650),
@@ -171,9 +172,9 @@ def app_root(name, *, project_id, region, state_bucket, github_repository, githu
             raise ValueError("The GitHub environment and workflow files are staging with the plain names, or staging-<service> with names suffixed by the service")
     merged = dict(DEFAULT_SETTINGS)
     for key, value in (settings or {}).items():
-        if key not in DEFAULT_SETTINGS:
+        if key not in DEFAULT_SETTINGS and key not in OPTIONAL_SETTINGS:
             raise ValueError(f"Unknown setting {key!r}")
-        expected = type(DEFAULT_SETTINGS[key])
+        expected = type(({**DEFAULT_SETTINGS, **OPTIONAL_SETTINGS})[key])
         if type(value) is not expected:
             raise ValueError(f"Setting {key!r} must be {expected.__name__}")
         if key in SETTING_RANGES and not SETTING_RANGES[key][0] <= value <= SETTING_RANGES[key][1]:

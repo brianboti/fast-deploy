@@ -23,7 +23,7 @@ FASTAPI = "from fastapi import FastAPI\napp = FastAPI()\n\n@app.get('/health')\n
 def test_trust_follows_where_the_contract_lives_unless_it_says_otherwise():
     own = containment(AppSpec(name="demo"))
     assert own == {"trust": "reviewed", "egress": "internet", "execution_environment": "default", "vulnerability_gate": "reports",
-                   "secret_scan": "reports", "runs_as_root": "reported"}
+                   "secret_scan": "a working key stops the build", "runs_as_root": "reported"}
     kept = containment(AppSpec(name="demo"), "unknown")
     assert kept["trust"] == "unknown" and kept["egress"] == "private" and kept["execution_environment"] == "gen2"
     assert containment(AppSpec(name="demo", egress="internet"), "unknown")["egress"] == "internet"  # the reviewed opt-in
@@ -105,20 +105,20 @@ REPORT = "\n".join(json.dumps(item) for item in [
 ]) + "\nnot json\n"
 
 
-def test_secret_findings_never_carry_the_secret_and_only_working_keys_stop_unknown_code(tmp_path, capsys):
+def test_secret_findings_never_carry_the_secret_and_working_keys_stop_all_code(tmp_path, capsys):
     found = leaks.findings(REPORT.splitlines(), strip="app/")
     assert [item["file"] for item in found] == ["svc/leaked.cfg", "svc/.env", "/app/x"] and found[2]["verification"] == "could not be checked"
     assert "THE-SECRET-VALUE" not in json.dumps(found) and "Raw" not in json.dumps(found)
-    assert leaks.decide(found, "unknown")[0] is True and leaks.decide(found, "reviewed")[0] is False
+    assert leaks.decide(found, "unknown")[0] is True and leaks.decide(found, "reviewed")[0] is True
     report = tmp_path / "report.jsonl"
-    report.write_text(REPORT)
+    report.write_text(REPORT.removesuffix("not json\n"))
     assert leaks.main([str(report), "--trust", "unknown", "--where", "checkout", "--strip", "app/", "--json", str(tmp_path / "s.json")]) == 1
     printed = capsys.readouterr()
     assert "::error file=svc/leaked.cfg,line=3,title=Secret scan (checkout)%3A AWS::a key that works right now" in printed.out
     assert "::notice file=svc/.env,line=1" in printed.out and "THE-SECRET-VALUE" not in printed.out + printed.err
     assert "rotate it at the provider" in printed.err
-    assert leaks.main([str(report), "--trust", "reviewed", "--where", "image"]) == 0
-    assert "::warning title=Secret scan (image)%3A AWS::a key that works right now" in capsys.readouterr().out
+    assert leaks.main([str(report), "--trust", "reviewed", "--where", "image"]) == 1
+    assert "::error title=Secret scan (image)%3A AWS::a key that works right now" in capsys.readouterr().out
 
 
 def test_the_deny_list_dockerignore_keeps_secrets_out_and_lets_the_build_copy_its_tests():
