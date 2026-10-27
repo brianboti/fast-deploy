@@ -120,7 +120,7 @@ MONITOR_STYLE = theme.MONITOR_STYLE
 
 def document(title, body, status=200, headers=None):
     page = (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
-            f'<meta name="color-scheme" content="light"><title>{esc(title)}</title><style>{STYLE}{MONITOR_STYLE}</style></head><body>{body}</body></html>')
+            f'<meta name="color-scheme" content="light dark"><title>{esc(title)}</title><style>{STYLE}{MONITOR_STYLE}</style></head><body>{body}</body></html>')
     return HTMLResponse(page, status_code=status, headers={**PAGE_HEADERS, **(headers or {})})
 
 
@@ -309,6 +309,26 @@ def area_row(form, bag, key, label, yaml, current, help_html="", rows=3, mono=Fa
 def text_row(form, bag, key, label, yaml, current, help_html="", kind="text", attributes=""):
     errors = bag.take(key)
     return row(label, text_control(form, key, current, errors, kind, attributes), key, yaml, help_html, errors)
+
+
+def pager(link, page, total, per_page, what="rows"):
+    """Where a long list is and the way to its other pages: `link(n)` is page n's address. Nothing for a list that fits on one."""
+    pages = max(1, -(-total // per_page))
+    if pages == 1:
+        return ""
+    page = min(max(1, page), pages)
+    start, end = (page - 1) * per_page + 1, min(page * per_page, total)
+    numbers = sorted({1, pages, *range(page - 2, page + 3)} & set(range(1, pages + 1)))
+    items, previous = [], 0
+    for number in numbers:
+        if number - previous > 1:
+            items.append('<span class="gap" aria-hidden="true">…</span>')
+        items.append(f'<span aria-current="page">{number}</span>' if number == page else f'<a href="{esc(link(number))}" aria-label="Page {number}">{number}</a>')
+        previous = number
+    before = (f'<a class="btn ghost" href="{esc(link(page - 1))}" rel="prev">Previous</a>' if page > 1 else '<span class="btn ghost off">Previous</span>')
+    after = (f'<a class="btn ghost" href="{esc(link(page + 1))}" rel="next">Next</a>' if page < pages else '<span class="btn ghost off">Next</span>')
+    return (f'<nav class="pager" aria-label="Pages of {esc(what)}"><span class="num">{start:,}–{end:,} of {total:,} {esc(what)}</span>'
+            f'<span class="pages">{before}{"".join(items)}{after}</span></nav>')
 
 
 def card(title, body, sub="", cls=""):

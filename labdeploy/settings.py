@@ -565,25 +565,32 @@ def routes(config, store, failures, controller=None, jobs=None):
                 query = deployment_query(params)
                 data = deployments.detail(principal, **query) if query else deployments.listing(principal)
                 public_query = {"onboarding" if k == "application" else "plan": v for k, v in query.items()}
-                return deployment_page.page(shown, data, public_query)
+                return deployment_page.page(shown, data, public_query, page_number(params))
             if tab == "health" and params.get("app"):
                 data = monitor.health(principal, params["app"], params.get("env") or "staging", params.get("range") or "24h", params.get("logs") == "1")
                 return pages.health(shown, data)
             if tab == "health":
                 return pages.health_list(shown, monitor.overview(principal))
             if tab == "releases":
-                return pages.releases(shown, monitor.releases(principal))
+                return pages.releases(shown, monitor.releases(principal), page_number(params))
             if tab == "cost":
                 return pages.cost(shown, monitor.cost(principal))
             if tab == "activity":
                 return pages.activity(shown, monitor.activity(principal, params.get("kind"), params.get("identity"), params.get("application"),
-                                                              limit=200 if params.get("more") else 50))
+                                                              limit=200 if params.get("more") else 50, page=page_number(params)))
             return pages.overview(shown, monitor.overview(principal))
         except ValueError as exc:  # an application this token may not see, or one without a production
             text = (f"There is no application named {params.get('app')} among those your token may see." if "not authorized" in str(exc)
                     else str(exc))
             return view.shell(shown, tab, view.head(MONITOR[tab], "") + view.callout("gray", text, f'<p><a href="{PREFIX}?tab=overview">Open the '
                                                                                                     "overview</a>.</p>"), 404)
+
+    def page_number(params):
+        """The page of a long list a request asks for: 1 unless `page` is a larger whole number."""
+        try:
+            return max(1, int(params.get("page") or 1))
+        except ValueError:
+            return 1
 
     def deployment_query(params):
         if params.get("plan"):
@@ -610,7 +617,7 @@ def routes(config, store, failures, controller=None, jobs=None):
             return JSONResponse({"error": "Deployment not found or not available to your account."}, status_code=404, headers=headers)
         if request.url.path.endswith("/report"):
             return JSONResponse(data, headers={**headers, "Content-Disposition": 'attachment; filename="deployment-report.json"'})
-        body = deployment_page.detail(data) if query else deployment_page.listing(data)
+        body = deployment_page.detail(data) if query else deployment_page.listing(data, page_number(request.query_params))
         return JSONResponse({"html": body, "state": data.get("state", "list"), "label": data.get("label", "Deployment list updated"),
                              "error": data.get("error"), "terminal": bool(data.get("terminal"))}, headers=headers)
 

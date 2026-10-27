@@ -41,7 +41,7 @@ LOGIN_SECONDS = 600  # a sign-in page left open longer than this must be reopene
 # No form-action directive: Chrome applies it to the redirect after the POST, which would block the hop back to Claude.
 PAGE_HEADERS = {"Cache-Control": "no-store", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"}
 PAGE = ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
-        '<meta name="color-scheme" content="light"><title>Fast Deploy sign-in</title><style>' + theme.STYLE + '</style></head>'
+        '<meta name="color-scheme" content="light dark"><title>Fast Deploy sign-in</title><style>' + theme.STYLE + '</style></head>'
         '<body><div class="center"><div class="card">' + theme.MARK + '<h1>Sign in to Fast Deploy</h1>'
         '<p class="lede"><strong>__CLIENT__</strong> is asking to use Fast Deploy as you. After sign-in you return to <strong>__HOST__</strong>.</p>'
         '__ERROR__<form method="post" action="/login"><input type="hidden" name="request" value="__REQUEST__">'

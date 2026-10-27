@@ -471,13 +471,19 @@ class Store:
             params += values
         return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
-    def find_events(self, limit=100, kind=None, identity=None, application=None, scope=None, since=None):
+    def find_events(self, limit=100, kind=None, identity=None, application=None, scope=None, since=None, offset=0):
         where, params = self.event_filter(kind, identity, application, scope, since)
         with self.connect() as db:
             rows = db.execute("SELECT at, identity, client, kind, name, application, outcome, duration_ms, detail FROM events"  # noqa: S608
-                              + where + " ORDER BY at DESC, rowid DESC LIMIT ?", (*params, limit)).fetchall()
+                              + where + " ORDER BY at DESC, rowid DESC LIMIT ? OFFSET ?", (*params, limit, max(0, offset))).fetchall()
         keys = ("at", "identity", "client", "kind", "name", "application", "outcome", "duration_ms", "detail")
         return [dict(zip(keys, row, strict=True)) for row in rows]
+
+    def count_events(self, kind=None, identity=None, application=None, scope=None, since=None):
+        """How many events the same filter finds: the Activity view's pages."""
+        where, params = self.event_filter(kind, identity, application, scope, since)
+        with self.connect() as db:
+            return db.execute("SELECT COUNT(*) FROM events" + where, params).fetchone()[0]  # noqa: S608
 
     def event_days(self, since, kind=None, identity=None, application=None, scope=None):
         """{UTC day: (events, configuration changes)} from `since` on, under the same filter."""

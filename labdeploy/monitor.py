@@ -591,7 +591,7 @@ class Monitor:
             self.reports[app_id] = {"result": result, "checked": now, "newest": newest}
         return {"result": result, "checked_at": now}
 
-    def activity(self, principal, kind=None, identity=None, application=None, days=30, limit=50):
+    def activity(self, principal, kind=None, identity=None, application=None, days=30, limit=50, page=1):
         now = self.clock()
         scope = self.controller.event_scope(principal)  # the same events as list_events gives this identity
         since = now - 365 * 86_400
@@ -601,15 +601,17 @@ class Monitor:
         application = application if application in choices["application"] else None
         start = int(now // 86_400 * 86_400) - (days - 1) * 86_400
         counted = self.store.event_days(start, kind, identity, application, scope)
+        count = self.store.count_events(kind, identity, application, scope)
+        page = min(max(1, page), max(1, -(-count // limit)))
         day_rows = []
         for offset in range(days):
             day = day_of(start + offset * 86_400)
             total, configured = counted.get(day, (0, 0))
             day_rows.append({"day": day, "events": total, "configuration": configured})
         result = {"as_of": now, "filters": {"kind": kind, "identity": identity, "application": application}, "choices": choices,
-                  "events": self.store.find_events(limit, kind, identity, application, scope), "days": day_rows,
+                  "events": self.store.find_events(limit, kind, identity, application, scope, offset=(page - 1) * limit), "days": day_rows,
                   "scope": "everything" if scope is None else "own" if scope[1] is None else "applications", "limit": limit,
-                  "everything": self.everything(principal)}
+                  "page": page, "total": count, "pages": max(1, -(-count // limit)), "everything": self.everything(principal)}
         # The jobs and the drift as get_controller_status gives them to this identity.
         result["jobs"] = self.controller.background_for(principal, self.jobs() if callable(self.jobs) else None)
         result["backup"] = self.store.newest_event("backup")
