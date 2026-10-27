@@ -32,19 +32,22 @@ from pydantic import AnyHttpUrl
 from starlette.responses import HTMLResponse, RedirectResponse
 from starlette.routing import Route
 
+from . import theme
+
 # Endpoints Claude must reach before it has a token; the request gate rate limits them per client address instead.
 PUBLIC_PATHS = frozenset({"/authorize", "/token", "/register", "/revoke", "/login"})
 CODE_SECONDS = 300  # RFC 6749 recommends at most ten minutes for an authorization code
 LOGIN_SECONDS = 600  # a sign-in page left open longer than this must be reopened from Claude
 # No form-action directive: Chrome applies it to the redirect after the POST, which would block the hop back to Claude.
 PAGE_HEADERS = {"Cache-Control": "no-store", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"}
-PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fast Deploy sign-in</title><style>body{font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;color:#222}
-input{width:100%;box-sizing:border-box;padding:.5rem;font-size:1rem;margin:.5rem 0 1rem}button{padding:.5rem 1rem;font-size:1rem}.error{color:#b00020}</style></head>
-<body><h1>Fast Deploy</h1><p><strong>__CLIENT__</strong> is asking to use Fast Deploy as you. After sign-in you return to <strong>__HOST__</strong>.</p>
-__ERROR__<form method="post" action="/login"><input type="hidden" name="request" value="__REQUEST__">
-<label for="token">Operator token</label><input id="token" name="token" type="password" autocomplete="off" required autofocus>
-<button type="submit">Sign in</button></form><p>The token is checked on this server only and is never shown to Claude.</p></body></html>"""
+PAGE = ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+        '<meta name="color-scheme" content="light"><title>Fast Deploy sign-in</title><style>' + theme.STYLE + '</style></head>'
+        '<body><div class="center"><div class="card">' + theme.MARK + '<h1>Sign in to Fast Deploy</h1>'
+        '<p class="lede"><strong>__CLIENT__</strong> is asking to use Fast Deploy as you. After sign-in you return to <strong>__HOST__</strong>.</p>'
+        '__ERROR__<form method="post" action="/login"><input type="hidden" name="request" value="__REQUEST__">'
+        '<label for="token">Operator token</label><input id="token" name="token" type="password" autocomplete="off" required autofocus>'
+        '<button class="btn primary block" type="submit">Sign in</button></form>'
+        '<p class="foot">The token is checked on this server only and is never shown to Claude.</p></div></div></body></html>')
 
 
 def normalize(url):
@@ -304,7 +307,7 @@ def login_routes(provider, failures):
     def page(login, request_id, error="", status=200):
         host = urlparse(login["params"]["redirect_uri"]).netloc
         body = (PAGE.replace("__CLIENT__", html.escape(login.get("client_name") or "An MCP client")).replace("__HOST__", html.escape(host))
-                .replace("__REQUEST__", html.escape(request_id)).replace("__ERROR__", f'<p class="error">{html.escape(error)}</p>' if error else ""))
+                .replace("__REQUEST__", html.escape(request_id)).replace("__ERROR__", f'<div class="callout red" role="alert"><div class="body">{html.escape(error)}</div></div>' if error else ""))
         return HTMLResponse(body, status_code=status, headers=PAGE_HEADERS)
 
     def expired():
