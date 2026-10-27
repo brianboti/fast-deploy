@@ -13,12 +13,12 @@ a threshold or a forecast is dashed.
 import html
 import math
 
-ACCENT = "#2563EB"  # one series (categorical slot 1, the page's blue)
-SECOND = "#EB6834"  # a second series (slot 2)
-GOOD, WARN, BAD = "#16A34A", "#C98500", "#DC2626"  # status: good, warning, bad; each always comes with words
-QUIET = "#A3A3A3"  # de-emphasis: what is not the point (below 3:1 on white, so every chart has its numbers table)
-INK = "#525252"  # thresholds, release markers
-GRID, AXIS, TRACK, EMPTY = "#EDEDED", "#D4D4D4", "#F0F0F0", "#E5E5E5"
+ACCENT = "#0071E3"  # one series (categorical slot 1, the page's blue)
+SECOND = "#FF6B35"  # a second series (slot 2)
+GOOD, WARN, BAD = "#30B454", "#E08A00", "#FF3B30"  # status: good, warning, bad; each always comes with words
+QUIET = "#C7C7CC"  # de-emphasis: what is not the point (below 3:1 on white, so every chart has its numbers table)
+INK = "#6E6E73"  # thresholds, release markers
+GRID, AXIS, TRACK, EMPTY = "#EBEBF0", "#D2D2D7", "#F2F2F7", "#E5E5EA"
 
 TOP, AXIS_BAND = 18, 20  # pixels above the plot (the top label) and below it (the time labels)
 

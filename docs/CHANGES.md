@@ -1,3 +1,26 @@
+# 1.33.0: one design system for every page
+
+The pages the controller serves (Monitor, Configure, the deployment page, the setup steps, sign-in and the OAuth consent page)
+shared no look: three palettes, three kinds of card, sidebar labels that changed from page to page. This release draws them
+all with one design system, `labdeploy/theme.py`, built on Apple's Human Interface Guidelines as they apply to a web page: the
+system typeface with tabular numbers and a small type scale, semantic colours used for one meaning each, a grouped light
+canvas with white surfaces and hairline separators, 8-point spacing, 44-point targets on a phone, and brief motion that is
+off when a person asks for reduced motion.
+
+- The sidebar is a translucent material with one vocabulary everywhere (Monitor: Overview, Deployments, Health, Releases,
+  Cost, Activity; Configure: Connections, Applications, Platform, People, Production, Advanced), the current page in the
+  accent colour and the signed-in identity as a small card. On a phone it becomes a bar that stays at the top.
+- Cards, settings rows, fields, switches, segmented controls, chips, callouts, tables and the sign-in card share one set of
+  tokens, and the charts use the same palette.
+- Motion: a page rises in as it loads, cards lift under the pointer, the switch slides, the live dot ripples and the Monitor
+  toolbar stays at the top of the screen while the page scrolls; `prefers-reduced-motion` turns every animation off.
+- The deployment page keeps its board, track, spotlight and journey, now in the same colours and type as the rest, with its
+  tools drawn as buttons.
+- The OAuth consent page is the same sign-in card as the settings page.
+
+Nothing a page does changed: the same routes, forms, class names and strict headers (no script outside the deployment page,
+no web font, no image, no `url(`), and the same tests pass.
+
 # 1.32.0: company readiness, phases 0 and 2
 
 This release implements phases 0 and 2 of the October 23 readiness plan. Codex started the work and Claude finished it. Phase 1
