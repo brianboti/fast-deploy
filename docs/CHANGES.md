@@ -1,3 +1,23 @@
+# 1.34.0: a premium finish, a dark theme and pages for the long lists
+
+A second pass over the design system of 1.33.0, after reading what the best product interfaces share: hierarchy from weight
+and spacing rather than decoration, colour held back for meaning, structure from faint borders with shadows only where
+something floats, one scale of spacing, and a hover, pressed, focused and disabled state on everything a person can touch.
+
+- Tokens: cool-tinted neutrals, a deeper accent kept for the primary action, links, focus and the live state; cards and
+  tiles carry a faint border and no resting shadow; the primary button is a subtle gradient with an inner highlight; inputs
+  and switches are tighter; the sidebar's current page is a quiet filled row, not a block of colour.
+- A dark theme, designed rather than inverted: surfaces step up in lightness, accents and status colours desaturated, never
+  pure black. It follows the system setting (`prefers-color-scheme`). The charts colour themselves from the theme's tokens,
+  so every chart, the deployment page and the sign-in page read in both.
+- The long lists have pages: releases (25 a page), events (50, or 200 with `more`) and the deployments list (20), with a pager
+  that says where you are and links to every page. Events are counted and read a page at a time from the database
+  (`Store.find_events` takes an offset; `Store.count_events` is new).
+- Smaller: empty states are drawn as an inset panel, the sign-in card sits on a soft glow, scrollbars are thin.
+
+Routes, forms, class names and the strict headers are unchanged (no script outside the deployment page, no web font, no
+image, no `url(`).
+
 # 1.33.0: one design system for every page
 
 The pages the controller serves (Monitor, Configure, the deployment page, the setup steps, sign-in and the OAuth consent page)

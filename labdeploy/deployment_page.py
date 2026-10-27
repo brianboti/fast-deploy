@@ -9,8 +9,8 @@ from .deployments import LABELS
 
 STYLE = """
 /* The deployment page builds on the design system of labdeploy/theme.py: the same type, colours, radii and motion. */
-.deployment{--ink:var(--label);--quiet:var(--label-2);--run:var(--accent);--run-deep:var(--accent-deep);--run-soft:rgba(0,113,227,.12);
---ok:#30B454;--ok-text:var(--green-text);--ok-soft:var(--green-soft);--stop:var(--red);--stop-text:var(--red-text);--stop-soft:var(--red-soft);color:var(--ink)}
+.deployment{--ink:var(--label);--quiet:var(--label-2);--run:var(--accent);--run-deep:var(--accent-text);--run-soft:rgba(var(--accent-rgb),.12);
+--ok:var(--green);--ok-text:var(--green-text);--ok-soft:var(--green-soft);--stop:var(--red);--stop-text:var(--red-text);--stop-soft:var(--red-soft);color:var(--ink)}
 
 .deployment .d-eyebrow{font-size:12px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;color:var(--quiet)}
 .deployment .d-top{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:24px}
@@ -64,9 +64,9 @@ STYLE = """
 .deployment .d-facts div:last-child{border:0}
 .deployment dt{font-size:12px;color:var(--quiet);margin-bottom:3px}
 .deployment dd{margin:0;font-size:13.5px;overflow-wrap:anywhere}
-.deployment .d-notice{border-left:3px solid var(--amber);background:var(--amber-soft);padding:14px 18px;border-radius:0 12px 12px 0;margin:16px 0;color:#6B3F00}
+.deployment .d-notice{border-left:3px solid var(--amber);background:var(--amber-soft);padding:14px 18px;border-radius:0 12px 12px 0;margin:16px 0;color:var(--amber-text)}
 .deployment .d-notice p{color:inherit}
-.deployment .d-error{border-color:var(--stop);background:var(--stop-soft);color:#8E1B14}
+.deployment .d-error{border-color:var(--stop);background:var(--stop-soft);color:var(--red-text)}
 .deployment .d-checks{display:grid;gap:10px}
 .deployment .d-check{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13.5px}
 .deployment .d-traffic{display:flex;height:8px;border-radius:6px;overflow:hidden;background:var(--fill);margin:10px 0}
@@ -94,8 +94,8 @@ display:flex;flex-direction:column-reverse;gap:2px}
 .deployment .d-board{border:1px solid var(--line);background:var(--surface);border-radius:22px;padding:28px 30px 24px;margin-bottom:18px;
 box-shadow:var(--shadow-1);position:relative;overflow:hidden}
 .deployment .d-board:before{content:'';position:absolute;inset:0;pointer-events:none;background:radial-gradient(900px 260px at 0% 0%,var(--run-soft),transparent 70%);opacity:.9}
-.deployment .d-board.b-live:before{background:radial-gradient(900px 260px at 0% 0%,rgba(52,199,89,.16),transparent 70%)}
-.deployment .d-board.b-stop:before{background:radial-gradient(900px 260px at 0% 0%,rgba(255,59,48,.14),transparent 70%)}
+.deployment .d-board.b-live:before{background:radial-gradient(900px 260px at 0% 0%,rgba(var(--green-rgb),.16),transparent 70%)}
+.deployment .d-board.b-stop:before{background:radial-gradient(900px 260px at 0% 0%,rgba(var(--red-rgb),.14),transparent 70%)}
 .deployment .d-board>*{position:relative}
 .deployment .d-board-head{display:flex;align-items:center;gap:26px}
 .deployment .d-board h2{font-size:26px;line-height:1.2;letter-spacing:-.022em;margin:8px 0 6px}
@@ -109,7 +109,7 @@ box-shadow:var(--shadow-1);position:relative;overflow:hidden}
 .deployment .d-pill.done{background:var(--ok-soft);color:var(--ok-text)}
 .deployment .d-pill.failed{background:var(--stop-soft);color:var(--stop-text)}
 .deployment .d-pill.skipped{background:var(--fill);color:var(--quiet)}
-.deployment .d-board .d-ring{width:112px;height:112px;filter:drop-shadow(0 6px 14px rgba(0,113,227,.18))}
+.deployment .d-board .d-ring{width:112px;height:112px;filter:drop-shadow(0 6px 14px rgba(var(--accent-rgb),.18))}
 .deployment .d-ring .d-ring-track{stroke:var(--fill-2)}
 .deployment .d-ring .d-ring-fill{stroke:var(--ok);transition:stroke-dasharray .9s cubic-bezier(.3,.7,.2,1)}
 .deployment .d-board .d-ring text{font:600 22px var(--font);fill:var(--ink);letter-spacing:-.02em}
@@ -136,7 +136,7 @@ box-shadow:var(--shadow-1);position:relative;overflow:hidden}
 .deployment .d-track li:first-child:before,.deployment .d-track li:last-child:after{display:none}
 .deployment .d-track li.in-done:before,.deployment .d-track li.out-done:after{background:var(--ok)}
 .deployment .d-track li.in-stop:before,.deployment .d-track li.out-stop:after{background:var(--stop)}
-.deployment .d-track li.in-flow:before{background:repeating-linear-gradient(90deg,var(--run) 0 8px,rgba(0,113,227,.35) 8px 16px);background-size:32px 100%;animation:d-flow .8s linear infinite}
+.deployment .d-track li.in-flow:before{background:repeating-linear-gradient(90deg,var(--run) 0 8px,rgba(var(--accent-rgb),.35) 8px 16px);background-size:32px 100%;animation:d-flow .8s linear infinite}
 .deployment .d-track a{display:flex;flex-direction:column;align-items:center;gap:8px;text-decoration:none;color:inherit;position:relative;z-index:1;border-radius:10px}
 .deployment .d-track a:hover .d-tl{color:var(--ink)}
 .deployment .d-tn{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:600;background:var(--surface);
@@ -146,7 +146,7 @@ border:2px solid var(--hairline-strong);color:var(--quiet);position:relative;tra
 .deployment .d-track .t-done .d-tl{color:var(--ok-text)}
 .deployment .d-track .t-running .d-tn,.deployment .d-track .t-next .d-tn{background:var(--run);border-color:var(--run);color:#fff;animation:d-pulse 1.6s ease-out infinite}
 .deployment .d-track .t-running .d-tn:after{content:'';position:absolute;inset:-7px;border-radius:50%;border:2px solid transparent;border-top-color:var(--run);
-border-right-color:rgba(0,113,227,.5);animation:d-spin 1s linear infinite}
+border-right-color:rgba(var(--accent-rgb),.5);animation:d-spin 1s linear infinite}
 .deployment .d-track .t-running .d-tl,.deployment .d-track .t-next .d-tl{color:var(--run-deep);font-weight:600}
 .deployment .d-track .t-failed .d-tn,.deployment .d-track .t-cancelled .d-tn{background:var(--stop);border-color:var(--stop);color:#fff}
 .deployment .d-track .t-failed .d-tl{color:var(--stop-text)}
@@ -155,9 +155,9 @@ border-right-color:rgba(0,113,227,.5);animation:d-spin 1s linear infinite}
 /* the spotlight: the stage happening now, said in full */
 .deployment .d-duo{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(280px,1fr);gap:18px;align-items:stretch;margin-bottom:18px}
 .deployment .d-duo>.d-panel{margin-bottom:0}
-.deployment .d-now-card{border-color:rgba(0,113,227,.25);background:linear-gradient(165deg,rgba(0,113,227,.07),var(--surface) 55%);position:relative;overflow:hidden}
-.deployment .d-now-card.n-live{border-color:rgba(52,199,89,.35);background:linear-gradient(165deg,rgba(52,199,89,.10),var(--surface) 55%)}
-.deployment .d-now-card.n-stop{border-color:rgba(255,59,48,.3);background:linear-gradient(165deg,rgba(255,59,48,.08),var(--surface) 55%)}
+.deployment .d-now-card{border-color:rgba(var(--accent-rgb),.25);background:linear-gradient(165deg,rgba(var(--accent-rgb),.07),var(--surface) 55%);position:relative;overflow:hidden}
+.deployment .d-now-card.n-live{border-color:rgba(var(--green-rgb),.35);background:linear-gradient(165deg,rgba(var(--green-rgb),.10),var(--surface) 55%)}
+.deployment .d-now-card.n-stop{border-color:rgba(var(--red-rgb),.3);background:linear-gradient(165deg,rgba(var(--red-rgb),.08),var(--surface) 55%)}
 .deployment .d-now-card.n-wait{border-color:var(--line);background:var(--surface)}
 .deployment .d-now-card .d-pad{padding:22px 24px}
 .deployment .d-now-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
@@ -172,11 +172,11 @@ border-right-color:rgba(0,113,227,.5);animation:d-spin 1s linear infinite}
 .deployment .d-now-card.n-stop .d-now-clock strong{color:var(--stop-text)}
 .deployment .d-now-clock>span{font-size:11px;color:var(--quiet);text-transform:uppercase;letter-spacing:.08em;font-weight:600}
 .deployment .d-why{display:grid;gap:8px;margin:16px 0 0;padding:14px 0 0;border-top:1px dashed var(--hairline-strong)}
-.deployment .d-why div{display:grid;grid-template-columns:22px minmax(0,1fr);gap:10px;align-items:start;font-size:13.5px;color:#3A3A3C;line-height:1.5}
+.deployment .d-why div{display:grid;grid-template-columns:22px minmax(0,1fr);gap:10px;align-items:start;font-size:13.5px;color:var(--label);line-height:1.5}
 .deployment .d-why b{display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--quiet);margin-bottom:1px}
 .deployment .d-why i{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;font-style:normal;font-size:12px;font-weight:600;margin-top:2px}
 .deployment .d-why .w-why i{background:var(--run-soft);color:var(--run-deep)}
-.deployment .d-why .w-fail i{background:var(--amber-soft);color:#8F5300}
+.deployment .d-why .w-fail i{background:var(--amber-soft);color:var(--amber-text)}
 .deployment .d-why .w-done i{background:var(--fill);color:var(--quiet)}
 .deployment details.d-more{margin-top:14px}
 .deployment details.d-more>summary{padding:0;display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:var(--run);cursor:pointer;background:none}
@@ -224,7 +224,7 @@ background-size:200px 100%;animation:d-shine 1.8s linear infinite}
 .deployment .d-flow .d-flow-sub{font:500 11px var(--font);fill:var(--quiet)}
 .deployment .d-flow .d-flow-pct{font:700 15px var(--font)}
 .deployment .d-flow .d-lane{fill:none;stroke:var(--fill-2);stroke-width:3;stroke-linecap:round}
-.deployment .d-flow .d-lane.on{stroke:rgba(0,113,227,.35)}
+.deployment .d-flow .d-lane.on{stroke:rgba(var(--accent-rgb),.35)}
 .deployment .d-flow .d-lane.on.old{stroke:var(--fill-3)}
 .deployment .d-flow .d-car{fill:var(--run)}
 .deployment .d-flow .d-car.old{fill:var(--label-3)}
@@ -233,7 +233,8 @@ background-size:200px 100%;animation:d-shine 1.8s linear infinite}
 .deployment .d-flow .d-vbox.off{stroke-dasharray:4 4}
 .deployment .d-flow .d-people{fill:var(--canvas);stroke:var(--hairline-strong);stroke-width:1.5}
 .deployment .d-split{display:flex;height:34px;border-radius:12px;overflow:hidden;background:var(--fill);margin:12px 0 10px}
-.deployment .d-split span{display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:white;white-space:nowrap;overflow:hidden;transition:width .9s var(--ease)}
+.deployment .d-split span{display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:var(--on-accent);white-space:nowrap;
+overflow:hidden;transition:width .9s var(--ease)}
 .deployment .d-split .old,.deployment .d-legend .old{background:var(--label-3)}
 .deployment .d-split .new,.deployment .d-legend .new{background:var(--run)}
 .deployment .d-legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--quiet)}
@@ -246,8 +247,8 @@ background-size:200px 100%;animation:d-shine 1.8s linear infinite}
 .deployment .d-segments{display:flex;gap:4px;padding:0 24px 16px;border-bottom:1px solid var(--line)}
 .deployment .d-segments span{flex:1;height:8px;border-radius:4px;background:var(--fill-2);transition:background .4s}
 .deployment .d-segments .s-done{background:var(--ok)}
-.deployment .d-segments .s-skipped{background:rgba(52,199,89,.45)}
-.deployment .d-segments .s-running,.deployment .d-segments .s-next{background:repeating-linear-gradient(-45deg,var(--run) 0 6px,rgba(0,113,227,.55) 6px 12px);
+.deployment .d-segments .s-skipped{background:rgba(var(--green-rgb),.45)}
+.deployment .d-segments .s-running,.deployment .d-segments .s-next{background:repeating-linear-gradient(-45deg,var(--run) 0 6px,rgba(var(--accent-rgb),.55) 6px 12px);
 background-size:34px 100%;animation:d-stripes 1s linear infinite}
 .deployment .d-segments .s-failed,.deployment .d-segments .s-cancelled{background:var(--stop)}
 .deployment .d-segments .s-not_run{background:var(--fill)}
@@ -255,27 +256,27 @@ background-size:34px 100%;animation:d-stripes 1s linear infinite}
 .deployment .d-stage{display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:14px;padding:14px 24px;position:relative;align-items:start;
 border-left:3px solid transparent;transition:background .4s}
 .deployment .d-stage:not(:last-child):before{content:'';position:absolute;left:45px;top:56px;bottom:-14px;width:2px;background:var(--fill-2)}
-.deployment .d-stage.s-done:before,.deployment .d-stage.s-skipped:before{background:rgba(52,199,89,.45)}
+.deployment .d-stage.s-done:before,.deployment .d-stage.s-skipped:before{background:rgba(var(--green-rgb),.45)}
 .deployment .d-node{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;font-weight:600;font-size:14px;background:var(--canvas);color:var(--quiet);
 border:2px solid var(--hairline);position:relative;z-index:1;transition:transform var(--base) var(--ease),background var(--base) var(--ease)}
-.deployment .d-stage.s-done .d-node,.deployment .d-stage.s-skipped .d-node{background:var(--ok);color:white;border-color:var(--ok)}
-.deployment .d-stage.s-running .d-node,.deployment .d-stage.s-next .d-node{background:var(--run);color:white;border-color:var(--run);animation:d-pulse 1.6s ease-out infinite}
+.deployment .d-stage.s-done .d-node,.deployment .d-stage.s-skipped .d-node{background:var(--ok);color:var(--on-accent);border-color:var(--ok)}
+.deployment .d-stage.s-running .d-node,.deployment .d-stage.s-next .d-node{background:var(--run);color:var(--on-accent);border-color:var(--run);animation:d-pulse 1.6s ease-out infinite}
 .deployment .d-stage.s-running .d-node:after{content:'';position:absolute;inset:-8px;border-radius:50%;border:2.5px solid transparent;border-top-color:var(--run);
-border-right-color:rgba(0,113,227,.45);animation:d-spin 1s linear infinite}
-.deployment .d-stage.s-failed .d-node,.deployment .d-stage.s-cancelled .d-node{background:var(--stop);color:white;border-color:var(--stop)}
-.deployment .d-stage.s-running,.deployment .d-stage.s-next{background:linear-gradient(90deg,rgba(0,113,227,.07),var(--surface) 80%);border-left-color:var(--run)}
-.deployment .d-stage.s-failed,.deployment .d-stage.s-cancelled{background:linear-gradient(90deg,rgba(255,59,48,.07),var(--surface) 80%);border-left-color:var(--stop)}
+border-right-color:rgba(var(--accent-rgb),.45);animation:d-spin 1s linear infinite}
+.deployment .d-stage.s-failed .d-node,.deployment .d-stage.s-cancelled .d-node{background:var(--stop);color:var(--on-accent);border-color:var(--stop)}
+.deployment .d-stage.s-running,.deployment .d-stage.s-next{background:linear-gradient(90deg,rgba(var(--accent-rgb),.07),var(--surface) 80%);border-left-color:var(--run)}
+.deployment .d-stage.s-failed,.deployment .d-stage.s-cancelled{background:linear-gradient(90deg,rgba(var(--red-rgb),.07),var(--surface) 80%);border-left-color:var(--stop)}
 .deployment .d-stage.d-just{animation:d-flash 1.4s ease-out}
 .deployment .d-stage.d-just .d-node,.deployment .d-track .d-just .d-tn{animation:d-pop .6s cubic-bezier(.2,1.4,.4,1)}
 .deployment .d-stage h3{font-size:15.5px;margin:3px 0 4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .deployment .d-stage h3 .d-pill{font-size:10.5px;padding:2px 8px 2px 7px}
 .deployment .d-stage.s-pending h3,.deployment .d-stage.s-not_run h3{color:var(--quiet)}
 .deployment .d-stage.s-not_run{opacity:.6}
-.deployment .d-stage p{margin:0;font-size:13.5px;color:#3A3A3C}
+.deployment .d-stage p{margin:0;font-size:13.5px;color:var(--label)}
 .deployment .d-stage .d-now{color:var(--run-deep);font-weight:600;margin-top:6px}
 .deployment .d-stage .d-why{margin-top:8px;padding-top:8px;gap:6px;border-top-color:var(--line)}
 .deployment .d-stage details.d-more>summary{font-size:12px;font-weight:500;color:var(--quiet)}
-.deployment .d-stage .d-why div{font-size:12.5px;color:#48484A}
+.deployment .d-stage .d-why div{font-size:12.5px;color:var(--label-2)}
 .deployment .d-stage .d-why i{width:18px;height:18px;font-size:10px;border-radius:5px;margin-top:1px}
 .deployment .d-stage .d-why div{grid-template-columns:18px minmax(0,1fr)}
 .deployment .d-when{text-align:right;min-width:96px}
@@ -292,13 +293,13 @@ border-right-color:rgba(0,113,227,.45);animation:d-spin 1s linear infinite}
 .deployment .d-stage details>summary:after{content:'+';margin-left:6px}
 .deployment .d-stage details[open]>summary:after{content:'−'}
 .deployment .d-substeps{list-style:none;margin:6px 0 0;padding:0;font-size:12px;max-width:520px}
-.deployment .d-substeps li{display:flex;gap:8px;padding:3px 0;color:#48484A}
+.deployment .d-substeps li{display:flex;gap:8px;padding:3px 0;color:var(--label-2)}
 .deployment .d-substeps time{margin-left:auto;color:var(--quiet);font-variant-numeric:tabular-nums;padding-left:10px}
 
 @keyframes d-stripes{to{background-position:34px 0}}
 @keyframes d-flow{to{background-position:32px 0}}
 @keyframes d-spin{to{transform:rotate(360deg)}}
-@keyframes d-pulse{0%{box-shadow:0 0 0 0 rgba(0,113,227,.45)}70%{box-shadow:0 0 0 12px rgba(0,113,227,0)}100%{box-shadow:0 0 0 0 rgba(0,113,227,0)}}
+@keyframes d-pulse{0%{box-shadow:0 0 0 0 rgba(var(--accent-rgb),.45)}70%{box-shadow:0 0 0 12px rgba(var(--accent-rgb),0)}100%{box-shadow:0 0 0 0 rgba(var(--accent-rgb),0)}}
 @keyframes d-ripple{0%{transform:scale(.6);opacity:.9}100%{transform:scale(1.9);opacity:0}}
 @keyframes d-pop{0%{transform:scale(.4)}60%{transform:scale(1.18)}100%{transform:scale(1)}}
 @keyframes d-flash{0%{background:var(--ok-soft)}100%{background:transparent}}
@@ -566,8 +567,8 @@ def ring(done, total):
     fill = round(251.3 * done / total, 2) if total else 0
     return (
         f'<svg class="d-ring" viewBox="0 0 100 100" role="img" aria-label="{done} of {total} reported steps finished">'
-        '<circle class="d-ring-track" cx="50" cy="50" r="40" fill="none" stroke="#E5E5EA" stroke-width="7"/>'
-        f'<circle class="d-ring-fill" cx="50" cy="50" r="40" fill="none" stroke="#30B454" stroke-width="7" stroke-dasharray="{fill} 251.3" '
+        '<circle class="d-ring-track" cx="50" cy="50" r="40" fill="none" stroke="var(--fill-2)" stroke-width="7"/>'
+        f'<circle class="d-ring-fill" cx="50" cy="50" r="40" fill="none" stroke="var(--green)" stroke-width="7" stroke-dasharray="{fill} 251.3" '
         'transform="rotate(-90 50 50)" stroke-linecap="round"/>'
         f'<text x="50" y="57" text-anchor="middle">{f"{done}/{total}" if total else "—"}</text></svg>'
     )
@@ -858,7 +859,7 @@ def flow_visual(old, new, present):
         off = " off" if (cls == "new" and not present and share <= 0) else ""
         return (f'<rect class="d-vbox {cls}{off}" x="222" y="{y - 22}" width="186" height="44" rx="10"/>'
                 f'<text x="236" y="{y - 3}">{name}</text><text class="d-flow-sub" x="236" y="{y + 13}">{extra}</text>'
-                f'<text class="d-flow-pct" x="396" y="{y + 2}" text-anchor="end" fill="{"#0060C8" if cls == "new" else "#6E6E73"}">{share:g}%</text>')
+                f'<text class="d-flow-pct" x="396" y="{y + 2}" text-anchor="end" fill="{"var(--accent-text)" if cls == "new" else "var(--label-2)"}">{share:g}%</text>')
     new_extra = "everyone is here" if new >= 100 else "getting visitors" if new > 0 else "running, no visitors yet" if present else "not started yet"
     old_extra = "everyone is here" if old >= 100 else "still serving some" if old > 0 else "standing by, ready"
     return (f'<svg class="d-flow" viewBox="0 0 418 140" role="img" aria-label="Previous version {old:g} percent, this release {new:g} percent">'
@@ -1096,7 +1097,7 @@ def board_ring(done, total, tone_cls):
     return (
         f'<svg class="d-ring" viewBox="0 0 100 100" role="img" aria-label="{done} of {total} stages finished">'
         '<circle class="d-ring-track" cx="50" cy="50" r="40" fill="none" stroke-width="8"/>'
-        f'<circle class="d-ring-fill" data-ring="stages" cx="50" cy="50" r="40" fill="none" stroke="#30B454" stroke-width="8" '
+        f'<circle class="d-ring-fill" data-ring="stages" cx="50" cy="50" r="40" fill="none" stroke="var(--green)" stroke-width="8" '
         f'style="stroke-dasharray:{fill} 251.3" transform="rotate(-90 50 50)" stroke-linecap="round"/>'
         f'<text x="50" y="52" text-anchor="middle">{f"{done}/{total}" if total else "—"}</text>'
         '<text class="d-ring-sub" x="50" y="66" text-anchor="middle">STAGES</text></svg>'
@@ -1151,7 +1152,10 @@ def stage_hero(data, state, label, elapsed):
             'Each stage is lit by what GitHub or Google Cloud reports, never by a timer.</p></section>')
 
 
-def listing(data):
+LIST_PER_PAGE = 20
+
+
+def listing(data, page_number=1):
     rows = data["rows"]
     active, needs = data["counts"]["active"], data["counts"]["attention"]
     head = (
@@ -1177,20 +1181,24 @@ def listing(data):
             f'<a class="d-run" href="{ui.esc(row["href"])}"><div><strong>{ui.esc(row["application"])}</strong>'
             f'<span class="d-caption">{ui.esc(row.get("summary") or row.get("kind"))} · {ui.esc(row["sha"][:8])}</span></div>{pill(row["state"], row["label"])}</a>'
         )
+    total = len(items)
+    page_number = min(max(1, page_number), max(1, -(-total // LIST_PER_PAGE)))
+    shown = items[(page_number - 1) * LIST_PER_PAGE:page_number * LIST_PER_PAGE]
+    paged = ui.pager(lambda number: "/settings?tab=deployments" + (f"&page={number}" if number > 1 else ""), page_number, total, LIST_PER_PAGE, "deployments")
     return (
         head
         + stats
         + panel(
             "Recent activity",
-            "".join(items) or '<div class="d-empty"><h2>Your first deployment will appear here</h2><p>Connect your accounts and check an app to get started.</p></div>',
+            ("".join(shown) + paged) or '<div class="d-empty"><h2>Your first deployment will appear here</h2><p>Connect your accounts and check an app to get started.</p></div>',
             "Open a deployment to follow its live steps, checks, and report. Up to 100 recent deployments.",
         )
     )
 
 
-def page(frame, data, query):
-    endpoint = "/settings/deployment/status" + ("?" + urlencode(query) if query else "")
-    body = detail(data) if query else listing(data)
+def page(frame, data, query, page_number=1):
+    endpoint = "/settings/deployment/status" + ("?" + urlencode(query) if query else f"?page={page_number}" if page_number > 1 else "")
+    body = detail(data) if query else listing(data, page_number)
     terminal = bool(query and data.get("terminal"))
     inner = (
         f'<style>{STYLE}</style><div class="deployment"><div class="d-tools" style="justify-content:space-between;margin-bottom:20px">'

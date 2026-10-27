@@ -13,12 +13,12 @@ a threshold or a forecast is dashed.
 import html
 import math
 
-ACCENT = "#0071E3"  # one series (categorical slot 1, the page's blue)
-SECOND = "#FF6B35"  # a second series (slot 2)
-GOOD, WARN, BAD = "#30B454", "#E08A00", "#FF3B30"  # status: good, warning, bad; each always comes with words
-QUIET = "#C7C7CC"  # de-emphasis: what is not the point (below 3:1 on white, so every chart has its numbers table)
-INK = "#6E6E73"  # thresholds, release markers
-GRID, AXIS, TRACK, EMPTY = "#EBEBF0", "#D2D2D7", "#F2F2F7", "#E5E5EA"
+ACCENT = "var(--c-accent)"  # one series (categorical slot 1, the page's blue)
+SECOND = "var(--c-second)"  # a second series (slot 2)
+GOOD, WARN, BAD = "var(--c-good)", "var(--c-warn)", "var(--c-bad)"  # status: good, warning, bad; each always comes with words
+QUIET = "var(--c-quiet)"  # de-emphasis: what is not the point (below 3:1 on white, so every chart has its numbers table)
+INK = "var(--c-ink)"  # thresholds, release markers
+GRID, AXIS, TRACK, EMPTY = "var(--c-grid)", "var(--c-axis)", "var(--c-track)", "var(--c-empty)"
 
 TOP, AXIS_BAND = 18, 20  # pixels above the plot (the top label) and below it (the time labels)
 
@@ -159,7 +159,7 @@ def sparkline(ident, title, desc, values, tips=None, height=36):
                          f'y2="{y(values[index + 1]):.1f}" stroke="{QUIET}" stroke-width="2" stroke-linecap="round"/>')
     last = next((index for index in range(count - 1, -1, -1) if values[index] is not None), None)
     if last is not None:
-        parts.append(f'<circle cx="{pct((last + .5) / count)}" cy="{y(values[last]):.1f}" r="3.5" fill="{ACCENT}" stroke="#fff" stroke-width="2"/>')
+        parts.append(f'<circle cx="{pct((last + .5) / count)}" cy="{y(values[last]):.1f}" r="3.5" fill="{ACCENT}" stroke="var(--halo)" stroke-width="2"/>')
     parts.append(hits(count, 0, height, tips))
     return frame(ident, title, desc, height, "".join(parts), "chart spark")
 
@@ -237,7 +237,7 @@ def line(ident, title, desc, values, unit="", color=ACCENT, tips=None, axis=(), 
             parts.append(f'<circle cx="{pct((index + .5) / count)}" cy="{y(value):.1f}" r="2.5" fill="{color}"/>')
     last = next((index for index in range(count - 1, -1, -1) if values[index] is not None), None)
     if last is not None:
-        parts.append(f'<circle cx="{pct((last + .5) / count)}" cy="{y(values[last]):.1f}" r="4" fill="{color}" stroke="#fff" stroke-width="2"/>')
+        parts.append(f'<circle cx="{pct((last + .5) / count)}" cy="{y(values[last]):.1f}" r="4" fill="{color}" stroke="var(--halo)" stroke-width="2"/>')
     parts.append(release_marks(markers, bottom) if markers else "")
     parts.append(hits(count, TOP, bottom, tips))
     return frame(ident, title, desc, height, "".join(parts))
@@ -269,7 +269,7 @@ def progress(ident, title, desc, points, forecast=None, thresholds=(), axis=(), 
                      f'<circle cx="{pct(forecast[0])}" cy="{y(forecast[1]):.1f}" r="3.5" fill="#fff" stroke="{ACCENT}" stroke-width="2"><title>{esc(forecast[2])}</title></circle>')
     if points:
         x, value, _ = points[-1]
-        parts.append(f'<circle cx="{pct(x)}" cy="{y(value):.1f}" r="4" fill="{ACCENT}" stroke="#fff" stroke-width="2"/>')
+        parts.append(f'<circle cx="{pct(x)}" cy="{y(value):.1f}" r="4" fill="{ACCENT}" stroke="var(--halo)" stroke-width="2"/>')
     edges = [x for x, _, _ in points]
     for index, (x, _, words) in enumerate(points):
         left = (edges[index - 1] + x) / 2 if index else max(x - 0.02, 0)
@@ -377,7 +377,7 @@ def uptime_strip(ident, title, desc, days, start_words, end_words, height=54):
 
 SHAPES = {
     "circle": '<circle r="5"/>',
-    "ring": '<circle r="4.5" fill="#fff" stroke-width="2"/>',
+    "ring": '<circle r="4.5" fill="var(--halo)" stroke-width="2"/>',
     "diamond": '<path d="M0-6.5 6.5 0 0 6.5-6.5 0z"/>',
     "square": '<rect x="-5" y="-5" width="10" height="10" rx="1"/>',
     "triangle": '<path d="M0-6.5 6.5 5h-13z"/>',

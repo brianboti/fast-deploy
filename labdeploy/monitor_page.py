@@ -13,7 +13,7 @@ from urllib.parse import quote, urlencode
 from . import charts
 from .chat import WHOLE_BILL, money, plural
 from .monitor import LIVE_SECONDS, RANGES
-from .settings_page import PREFIX, ago, callout, card, chip, esc, head, icon, shell
+from .settings_page import PREFIX, ago, callout, card, chip, esc, head, icon, pager, shell
 
 LIVE_WORDS = ("Live, a few minutes behind: Cloud Monitoring samples each minute and shows a sample up to three minutes later, and this page keeps "
               f"a reading {LIVE_SECONDS // 60} minutes for everyone who opens it.")
@@ -634,7 +634,10 @@ def style_of(row):
     return row["outcome"] if row["outcome"] in STYLES else "in_progress"
 
 
-def releases(frame, data):
+RELEASES_PER_PAGE = 25
+
+
+def releases(frame, data, page=1):
     trust = data["trust"]["overall"]
     parts = [head("Releases", f"Every release, promotion and rollback this controller recorded for the applications your token may see, and the "
                               f"four DORA numbers over {data['days']} days."), toolbar(records_note(data["as_of"]), refresh(href("releases")))]
@@ -669,7 +672,7 @@ def releases(frame, data):
     parts.append(f'<div class="tiles">{"".join(tiles_html)}</div>')
     parts.append(section("Timeline", timeline_figure(data), f"The last {data['days']} days. Each shape is a release or promotion: its shape and colour "
                                                             "say what became of it."))
-    parts.append(release_table(data))
+    parts.append(release_table(data, page))
     return shell(frame, "releases", "".join(parts))
 
 
@@ -701,9 +704,11 @@ def timeline_figure(data):
     return figure("Releases and promotions", chart, "", legend, "", table)
 
 
-def release_table(data):
+def release_table(data, page=1):
+    total = len(data["rows"])
+    page = min(max(1, page), max(1, -(-total // RELEASES_PER_PAGE)))
     rows = []
-    for row in data["rows"][:60]:
+    for row in data["rows"][(page - 1) * RELEASES_PER_PAGE:page * RELEASES_PER_PAGE]:
         environment = " · production" if row["environment"] == "production" else ""
         what = {"release": "Release", "promotion": "Promotion", "rollback": "Rollback", "production_rollback": "Rollback"}.get(row["kind"], row["kind"])
         verdict = verdict_chip({"verdict": row["verdict"]} if row["verdict"] else None, row["finished"], data["as_of"]) if row["outcome"] == "live" else ""
@@ -718,9 +723,9 @@ def release_table(data):
     table = ('<div class="table-scroll"><table class="list stack"><thead><tr><th>Finished (UTC)</th><th>Application</th><th>Commit</th><th>Who asked</th>'
              '<th class="r">Took</th><th>What became of it</th><th>GitHub</th></tr></thead>'
              f'<tbody>{"".join(rows)}</tbody></table></div>')
-    more = f" The newest 60 of {len(data['rows'])}." if len(data["rows"]) > 60 else ""
-    return (f'<section class="card flush"><div class="card-head"><div><h2>Every release</h2><p class="sub">Newest first, the last 90 days.{more}</p></div></div>'
-            f'<div class="card-body">{table}</div></section>')
+    paged = pager(lambda number: href("releases", page=number if number > 1 else None), page, total, RELEASES_PER_PAGE, "releases")
+    return (f'<section class="card flush"><div class="card-head"><div><h2>Every release</h2><p class="sub">Newest first, the last 90 days.</p></div></div>'
+            f'<div class="card-body">{table}{paged}</div></section>')
 
 
 # ---- Cost
@@ -1002,12 +1007,12 @@ def events_table(data):
         return section("Events", empty("No event under this filter."))
     table = ('<div class="table-scroll"><table class="list stack"><thead><tr><th>When (UTC)</th><th>What</th><th>Who</th><th>Application</th><th>Outcome</th>'
              f'<th>Detail</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
-    more = ""
-    if len(rows) >= data["limit"] and data["limit"] < 200:
-        more = f'<div class="links" style="padding:12px 20px 14px"><a class="btn secondary" href="{esc(href("activity", **data["filters"], more=1))}">Show the newest 200</a></div>'
-    return (f'<section class="card flush"><div class="card-head"><div><h2>Events</h2><p class="sub">The newest {len(rows)}, newest first. Configuration '
+    more = 1 if data["limit"] >= 200 else None
+    paged = pager(lambda number: href("activity", **data["filters"], more=more, page=number if number > 1 else None), data.get("page", 1), data.get("total", len(rows)),
+                  data["limit"], "events")
+    return (f'<section class="card flush"><div class="card-head"><div><h2>Events</h2><p class="sub">Newest first. Configuration '
             "changes name the keys that changed, never their values.</p></div></div>"
-            f'<div class="card-body">{table}{more}</div></section>')
+            f'<div class="card-body">{table}{paged}</div></section>')
 
 
 JOB_WORDS = {"auto_deploy": "Auto-deploy check", "watchdog": "Watchdog", "backup": "Nightly backup", "onboarding": "Onboarding",

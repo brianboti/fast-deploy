@@ -682,3 +682,27 @@ def test_the_overview_counts_releases_and_the_trust_numbers_from_the_records(tmp
     assert [row["outcome"] for row in found["rows"]][:2] == ["stopped", "live"] and found["lead_hours"] is not None
     assert len(found["weekly"]) == 8 and found["services"] == [("demo", "production"), ("demo", "staging"), ("other", "staging")]
     assert aftercare.release_words({"state": "failed"}) == "stopped"
+
+
+# ---- 1.34.0: the long lists have pages
+
+def test_the_long_lists_have_pages(site):
+    store = site(Steady())
+    now = time.time()
+    with store.connect() as db:
+        db.executemany("INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                       [(now - 100 - index, "operator", "127.0.0.1", "tool", "list_applications", "demo", "ok", 1, None) for index in range(120)])
+    assert store.count_events() == 125 and len(store.find_events(50, offset=100)) == 25
+    browser = site.client()  # the sign-in is the 126th event
+    first = view(browser, "activity")
+    assert 'class="pager"' in first.text and "1–50 of 126 events" in first.text and 'aria-current="page">1<' in first.text
+    second = view(browser, "activity", page="2")
+    assert "51–100 of 126 events" in second.text and 'rel="prev"' in second.text and 'rel="next"' in second.text
+    assert "101–126 of 126 events" in view(browser, "activity", page="99").text  # past the end: the last page
+    assert "1–50 of 126 events" in view(browser, "activity", page="x").text  # nonsense: the first
+    assert 'class="pager"' not in view(browser, "releases").text  # five releases fit on one page
+    rows = [{"application": "demo", "href": f"/settings?tab=deployments&plan={index}", "summary": "Change", "sha": f"{index:08x}", "state": "succeeded",
+             "label": "Deployment succeeded"} for index in range(45)]
+    from labdeploy import deployment_page
+    listed = deployment_page.listing({"rows": rows, "setups": [], "counts": {"active": 0, "attention": 0}}, 3)
+    assert "41–45 of 45 deployments" in listed and listed.count('class="d-run"') == 5 and "&amp;page=2" in listed
