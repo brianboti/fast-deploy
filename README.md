@@ -1,5 +1,40 @@
 # Fast Deploy
 
+## Two layers (1.35.0)
+
+This repository holds a provider-independent **Cloud Infrastructure MCP** (`cloudinfra`) and, on top of it, the
+**Fast Deploy** application delivery workflow (`labdeploy`), the controller the rest of this README describes.
+
+```
+Application Layer (Claude, a CI job, another service, Fast Deploy)
+  │  InfrastructureRequest → InfrastructureResponse, over MCP or REST
+  ▼
+Cloud Infrastructure MCP (cloudinfra): validation, catalog, orchestration, provider abstraction
+  │  CloudProvider
+  ▼
+GCPProvider → Google Cloud          (AWS, Azure, Jetstream: adapters to come; nothing above changes)
+```
+
+The infrastructure layer provisions machines, disks, buckets, networks and managed databases from a request such as
+`{"provider": "gcp", "region": "us-central1", "compute": {"cpu": 4, "memory_gb": 16, "os": "ubuntu"}}`, and returns
+resource ids, addresses, endpoints and status. It takes no repository, image, script or command, holds no GitHub
+credential, and decides nothing about an application; those are the Application Layer's. Fast Deploy keeps owning
+repositories, builds, tests, images and releases, and never has to be present for the infrastructure layer to work.
+
+- Architecture and ownership: [docs/INFRASTRUCTURE-ARCHITECTURE.md](docs/INFRASTRUCTURE-ARCHITECTURE.md)
+- The 27 MCP tools: [docs/MCP-CATALOG.md](docs/MCP-CATALOG.md)
+- The provider interface and the Google Cloud adapter: [docs/PROVIDER-INTERFACE.md](docs/PROVIDER-INTERFACE.md)
+- The analysis behind the split: [docs/REFACTOR-2026-10-28.md](docs/REFACTOR-2026-10-28.md)
+
+```bash
+python -m cloudinfra.cli token                      # a caller token and its hash
+cp cloudinfra.example.yaml cloudinfra.local.yaml    # project, regions, limits, principals; no credential in the file
+CLOUDINFRA_CONFIG=cloudinfra.local.yaml uvicorn cloudinfra.mcp.server:create_app --factory --host 127.0.0.1 --port 8100
+python -m pytest tests/cloudinfra -q                # the boundary tests; no cloud is touched
+```
+
+## Fast Deploy: the application delivery workflow
+
 *Formerly Lab Deploy.* What people see was renamed in 1.14.0 and this repository in 1.14.1 (`brianboti/fast-deploy`;
 GitHub redirects the old `brianboti/lab-deploy`). The Python package `labdeploy`, the command `lab-deploy`, the local
 folder and the Google Cloud resources keep their old names, so nothing running had to move.

@@ -1,0 +1,42 @@
+# The Cloud Infrastructure MCP's configuration. Copy to cloudinfra.local.yaml (ignored by git) and start the server with
+#   CLOUDINFRA_CONFIG=cloudinfra.local.yaml uvicorn cloudinfra.mcp.server:create_app --factory --host 127.0.0.1 --port 8100
+# No credential lives here: on a Google Cloud machine the service uses the attached service account; on a laptop it asks
+# gcloud for a token, impersonating the service account named below when one is.
+database: cloudinfra.db
+allowed_hosts:
+  - "127.0.0.1:*"
+  - "localhost:*"
+# log_file: /var/lib/cloudinfra/service.log     # one JSON line per event, request and operation ids on each, secrets redacted
+# rate_limit_per_minute: 120                      # requests per caller identity
+# auth_failures_per_minute: 20                    # failed sign-ins per client address
+# workers: 4                                      # provisioning and destruction run in this many background workers
+# cleanup_on_failure: true                        # delete what a failed request created; false keeps it for inspection and says so
+labels:                                           # the operator's labels on every resource the service creates
+  environment: lab
+limits:                                           # cost protection, checked before any provider call
+  max_instances_per_request: 10
+  max_cpu_per_instance: 32
+  max_memory_gb_per_instance: 128
+  max_storage_gb_per_request: 2000
+  max_database_storage_gb: 1000
+  max_monthly_cost_usd: 500                       # refuse a request whose estimate from list prices is higher
+  max_active_requests_per_principal: 20
+  operation_timeout_seconds: 900
+providers:
+  gcp:
+    project_id: your-infrastructure-project
+    allowed_regions: [us-central1]
+    default_network: default                      # where machines go when a request has no network block
+    # default_subnet: null                        # needed when default_network is a custom-mode network
+    # impersonate_service_account: cloudinfra@your-infrastructure-project.iam.gserviceaccount.com
+    # zones: {europe-west10: [a, b, c]}           # regions the adapter's own table does not know
+principals:                                       # the Application Layer systems that may call the service
+  - name: app-layer
+    token_sha256: "REPLACE_WITH_THE_HASH_FROM_cloud-infra_token"
+    can_provision: true
+    can_destroy: true
+    # scope: own                                  # own: its own requests; all: every caller's (an operator identity)
+    # max_monthly_cost_usd: 100                   # a tighter ceiling than limits.max_monthly_cost_usd for this caller
+  - name: observer
+    token_sha256: "REPLACE_WITH_ANOTHER_HASH"     # reads only: can_provision and can_destroy default to false
+    scope: all

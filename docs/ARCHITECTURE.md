@@ -1,5 +1,12 @@
 # Architecture and boundaries
 
+> Since 1.35.0 this controller is the **application delivery workflow** on top of a separate, provider-independent
+> **Cloud Infrastructure MCP** (`cloudinfra`), described in [INFRASTRUCTURE-ARCHITECTURE.md](INFRASTRUCTURE-ARCHITECTURE.md)
+> with its catalog in [MCP-CATALOG.md](MCP-CATALOG.md). Everything below (repositories, builds, tests, images, releases,
+> Cloud Run) is this workflow's own; the infrastructure layer provisions machines, storage, networks and databases from a
+> provider-neutral request and knows nothing of it. The dependency points one way: `labdeploy` may import `cloudinfra`
+> (it takes `GoogleToken` from there); `cloudinfra` never imports `labdeploy`.
+
 ```mermaid
 flowchart TD
     User["Release manager in Claude"] --> MCP["Authenticated MCP tools"]

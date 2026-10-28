@@ -1,3 +1,47 @@
+# 1.35.0: a provider-independent Cloud Infrastructure MCP, and Fast Deploy as the workflow on top of it
+
+The repository now holds two layers with one direction of dependency. `cloudinfra` is the infrastructure layer: an
+Application Layer asks for what infrastructure it needs (machines by CPU and memory, disks and buckets by size, a private
+network, a managed database) in a provider-neutral request, and the service validates it, plans it, provisions it through
+a provider adapter and reports resource ids, addresses, endpoints and status. It takes no repository, image, script, command
+or key, holds no GitHub credential, and decides nothing about an application. `labdeploy` (Fast Deploy) is unchanged in
+behaviour and becomes the optional application delivery workflow: repositories, builds, tests, images, releases and the
+Cloud Run specifics. The analysis behind the split is `docs/REFACTOR-2026-10-28.md`.
+
+- A typed contract (`cloudinfra/models`): `InfrastructureRequest` with `ComputeRequest`, `StorageRequest`, `NetworkRequest`
+  and `DatabaseRequest`; `InfrastructureResponse` with resources by kind, endpoints, operations, a cost estimate and a
+  structured error; strict models that refuse unknown fields; every failure is `{"status": "FAILED", "error": {code,
+  message, details}}` with one of 23 codes.
+- `CloudProvider` (`cloudinfra/providers/base.py`): the primitive interface every adapter implements; `GCPProvider` behind
+  it, calling Compute Engine, Cloud SQL, Cloud Storage, Service Networking and Cloud Monitoring through one REST client.
+  `aws`, `azure` and `jetstream` are refused with `UNSUPPORTED_PROVIDER` until their adapters exist; adding one changes
+  nothing above the registry.
+- An orchestrator (`cloudinfra/orchestration`): validate, plan, provision in dependency order in bounded workers, status
+  refreshed from the provider, destroy in reverse; a failure deletes what the request created and names what it could
+  not; quota checks, limits on counts and sizes, a monthly cost ceiling per service and per caller, a cap on live requests.
+- An MCP service catalog of 27 primitive tools in six groups (compute, storage, network, database, infrastructure
+  orchestration, operations), each with a safety hint, documented in `docs/MCP-CATALOG.md`, which is generated from the
+  code and held equal to the registered tools by a test. A small REST API mirrors the lifecycle tools.
+- Security: bearer principals with hashed tokens, `can_provision`, `can_destroy` and `scope`; rate limits; the provider
+  credential from the host only (`GoogleToken`, moved from `labdeploy/cloud.py` to `cloudinfra/providers/gcp/auth.py` and
+  re-exported); OS Login and no service account on machines, SSH from the identity-aware proxy only, private subnets only,
+  encrypted-only databases with deletion protection and backups, buckets never emptied; a database password returned once
+  and never stored or logged.
+- Observability: one JSON line per lifecycle event with request and operation ids, secrets redacted; an audit event per
+  call with identity, client, outcome and duration.
+- Tests at the boundary (`tests/cloudinfra`, 100+ cases against a fake Google API): request validation and every code,
+  provider selection, generic request to Google translation, provisioning order, failure with cleanup, destroy, status,
+  authorization, the server end to end, the catalog document, the import boundary, and the design test: one Ubuntu
+  machine with 4 CPUs and 16 GB from a request that names nothing about an application. Real-cloud tests live in
+  `tests/integration/cloudinfra` and run only with `CLOUDINFRA_INTEGRATION=1`.
+- Documents: `docs/INFRASTRUCTURE-ARCHITECTURE.md` (the two layers and what each owns, lifecycle, state, security,
+  observability, extension), `docs/MCP-CATALOG.md`, `docs/PROVIDER-INTERFACE.md`; `cloudinfra.example.yaml`; the
+  `cloud-infra` command (`token`, `catalog`, `validate`, `plan`).
+
+Upgrade: nothing to do for Fast Deploy installations; `labdeploy.cloud.GoogleToken` still imports. To run the infrastructure
+service, copy `cloudinfra.example.yaml`, add a principal from `cloud-infra token`, and start
+`uvicorn cloudinfra.mcp.server:create_app --factory` with `CLOUDINFRA_CONFIG` pointing at the file.
+
 # 1.34.0: a premium finish, a dark theme and pages for the long lists
 
 A second pass over the design system of 1.33.0, after reading what the best product interfaces share: hierarchy from weight

@@ -13,9 +13,11 @@ import time
 
 import httpx
 
+from cloudinfra.providers.gcp.auth import METADATA, GoogleToken
+
 from .telemetry import RESOURCE, CloudMonitoring, merge, percentile
 
-METADATA = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+__all__ = ["METADATA", "GoogleToken", "Observer", "distribution_summary", "impacted_locations", "log_line", "secret_reader"]
 
 
 def log_line(entry):
@@ -32,34 +34,8 @@ def log_line(entry):
     return {"at": entry.get("timestamp"), "severity": entry.get("severity"), "revision": labels.get("revision_name"), "message": str(payload or "")[:500]}
 
 
-class GoogleToken:
-    """An access token for Google APIs as this host itself: the attached service account through the metadata server on a
-    Google Cloud machine, else the operator's own gcloud sign-in on a laptop. Kept until a minute before it ends."""
-
-    def __init__(self, client=None, runner=None, clock=time.time):
-        self.client = client or httpx.Client(timeout=30, follow_redirects=False)
-        self.runner = runner or (lambda args: subprocess.run(args, check=True, capture_output=True, text=True, timeout=60).stdout.strip())
-        self.clock = clock
-        self.cached, self.until = None, 0.0
-
-    def __call__(self):
-        if self.cached and self.clock() < self.until:
-            return self.cached
-        try:
-            response = self.client.get(METADATA, headers={"Metadata-Flavor": "Google"}, timeout=0.5)
-            if response.status_code == 200:
-                data = response.json()
-                self.cached, self.until = data["access_token"], self.clock() + max(60, int(data.get("expires_in", 300)) - 60)
-                return self.cached
-        except (httpx.HTTPError, ValueError, KeyError):
-            pass
-        try:
-            token = self.runner(["gcloud", "auth", "print-access-token"])
-        except (subprocess.CalledProcessError, OSError, subprocess.SubprocessError):
-            raise ValueError("Could not get a Google token on this host: on a laptop, sign in with gcloud auth login; on the machine, "
-                             "check that it runs with its service account") from None
-        self.cached, self.until = token, self.clock() + 1800
-        return token
+# GoogleToken lives in the infrastructure layer now (cloudinfra/providers/gcp/auth.py); imported here so every caller and test
+# keeps working, and so the dependency points from this application-delivery layer to the infrastructure layer, never back.
 
 
 def secret_reader(name, token, client=None, ttl=3600, clock=time.time):
