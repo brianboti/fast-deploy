@@ -8,11 +8,14 @@ def tools(mcp, orchestrator, wrap, identity):
                        memory_gb: Annotated[int, field("create_compute", "memory_gb")], provider: Annotated[str, field("create_compute", "provider")] = "gcp",
                        count: Annotated[int, field("create_compute", "count")] = 1, os: Annotated[str, field("create_compute", "os")] = "ubuntu",
                        boot_disk_gb: Annotated[int, field("create_compute", "boot_disk_gb")] = 20, public_ip: Annotated[bool, field("create_compute", "public_ip")] = False,
-                       network_id: Annotated[str | None, field("create_compute", "network_id")] = None, zone: Annotated[str | None, field("create_compute", "zone")] = None,
+                       network_id: Annotated[str | None, field("create_compute", "network_id")] = None,
+                       accelerator: Annotated[str | None, field("create_compute", "accelerator")] = None,
+                       accelerator_count: Annotated[int, field("create_compute", "accelerator_count")] = 1, zone: Annotated[str | None, field("create_compute", "zone")] = None,
                        name: Annotated[str | None, field("create_compute", "name")] = None, labels: Annotated[dict[str, str] | None, field("create_compute", "labels")] = None,
                        wait_seconds: Wait = 0) -> Result:
         return orchestrator.create_compute(identity(), region=region, cpu=cpu, memory_gb=memory_gb, provider=provider, count=count, os=os, boot_disk_gb=boot_disk_gb, public_ip=public_ip,
-                                           network_id=network_id, zone=zone, name=name, labels=labels, wait_seconds=wait_seconds)
+                                           network_id=network_id, accelerator=accelerator, accelerator_count=accelerator_count, zone=zone, name=name, labels=labels,
+                                           wait_seconds=wait_seconds)
 
     def get_compute(resource_id: Annotated[str, field("get_compute", "resource_id")]) -> Result:
         from ...models.resources import ResourceKind

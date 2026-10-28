@@ -11,25 +11,51 @@ def validate(request: InfrastructureRequest, config, provider: CloudProvider) ->
     allowed = list(settings.allowed_regions)
     if request.region not in allowed:
         problems.append(Problem(ErrorCode.INVALID_REGION, f"Region {request.region} is not allowed by this service; allowed: {', '.join(allowed)}", "region"))
+    for kind in request.kinds():
+        if kind not in provider.supported_kinds:
+            problems.append(Problem(ErrorCode.UNSUPPORTED_RESOURCE_KIND, f"The {provider.name} adapter does not provide {kind}; it provides {', '.join(provider.supported_kinds)}", kind))
     problems.extend(provider.validate(request))
     limits = config.limits
-    if request.compute:
-        compute = request.compute
-        if compute.count > limits.max_instances_per_request:
-            problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_instances_per_request} machines per request; {compute.count} asked", "compute.count"))
-        if compute.cpu > limits.max_cpu_per_instance:
-            problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_cpu_per_instance} CPUs per machine; {compute.cpu} asked", "compute.cpu"))
-        if compute.memory_gb > limits.max_memory_gb_per_instance:
-            problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_memory_gb_per_instance} GB per machine; {compute.memory_gb} asked", "compute.memory_gb"))
-        if compute.public_ip and request.network is not None and not request.network.public_access:
-            problems.append(Problem(ErrorCode.INVALID_NETWORK_CONFIGURATION, "compute.public_ip needs network.public_access: true on the request's network", "compute.public_ip"))
+    groups = request.compute_groups()
+    machines = sum(group.count for group in groups)
+    if machines > limits.max_instances_per_request:
+        problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_instances_per_request} machines per request; {machines} asked", "compute.count"))
+    for group in groups:
+        where = f"compute[{group.group_name}]" if len(groups) > 1 else "compute"
+        if group.cpu > limits.max_cpu_per_instance:
+            problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_cpu_per_instance} CPUs per machine; {group.cpu} asked", f"{where}.cpu"))
+        if group.memory_gb > limits.max_memory_gb_per_instance:
+            problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_memory_gb_per_instance} GB per machine; {group.memory_gb} asked", f"{where}.memory_gb"))
+        if group.accelerator and group.accelerator.count > limits.max_accelerators_per_instance:
+            text = "Accelerators are not allowed by this service" if limits.max_accelerators_per_instance == 0 else f"At most {limits.max_accelerators_per_instance} accelerators per machine"
+            problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, text, f"{where}.accelerator.count"))
+        if group.public_ip and request.network is not None and not request.network.public_access:
+            problems.append(Problem(ErrorCode.INVALID_NETWORK_CONFIGURATION, "compute.public_ip needs network.public_access: true on the request's network", f"{where}.public_ip"))
+        if group.network_id and request.network is not None:
+            problems.append(Problem(ErrorCode.INVALID_NETWORK_CONFIGURATION, "compute.network_id and a network block in the same request: choose one", f"{where}.network_id"))
+    boot = sum(group.boot_disk_gb * group.count for group in groups)
     if request.storage:
-        disks = (request.compute.count if request.compute and request.storage.type == "persistent" else 1)
-        total = request.storage.size_gb * disks + (request.compute.boot_disk_gb * request.compute.count if request.compute else 0)
+        targets = [group for group in groups if request.storage.group in (None, group.group_name)]
+        disks = sum(group.count for group in targets) if request.storage.type == "persistent" and groups else 1
+        total = request.storage.size_gb * disks + boot
         if total > limits.max_storage_gb_per_request:
             problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_storage_gb_per_request} GB of disk per request; {total} GB asked", "storage.size_gb"))
-    elif request.compute and request.compute.boot_disk_gb * request.compute.count > limits.max_storage_gb_per_request:
+    elif boot > limits.max_storage_gb_per_request:
         problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_storage_gb_per_request} GB of disk per request", "compute.boot_disk_gb"))
+    if request.cache:
+        if request.cache.memory_gb > limits.max_cache_memory_gb:
+            problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_cache_memory_gb} GB of cache; {request.cache.memory_gb} asked", "cache.memory_gb"))
+        if request.network is None and request.cache.network_id is None:
+            problems.append(Problem(ErrorCode.INVALID_CACHE_CONFIGURATION, "A cache is private: it needs a network block in the same request, or network_id naming one this service created", "cache"))
+        if request.cache.network_id and request.network is not None:
+            problems.append(Problem(ErrorCode.INVALID_CACHE_CONFIGURATION, "cache.network_id and a network block in the same request: choose one", "cache.network_id"))
+    if request.cluster:
+        if request.cluster.node_count > limits.max_cluster_nodes:
+            problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_cluster_nodes} cluster nodes; {request.cluster.node_count} asked", "cluster.node_count"))
+        if request.cluster.node_cpu > limits.max_cpu_per_instance or request.cluster.node_memory_gb > limits.max_memory_gb_per_instance:
+            problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_cpu_per_instance} CPUs and {limits.max_memory_gb_per_instance} GB per node", "cluster"))
+        if request.cluster.network_id and request.network is not None:
+            problems.append(Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, "cluster.network_id and a network block in the same request: choose one", "cluster.network_id"))
     if request.database:
         if request.database.storage_gb > limits.max_database_storage_gb:
             problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_database_storage_gb} GB of database storage; {request.database.storage_gb} asked", "database.storage_gb"))
@@ -38,8 +64,6 @@ def validate(request: InfrastructureRequest, config, provider: CloudProvider) ->
                                     "network_id naming a network this service created", "database"))
         if request.database.network_id and request.network is not None:
             problems.append(Problem(ErrorCode.INVALID_DATABASE_CONFIGURATION, "database.network_id and a network block in the same request: choose one", "database.network_id"))
-    if request.compute and request.compute.network_id and request.network is not None:
-        problems.append(Problem(ErrorCode.INVALID_NETWORK_CONFIGURATION, "compute.network_id and a network block in the same request: choose one", "compute.network_id"))
     return problems
 
 

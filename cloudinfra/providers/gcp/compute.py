@@ -44,11 +44,18 @@ class GcpCompute:
             "serviceAccounts": [],
             "shieldedInstanceConfig": {"enableSecureBoot": True, "enableVtpm": True, "enableIntegrityMonitoring": True},
         }
+        accelerator = None
+        if shape.get("accelerator"):
+            gpu, count = shape["accelerator"]["type"], shape["accelerator"]["count"]
+            body["guestAccelerators"] = [{"acceleratorType": f"zones/{zone}/acceleratorTypes/{gpu}", "acceleratorCount": count}]
+            body["scheduling"] = {"onHostMaintenance": "TERMINATE", "automaticRestart": True}  # a machine with a GPU cannot live-migrate
+            accelerator = f"{gpu} x{count}"
         operation = self.api.post(self._instances(zone), json=body)
         self.api.wait_compute(operation)
         resource = ComputeResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region, zone=zone,
-                                   machine_type=shape["machine_type"], cpu=spec.cpu, memory_gb=spec.memory_gb, os_image=shape["image"].rsplit("/", 1)[-1],
-                                   boot_disk_gb=spec.boot_disk_gb, labels=body["labels"], provider_id=f"{self._instances(zone)}/{planned.name}")
+                                   group=shape.get("group", "vm"), machine_type=shape["machine_type"], cpu=shape.get("cpu", spec.cpu), memory_gb=shape.get("memory_gb", spec.memory_gb),
+                                   os_image=shape["image"].rsplit("/", 1)[-1], boot_disk_gb=spec.boot_disk_gb, accelerator=accelerator, labels=body["labels"],
+                                   provider_id=f"{self._instances(zone)}/{planned.name}")
         return self.get(resource)
 
     def get(self, resource: ComputeResource) -> ComputeResource:
@@ -65,8 +72,10 @@ class GcpCompute:
         access = interfaces[0].get("accessConfigs") or [{}]
         machine = instance.get("machineType", base.machine_type).rsplit("/", 1)[-1]
         shape = translate.machine_shape(machine) or (base.cpu, base.memory_gb)
+        gpus = instance.get("guestAccelerators") or []
+        accelerator = f"{gpus[0].get('acceleratorType', '').rsplit('/', 1)[-1]} x{gpus[0].get('acceleratorCount', 1)}" if gpus else base.accelerator
         return base.model_copy(update={
-            "status": STATUS.get(instance.get("status", ""), ResourceStatus.UNKNOWN), "machine_type": machine, "cpu": shape[0], "memory_gb": shape[1],
+            "status": STATUS.get(instance.get("status", ""), ResourceStatus.UNKNOWN), "machine_type": machine, "cpu": shape[0], "memory_gb": shape[1], "accelerator": accelerator,
             "internal_ip": interfaces[0].get("networkIP"), "public_ip": access[0].get("natIP"), "provider_id": instance.get("selfLink", base.provider_id),
             "labels": instance.get("labels") or base.labels, "created_at": base.created_at or instance.get("creationTimestamp"),
         })
@@ -85,7 +94,7 @@ class GcpCompute:
                     shape = translate.machine_shape(machine) or (0, 0)
                     base = ComputeResource(id="cmp-000000000000", name=instance["name"], request_id=(instance.get("labels") or {}).get("cloudinfra-request", "unknown"),
                                            provider="gcp", region=zone.rsplit("-", 1)[0], zone=zone, machine_type=machine, cpu=shape[0], memory_gb=shape[1],
-                                           os_image="unknown", boot_disk_gb=0)
+                                           os_image="unknown", boot_disk_gb=0, group=(instance.get("labels") or {}).get("cloudinfra-group", "vm"))
                     found.append(self._from_instance(instance, base))
             page = data.get("nextPageToken")
             if not page:
@@ -94,7 +103,8 @@ class GcpCompute:
     def resize(self, resource: ComputeResource, cpu: int, memory_gb: int, ctx) -> ComputeResource:
         machine = translate.machine_type(cpu, memory_gb)
         if machine is None:
-            problem = translate.compute_problems(type("Shape", (), {"cpu": cpu, "memory_gb": memory_gb})())[0]
+            from ...models.request import ComputeRequest
+            problem = translate.compute_problems(ComputeRequest(cpu=cpu, memory_gb=memory_gb))[0]
             raise InfrastructureError(problem.code, problem.message, {"cpu": cpu, "memory_gb": memory_gb})
         base = f"{self._instances(resource.zone)}/{resource.name}"
         event("provider_resize", provider="gcp", resource=resource.id, machine_type=machine)

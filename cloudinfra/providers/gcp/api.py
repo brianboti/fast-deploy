@@ -16,6 +16,11 @@ STORAGE = "https://storage.googleapis.com/storage/v1"
 MONITORING = "https://monitoring.googleapis.com/v3"
 SERVICE_NETWORKING = "https://servicenetworking.googleapis.com/v1"
 RESOURCE_MANAGER = "https://cloudresourcemanager.googleapis.com/v1"
+PUBSUB = "https://pubsub.googleapis.com/v1"
+SECRETS = "https://secretmanager.googleapis.com/v1"
+CONTAINER = "https://container.googleapis.com/v1"
+REDIS = "https://redis.googleapis.com/v1"
+LONG_POLL_SECONDS = 10
 SQL_POLL_SECONDS = 5
 SERVICE_NETWORKING_POLL_SECONDS = 5
 
@@ -90,6 +95,9 @@ class GcpApi:
     def patch(self, url, json=None):
         return self.request("PATCH", url, json=json)
 
+    def put(self, url, json=None):
+        return self.request("PUT", url, json=json)
+
     def delete(self, url):
         return self.request("DELETE", url)
 
@@ -126,6 +134,34 @@ class GcpApi:
                 raise InfrastructureError(ErrorCode.OPERATION_TIMEOUT, "A Cloud SQL operation did not finish in time", {"operation": operation.get("name")})
             self.sleep(SQL_POLL_SECONDS)
             operation = self.get(f"{SQL}/projects/{self.project}/operations/{operation['name']}")
+
+    def wait_longrunning(self, operation: dict, base: str, timeout: int | None = None, what: str = "Google Cloud") -> dict:
+        """A google.longrunning operation (Memorystore): GET <base>/<name> until done."""
+        deadline = self.clock() + (timeout or self.operation_timeout)
+        while True:
+            if operation.get("done"):
+                if operation.get("error"):
+                    raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"{what} operation failed: {str(operation['error'].get('message', 'no detail'))[:300]}",
+                                              {"operation": operation.get("name")})
+                return operation
+            if self.clock() > deadline:
+                raise InfrastructureError(ErrorCode.OPERATION_TIMEOUT, f"A {what} operation did not finish in time", {"operation": operation.get("name")})
+            self.sleep(LONG_POLL_SECONDS)
+            operation = self.get(f"{base}/{operation['name']}")
+
+    def wait_container(self, operation: dict, timeout: int | None = None) -> dict:
+        """A Kubernetes Engine operation: GET its self link until its status is DONE."""
+        deadline = self.clock() + (timeout or self.operation_timeout)
+        while True:
+            if operation.get("status") == "DONE":
+                if operation.get("error"):
+                    raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"Kubernetes Engine operation failed: {str(operation['error'].get('message', 'no detail'))[:300]}",
+                                              {"operation": operation.get("name")})
+                return operation
+            if self.clock() > deadline:
+                raise InfrastructureError(ErrorCode.OPERATION_TIMEOUT, "A Kubernetes Engine operation did not finish in time", {"operation": operation.get("name")})
+            self.sleep(LONG_POLL_SECONDS)
+            operation = self.get(operation["selfLink"])
 
     def wait_service_networking(self, operation: dict, timeout: int | None = None) -> dict:
         deadline = self.clock() + (timeout or self.operation_timeout)

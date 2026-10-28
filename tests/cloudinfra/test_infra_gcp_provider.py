@@ -62,7 +62,7 @@ def test_storage_disk_attach_and_bucket():
     machine = provider.create_compute(request.compute, planned[1], ctx, None)
     attached = provider.attach_storage(disk, machine, ctx)
     body = next(call[2] for call in fake.calls if call[1].endswith("/attachDisk"))
-    assert body == {"source": disk.provider_id, "deviceName": "data-disk-1", "autoDelete": False} and attached.attached_to == machine.id
+    assert body == {"source": disk.provider_id, "deviceName": "data-vm-disk-1", "autoDelete": False} and attached.attached_to == machine.id
     disk_body = next(call[2] for call in fake.calls if call[0] == "POST" and call[1].endswith("/disks"))
     assert disk_body["type"].endswith("/pd-ssd") and disk_body["sizeGb"] == "200" and disk_body["labels"]["managed-by"] == "cloudinfra"
     with pytest.raises(InfrastructureError) as caught:

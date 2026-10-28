@@ -7,8 +7,32 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 from ..models.errors import ErrorCode
-from ..models.request import ComputeRequest, DatabaseRequest, InfrastructureRequest, NetworkRequest, StorageRequest
-from ..models.resources import ComputeResource, DatabaseResource, FirewallRule, NetworkResource, ResourceStatus, StorageResource
+from ..models.request import (
+    RESOURCE_KINDS,
+    CacheRequest,
+    ClusterRequest,
+    ComputeRequest,
+    DatabaseRequest,
+    InfrastructureRequest,
+    LoadBalancerRequest,
+    NetworkRequest,
+    QueueRequest,
+    SecretRequest,
+    StorageRequest,
+)
+from ..models.resources import (
+    CacheResource,
+    ClusterResource,
+    ComputeResource,
+    DatabaseResource,
+    FirewallRule,
+    LoadBalancerResource,
+    NetworkResource,
+    QueueResource,
+    ResourceStatus,
+    SecretResource,
+    StorageResource,
+)
 from ..models.response import CostEstimate, Health, PlannedResource, Usage
 
 
@@ -34,6 +58,8 @@ class ProvisionContext:
 
 class CloudProvider(ABC):
     name: str = "abstract"
+    # The kinds this adapter implements; a request for another is refused with UNSUPPORTED_RESOURCE_KIND before any call.
+    supported_kinds: tuple[str, ...] = RESOURCE_KINDS
 
     # ---- knowledge: no network call
     @abstractmethod
@@ -120,10 +146,64 @@ class CloudProvider(ABC):
     @abstractmethod
     def delete_database(self, resource: DatabaseResource, ctx: ProvisionContext) -> None: ...
 
-    # ---- reading any resource
+    # ---- cache
+    @abstractmethod
+    def create_cache(self, spec: CacheRequest, planned: PlannedResource, ctx: ProvisionContext, network: NetworkResource | None) -> CacheResource: ...
+
+    @abstractmethod
+    def get_cache(self, resource: CacheResource) -> CacheResource: ...
+
+    @abstractmethod
+    def delete_cache(self, resource: CacheResource, ctx: ProvisionContext) -> None: ...
+
+    # ---- queue
+    @abstractmethod
+    def create_queue(self, spec: QueueRequest, planned: PlannedResource, ctx: ProvisionContext) -> QueueResource: ...
+
+    @abstractmethod
+    def get_queue(self, resource: QueueResource) -> QueueResource: ...
+
+    @abstractmethod
+    def delete_queue(self, resource: QueueResource, ctx: ProvisionContext) -> None: ...
+
+    # ---- secret
+    @abstractmethod
+    def create_secret(self, spec: SecretRequest, planned: PlannedResource, ctx: ProvisionContext) -> SecretResource: ...
+
+    @abstractmethod
+    def get_secret(self, resource: SecretResource) -> SecretResource: ...
+
+    @abstractmethod
+    def delete_secret(self, resource: SecretResource, ctx: ProvisionContext) -> None: ...
+
+    # ---- cluster
+    @abstractmethod
+    def create_cluster(self, spec: ClusterRequest, planned: PlannedResource, ctx: ProvisionContext, network: NetworkResource | None) -> ClusterResource: ...
+
+    @abstractmethod
+    def get_cluster(self, resource: ClusterResource) -> ClusterResource: ...
+
+    @abstractmethod
+    def delete_cluster(self, resource: ClusterResource, ctx: ProvisionContext) -> None: ...
+
+    # ---- load balancer
+    @abstractmethod
+    def create_load_balancer(self, spec: LoadBalancerRequest, planned: PlannedResource, ctx: ProvisionContext, backends: list[ComputeResource],
+                             network: NetworkResource | None) -> LoadBalancerResource: ...
+
+    @abstractmethod
+    def get_load_balancer(self, resource: LoadBalancerResource) -> LoadBalancerResource: ...
+
+    @abstractmethod
+    def delete_load_balancer(self, resource: LoadBalancerResource, ctx: ProvisionContext) -> None: ...
+
+    # ---- reading and deleting any resource
     def refresh(self, resource):
         """The resource as the provider sees it now, by kind."""
-        return {"compute": self.get_compute, "storage": self.get_storage, "network": self.get_network, "database": self.get_database}[resource.kind.value](resource)
+        return getattr(self, f"get_{resource.kind.value}")(resource)
+
+    def delete(self, resource, ctx: ProvisionContext) -> None:
+        getattr(self, f"delete_{resource.kind.value}")(resource, ctx)
 
     def resource_status(self, resource) -> ResourceStatus:
         return self.refresh(resource).status

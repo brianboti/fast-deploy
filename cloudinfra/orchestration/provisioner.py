@@ -9,19 +9,47 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from ..models.errors import ErrorCode, InfrastructureError
-from ..models.request import ComputeRequest, DatabaseRequest, InfrastructureRequest, NetworkRequest, StorageRequest
-from ..models.resources import ComputeResource, DatabaseResource, NetworkResource, ResourceKind, ResourceStatus, StorageResource
+from ..models.request import (
+    RESOURCE_KINDS,
+    AcceleratorRequest,
+    CacheRequest,
+    ClusterRequest,
+    ComputeRequest,
+    DatabaseRequest,
+    InfrastructureRequest,
+    LoadBalancerRequest,
+    NetworkRequest,
+    QueueRequest,
+    SecretRequest,
+    StorageRequest,
+)
+from ..models.resources import (
+    CacheResource,
+    ClusterResource,
+    ComputeResource,
+    DatabaseResource,
+    LoadBalancerResource,
+    NetworkResource,
+    QueueResource,
+    ResourceKind,
+    ResourceStatus,
+    SecretResource,
+    StorageResource,
+)
 from ..models.response import (
     Credentials,
     Endpoints,
     ErrorDetail,
     Health,
     InfrastructureResponse,
+    KindField,
     ListResponse,
     OperationStatus,
     PlannedResource,
     PlanResponse,
     RequestStatus,
+    ResourceKindInfo,
+    ResourceKindsResponse,
     ResourceResponse,
     Resources,
     Usage,
@@ -35,7 +63,10 @@ from . import planner, validator
 
 MAX_WAIT_SECONDS = 45
 POLL_SECONDS = 0.5
-DESTROY_ORDER = (ResourceKind.database, ResourceKind.compute, ResourceKind.storage, ResourceKind.network)
+DESTROY_ORDER = tuple(ResourceKind(kind) for kind in reversed(RESOURCE_KINDS))
+KIND_MODELS = {"network": NetworkRequest, "storage": StorageRequest, "compute": ComputeRequest, "database": DatabaseRequest, "cache": CacheRequest, "queue": QueueRequest,
+               "secret": SecretRequest, "cluster": ClusterRequest, "load_balancer": LoadBalancerRequest}
+SEVERAL = ("compute", "queue", "secret")
 LIVE = (RequestStatus.PROVISIONING, RequestStatus.READY, RequestStatus.FAILED, RequestStatus.DESTROYING, RequestStatus.DESTROY_FAILED)
 
 
@@ -135,6 +166,7 @@ class Orchestrator:
                 raise InfrastructureError(ErrorCode.LIMIT_EXCEEDED, f"{principal.name} already has {active} live requests; destroy one before provisioning more",
                                           {"active": active, "limit": self.config.limits.max_active_requests_per_principal})
             existing = self._existing_networks(request, principal, provider)
+            external_backends = self._existing_backends(request, principal, provider)
             if request.database:
                 ctx.database_password = secrets.token_urlsafe(24)
             self.state.create_request(request_id, ctx.name, provider.name, request.region, ctx.zone, principal.name, RequestStatus.PROVISIONING, request.model_dump(mode="json"),
@@ -142,7 +174,7 @@ class Orchestrator:
             for item in planned:
                 self.state.save_resource(self._pending(item, request, ctx, provider.name))
             operation_id = self.state.start_operation(request_id, "provision", identity=principal.name)
-            self.executor.submit(self._run_provision, request_id, request, planned, ctx, provider, operation_id, existing)
+            self.executor.submit(self._run_provision, request_id, request, planned, ctx, provider, operation_id, existing, external_backends)
             if wait_seconds:
                 self._wait(request_id, wait_seconds)
             response = self.status(request_id, principal, refresh=False)
@@ -151,9 +183,9 @@ class Orchestrator:
             return response
 
     def _existing_networks(self, request: InfrastructureRequest, principal, provider: CloudProvider) -> dict[str, NetworkResource]:
-        """The networks a request names by id (compute.network_id, database.network_id): visible, ready, same provider and region."""
+        """The networks a request names by id (network_id on compute, database, cache, cluster): visible, ready, same provider and region."""
         found = {}
-        for block in (request.compute, request.database):
+        for block in (*request.compute_groups(), request.database, request.cache, request.cluster):
             network_id = getattr(block, "network_id", None)
             if not network_id:
                 continue
@@ -168,21 +200,47 @@ class Orchestrator:
             found[network_id] = resource
         return found
 
+    def _existing_backends(self, request: InfrastructureRequest, principal, provider: CloudProvider) -> list[ComputeResource]:
+        """The machines a load balancer names by id: visible, ready, same provider, region and zone."""
+        found = []
+        for compute_id in (request.load_balancer.backends if request.load_balancer else None) or []:
+            resource, _ = self._resource(compute_id, principal)
+            if resource.kind != ResourceKind.compute:
+                raise InfrastructureError(ErrorCode.NOT_FOUND, f"{compute_id} is a {resource.kind.value}, not a machine", {"resource_id": compute_id})
+            if resource.status != ResourceStatus.READY:
+                raise InfrastructureError(ErrorCode.INVALID_STATE, f"Machine {compute_id} is {resource.status.value}, not READY", {"resource_id": compute_id})
+            if resource.provider != provider.name or resource.region != request.region or (found and resource.zone != found[0].zone):
+                raise InfrastructureError(ErrorCode.INVALID_LOAD_BALANCER_CONFIGURATION, f"Machine {compute_id} is in {resource.provider} {resource.zone}; every backend must be in "
+                                          f"{provider.name} {request.region} and one zone", {"resource_id": compute_id})
+            found.append(resource)
+        return found
+
     @staticmethod
     def _pending(item: PlannedResource, request: InfrastructureRequest, ctx: ProvisionContext, provider: str):
         common = {"id": item.spec["resource_id"], "name": item.name, "request_id": ctx.request_id, "provider": provider, "region": ctx.region, "status": ResourceStatus.PENDING}
         spec = item.spec
         if item.kind == "compute":
-            return ComputeResource(**common, zone=spec["zone"], machine_type=spec["machine_type"], cpu=request.compute.cpu, memory_gb=request.compute.memory_gb,
-                                   os_image=spec["image"].rsplit("/", 1)[-1], boot_disk_gb=spec["boot_disk_gb"])
+            accelerator = f"{spec['accelerator']['type']} x{spec['accelerator']['count']}" if spec.get("accelerator") else None
+            return ComputeResource(**common, zone=spec["zone"], group=spec["group"], machine_type=spec["machine_type"], cpu=spec["cpu"], memory_gb=spec["memory_gb"],
+                                   os_image=spec["image"].rsplit("/", 1)[-1], boot_disk_gb=spec["boot_disk_gb"], accelerator=accelerator)
         if item.kind == "storage":
             return StorageResource(**common, zone=spec.get("zone"), type=spec["type"], size_gb=spec["size_gb"], performance=request.storage.performance)
         if item.kind == "network":
             return NetworkResource(**common, subnet=spec["subnet"], cidr=spec["cidr"], public_access=spec["public_access"])
-        return DatabaseResource(**common, engine=spec["engine"], version=spec["version"], tier=spec["tier"], storage_gb=spec["storage_gb"], high_availability=spec["high_availability"],
-                                public_access=not spec["private"], port=spec["port"], database=request.database.database_name, username=request.database.username)
+        if item.kind == "database":
+            return DatabaseResource(**common, engine=spec["engine"], version=spec["version"], tier=spec["tier"], storage_gb=spec["storage_gb"], high_availability=spec["high_availability"],
+                                    public_access=not spec["private"], port=spec["port"], database=request.database.database_name, username=request.database.username)
+        if item.kind == "cache":
+            return CacheResource(**common, version=spec["version"], tier=spec["tier"], memory_gb=spec["memory_gb"], high_availability=spec["tier"] == "STANDARD_HA")
+        if item.kind == "queue":
+            return QueueResource(**common, topic=f"pending/{item.name}", retention_hours=spec["retention_hours"])
+        if item.kind == "secret":
+            return SecretResource(**common, resource_name=f"pending/{item.name}", versions=0)
+        if item.kind == "cluster":
+            return ClusterResource(**common, zone=spec["location"], location=spec["location"], node_count=spec["node_count"], machine_type=spec["machine_type"])
+        return LoadBalancerResource(**common, type=spec["type"], port=spec["port"], backend_group=spec["backend_group"], health_check_path=spec.get("health_check_path"))
 
-    def _run_provision(self, request_id, request, planned, ctx, provider, operation_id, existing):
+    def _run_provision(self, request_id, request, planned, ctx, provider, operation_id, existing, external_backends=()):
         with bound(request_id=request_id, operation_id=operation_id, identity=ctx.owner):
             event("provisioning_started", provider=provider.name, resources=len(planned))
             created, computes, network, current = [], {}, None, None
@@ -197,10 +255,26 @@ class Orchestrator:
                     elif item.kind == "storage":
                         resource = provider.create_storage(request.storage, item, ctx)
                     elif item.kind == "compute":
-                        joined = network or existing.get(request.compute.network_id)
-                        resource = provider.create_compute(request.compute, item, ctx, joined)
+                        group = request.group(item.spec["group"])
+                        joined = network or existing.get(group.network_id)
+                        resource = provider.create_compute(group, item, ctx, joined)
                         resource = resource.model_copy(update={"network": joined.id if joined is not None else None})
                         computes[item.name] = resource
+                    elif item.kind == "cache":
+                        joined = network or existing.get(request.cache.network_id)
+                        resource = provider.create_cache(request.cache, item, ctx, joined)
+                    elif item.kind == "queue":
+                        resource = provider.create_queue(next(queue for queue in request.queues() if queue.name == item.spec["queue"]), item, ctx)
+                    elif item.kind == "secret":
+                        resource = provider.create_secret(next(secret for secret in request.secrets() if secret.name == item.spec["secret"]), item, ctx)
+                    elif item.kind == "cluster":
+                        joined = network or existing.get(request.cluster.network_id)
+                        resource = provider.create_cluster(request.cluster, item, ctx, joined)
+                    elif item.kind == "load_balancer":
+                        backends = [computes[name] for name in item.spec["backends"] if name in computes] or list(external_backends)
+                        group = request.group(request.load_balancer.backend_group)
+                        joined = network or existing.get(group.network_id if group else None)
+                        resource = provider.create_load_balancer(request.load_balancer, item, ctx, backends, joined)
                     else:
                         joined = network or existing.get(request.database.network_id)
                         if joined is not None and not request.database.public_access:
@@ -254,7 +328,7 @@ class Orchestrator:
         if not quota:
             event("quota_unavailable", provider=provider.name, region=request.region)
             return
-        wanted = {"CPUS": sum(request.compute.cpu for item in planned if item.kind == "compute") if request.compute else 0,
+        wanted = {"CPUS": sum(item.spec.get("cpu", 0) for item in planned if item.kind == "compute"),
                   "INSTANCES": sum(1 for item in planned if item.kind == "compute"),
                   "DISKS_TOTAL_GB": sum(item.spec.get("size_gb", 0) for item in planned if item.kind == "storage" and item.spec.get("type") == "persistent")
                   + sum(item.spec.get("boot_disk_gb", 0) for item in planned if item.kind == "compute"),
@@ -267,7 +341,7 @@ class Orchestrator:
         event("quota_checked", region=request.region, wanted=wanted)
 
     def _delete(self, provider: CloudProvider, resource, ctx: ProvisionContext) -> None:
-        {"compute": provider.delete_compute, "storage": provider.delete_storage, "network": provider.delete_network, "database": provider.delete_database}[resource.kind.value](resource, ctx)
+        provider.delete(resource, ctx)
 
     def _cleanup(self, request_id, created, ctx, provider) -> dict:
         operation_id = self.state.start_operation(request_id, "cleanup", identity=ctx.owner)
@@ -315,10 +389,13 @@ class Orchestrator:
         grouped = Resources()
         for resource in resources:
             getattr(grouped, resource.kind.value).append(resource)
-        database = next(iter(grouped.database), None)
+        database, cache, cluster, balancer = (next(iter(items), None) for items in (grouped.database, grouped.cache, grouped.cluster, grouped.load_balancer))
         endpoints = Endpoints(public_ips=[item.public_ip for item in grouped.compute if item.public_ip], internal_ips=[item.internal_ip for item in grouped.compute if item.internal_ip],
                               database_host=database.host if database else None, database_port=database.port if database and database.host else None,
-                              bucket_urls=[item.url for item in grouped.storage if item.url])
+                              bucket_urls=[item.url for item in grouped.storage if item.url], load_balancer_address=balancer.address if balancer else None,
+                              cache_host=cache.host if cache else None, cache_port=cache.port if cache and cache.host else None, cluster_endpoint=cluster.endpoint if cluster else None,
+                              queue_topics=[item.topic for item in grouped.queue if item.status == ResourceStatus.READY],
+                              secret_names=[item.resource_name for item in grouped.secret if item.status == ResourceStatus.READY])
         return InfrastructureResponse(request_id=record["request_id"], name=record["name"], provider=record["provider"], region=record["region"], zone=record["zone"],
                                       status=record["status"], owner=record["owner"], labels=record["labels"], resources=grouped, endpoints=endpoints,
                                       operations=self.state.operations_of(record["request_id"]), estimated_monthly_cost_usd=record["estimated_cost"],
@@ -380,10 +457,49 @@ class Orchestrator:
                 event("destruction_completed", resources=[item.id for item in resources])
 
     # ---- single-resource primitives
-    def create_compute(self, principal, *, region, cpu, memory_gb, provider="gcp", count=1, os="ubuntu", boot_disk_gb=20, public_ip=False, network_id=None, zone=None, name=None,
-                       labels=None, wait_seconds=0) -> InfrastructureResponse:
-        compute = ComputeRequest(count=count, cpu=cpu, memory_gb=memory_gb, os=os, boot_disk_gb=boot_disk_gb, public_ip=public_ip, network_id=network_id)
+    def create_compute(self, principal, *, region, cpu, memory_gb, provider="gcp", count=1, os="ubuntu", boot_disk_gb=20, public_ip=False, network_id=None, accelerator=None,
+                       accelerator_count=1, zone=None, name=None, labels=None, wait_seconds=0) -> InfrastructureResponse:
+        gpus = AcceleratorRequest(type=accelerator, count=accelerator_count) if accelerator else None
+        compute = ComputeRequest(count=count, cpu=cpu, memory_gb=memory_gb, os=os, boot_disk_gb=boot_disk_gb, public_ip=public_ip, network_id=network_id, accelerator=gpus)
         return self.provision(InfrastructureRequest(provider=provider, region=region, zone=zone, name=name, labels=labels or {}, compute=compute), principal, wait_seconds)
+
+    def create_cache(self, principal, *, region, provider="gcp", memory_gb=1, high_availability=False, version=None, network_id=None, name=None, labels=None, wait_seconds=0):
+        cache = CacheRequest(memory_gb=memory_gb, high_availability=high_availability, version=version, network_id=network_id)
+        return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, cache=cache), principal, wait_seconds)
+
+    def create_queue(self, principal, *, region, queue_name, provider="gcp", retention_hours=168, subscription=True, ack_deadline_seconds=20, name=None, labels=None, wait_seconds=0):
+        queue = QueueRequest(name=queue_name, retention_hours=retention_hours, subscription=subscription, ack_deadline_seconds=ack_deadline_seconds)
+        return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, queue=queue), principal, wait_seconds)
+
+    def create_secret(self, principal, *, region, secret_name, provider="gcp", generate_value=False, name=None, labels=None, wait_seconds=0):
+        secret = SecretRequest(name=secret_name, generate_value=generate_value)
+        return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, secret=secret), principal, wait_seconds)
+
+    def create_cluster(self, principal, *, region, provider="gcp", node_count=1, node_cpu=2, node_memory_gb=8, node_disk_gb=50, kubernetes_version=None, private_nodes=False,
+                       network_id=None, zone=None, name=None, labels=None, wait_seconds=0):
+        cluster = ClusterRequest(node_count=node_count, node_cpu=node_cpu, node_memory_gb=node_memory_gb, node_disk_gb=node_disk_gb, kubernetes_version=kubernetes_version,
+                                 private_nodes=private_nodes, network_id=network_id)
+        return self.provision(InfrastructureRequest(provider=provider, region=region, zone=zone, name=name, labels=labels or {}, cluster=cluster), principal, wait_seconds)
+
+    def create_load_balancer(self, principal, *, region, backends, provider="gcp", type="http", port=80, health_check_path="/", name=None, labels=None, wait_seconds=0):
+        balancer = LoadBalancerRequest(type=type, port=port, health_check_path=health_check_path, backends=backends)
+        return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, load_balancer=balancer), principal, wait_seconds)
+
+    def resource_kinds(self) -> ResourceKindsResponse:
+        """What can be asked for: every kind of the contract with its fields, and which configured adapters provide it."""
+        providers = {name: self.registry.get(name) for name in self.registry.names()}
+        kinds = []
+        for kind in RESOURCE_KINDS:
+            schema = KIND_MODELS[kind].model_json_schema()
+            fields = []
+            for field_name, definition in schema.get("properties", {}).items():
+                kind_of = definition.get("type") or " | ".join(item.get("type", "object") for item in definition.get("anyOf", [])) or "object"
+                fields.append(KindField(name=field_name, type=kind_of, required=field_name in schema.get("required", []), default=definition.get("default"),
+                                        description=definition.get("description")))
+            kinds.append(ResourceKindInfo(kind=kind, description=(schema.get("description") or "").strip(), several_per_request=kind in SEVERAL, fields=fields,
+                                          providers=[name for name, provider in providers.items() if kind in provider.supported_kinds]))
+        return ResourceKindsResponse(kinds=kinds, providers=list(providers), note="A request block of any other name is refused with UNSUPPORTED_RESOURCE_KIND; "
+                                     "network_id on compute, database, cache and cluster joins a network created earlier, and load_balancer.backends names machines created earlier.")
 
     def create_storage(self, principal, *, region, size_gb, provider="gcp", type="persistent", performance="balanced", zone=None, name=None, labels=None, wait_seconds=0):
         storage = StorageRequest(type=type, size_gb=size_gb, performance=performance)

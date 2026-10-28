@@ -15,6 +15,10 @@ class ErrorCode(StrEnum):
     INVALID_STORAGE_CONFIGURATION = "INVALID_STORAGE_CONFIGURATION"
     INVALID_NETWORK_CONFIGURATION = "INVALID_NETWORK_CONFIGURATION"
     INVALID_DATABASE_CONFIGURATION = "INVALID_DATABASE_CONFIGURATION"
+    INVALID_CACHE_CONFIGURATION = "INVALID_CACHE_CONFIGURATION"
+    INVALID_CLUSTER_CONFIGURATION = "INVALID_CLUSTER_CONFIGURATION"
+    INVALID_LOAD_BALANCER_CONFIGURATION = "INVALID_LOAD_BALANCER_CONFIGURATION"
+    UNSUPPORTED_RESOURCE_KIND = "UNSUPPORTED_RESOURCE_KIND"
     LIMIT_EXCEEDED = "LIMIT_EXCEEDED"
     COST_LIMIT_EXCEEDED = "COST_LIMIT_EXCEEDED"
     QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
@@ -73,14 +77,57 @@ def problems_from(error: Any) -> list[ErrorDetail]:
     """The problems a pydantic ValidationError describes, one ErrorDetail each: a coded message keeps its code, any other
     becomes INVALID_REQUEST with the field it names."""
     problems = []
-    for item in error.errors():
+    for item in _without_union_noise(error.errors()):
         location = ".".join(str(part) for part in item.get("loc", ()))
-        message = str(item.get("msg", "invalid"))
+        message = re.sub(r"^Value error, ", "", str(item.get("msg", "invalid")))
         found = CODED.match(message)
         code, text = (ErrorCode(found.group(1)), found.group(2)) if found and found.group(1) in ErrorCode.__members__ else (ErrorCode.INVALID_REQUEST, message)
         details = {"field": location} if location else {}
         named = bool(found)  # a coded message names its own field
-        if item.get("type") == "extra_forbidden":
+        if item.get("type") == "extra_forbidden" and len(item.get("loc", ())) == 1:
+            code, text, named = ErrorCode.UNSUPPORTED_RESOURCE_KIND, unknown_kind_message(str(item["loc"][0])), True
+            details["nearest"] = nearest_kind(str(item["loc"][0]))
+        elif item.get("type") == "extra_forbidden":
             text, named = f"{location} is not a field of the request", True
         problems.append(ErrorDetail(code=code, message=text if named or not location else f"{location}: {text}", details=details))
     return problems
+
+
+def nearest_kind(name: str) -> str | None:
+    """The resource kind an unknown top-level block most likely meant (loadbalancer → load_balancer, vm → compute)."""
+    import difflib
+
+    from .request import RESOURCE_KINDS
+    aliases = {"vm": "compute", "vms": "compute", "instance": "compute", "instances": "compute", "server": "compute", "machine": "compute", "machines": "compute",
+               "disk": "storage", "disks": "storage", "bucket": "storage", "volume": "storage", "vpc": "network", "subnet": "network", "firewall": "network",
+               "db": "database", "postgres": "database", "postgresql": "database", "mysql": "database", "sql": "database", "redis": "cache", "memcache": "cache",
+               "topic": "queue", "topics": "queue", "pubsub": "queue", "messaging": "queue", "secrets": "secret", "kubernetes": "cluster", "k8s": "cluster", "gke": "cluster",
+               "loadbalancer": "load_balancer", "lb": "load_balancer", "balancer": "load_balancer", "ingress": "load_balancer"}
+    lowered = name.lower().replace("-", "_")
+    if lowered in aliases:
+        return aliases[lowered]
+    near = difflib.get_close_matches(lowered, RESOURCE_KINDS, n=1, cutoff=0.6)
+    return near[0] if near else None
+
+
+def unknown_kind_message(name: str) -> str:
+    from .request import RESOURCE_KINDS
+    guess = nearest_kind(name)
+    hint = f" (did you mean {guess}?)" if guess else ""
+    return f"{name} is not a resource kind this service provides{hint}; kinds: {', '.join(RESOURCE_KINDS)}. Other top-level fields: provider, region, zone, name, labels."
+
+
+UNION_TAG = re.compile(r"^(?:[A-Z][A-Za-z]+|list\[[A-Za-z]+\])$")
+BRANCH_TYPES = ("list_type", "model_type", "dict_type", "model_attributes_type")
+
+
+def _without_union_noise(errors: list) -> list:
+    """A field that takes one block or a list of them makes pydantic report both branches; keep the branch that matched the
+    input's shape, and name the field without the branch tag (compute.cpu, not compute.ComputeRequest.cpu)."""
+    cleaned = []
+    for item in errors:
+        loc = tuple(item.get("loc", ()))
+        tagged = len(loc) >= 2 and isinstance(loc[1], str) and UNION_TAG.match(loc[1]) is not None
+        cleaned.append({**item, "loc": (loc[0], *loc[2:]) if tagged else loc, "_branch": tagged})
+    fields_with_detail = {item["loc"][0] for item in cleaned if item["_branch"] and item.get("type") not in BRANCH_TYPES}
+    return [item for item in cleaned if not (item["_branch"] and item.get("type") in BRANCH_TYPES and item["loc"][0] in fields_with_detail)]

@@ -44,7 +44,7 @@ def test_plan_names_shapes_and_order():
                                                    "storage": {"size_gb": 200}, "database": {"size": "medium"}, "network": {"public_access": True}})
     ctx = planner.context(request, "abcdef" + "0" * 26, "app-layer", config, provider)
     planned = planner.plan(request, ctx, provider)
-    assert [(item.kind, item.name) for item in planned] == [("network", "analytics-net"), ("storage", "analytics-disk-1"), ("storage", "analytics-disk-2"),
+    assert [(item.kind, item.name) for item in planned] == [("network", "analytics-net"), ("storage", "analytics-vm-disk-1"), ("storage", "analytics-vm-disk-2"),
                                                             ("compute", "analytics-vm-1"), ("compute", "analytics-vm-2"), ("database", "analytics-db-abcdef")]
     assert all(item.spec["resource_id"].startswith({"network": "net-", "storage": "sto-", "compute": "cmp-", "database": "db-"}[item.kind]) for item in planned)
     assert planned[1].spec["attach_to"] == "analytics-vm-1" and planned[3].spec["machine_type"] == "e2-standard-4" and planned[3].spec["zone"] == "us-central1-a"

@@ -5,4 +5,4 @@ request; this package validates it, plans it, provisions it through a cloud prov
 never reads a repository, builds an image, runs a test or decides how an application is released.
 """
 
-__version__ = "1.35.0"
+__version__ = "1.36.0"

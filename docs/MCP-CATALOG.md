@@ -1,6 +1,6 @@
 # MCP service catalog
 
-Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 27 tools in 6 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-` or `db-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
+Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 43 tools in 11 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-` or `db-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
 
 ## At a glance
 
@@ -22,6 +22,22 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | Database | `create_database` | Create a managed database | changes cloud |
 | Database | `get_database` | Get a database | read only |
 | Database | `delete_database` | Delete a database | destructive |
+| Cache | `create_cache` | Create a cache | changes cloud |
+| Cache | `get_cache` | Get a cache | read only |
+| Cache | `delete_cache` | Delete a cache | destructive |
+| Queue | `create_queue` | Create a queue | changes cloud |
+| Queue | `get_queue` | Get a queue | read only |
+| Queue | `delete_queue` | Delete a queue | destructive |
+| Secret | `create_secret` | Create a secret | changes cloud |
+| Secret | `get_secret` | Get a secret | read only |
+| Secret | `delete_secret` | Delete a secret | destructive |
+| Cluster | `create_cluster` | Create a Kubernetes cluster | changes cloud |
+| Cluster | `get_cluster` | Get a cluster | read only |
+| Cluster | `delete_cluster` | Delete a cluster | destructive |
+| Load balancer | `create_load_balancer` | Create a load balancer | changes cloud |
+| Load balancer | `get_load_balancer` | Get a load balancer | read only |
+| Load balancer | `delete_load_balancer` | Delete a load balancer | destructive |
+| Infrastructure | `list_resource_kinds` | List resource kinds | read only |
 | Infrastructure | `validate_infrastructure_request` | Validate a request | read only |
 | Infrastructure | `plan_infrastructure` | Plan a request | read only |
 | Infrastructure | `provision_infrastructure` | Provision a request | changes cloud |
@@ -46,6 +62,10 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `INVALID_STORAGE_CONFIGURATION` | A storage request the provider cannot satisfy (attaching a bucket, a disk across zones). |
 | `INVALID_NETWORK_CONFIGURATION` | A range, port or source outside the rules, or a public address without a public network. |
 | `INVALID_DATABASE_CONFIGURATION` | An engine version the provider does not run, or a private database without a network. |
+| `INVALID_CACHE_CONFIGURATION` | A cache version the provider does not run, or a cache without a network. |
+| `INVALID_CLUSTER_CONFIGURATION` | A node shape the provider has no type for. |
+| `INVALID_LOAD_BALANCER_CONFIGURATION` | No machines behind it, or machines in different zones or regions. |
+| `UNSUPPORTED_RESOURCE_KIND` | A request block of a kind the contract or the chosen adapter does not provide; details name the nearest kind. |
 | `LIMIT_EXCEEDED` | Above one of the operator's limits on counts, sizes or live requests. |
 | `COST_LIMIT_EXCEEDED` | The estimate from list prices is above the ceiling for this service or this caller. |
 | `QUOTA_EXCEEDED` | The provider's quota in the region has no room for the request. |
@@ -81,13 +101,15 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `boot_disk_gb` | no | Boot disk in GB (default 20). |
 | `public_ip` | no | Give each machine a public address (default false). |
 | `network_id` | no | A network this service created earlier (net-…), to join instead of the operator's default network. |
+| `accelerator` | no | GPUs per machine: t4, l4, a100 or h100; the machine family follows the type, and the driver is the Application Layer's to install. |
+| `accelerator_count` | no | GPUs per machine (default 1); each type offers fixed counts. |
 | `zone` | no | A zone of the region; the provider picks the first when omitted. |
 | `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
 | `labels` | no | Labels for every resource, next to the service's ownership labels. |
 | `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
 
 **Required fields.** `region`, `cpu`, `memory_gb`.
-**Optional fields.** `provider`, `count`, `os`, `boot_disk_gb`, `public_ip`, `network_id`, `zone`, `name`, `labels`, `wait_seconds`.
+**Optional fields.** `provider`, `count`, `os`, `boot_disk_gb`, `public_ip`, `network_id`, `accelerator`, `accelerator_count`, `zone`, `name`, `labels`, `wait_seconds`.
 
 **Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED.
 
@@ -95,7 +117,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. Machines get OS Login (IAM) and no service account; shielded VM settings on. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
 
-**Provider mapping (Google Cloud).** Compute Engine: compute.instances.insert with an E2 machine type and a public image family; compute.instances.get after.
+**Provider mapping (Google Cloud).** Compute Engine: compute.instances.insert with an E2 machine type (N1, G2, A2 or A3 with a GPU) and a public image family; compute.instances.get after.
 
 ### `get_compute`
 
@@ -458,7 +480,396 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Provider mapping (Google Cloud).** Cloud SQL Admin: sqladmin.instances.patch (deletion protection off), sqladmin.instances.delete.
 
+## Cache
+
+### `create_cache`
+
+**Purpose.** Create a managed in-memory cache (Redis) on a network this service created: private, authenticated, encrypted in transit. The Application Layer reads the AUTH string from the provider with its own identity.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
+| `network_id` | yes | A network this service created earlier (net-…); required, since the resource is private. |
+| `provider` | no | The cloud provider adapter; gcp (default) is the one implemented. |
+| `memory_gb` | no | Memory in GB (default 1). |
+| `high_availability` | no | A replica in a second zone (default false). |
+| `version` | no | Engine version (7.2); the provider's default when omitted. |
+| `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
+| `labels` | no | Labels for every resource, next to the service's ownership labels. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `region`, `network_id`.
+**Optional fields.** `provider`, `memory_gb`, `high_availability`, `version`, `name`, `labels`, `wait_seconds`.
+
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED.
+
+**Possible errors.** `INVALID_CACHE_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
+
+**Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. No credential passes through this service. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+
+**Provider mapping (Google Cloud).** Memorystore for Redis: redis.projects.locations.instances.create (direct peering, AUTH on, TLS).
+
+### `get_cache`
+
+**Purpose.** Host, port, state, version and memory of one cache.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** none.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`.
+
+**Security.** Read-only; creates and changes nothing. Read-only; never returns the AUTH string.
+
+**Provider mapping (Google Cloud).** Memorystore for Redis: redis.projects.locations.instances.get.
+
+### `delete_cache`
+
+**Purpose.** Delete one cache with its data.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** `wait_seconds`.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `DESTROY_FAILED`.
+
+**Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy. The data goes with it.
+
+**Provider mapping (Google Cloud).** Memorystore for Redis: redis.projects.locations.instances.delete.
+
+## Queue
+
+### `create_queue`
+
+**Purpose.** Create a message topic and, by default, one pull subscription of the same name.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
+| `queue_name` | yes | The queue's short name, part of the topic's name. |
+| `provider` | no | The cloud provider adapter; gcp (default) is the one implemented. |
+| `retention_hours` | no | How long unacknowledged messages are kept (default 168, up to 744). |
+| `subscription` | no | Create one pull subscription (default true). |
+| `ack_deadline_seconds` | no | Acknowledgement deadline (default 20). |
+| `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
+| `labels` | no | Labels for every resource, next to the service's ownership labels. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `region`, `queue_name`.
+**Optional fields.** `provider`, `retention_hours`, `subscription`, `ack_deadline_seconds`, `name`, `labels`, `wait_seconds`.
+
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
+
+**Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. Publishing and pulling are the Application Layer's, with its own identity. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+
+**Provider mapping (Google Cloud).** Pub/Sub: pubsub.projects.topics.create, pubsub.projects.subscriptions.create.
+
+### `get_queue`
+
+**Purpose.** A topic's full name, its subscription and state.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** none.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`.
+
+**Security.** Read-only; creates and changes nothing. Read-only.
+
+**Provider mapping (Google Cloud).** Pub/Sub: pubsub.projects.topics.get.
+
+### `delete_queue`
+
+**Purpose.** Delete the subscription and the topic; unread messages go with them.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** `wait_seconds`.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `DESTROY_FAILED`.
+
+**Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy.
+
+**Provider mapping (Google Cloud).** Pub/Sub: pubsub.projects.subscriptions.delete, pubsub.projects.topics.delete.
+
+## Secret
+
+### `create_secret`
+
+**Purpose.** Create a secret container. Optionally write a generated random value as its first version; a value is never returned, logged or kept by this service, and the Application Layer reads and writes versions with its own identity.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
+| `secret_name` | yes | The secret's short name, part of its resource name. |
+| `provider` | no | The cloud provider adapter; gcp (default) is the one implemented. |
+| `generate_value` | no | Write a generated random value as the first version (default false). |
+| `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
+| `labels` | no | Labels for every resource, next to the service's ownership labels. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `region`, `secret_name`.
+**Optional fields.** `provider`, `generate_value`, `name`, `labels`, `wait_seconds`.
+
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
+
+**Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. No value passes through a request or a response. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+
+**Provider mapping (Google Cloud).** Secret Manager: secretmanager.projects.secrets.create, secretmanager.projects.secrets.addVersion.
+
+### `get_secret`
+
+**Purpose.** A secret's resource name, how many versions this service wrote, and its state. Never a value.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** none.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`.
+
+**Security.** Read-only; creates and changes nothing. Read-only; never returns a value.
+
+**Provider mapping (Google Cloud).** Secret Manager: secretmanager.projects.secrets.get.
+
+### `delete_secret`
+
+**Purpose.** Delete the secret and every version.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** `wait_seconds`.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `DESTROY_FAILED`.
+
+**Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy.
+
+**Provider mapping (Google Cloud).** Secret Manager: secretmanager.projects.secrets.delete.
+
+## Cluster
+
+### `create_cluster`
+
+**Purpose.** Create a managed Kubernetes cluster with one node pool of identical nodes: VPC-native, shielded nodes, workload identity on, versions from the provider's regular release channel. Credentials come from the provider's IAM, never from this service.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
+| `provider` | no | The cloud provider adapter; gcp (default) is the one implemented. |
+| `node_count` | no | Nodes in the pool (default 1). |
+| `node_cpu` | no | Virtual CPUs per node (default 2). |
+| `node_memory_gb` | no | Memory per node in GB (default 8). |
+| `node_disk_gb` | no | Node disk in GB (default 50). |
+| `kubernetes_version` | no | A version the provider offers; its default channel when omitted. |
+| `private_nodes` | no | Nodes without public addresses (default false). |
+| `network_id` | no | A network this service created earlier (net-…), to join instead of the operator's default network. |
+| `zone` | no | A zone of the region; the provider picks the first when omitted. |
+| `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
+| `labels` | no | Labels for every resource, next to the service's ownership labels. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `region`.
+**Optional fields.** `provider`, `node_count`, `node_cpu`, `node_memory_gb`, `node_disk_gb`, `kubernetes_version`, `private_nodes`, `network_id`, `zone`, `name`, `labels`, `wait_seconds`.
+
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED.
+
+**Possible errors.** `INVALID_CLUSTER_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
+
+**Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. Nodes get the logging, monitoring and read-only storage scopes only. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+
+**Provider mapping (Google Cloud).** Kubernetes Engine: container.projects.locations.clusters.create (zonal, one node pool).
+
+### `get_cluster`
+
+**Purpose.** Endpoint, version, node count and state of one cluster.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** none.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`.
+
+**Security.** Read-only; creates and changes nothing. Read-only; never returns credentials.
+
+**Provider mapping (Google Cloud).** Kubernetes Engine: container.projects.locations.clusters.get.
+
+### `delete_cluster`
+
+**Purpose.** Delete the cluster and its nodes; workloads and their disks go with it.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** `wait_seconds`.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `DESTROY_FAILED`.
+
+**Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy.
+
+**Provider mapping (Google Cloud).** Kubernetes Engine: container.projects.locations.clusters.delete.
+
+## Load balancer
+
+### `create_load_balancer`
+
+**Purpose.** Put a public load balancer in front of machines this service created: http (an application load balancer with a health check on a path) or tcp (a passthrough network load balancer). Health checkers are allowed through the firewall on the backend port.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
+| `backends` | yes | The machines behind it (cmp-…), all in one zone. |
+| `provider` | no | The cloud provider adapter; gcp (default) is the one implemented. |
+| `type` | no | http (default) or tcp. |
+| `port` | no | The port the machines serve on; the public port is the same (default 80). |
+| `health_check_path` | no | The path an http health check requests (default /). |
+| `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
+| `labels` | no | Labels for every resource, next to the service's ownership labels. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `region`, `backends`.
+**Optional fields.** `provider`, `type`, `port`, `health_check_path`, `name`, `labels`, `wait_seconds`.
+
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED.
+
+**Possible errors.** `INVALID_LOAD_BALANCER_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
+
+**Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. HTTP only; TLS termination is a later feature. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+
+**Provider mapping (Google Cloud).** Compute Engine: instance group, firewall rule, health check, backend service, URL map and target proxy (http), address and forwarding rule.
+
+### `get_load_balancer`
+
+**Purpose.** Public address, port, backends and state of one load balancer.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** none.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`.
+
+**Security.** Read-only; creates and changes nothing. Read-only.
+
+**Provider mapping (Google Cloud).** Compute Engine: compute.globalForwardingRules.get or compute.forwardingRules.get.
+
+### `delete_load_balancer`
+
+**Purpose.** Delete every piece of the load balancer in reverse order; the machines behind it stay.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** `wait_seconds`.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `DESTROY_FAILED`.
+
+**Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy.
+
+**Provider mapping (Google Cloud).** Compute Engine: the delete of each piece, forwarding rule first.
+
 ## Infrastructure
+
+### `list_resource_kinds`
+
+**Purpose.** What can be asked for: every kind of the contract with its fields, whether several fit in one request, and which configured adapters provide it. Ask this before a request for something unusual; an unknown block is refused with UNSUPPORTED_RESOURCE_KIND.
+
+**Inputs.** None.
+
+**Required fields.** none.
+**Optional fields.** none.
+
+**Output.** ResourceKindsResponse: kinds (kind, description, several_per_request, fields, providers), providers, note.
+
+**Possible errors.** none beyond authentication.
+
+**Security.** Read-only; creates and changes nothing. Read-only; no provider call.
+
+**Provider mapping (Google Cloud).** None.
 
 ### `validate_infrastructure_request`
 
@@ -468,7 +879,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 | Field | Required | Description |
 |---|---|---|
-| `request` | yes | The InfrastructureRequest: provider, region, and at least one of compute, storage, network, database. |
+| `request` | yes | The InfrastructureRequest: provider, region, and at least one of network, storage, compute, database, cache, queue, secret, cluster, load_balancer. |
 
 **Required fields.** `request`.
 **Optional fields.** none.
@@ -505,7 +916,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 ### `provision_infrastructure`
 
-**Purpose.** Validate, plan, record and provision a full request: network, storage, compute, database, in that order. Answers at once with PROVISIONING (or waits up to 45 seconds); follow it with get_infrastructure_status. A failure deletes what was created and reports it.
+**Purpose.** Validate, plan, record and provision a full request: network, storage, compute, database, cache, queue, secret, cluster, load balancer, in that order. Answers at once with PROVISIONING (or waits up to 45 seconds); follow it with get_infrastructure_status. A failure deletes what was created and reports it.
 
 **Inputs.**
 
@@ -571,7 +982,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 ### `destroy_infrastructure`
 
-**Purpose.** Delete everything a request created, in reverse order: database, machines, storage, network. Answers at once with DESTROYING (or waits up to 45 seconds). What could not be deleted is named; call again once the cause is fixed.
+**Purpose.** Delete everything a request created, in reverse order: load balancer, cluster, secrets, queues, cache, database, machines, storage, network. Answers at once with DESTROYING (or waits up to 45 seconds). What could not be deleted is named; call again once the cause is fixed.
 
 **Inputs.**
 
