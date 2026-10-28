@@ -7,7 +7,7 @@ import contextlib
 import difflib
 import os
 import re
-from typing import Any
+from typing import Any, Literal
 
 import pydantic
 from fastapi import FastAPI, Request
@@ -22,6 +22,7 @@ from ..models.errors import ErrorCode, InfrastructureError, problems_from
 from ..models.request import InfrastructureRequest
 from ..observability import logging as observability
 from ..orchestration.provisioner import Orchestrator
+from ..orchestration.sweeper import Sweeper
 from ..providers import ProviderRegistry
 from ..security.auth import Authenticate, as_tool_error, audited, client_address, identity, invoke
 from ..state.state_manager import StateManager
@@ -34,8 +35,10 @@ INSTRUCTIONS = (
     "request; list_resource_kinds says exactly what can be asked for; the service validates it, plans it, provisions it "
     "through the provider adapter and reports resource ids, addresses, endpoints and status. It takes no source code, image, repository, script or "
     "command, and decides nothing about an application. Start with validate_infrastructure_request or plan_infrastructure; provision_infrastructure "
-    "answers at once with PROVISIONING and get_infrastructure_status follows it; destroy_infrastructure removes everything a request created. Every "
-    "result carries status; a FAILED one carries error.code and error.message. Costs are estimates from list prices, never a bill."
+    "answers at once with PROVISIONING and get_infrastructure_status follows it; destroy_infrastructure removes everything a request created. "
+    "control_infrastructure stops, starts or extends a request, and manage_infrastructure_access grants people access to what it created; each resource's "
+    "connect block says how to reach it. Every result carries status; a FAILED one carries error.code and error.message. Costs are estimates from list prices, "
+    "never a bill."
 )
 HTTP_STATUS = {"NOT_FOUND": 404, "PERMISSION_DENIED": 403, "INVALID_STATE": 409, "PROVIDER_CONFLICT": 409, "QUOTA_EXCEEDED": 429, "PROVIDER_UNAVAILABLE": 502,
                "PROVIDER_ERROR": 502, "PROVIDER_AUTH_FAILED": 502, "PROVIDER_PERMISSION_DENIED": 502, "OPERATION_TIMEOUT": 504, "INTERNAL_ERROR": 500}
@@ -57,6 +60,31 @@ def unknown_arguments(tool, valid, arguments):
     listed = named[0] if len(named) == 1 else ", ".join(named[:-1]) + " and " + named[-1]
     takes = f"it takes {', '.join(valid)}" if valid else "it takes no arguments"
     return f"{tool} has no argument{'s' if len(unknown) > 1 else ''} {listed}; {takes}. Nothing was done: ask again with those names."
+
+
+class ControlBody(pydantic.BaseModel):
+    """POST /infrastructure/{request_id}/actions"""
+    model_config = pydantic.ConfigDict(extra="forbid", strict=True)
+    action: Literal["stop", "start", "extend", "keep_awake"]
+    hours: int | None = None
+    wait_seconds: int = pydantic.Field(default=0, ge=0, le=45)
+
+
+class AccessBody(pydantic.BaseModel):
+    """POST /infrastructure/{request_id}/access"""
+    model_config = pydantic.ConfigDict(extra="forbid", strict=True)
+    action: Literal["grant", "revoke"]
+    member: str
+    level: Literal["use", "admin"] = "use"
+
+
+def body_of_model(model, body: dict):
+    """A small REST body as its model; a wrong one is INVALID_REQUEST naming the fields it takes."""
+    try:
+        return model.model_validate(body)
+    except pydantic.ValidationError as exc:
+        problems = "; ".join(f"{'.'.join(str(part) for part in item['loc']) or 'body'}: {item['msg']}" for item in exc.errors())
+        raise InfrastructureError(ErrorCode.INVALID_REQUEST, f"The body takes {', '.join(model.model_fields)}. {problems}", {"fields": list(model.model_fields)}) from None
 
 
 class StrictMCP(FastMCP):
@@ -104,6 +132,7 @@ def build_app(config, registry: ProviderRegistry | None = None, state: StateMana
     state = state or StateManager(config.database)
     registry = registry or ProviderRegistry(config)
     orchestrator = Orchestrator(config, state, registry, executor)
+    sweeper = Sweeper(orchestrator, config.sweep_interval_seconds)
     mcp = StrictMCP("Cloud Infrastructure", state=state, instructions=INSTRUCTIONS, stateless_http=True, json_response=True,
                     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=config.allowed_hosts, allowed_origins=[]))
     mcp._mcp_server.version = __version__
@@ -117,14 +146,17 @@ def build_app(config, registry: ProviderRegistry | None = None, state: StateMana
 
     @contextlib.asynccontextmanager
     async def lifespan(app):
+        orchestrator.recover()  # what a restart interrupted is put where it can be retried or destroyed
+        sweeper.start()  # expiry and idle stop; off when sweep_interval_seconds is 0
         try:
             async with mcp.session_manager.run():
                 yield
         finally:
+            sweeper.stop()
             orchestrator.executor.shutdown(wait=False)
 
     app = FastAPI(title="Cloud Infrastructure MCP", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
-    app.state.mcp, app.state.orchestrator, app.state.state = mcp, orchestrator, state
+    app.state.mcp, app.state.orchestrator, app.state.state, app.state.sweeper = mcp, orchestrator, state, sweeper
     app.add_middleware(Authenticate, config=config, state=state)
 
     def rest(name, fn, subject=None):
@@ -168,8 +200,8 @@ def build_app(config, registry: ProviderRegistry | None = None, state: StateMana
         return rest("provision", lambda: orchestrator.provision(InfrastructureRequest.model_validate(body), identity.get(), wait_seconds))
 
     @app.get("/infrastructure")
-    def list_requests(status: str | None = None, limit: int = 50):
-        return rest("list", lambda: orchestrator.list_requests(identity.get(), status, limit))
+    def list_requests(status: str | None = None, limit: int = 50, expiring_within_hours: int | None = None):
+        return rest("list", lambda: orchestrator.list_requests(identity.get(), status, limit, expiring_within_hours))
 
     @app.get("/infrastructure/{request_id}")
     def status(request_id: str, wait_seconds: int = 0):
@@ -178,6 +210,24 @@ def build_app(config, registry: ProviderRegistry | None = None, state: StateMana
     @app.delete("/infrastructure/{request_id}")
     def destroy(request_id: str, wait_seconds: int = 0):
         return rest("destroy", lambda: orchestrator.destroy(request_id, identity.get(), wait_seconds), request_id)
+
+    @app.post("/infrastructure/{request_id}/actions")
+    async def control(request_id: str, request: Request):
+        body = await body_of(request)
+
+        def run():
+            asked = body_of_model(ControlBody, body)
+            return orchestrator.control(request_id, asked.action, identity.get(), asked.hours, asked.wait_seconds)
+        return rest("control", run, request_id)
+
+    @app.post("/infrastructure/{request_id}/access")
+    async def access(request_id: str, request: Request):
+        body = await body_of(request)
+
+        def run():
+            asked = body_of_model(AccessBody, body)
+            return orchestrator.manage_access(request_id, asked.action, asked.member, identity.get(), asked.level)
+        return rest("access", run, request_id)
 
     app.mount("/", mcp.streamable_http_app())
     return app

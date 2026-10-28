@@ -6,7 +6,7 @@ an adapter implements creation, reading, change and deletion of each resource ki
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
-from ..models.errors import ErrorCode
+from ..models.errors import ErrorCode, InfrastructureError
 from ..models.request import (
     RESOURCE_KINDS,
     CacheRequest,
@@ -24,6 +24,7 @@ from ..models.resources import (
     CacheResource,
     ClusterResource,
     ComputeResource,
+    ConnectInfo,
     DatabaseResource,
     FirewallRule,
     LoadBalancerResource,
@@ -60,6 +61,9 @@ class CloudProvider(ABC):
     name: str = "abstract"
     # The kinds this adapter implements; a request for another is refused with UNSUPPORTED_RESOURCE_KIND before any call.
     supported_kinds: tuple[str, ...] = RESOURCE_KINDS
+    # Optional capabilities; an adapter lists the kinds it can stop and start, and grant access on.
+    stoppable_kinds: tuple[str, ...] = ()
+    grantable_kinds: tuple[str, ...] = ()
 
     # ---- knowledge: no network call
     @abstractmethod
@@ -204,6 +208,50 @@ class CloudProvider(ABC):
 
     def delete(self, resource, ctx: ProvisionContext) -> None:
         getattr(self, f"delete_{resource.kind.value}")(resource, ctx)
+
+    # ---- optional capabilities, each refused with a structured error until an adapter implements it
+    def _unsupported(self, what: str, resource=None):
+        kind = f" a {resource.kind.value}" if resource is not None else ""
+        raise InfrastructureError(ErrorCode.UNSUPPORTED_RESOURCE_KIND, f"The {self.name} adapter cannot {what}{kind}", {"provider": self.name})
+
+    def stop(self, resource, ctx: ProvisionContext):
+        """Stop a resource that can stop, returning it as the provider sees it afterwards."""
+        if resource.kind.value not in self.stoppable_kinds:
+            self._unsupported("stop", resource)
+        return getattr(self, f"stop_{resource.kind.value}")(resource, ctx)
+
+    def start(self, resource, ctx: ProvisionContext):
+        if resource.kind.value not in self.stoppable_kinds:
+            self._unsupported("start", resource)
+        return getattr(self, f"start_{resource.kind.value}")(resource, ctx)
+
+    def grant(self, resource, member: str, level: str, ctx: ProvisionContext) -> list[str]:
+        """Grant a member access on one resource this service created, through the resource's own access policy; return
+        the roles granted. Never a project-wide grant."""
+        self._unsupported("grant access on", resource)
+
+    def revoke(self, resource, member: str, ctx: ProvisionContext) -> None:
+        self._unsupported("revoke access on", resource)
+
+    def put_secret_value(self, resource: SecretResource, value: str, ctx: ProvisionContext) -> SecretResource:
+        """Write a value the service generated as a new version; the value is never returned or logged."""
+        self._unsupported("write a secret value to", resource)
+
+    def read_cache_auth(self, resource: CacheResource) -> str:
+        """The cache's own AUTH string, to be copied into a secret the request owns."""
+        self._unsupported("read the AUTH string of", resource)
+
+    def connect_info(self, resource, resources: list) -> ConnectInfo | None:
+        """How to reach a resource, given the other resources of its request; None when there is nothing to say."""
+        return None
+
+    def busy_cores(self, resource: ComputeResource, minutes: int) -> float | None:
+        """The busiest CPU sample of a machine in the last minutes, in cores; None when nothing was recorded."""
+        return None
+
+    def profile_infos(self) -> list[dict]:
+        """The software profiles this adapter offers: name, description, accelerator rule."""
+        return []
 
     def resource_status(self, resource) -> ResourceStatus:
         return self.refresh(resource).status

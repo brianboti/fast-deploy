@@ -11,7 +11,7 @@ records why the split was made this way.
 Application Layer            any system: Claude, a CI job, another service, the Fast Deploy workflow
   │
   │  Infrastructure contract  InfrastructureRequest → InfrastructureResponse (cloudinfra/models)
-  │                           MCP (Streamable HTTP, 43 tools) or REST, bearer token per caller
+  │                           MCP (Streamable HTTP, 45 tools) or REST, bearer token per caller
   ▼
 ┌────────────────────────────────────────────────────────────────────────────────────┐
 │ Cloud Infrastructure MCP  (cloudinfra)                                             │
@@ -20,6 +20,7 @@ Application Layer            any system: Claude, a CI job, another service, the 
 │  mcp/catalog.py      the service catalog: one record per tool, renders the doc     │
 │  mcp/tools/*         compute · storage · network · database · infrastructure · ops │
 │  orchestration/      validator → planner → provisioner (status, destroy, cleanup)  │
+│                      access (grants) · lifecycle (time) · sweeper (expiry, idle)   │
 │  state/              SQLite: requests, resources, operations, events               │
 │  security/           principals and token hashes · request value validation        │
 │  observability/      JSON events with request_id and operation_id, redaction       │
@@ -30,7 +31,7 @@ Application Layer            any system: Claude, a CI job, another service, the 
                  ▼                     ▼                     ▼                      ▼
        providers/gcp/            AWSProvider           AzureProvider        JetstreamProvider
        GCPProvider               (later)               (later)              (later)
-                 │  REST: compute, sqladmin, storage, servicenetworking, monitoring
+                 │  REST: compute, sqladmin, storage, servicenetworking, redis, pubsub, secretmanager, container, iap, monitoring
                  ▼
             Google Cloud
 ```
@@ -46,8 +47,10 @@ Application Layer            any system: Claude, a CI job, another service, the 
 | application release decisions and versions | managed Kubernetes clusters (the control plane and node pool, not what runs on them) |
 | application-level scaling behaviour | the cloud resource lifecycle: validate, plan, provision, query, destroy |
 | application-level clustering and sessions | infrastructure status, health and usage |
-| application configuration, secret values, GPU drivers, cluster workloads | provider abstraction, the request/response contract, cloud authentication |
+| application configuration, secret values, GPU drivers on a plain image, cluster workloads | provider abstraction, the request/response contract, cloud authentication |
 | the GitHub workflow, if any | infrastructure cleanup, on failure and on request |
+| who works on the application | access to what it created: grants on each resource (never on the project) and how to connect |
+| when and how long the application runs | time on what it created: stop and start, idle stop, maximum run time, expiry |
 
 The infrastructure layer does not clone a repository, run a test, build anything, hold a GitHub credential, choose an
 application's architecture, decide when or what to release, or scale an application. A request that names an image, a
@@ -70,7 +73,9 @@ labels: {team: data}
 network:  {public_access: true, cidr: 10.10.0.0/24, allowed_ports: [80, 443], allowed_sources: ["0.0.0.0/0"], iap_ssh: true}
 compute:                             # one group, or a list of groups
   - {group: web, count: 2, cpu: 2, memory_gb: 8, os: ubuntu, public_ip: false}
-  - {group: gpu, count: 1, cpu: 8, memory_gb: 32, accelerator: {type: l4, count: 1}}
+  - {group: gpu, count: 1, cpu: 8, memory_gb: 32, accelerator: {type: l4, count: 1},
+     profile: gpu-signed,             # an operator profile: an image with signed drivers (os otherwise)
+     autostop: {idle_minutes: 60}, max_run_hours: 24}
 storage:  {type: persistent, size_gb: 200, performance: balanced, group: gpu}
 database: {engine: postgresql, version: "16", size: small, storage_gb: 10, high_availability: false, public_access: false}
 cache:    {engine: redis, memory_gb: 2, high_availability: false}
@@ -78,17 +83,25 @@ queue:    [{name: events}, {name: jobs, subscription: false}]
 secret:   [{name: api-key, generate_value: true}, {name: token}]
 cluster:  {node_count: 2, node_cpu: 2, node_memory_gb: 8}
 load_balancer: {type: http, port: 8080, backend_group: web, health_check_path: /healthz}
+lifetime: {hours: 168, on_expiry: stop}       # optional; none unless asked or set by the operator
+access:   [{member: "group:data-team@example.com", level: use}]
 ```
 
 Blocks compose across requests: `network_id` on compute, database, cache and cluster joins a network created earlier,
-and `load_balancer.backends` fronts machines created earlier. Values that would be secrets never pass through: a
-database password is generated here and returned once; a generated secret value goes straight to the provider; a cache's
-AUTH string and a cluster's credentials come from the provider's IAM to the Application Layer directly.
+and `load_balancer.backends` fronts machines created earlier. Values that would be secrets never reach a response, the
+state file or a log: a database password is generated here and written to a secret the request owns (`db-password`), and a
+cache's AUTH string is copied from the provider into another (`cache-auth`); the request's access members read them with
+their own identity. A generated secret value goes straight to the provider; a cluster's credentials come from the
+provider's IAM. An operator may also have the password returned once, in the creating response
+(`return_database_password`).
 
 The response has the same shape for every provider: `request_id`, `status`, `resources` by kind (each with the id this
 service issued, the provider's own identifier, name, zone, state, addresses), `endpoints` (public and internal addresses,
-database host and port, bucket URLs), `operations`, the cost estimate, and `error` when something failed. A database's
-password is in `credentials` of the response that created it, once; the service never stores or logs it. Every failure,
+database host and port, bucket URLs), `operations`, the cost estimate, and `error` when something failed. Each resource
+carries a `connect` block (commands, prerequisites, notes) written from what exists; `lifecycle` says when the request
+expires, why it is stopped and what keeps billing while it is; `access` lists each member with its grants; `warnings` say
+what to know now. `credentials`, in the creating response only, names the secrets that hold a database password or a
+cache AUTH string. Every failure,
 anywhere, is `{"status": "FAILED", "error": {"code", "message", "details"}}`; the codes are listed in
 [MCP-CATALOG.md](MCP-CATALOG.md). The models are in `cloudinfra/models/` (pydantic, strict, unknown fields refused).
 
@@ -120,10 +133,81 @@ REQUEST ──► VALIDATE ──► PLAN ──► PROVISION ──► READY �
   network). `DESTROYED`, or `DESTROY_FAILED` with the remaining resources, and the call can
   be repeated once the cause is fixed. A network that still carries machines or databases, of any request, is refused.
 
+```
+READY ──stop──► STOPPING ──► STOPPED ──start──► STARTING ──► READY
+  │  (asked, or at expiry)       │
+  └─ at expiry, on_expiry: destroy, or when the retention ends ──► DESTROYING ──► DESTROYED
+```
+
 The primitives (`create_compute`, `create_network`, …) go through the same path: each creates a request of one block, so
 every resource has a request id, an operation record, an audit trail and a destroy path. `provision_infrastructure` is the
 composite; primitives compose through `network_id` (machines and databases join a network created earlier) and
 `attach_storage`.
+
+## Access to what is created
+
+Whoever asked for a machine needs to log in to it; whoever runs an application needs its database password. The service
+grants access on the resources a request created, through each resource's own IAM policy, and never changes the project's
+policy.
+
+- **Members.** `access` on a request lists people, groups or service accounts (`user:`, `group:`, `serviceAccount:` and an
+  email address) with a level, `use` or `admin`. The requester is added as `admin` when the operator maps its principal to
+  an `identity` (`access.grant_requester`, on by default). A member must be in one of the operator's
+  `access.allowed_domains` (with none, only principals' identities may be named); `access.max_members` caps the list.
+  Email addresses compare without regard to case, as Google's do, and are kept in lowercase.
+- **Grants**, applied once the resources exist:
+
+  | Kind | `use` | `admin` |
+  |---|---|---|
+  | compute | `roles/compute.osLogin` on the machine, `roles/iap.tunnelResourceAccessor` on its IAP tunnel | `roles/compute.osAdminLogin`, and the tunnel |
+  | secret (the database password and cache AUTH string among them) | `roles/secretmanager.secretAccessor` | the same and `roles/secretmanager.secretVersionAdder` |
+  | storage (a bucket) | `roles/storage.objectUser` | `roles/storage.objectAdmin` |
+  | queue | `roles/pubsub.publisher` on the topic, `roles/pubsub.subscriber` on the subscription | the same |
+
+  A database and a cache are reached through their secrets and the request's network; a cluster through the project-level
+  `container.clusterViewer` role. The tunnel grant names the machine's numeric id, so a later machine with the same name
+  never inherits it.
+- **Project-level prerequisites** are the platform team's, once: a role with `compute.projects.get` and
+  `compute.instances.get` so that gcloud finds a machine, `cloudsql.client` for the Cloud SQL Auth Proxy,
+  `container.clusterViewer` for cluster credentials. Each connect block names the ones it needs.
+- **Failures and changes.** A grant that fails is recorded on the member (`FAILED` or `PARTIAL`, with the error); the
+  request stays READY and `manage_infrastructure_access` grants again. A revoke removes the member from every resource of
+  the request, including a policy a failed grant reached; a lower level removes the old roles first; destroy takes members
+  out of the tunnel policy, which outlives the machine. The service only ever grants or removes the roles above.
+- **The service's own identity** needs the `getIamPolicy` and `setIamPolicy` permissions of those resource types (Compute
+  Engine instances, IAP tunnel instances, secrets, buckets, topics and subscriptions); a custom role that lists exactly
+  those is the narrowest way to give them.
+
+## Time: stop, start, idle stop and expiry
+
+Nothing stops or expires by itself unless a request or the operator asks for it, so nothing in production stops by
+surprise.
+
+- **Stop and start** (`control_infrastructure`). Machines and databases stop (a Cloud SQL instance through its activation
+  policy); machines stop before their database and start after it. While stopped, boot disks, database storage and
+  addresses, buckets, caches, clusters and load balancers keep billing: the `lifecycle` block lists them, and
+  `get_resource_cost` gives `current_monthly_usd` at the stopped rate.
+- **Maximum run time** (`compute.max_run_hours`). Google's own `maxRunDuration` with `instanceTerminationAction: STOP`:
+  each start begins the count again, and it holds even when this service is down.
+- **Expiry** (`lifetime`, or the operator's `limits.default_lifetime_hours`, else `limits.max_lifetime_hours`). Hours from
+  creation, at most `limits.max_lifetime_hours` with extensions. Warnings 48 and 2 hours before (an `expiry_warning` audit event, and the
+  `warnings` of every answer). At expiry, `on_expiry: stop` (the default) stops machines and databases and keeps
+  everything for `limits.expiry_retention_days` (7) before destroying it; `destroy`, or a retention of 0, deletes at once.
+  Nothing is marked stopped while a machine is in the middle of a change or its state cannot be read: the next check
+  tries again. `extend` adds hours, also after expiry while the data is kept, once a stop or start in progress has
+  finished; a request that expired starts again only after an extend.
+- **Idle stop** (`compute.autostop`, or the operator's `limits.default_autostop_idle_minutes` for machines with GPUs or
+  for all). A machine stops when its busiest CPU sample in the window used fewer than `limits.idle_cpu_cores` cores (0.5),
+  at least one window after it last started; no samples is not idleness. `keep_awake` suspends it for up to
+  `limits.max_keep_awake_hours`. GPU utilisation is not measured, so a job that keeps the GPUs busy with little CPU needs
+  `keep_awake`.
+- **The sweeper** runs these checks every `sweep_interval_seconds` (300; 0 turns it off) as its own principal,
+  `cloudinfra-sweeper`, which no token maps to; each action it takes is an operation and an audit event like any other.
+  It decides on each request as it is at that moment, under the request's lock, which every change to a request's
+  status, lifecycle or access list also takes. One service process per state file, as SQLite already requires.
+- **Restarts.** No worker survives one. At start the service puts a request left STOPPING or STARTING back to READY or
+  STOPPED, as the provider sees it. A request left PROVISIONING becomes FAILED and one left DESTROYING becomes
+  DESTROY_FAILED, so either can be destroyed again. Operations still RUNNING are marked interrupted.
 
 ## State
 
@@ -141,7 +225,8 @@ database was created and finds no trace of the password.
 | Authorization | `can_provision` for tools that create or change, `can_destroy` for deletes; `scope: own` sees only its own requests (another caller's request is NOT_FOUND, not merely forbidden); `scope: all` for an operator identity |
 | Budgets | Per-identity request budget, per-address failed-login budget (429 with Retry-After) |
 | Provider credential | Taken by the adapter from the host (metadata server, or gcloud with optional impersonation); never configured in a file, never accepted from a caller, never visible to the Application Layer |
-| Least privilege on what is created | Machines get OS Login (IAM) and no service account, vTPM and integrity monitoring, and Secure Boot except where a GPU's drivers need it off; SSH only from the identity-aware proxy range; subnets only in private ranges; buckets with uniform access and public-access prevention; databases encrypted-only with deletion protection and backups, turned off only by an explicit destroy; caches private with AUTH and TLS; cluster nodes with logging, monitoring and read-only storage scopes only, shielded, workload identity on; load balancers open only the backend port to the provider's health checkers |
+| Access to what is created | Grants only on the resources a request created, through each resource's own policy, never on the project; members limited to the operator's domains and count; only a fixed list of roles is ever granted or removed |
+| Least privilege on what is created | Machines get OS Login (IAM) and no service account, vTPM and integrity monitoring, and Secure Boot except on a plain image whose GPU drivers need it off; SSH only from the identity-aware proxy range; subnets only in private ranges; buckets with uniform access and public-access prevention; databases encrypted-only with deletion protection and backups, turned off only by an explicit destroy; caches private with AUTH and TLS; cluster nodes with logging, monitoring and read-only storage scopes only, shielded, workload identity on; load balancers open only the backend port to the provider's health checkers |
 | No command execution | The contract carries no script, command, key or provider structure; names, ranges, ports and labels are validated (`security/validation.py`); strict models refuse unknown fields; the server refuses unknown arguments by name before a tool runs |
 | Structured errors | Provider exceptions never escape; every error has a code; provider messages are kept in `details`, truncated |
 | Cost controls | Limits on counts and sizes, a monthly cost ceiling per service and per caller, a cap on live requests per caller, quota checks, labels `managed-by`, `cloudinfra-request`, `cloudinfra-name`, `cloudinfra-owner` on every resource plus the operator's own, cleanup on failure, destroy on request, and estimates on every plan |
@@ -153,8 +238,11 @@ the lifecycle is a JSON line on the `cloudinfra` logger carrying `request_id`, `
 `request_received`, `request_validated`, `provider_selected`, `resources_requested`, `provisioning_started`,
 `quota_checked`, `resource_created`, `storage_attached`, `provisioning_completed`, `provisioning_failed`,
 `cleanup_started`, `resource_deleted`, `cleanup_completed`, `destruction_started`, `destruction_completed`,
-`destruction_failed`, `resource_resized`, `firewall_configured`, `internal_error`, and `provider_call` for each provider
-request (method, URL, HTTP status). Fields under secret-looking keys are redacted before a line is written.
+`destruction_failed`, `resource_resized`, `firewall_configured`, `credential_stored`, `access_granted`,
+`access_grant_failed`, `access_revoked`, `access_revoke_failed`, `stop_started`, `stop_completed`, `stop_failed`,
+`start_started`, `start_completed`, `start_failed`, `resource_stopped`, `resource_started`, `lifetime_extended`,
+`idle_stop_suspended`, `expiry_warning`, `request_expired`, `machine_idle`, `sweep_completed`, `sweep_failed`,
+`internal_error`, and `provider_call` for each provider request (method, URL, HTTP status). Fields under secret-looking keys are redacted before a line is written.
 
 ## Terraform
 
@@ -192,9 +280,11 @@ python -m pytest tests/cloudinfra -q                # the boundary tests, no clo
 CLOUDINFRA_INTEGRATION=1 CLOUDINFRA_PROJECT=my-project python -m pytest tests/integration/cloudinfra -q   # one real machine, then destroyed
 ```
 
-The catalog has 43 tools: create, get and delete for each of the nine kinds (plus list, resize, attach and firewall
-configuration where they apply), the lifecycle tools, and the operations tools. The MCP endpoint is `/mcp`; the REST endpoints are `POST /infrastructure/validate`, `POST /infrastructure/plan`,
-`POST /infrastructure`, `GET /infrastructure`, `GET /infrastructure/{id}`, `DELETE /infrastructure/{id}`, `GET /catalog`
-and `GET /status`. The same Docker image as Fast Deploy carries the package; its command is the uvicorn line above. The
+The catalog has 45 tools: create, get and delete for each of the nine kinds (plus list, resize, attach and firewall
+configuration where they apply), the lifecycle tools (stop, start, extend and keep awake among them), access, and the
+operations tools. The MCP endpoint is `/mcp`; the REST endpoints are `POST /infrastructure/validate`,
+`POST /infrastructure/plan`, `POST /infrastructure`, `GET /infrastructure` (with `status` and `expiring_within_hours`),
+`GET /infrastructure/{id}`, `DELETE /infrastructure/{id}`, `POST /infrastructure/{id}/actions` (`action`, `hours`),
+`POST /infrastructure/{id}/access` (`action`, `member`, `level`), `GET /catalog` and `GET /status`. The same Docker image as Fast Deploy carries the package; its command is the uvicorn line above. The
 Fast Deploy controller and this service are separate processes with separate principals, state files and credentials;
 Fast Deploy's OAuth sign-in can front this server the same way when Claude's hosted connector needs it.

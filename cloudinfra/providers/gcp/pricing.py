@@ -55,6 +55,17 @@ def tier_month(tier: str) -> float:
     return 0.0
 
 
+def stopped(planned: PlannedResource, running: float) -> float:
+    """What a line costs a month while stopped: a machine keeps only its boot disk (an ephemeral address is released and a
+    GPU is not billed); a database keeps its storage; everything else cannot stop and costs what it costs running."""
+    spec = planned.spec
+    if planned.kind == "compute":
+        return round(spec.get("boot_disk_gb", 0) * PRICING["disk_gb_month"]["pd-balanced"], 2)
+    if planned.kind == "database":
+        return round(spec["storage_gb"] * PRICING["sql"]["storage_ssd_gb_month"], 2)
+    return running
+
+
 def line(planned: PlannedResource) -> CostLine:
     spec = planned.spec
     if planned.kind == "compute":
@@ -93,9 +104,10 @@ def line(planned: PlannedResource) -> CostLine:
         monthly, basis = 0.0, "message delivery is billed by volume after the account's free allowance; nothing while idle"
     else:
         monthly, basis = 0.0, "a network, its subnet and firewall rules cost nothing while idle"
-    return CostLine(resource=planned.name, kind=planned.kind, monthly_usd=round(monthly, 2), basis=basis)
+    return CostLine(resource=planned.name, kind=planned.kind, monthly_usd=round(monthly, 2), basis=basis, stopped_usd=stopped(planned, round(monthly, 2)))
 
 
 def estimate(planned: list[PlannedResource]) -> CostEstimate:
     lines = [line(item) for item in planned]
-    return CostEstimate(monthly_usd=round(sum(item.monthly_usd for item in lines), 2), lines=lines, source=PRICING["source"], verified=PRICING["verified"], note=NOTE)
+    return CostEstimate(monthly_usd=round(sum(item.monthly_usd for item in lines), 2), stopped_monthly_usd=round(sum(item.stopped_usd or 0 for item in lines), 2),
+                        lines=lines, source=PRICING["source"], verified=PRICING["verified"], note=NOTE)

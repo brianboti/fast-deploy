@@ -34,7 +34,7 @@ class GcpCompute:
             "name": planned.name,
             "description": translate.description(ctx),
             "machineType": f"zones/{zone}/machineTypes/{shape['machine_type']}",
-            "disks": [{"boot": True, "autoDelete": True, "initializeParams": {"sourceImage": shape["image"], "diskSizeGb": str(spec.boot_disk_gb),
+            "disks": [{"boot": True, "autoDelete": True, "initializeParams": {"sourceImage": shape["image"], "diskSizeGb": str(shape["boot_disk_gb"]),
                                                                               "diskType": f"zones/{zone}/diskTypes/pd-balanced"}}],
             "networkInterfaces": [self._interface({**shape, "region": ctx.region}, network)],
             "labels": translate.labels(ctx),
@@ -42,24 +42,37 @@ class GcpCompute:
             # Application Layer attaches one with its own permissions if it needs Google APIs from inside.
             "metadata": {"items": [{"key": "enable-oslogin", "value": "TRUE"}]},
             "serviceAccounts": [],
-            "shieldedInstanceConfig": {"enableSecureBoot": True, "enableVtpm": True, "enableIntegrityMonitoring": True},
+            # vTPM and integrity monitoring always; Secure Boot as the planned software allows: on, except a plain image on a
+            # GPU machine, whose drivers Google's installer builds unsigned. A profile with signed drivers keeps it on.
+            "shieldedInstanceConfig": {"enableSecureBoot": shape.get("secure_boot", True), "enableVtpm": True, "enableIntegrityMonitoring": True},
         }
-        accelerator = None
+        accelerator, scheduling = None, {}
         if shape.get("accelerator"):
             gpu, count = shape["accelerator"]["type"], shape["accelerator"]["count"]
             body["guestAccelerators"] = [{"acceleratorType": f"zones/{zone}/acceleratorTypes/{gpu}", "acceleratorCount": count}]
-            body["scheduling"] = {"onHostMaintenance": "TERMINATE", "automaticRestart": True}  # a machine with a GPU cannot live-migrate
-            # Google's GPU driver installation does not work with Secure Boot on (unsigned kernel modules); vTPM and integrity
-            # monitoring stay on, which is Google's own default for every machine.
-            body["shieldedInstanceConfig"]["enableSecureBoot"] = False
+            scheduling.update({"onHostMaintenance": "TERMINATE", "automaticRestart": True})  # a machine with a GPU cannot live-migrate
             accelerator = f"{gpu} x{count}"
+        if shape.get("max_run_hours"):
+            # Compute Engine's run-time limit: the timer counts from each start, and a standard machine must name the action.
+            scheduling.update({"maxRunDuration": {"seconds": str(int(shape["max_run_hours"]) * 3600)}, "instanceTerminationAction": "STOP"})
+        if scheduling:
+            body["scheduling"] = scheduling
         operation = self.api.post(self._instances(zone), json=body)
         self.api.wait_compute(operation)
         resource = ComputeResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region, zone=zone,
                                    group=shape.get("group", "vm"), machine_type=shape["machine_type"], cpu=shape.get("cpu", spec.cpu), memory_gb=shape.get("memory_gb", spec.memory_gb),
-                                   os_image=shape["image"].rsplit("/", 1)[-1], boot_disk_gb=spec.boot_disk_gb, accelerator=accelerator, labels=body["labels"],
-                                   provider_id=f"{self._instances(zone)}/{planned.name}")
+                                   os_image=shape["image"].rsplit("/", 1)[-1], boot_disk_gb=shape["boot_disk_gb"], accelerator=accelerator, labels=body["labels"],
+                                   profile=shape.get("profile"), secure_boot=shape.get("secure_boot", True), max_run_hours=shape.get("max_run_hours"),
+                                   autostop_idle_minutes=shape.get("autostop_idle_minutes"), provider_id=f"{self._instances(zone)}/{planned.name}")
         return self.get(resource)
+
+    def stop(self, resource: ComputeResource, ctx) -> ComputeResource:
+        self.api.wait_compute(self.api.post(f"{self._instances(resource.zone)}/{resource.name}/stop"))
+        return self.get(resource)
+
+    def start(self, resource: ComputeResource, ctx) -> ComputeResource:
+        self.api.wait_compute(self.api.post(f"{self._instances(resource.zone)}/{resource.name}/start"))
+        return self.get(resource.model_copy(update={"stop_reason": None}))
 
     def get(self, resource: ComputeResource) -> ComputeResource:
         try:
@@ -81,6 +94,8 @@ class GcpCompute:
             "status": STATUS.get(instance.get("status", ""), ResourceStatus.UNKNOWN), "machine_type": machine, "cpu": shape[0], "memory_gb": shape[1], "accelerator": accelerator,
             "internal_ip": interfaces[0].get("networkIP"), "public_ip": access[0].get("natIP"), "provider_id": instance.get("selfLink", base.provider_id),
             "labels": instance.get("labels") or base.labels, "created_at": base.created_at or instance.get("creationTimestamp"),
+            "instance_id": str(instance["id"]) if instance.get("id") is not None else base.instance_id,
+            "started_at": instance.get("lastStartTimestamp") or base.started_at,
         })
 
     def list(self, labels: dict[str, str]) -> list[ComputeResource]:
@@ -111,9 +126,12 @@ class GcpCompute:
             raise InfrastructureError(problem.code, problem.message, {"cpu": cpu, "memory_gb": memory_gb})
         base = f"{self._instances(resource.zone)}/{resource.name}"
         event("provider_resize", provider="gcp", resource=resource.id, machine_type=machine)
-        self.api.wait_compute(self.api.post(f"{base}/stop"))
+        running = self.get(resource).status != ResourceStatus.STOPPED  # a stopped machine is resized and stays stopped
+        if running:
+            self.api.wait_compute(self.api.post(f"{base}/stop"))
         self.api.wait_compute(self.api.post(f"{base}/setMachineType", json={"machineType": f"zones/{resource.zone}/machineTypes/{machine}"}))
-        self.api.wait_compute(self.api.post(f"{base}/start"))
+        if running:
+            self.api.wait_compute(self.api.post(f"{base}/start"))
         return self.get(resource.model_copy(update={"machine_type": machine, "cpu": cpu, "memory_gb": memory_gb}))
 
     def delete(self, resource: ComputeResource, ctx) -> None:

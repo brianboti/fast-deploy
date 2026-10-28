@@ -117,7 +117,9 @@ false`, and treating tool outputs as untrusted (F). OWASP's client-side risk gat
 when it is destructive without being idempotent (F); our deletes carry `idempotentHint: true` but a second delete of a
 gone resource answers `INVALID_STATE`, so the hint is not quite true. We meet the server MUSTs, `additionalProperties:
 false`, per-identity and per-address budgets and an audit row per call; we lack the confirmation step, parameters in
-the audit row, and OAuth resource metadata (static bearer tokens are what Claude's connectors accept today, F).
+the audit row, and OAuth resource metadata (static bearer tokens work in Claude Code and the Messages API's MCP
+connector, but claude.ai accepts a fixed request header only in a beta for a limited set of organisations, as one
+organisation-wide credential, so per-person use there needs OAuth; corrected by `docs/RESEARCH-2026-10-28-positioning.md`).
 
 **Peers.** HashiCorp's Terraform MCP server has 61 tools with write operations off by default and a plan modelled as a
 run you poll; AWS Labs' servers are read-only by default with `--allow-write`, use an `operation` parameter per
@@ -226,7 +228,7 @@ The thread read Google's pages for every resource the adapter creates; where a p
   peering, our choice, the default that cannot be changed later (F). Add Valkey as an engine; use PSA for Redis.
 - Machine families and disks. Google names no single default family: E2 for lower cost, N4 and N2 for balance, C4 and
   C3 for consistent performance; Hyperdisk is recommended where the series supports it and the newest series take only
-  Hyperdisk, while E2 stays on Persistent Disk (F). Our E2-only choice is sound for a lab and could gain a performance
+  Hyperdisk, while E2 stays on Persistent Disk (F). Our E2-only choice is sound for development work and could gain a performance
   tier on N4 with Hyperdisk, and a Spot option (`provisioningModel: SPOT`, up to 91 percent off, no SLA) (F).
 - GPU facts. us-central1-f has no L4 and no H100 (F); the adapter's default zone is the region's first, which is
   us-central1-a, so the default is safe, but a caller choosing a zone is not checked; a3-highgpu-1g, 2g and 4g must be
@@ -315,7 +317,7 @@ stars of the official AWS and Google module collections (a proxy for what people
 2024, HashiCorp 2024 and Flexera 2026 surveys, Datadog's container, serverless and cost reports, Google's, AWS's and
 Azure's reference architectures, the Score and Humanitec resource types, and the research-computing catalogs
 (Jetstream2, CloudBank, several university research-computing services). Stars and downloads skew to AWS and to
-enterprises; the lab's own request log would be the better sample once there is one.
+enterprises; the operator's own request log would be the better sample once there is one.
 
 | # | Kind | Evidence | Ours |
 |---|---|---|---|

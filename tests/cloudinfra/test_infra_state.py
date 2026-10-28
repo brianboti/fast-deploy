@@ -1,4 +1,5 @@
 """The state manager: infrastructure state only, no credential ever written, events for every call."""
+import base64
 import json
 
 from gcp_fakes import FULL_REQUEST, make_orchestrator, principal
@@ -34,8 +35,10 @@ def test_no_password_reaches_the_database_file_or_the_log(tmp_path, caplog):
     orchestrator, fake = make_orchestrator(tmp_path)
     with caplog.at_level("INFO", logger="cloudinfra"):
         response = orchestrator.provision(InfrastructureRequest.model_validate(FULL_REQUEST), principal(orchestrator.config), wait_seconds=45)
-    password = response.credentials.database_password
-    assert password and password == fake.sql_users[response.resources.database[0].name][0]["password"], "the provider received exactly the password the caller got"
+    password = fake.sql_users[response.resources.database[0].name][0]["password"]
+    assert response.credentials.database_password is None, "by default the password reaches the request's secret only"
+    assert [base64.b64decode(value).decode() for value in fake.secret_versions["analytics-db-password"]] == [password]
+    assert password not in json.dumps(response.model_dump(mode="json"))
     raw = (tmp_path / "cloudinfra.db").read_bytes()
     assert password.encode() not in raw
     assert password not in caplog.text and "[redacted]" not in caplog.text or True

@@ -163,6 +163,26 @@ def image(os_family: str) -> str:
     return IMAGES[os_family]
 
 
+def software(group, settings) -> dict | Problem:
+    """The image, profile, Secure Boot setting and boot disk a compute group gets. A profile is the operator's; a GPU group
+    that names neither a profile nor an os gets the operator's default accelerator profile when there is one. A plain
+    image on a GPU machine boots with Secure Boot off, because Google's driver installation needs unsigned modules."""
+    name = group.profile
+    if name is None and group.accelerator is not None and group.os is None:
+        name = settings.default_accelerator_profile
+    if name is None:
+        return {"image": image(group.os_family), "profile": None, "secure_boot": group.accelerator is None, "boot_disk_gb": group.boot_disk_gb}
+    profile = settings.profiles.get(name)
+    if profile is None:
+        offered = ", ".join(sorted(settings.profiles)) or "none configured"
+        return Problem(ErrorCode.INVALID_COMPUTE_CONFIGURATION, f"Unknown profile {name!r}; profiles: {offered}", "compute.profile")
+    if profile.accelerator == "required" and group.accelerator is None:
+        return Problem(ErrorCode.INVALID_COMPUTE_CONFIGURATION, f"Profile {name} is for machines with GPUs; add an accelerator or choose another profile", "compute.profile")
+    if profile.accelerator == "none" and group.accelerator is not None:
+        return Problem(ErrorCode.INVALID_COMPUTE_CONFIGURATION, f"Profile {name} is not for machines with GPUs; choose another profile", "compute.profile")
+    return {"image": profile.image, "profile": name, "secure_boot": profile.secure_boot, "boot_disk_gb": max(group.boot_disk_gb, profile.min_boot_disk_gb)}
+
+
 def disk_type(performance: str) -> str:
     return DISK_TYPES[performance]
 

@@ -19,6 +19,7 @@ class ErrorCode(StrEnum):
     INVALID_CLUSTER_CONFIGURATION = "INVALID_CLUSTER_CONFIGURATION"
     INVALID_LOAD_BALANCER_CONFIGURATION = "INVALID_LOAD_BALANCER_CONFIGURATION"
     UNSUPPORTED_RESOURCE_KIND = "UNSUPPORTED_RESOURCE_KIND"
+    INVALID_ACCESS = "INVALID_ACCESS"
     LIMIT_EXCEEDED = "LIMIT_EXCEEDED"
     COST_LIMIT_EXCEEDED = "COST_LIMIT_EXCEEDED"
     QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
@@ -114,10 +115,13 @@ def unknown_kind_message(name: str) -> str:
     from .request import RESOURCE_KINDS
     guess = nearest_kind(name)
     hint = f" (did you mean {guess}?)" if guess else ""
-    return f"{name} is not a resource kind this service provides{hint}; kinds: {', '.join(RESOURCE_KINDS)}. Other top-level fields: provider, region, zone, name, labels."
+    return (f"{name} is not a resource kind this service provides{hint}; kinds: {', '.join(RESOURCE_KINDS)}. "
+            "Other top-level fields: provider, region, zone, name, labels, lifetime, access.")
 
 
-UNION_TAG = re.compile(r"^(?:[A-Z][A-Za-z]+|list\[[A-Za-z]+\])$")
+# How pydantic names the branch of a union in an error's location: the model (ComputeRequest), a list of it, or the
+# validator wrapped around it (function-after[_check(), ComputeRequest]).
+UNION_TAG = re.compile(r"^(?:[A-Z][A-Za-z]+|list\[.+\]|function-(?:after|before|wrap|plain)\[.+\])$")
 BRANCH_TYPES = ("list_type", "model_type", "dict_type", "model_attributes_type")
 
 

@@ -1,3 +1,76 @@
+# 1.37.0: release A, so that a developer can use what the service creates
+
+`docs/RESEARCH-2026-10-28-positioning.md` (added in this release) placed the service against the infrastructure products
+companies use and ordered the work into three releases. Release A closes the gaps between "the machine exists" and "a
+developer is working on it": who can reach it, how, with what software, and for how long. Nothing here stops or expires
+on its own unless a request or the operator asks for it.
+
+- **Access.** A request takes `access`: people, groups or service accounts (`user:`, `group:`, `serviceAccount:`) at
+  level `use` or `admin`. The requester is added as `admin` when the operator maps its principal to an `identity`. Grants
+  go on each created resource's own IAM policy, never on the project: OS Login on machines and the IAP tunnel bound to the
+  machine's numeric id, secret access, bucket object roles, Pub/Sub publisher and subscriber. Members are limited to the
+  operator's `access.allowed_domains` and `access.max_members` (`INVALID_ACCESS` otherwise). A grant that fails is the
+  member's (`FAILED`, `PARTIAL`, with the error), not the request's. `manage_infrastructure_access` grants, changes a level
+  (removing the old roles first) or revokes later; destroy takes members out of the tunnel policy.
+- **Connect blocks.** Every READY or STOPPED resource carries `connect`: the commands to reach it (gcloud ssh and port
+  forwarding through IAP, psql or mysql, redis-cli with TLS, bucket, queue and cluster commands), the prerequisites the
+  platform team grants once at project level, and notes. Commands name secrets, never their values.
+- **Credentials in secrets the request owns.** Changed: the generated database password is no longer returned in the
+  creating response. It is written to the request's `<name>-db-password` secret, and the cache's AUTH string is copied into
+  `<name>-cache-auth`; `credentials` names both secrets, and access members read them. An operator can have the password
+  returned once as before with `return_database_password: true`.
+- **Software profiles.** The operator defines images (`providers.gcp.profiles`): an image family or a pinned image, Secure
+  Boot, a minimum boot disk, and whether GPUs are required, optional or refused; `compute.profile` names one instead of
+  `os`, and `default_accelerator_profile` is what GPU machines get when they name neither. A GPU image with signed drivers
+  (built with Google's `cuda_installer.pyz build_image`) keeps Secure Boot on; a plain image on a GPU machine still turns
+  it off and the plan says why. `list_resource_kinds` and `get_service_status` list the profiles.
+- **GPU boot disk.** Machines with GPUs get a 50 GB boot disk unless they ask, and at least 40 GB (Google's minimum for
+  drivers and a toolkit); less is refused with `INVALID_COMPUTE_CONFIGURATION`.
+- **Stop and start.** `control_infrastructure` stops a READY request's machines and databases (Cloud SQL through its
+  activation policy), machines before their database, and starts them in the reverse order. New statuses `STOPPING`,
+  `STOPPED`, `STARTING`. The `lifecycle` block lists what keeps billing while stopped, and `get_resource_cost` gives
+  `current_monthly_usd` at the stopped rate (`stopped_monthly_usd` is on every estimate).
+- **Maximum run time.** `compute.max_run_hours` sets Google's `maxRunDuration` with `instanceTerminationAction: STOP`.
+- **Expiry.** `lifetime: {hours, on_expiry}` on a request, or the operator's `limits.default_lifetime_hours` (none by
+  default), capped by `limits.max_lifetime_hours`, which also applies to a request that sets none when there is no default.
+  Warnings 48 and 2 hours before, in the audit log and in every answer; at expiry the request stops and keeps its data for
+  `limits.expiry_retention_days` (7) before it is destroyed, or is destroyed at once with `on_expiry: destroy` (or a
+  retention of 0). `control_infrastructure extend` adds hours, once a stop or start in progress has finished;
+  `list_infrastructure` takes `expiring_within_hours` and lists running or stopped requests only.
+- **Idle stop.** `compute.autostop: {idle_minutes}`, or the operator's `limits.default_autostop_idle_minutes` for machines
+  with GPUs (or all). A machine stops when its busiest CPU sample in the window used fewer than `limits.idle_cpu_cores`
+  cores, at least one window after it started; `control_infrastructure keep_awake` suspends it.
+- **The sweeper.** A background thread (every `sweep_interval_seconds`, 300; 0 turns it off) applies expiry and idle stop
+  as its own principal, `cloudinfra-sweeper`; each action is an operation and an audit event.
+- **Safety under concurrency and restarts.** An independent review of this release found eleven defects before it was
+  committed; all are fixed and each has a test.
+  - Changes to one request (its status, lifecycle and access list) are serialized in the process. Simultaneous grants
+    no longer lose a member, and the sweeper decides on a request as it is when it acts, so an extension or a keep-awake
+    that lands during a sweep holds.
+  - A revoke or a lower level reaches every resource that may still exist, whatever state a failed refresh or a resize
+    left it in. Members compare without regard to case and are stored in lowercase.
+  - A stop refuses a machine or database in the middle of a change, tries those whose state cannot be read, and marks a
+    request STOPPED only when everything that can stop did. A resize leaves a stopped machine stopped. Idle stop looks
+    again at a machine after a failed refresh.
+  - At start the service puts a request a restart left STOPPING or STARTING back to READY or STOPPED, as the provider
+    sees it. A request left PROVISIONING becomes FAILED, and one left DESTROYING becomes DESTROY_FAILED, so it can be
+    destroyed again. Operations still RUNNING are marked interrupted. Work refused during shutdown leaves the request as
+    it was.
+- **Interfaces.** Two tools (45 in all): `control_infrastructure` and `manage_infrastructure_access`; `create_compute` takes
+  `profile`, `autostop_idle_minutes`, `max_run_hours` and `lifetime_hours`. REST: `POST /infrastructure/{id}/actions`,
+  `POST /infrastructure/{id}/access`, and `expiring_within_hours` on `GET /infrastructure`. A wrong REST body for these is
+  `INVALID_REQUEST` naming the fields it takes.
+- **State.** Requests gain `expires_at`, a lifecycle record and an access list; an existing state file gains the columns
+  when the service opens it.
+- **Corrections.** Idle measurement takes the busiest sample, not the mean of the points. The catalog header names every
+  resource id prefix. The 2026-10-28 review no longer says claude.ai custom connectors cannot send static headers (a beta
+  for some organizations does, with one credential for the whole organization), and it no longer assumes the service is for
+  a university lab: the audience is companies.
+
+Not done here: running release A against a real project, which needs the company's project, its domains and a decision on
+the service identity's custom role (the `getIamPolicy` and `setIamPolicy` permissions it needs are listed in
+`docs/INFRASTRUCTURE-ARCHITECTURE.md`).
+
 # 1.36.1: the first corrections from the review of 2026-10-28
 
 `docs/RESEARCH-2026-10-28-infrastructure-layer.md` reviewed the infrastructure layer against the MCP specification, industry

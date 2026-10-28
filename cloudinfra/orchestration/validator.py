@@ -20,8 +20,13 @@ def validate(request: InfrastructureRequest, config, provider: CloudProvider) ->
     machines = sum(group.count for group in groups)
     if machines > limits.max_instances_per_request:
         problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_instances_per_request} machines per request; {machines} asked", "compute.count"))
+    if request.lifetime and limits.max_lifetime_hours and request.lifetime.hours > limits.max_lifetime_hours:
+        problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_lifetime_hours} hours of lifetime; {request.lifetime.hours} asked", "lifetime.hours"))
     for group in groups:
         where = f"compute[{group.group_name}]" if len(groups) > 1 else "compute"
+        if (group.autostop or group.max_run_hours) and "compute" not in provider.stoppable_kinds:
+            problems.append(Problem(ErrorCode.INVALID_COMPUTE_CONFIGURATION, f"The {provider.name} adapter cannot stop machines: autostop and max_run_hours are not available",
+                                    f"{where}.autostop" if group.autostop else f"{where}.max_run_hours"))
         if group.cpu > limits.max_cpu_per_instance:
             problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_cpu_per_instance} CPUs per machine; {group.cpu} asked", f"{where}.cpu"))
         if group.memory_gb > limits.max_memory_gb_per_instance:

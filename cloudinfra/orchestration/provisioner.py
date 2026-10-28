@@ -4,7 +4,9 @@ It owns the order (network, storage, compute, database; the reverse to destroy),
 authorization of each caller. Providers implement primitives only. Provisioning and destruction run in bounded workers so
 a tool call returns at once; a caller may wait up to 45 seconds for the outcome and otherwise polls the status.
 """
+import datetime
 import secrets
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -12,11 +14,13 @@ from ..models.errors import ErrorCode, InfrastructureError
 from ..models.request import (
     RESOURCE_KINDS,
     AcceleratorRequest,
+    AutostopRequest,
     CacheRequest,
     ClusterRequest,
     ComputeRequest,
     DatabaseRequest,
     InfrastructureRequest,
+    LifetimeRequest,
     LoadBalancerRequest,
     NetworkRequest,
     QueueRequest,
@@ -28,6 +32,7 @@ from ..models.resources import (
     ClusterResource,
     ComputeResource,
     DatabaseResource,
+    Grant,
     LoadBalancerResource,
     NetworkResource,
     QueueResource,
@@ -37,6 +42,7 @@ from ..models.resources import (
     StorageResource,
 )
 from ..models.response import (
+    AccessGrant,
     Credentials,
     Endpoints,
     ErrorDetail,
@@ -47,6 +53,7 @@ from ..models.response import (
     OperationStatus,
     PlannedResource,
     PlanResponse,
+    ProfileInfo,
     RequestStatus,
     ResourceKindInfo,
     ResourceKindsResponse,
@@ -59,7 +66,8 @@ from ..observability.logging import bound, event
 from ..providers.base import CloudProvider, ProvisionContext
 from ..security import validation
 from ..state.state_manager import StateManager, new_id
-from . import planner, validator
+from . import access as access_rules
+from . import lifecycle, planner, validator
 
 MAX_WAIT_SECONDS = 45
 POLL_SECONDS = 0.5
@@ -67,7 +75,12 @@ DESTROY_ORDER = tuple(ResourceKind(kind) for kind in reversed(RESOURCE_KINDS))
 KIND_MODELS = {"network": NetworkRequest, "storage": StorageRequest, "compute": ComputeRequest, "database": DatabaseRequest, "cache": CacheRequest, "queue": QueueRequest,
                "secret": SecretRequest, "cluster": ClusterRequest, "load_balancer": LoadBalancerRequest}
 SEVERAL = ("compute", "queue", "secret")
-LIVE = (RequestStatus.PROVISIONING, RequestStatus.READY, RequestStatus.FAILED, RequestStatus.DESTROYING, RequestStatus.DESTROY_FAILED)
+LIVE = (RequestStatus.PROVISIONING, RequestStatus.READY, RequestStatus.STOPPING, RequestStatus.STOPPED, RequestStatus.STARTING, RequestStatus.FAILED,
+        RequestStatus.DESTROYING, RequestStatus.DESTROY_FAILED)
+MOVING = (RequestStatus.PROVISIONING, RequestStatus.DESTROYING, RequestStatus.STOPPING, RequestStatus.STARTING)  # a worker is changing the request
+CONTROL_ACTIONS = ("stop", "start", "extend", "keep_awake")
+ACCESS_ACTIONS = ("grant", "revoke")
+MAX_HOURS = 8760
 
 
 class InlineExecutor:
@@ -81,8 +94,11 @@ class InlineExecutor:
 
 
 class Orchestrator:
-    def __init__(self, config, state: StateManager, registry, executor=None, sleep=time.sleep, clock=time.monotonic):
+    def __init__(self, config, state: StateManager, registry, executor=None, sleep=time.sleep, clock=time.monotonic, wallclock=None):
         self.config, self.state, self.registry, self.sleep, self.clock = config, state, registry, sleep, clock
+        self.wallclock = wallclock or (lambda: datetime.datetime.now(datetime.UTC))  # expiry and idle stop run on this clock
+        self._locks: dict[str, threading.RLock] = {}
+        self._locks_guard = threading.Lock()
         self.executor = executor or ThreadPoolExecutor(max_workers=config.workers, thread_name_prefix="cloudinfra")
 
     # ---- authorization and visibility
@@ -110,13 +126,85 @@ class Orchestrator:
     def _context(self, record: dict, principal=None) -> ProvisionContext:
         return ProvisionContext(request_id=record["request_id"], name=record["name"], region=record["region"], zone=record["zone"], owner=record["owner"], labels=record["labels"])
 
+    def lock(self, request_id: str) -> threading.RLock:
+        """The lock that serializes changes to one request's status, lifecycle and access list in this process, so that a
+        caller, a worker finishing and the sweeper never interleave their read-modify-writes. One process per state file."""
+        with self._locks_guard:
+            return self._locks.setdefault(request_id, threading.RLock())
+
+    def _submit(self, request_id: str, operation_id: str, revert, fn, *args) -> None:
+        """Hand work to the workers. When they take no more (the service is shutting down), put the request back as it was
+        and say so, rather than leave it in a state no worker will finish."""
+        try:
+            self.executor.submit(fn, *args)
+        except RuntimeError as exc:
+            revert()
+            error = InfrastructureError(ErrorCode.INTERNAL_ERROR, "The service is shutting down and took no new work; the request is as it was. Ask again once "
+                                        "the service is back", {"request_id": request_id})
+            self.state.finish_operation(operation_id, OperationStatus.FAILED, error=error.detail().model_dump(mode="json"))
+            raise error from exc
+
+    def recover(self) -> list[dict]:
+        """After a restart no worker survives, so a request left PROVISIONING, STOPPING, STARTING or DESTROYING, and every
+        RUNNING operation, was interrupted. Each request is put where it can be retried or destroyed. Call before serving."""
+        found = []
+        for status in MOVING:
+            for record in self.state.list_requests(status=status.value, limit=1_000_000):
+                request_id = record["request_id"]
+                with self.lock(request_id), bound(request_id=request_id, identity="cloudinfra-recovery"):
+                    after = self._recover_one(record)
+                    event("request_recovered", was=status.value, now=after.value)
+                    found.append({"request_id": request_id, "was": status.value, "now": after.value})
+        interrupted = InfrastructureError(ErrorCode.INTERNAL_ERROR, "Interrupted by a restart of the service", {"cause": "INTERRUPTED"})
+        for operation in self.state.running_operations():
+            self.state.finish_operation(operation.operation_id, OperationStatus.FAILED, error=interrupted.detail().model_dump(mode="json"), detail="interrupted")
+        return found
+
+    def _recover_one(self, record: dict) -> RequestStatus:
+        request_id, status = record["request_id"], record["status"]
+        if status == RequestStatus.PROVISIONING:
+            for resource in self.state.resources_of(request_id):
+                if resource.provider_id is None and resource.status in (ResourceStatus.PENDING, ResourceStatus.CREATING):
+                    self.state.save_resource(resource.model_copy(update={"status": ResourceStatus.FAILED}))
+            error = InfrastructureError(ErrorCode.PROVISIONING_FAILED, "Provisioning was interrupted by a restart of the service. Destroy the request to delete "
+                                        "what it created; a resource being created at that moment may exist at the provider without an id here, and its labels "
+                                        "name this request", {"cause": "INTERRUPTED"})
+            self.state.set_request_status(request_id, RequestStatus.FAILED, error=error.detail().model_dump(mode="json"))
+            return RequestStatus.FAILED
+        if status == RequestStatus.DESTROYING:
+            error = InfrastructureError(ErrorCode.DESTROY_FAILED, "Destruction was interrupted by a restart of the service; call destroy_infrastructure again",
+                                        {"cause": "INTERRUPTED"})
+            self.state.set_request_status(request_id, RequestStatus.DESTROY_FAILED, error=error.detail().model_dump(mode="json"))
+            return RequestStatus.DESTROY_FAILED
+        # STOPPING or STARTING: STOPPED only when everything that can stop is stopped, as the provider sees it now
+        try:
+            found = self._stoppable(record, self.registry.get(record["provider"]))
+        except InfrastructureError:
+            found = []
+        stopped = bool(found) and all(item.status == ResourceStatus.STOPPED for item in found)
+        life = dict(record["lifecycle"] or {})
+        if stopped and not life.get("stop_reason"):
+            life.update(stopped_at=lifecycle.iso(self.wallclock()), stop_reason="requested")
+        elif not stopped:
+            for key in ("stopped_at", "stop_reason", "retain_until"):
+                life.pop(key, None)
+        self.state.set_lifecycle(request_id, life)
+        after = RequestStatus.STOPPED if stopped else RequestStatus.READY
+        self.state.set_request_status(request_id, after)
+        return after
+
+    @staticmethod
+    def _cause(exc: Exception) -> InfrastructureError:
+        """Any exception as a structured error: an InfrastructureError as it is, anything else as INTERNAL_ERROR."""
+        return exc if isinstance(exc, InfrastructureError) else InfrastructureError(ErrorCode.INTERNAL_ERROR, f"Unexpected {type(exc).__name__}: {str(exc)[:200]}")
+
     # ---- validate and plan
     def _prepare(self, request: InfrastructureRequest, principal, request_id: str):
         provider = self.registry.get(request.provider)
-        problems = validator.validate(request, self.config, provider)
+        problems = validator.validate(request, self.config, provider) + access_rules.problems(request, self.config, principal)
         validator.raise_first(problems)
         ctx = planner.context(request, request_id, principal.name, self.config, provider)
-        planned = planner.plan(request, ctx, provider)
+        planned = planner.plan(request, ctx, provider, self.config)
         estimate = provider.estimate_cost(planned)
         cost = planner.cost_problem(estimate, self.config, principal)
         if cost:
@@ -129,11 +217,11 @@ class Orchestrator:
             provider = self.registry.get(request.provider)
         except InfrastructureError as exc:
             return ValidationResponse(valid=False, provider=request.provider, region=request.region, request=request, problems=[exc.detail()])
-        found = validator.validate(request, self.config, provider)
+        found = validator.validate(request, self.config, provider) + access_rules.problems(request, self.config, principal)
         problems.extend(ErrorDetail(code=item.code, message=item.message, details={"field": item.field} if item.field else {}) for item in found)
         if not found:
             ctx = planner.context(request, new_id(), principal.name, self.config, provider)
-            estimate = provider.estimate_cost(planner.plan(request, ctx, provider))
+            estimate = provider.estimate_cost(planner.plan(request, ctx, provider, self.config))
             cost = planner.cost_problem(estimate, self.config, principal)
             if cost:
                 problems.append(ErrorDetail(code=cost.code, message=cost.message, details={"estimated_monthly_usd": estimate.monthly_usd}))
@@ -149,7 +237,7 @@ class Orchestrator:
             event("resources_requested", planned=[{"kind": item.kind, "name": item.name} for item in planned], estimated_monthly_usd=estimate.monthly_usd)
             quota = provider.quota(request.region) if check_quota else None
             return PlanResponse(request_id=request_id, name=ctx.name, provider=provider.name, region=request.region, zone=ctx.zone, planned=planned, estimate=estimate,
-                                warnings=planner.warnings(request, planned), quota=quota)
+                                warnings=planner.warnings(request, planned, self.config, provider), quota=quota)
 
     # ---- provision
     def provision(self, request: InfrastructureRequest, principal, wait_seconds: int = 0) -> InfrastructureResponse:
@@ -167,20 +255,37 @@ class Orchestrator:
                                           {"active": active, "limit": self.config.limits.max_active_requests_per_principal})
             existing = self._existing_networks(request, principal, provider)
             external_backends = self._existing_backends(request, principal, provider)
-            if request.database:
-                ctx.database_password = secrets.token_urlsafe(24)
+            # The database password is generated here, written by the worker to a secret the request owns, and dropped.
+            password = secrets.token_urlsafe(24) if request.database else None
+            ctx.database_password = password
             self.state.create_request(request_id, ctx.name, provider.name, request.region, ctx.zone, principal.name, RequestStatus.PROVISIONING, request.model_dump(mode="json"),
                                       ctx.labels, estimate.monthly_usd)
+            life = lifecycle.initial(request, self.config.limits, self.wallclock())
+            if life:
+                self.state.set_lifecycle(request_id, life)
+            members = access_rules.members(request, principal, self.config)
+            if members:
+                self.state.set_access(request_id, members)
+            links = self._links(planned)
             for item in planned:
-                self.state.save_resource(self._pending(item, request, ctx, provider.name))
+                self.state.save_resource(self._pending(item, request, ctx, provider.name, links))
             operation_id = self.state.start_operation(request_id, "provision", identity=principal.name)
-            self.executor.submit(self._run_provision, request_id, request, planned, ctx, provider, operation_id, existing, external_backends)
+            refused = InfrastructureError(ErrorCode.PROVISIONING_FAILED, "The service was shutting down; nothing was created", {"cause": "SHUTTING_DOWN"})
+            self._submit(request_id, operation_id, lambda: self.state.set_request_status(request_id, RequestStatus.FAILED, error=refused.detail().model_dump(mode="json")),
+                         self._run_provision, request_id, request, planned, ctx, provider, operation_id, existing, external_backends)
             if wait_seconds:
                 self._wait(request_id, wait_seconds)
             response = self.status(request_id, principal, refresh=False)
-            if request.database:
-                response.credentials = Credentials(database_password=ctx.database_password)
+            response.warnings = [*planner.warnings(request, planned, self.config, provider), *response.warnings]
+            if request.database or request.cache:
+                response.credentials = Credentials(database_password_secret=links.get("database_password"), cache_auth_secret=links.get("cache_auth"),
+                                                   database_password=password if self.config.return_database_password else None)
             return response
+
+    @staticmethod
+    def _links(planned: list[PlannedResource]) -> dict[str, str]:
+        """The secrets a plan makes for the request's own credentials, by purpose: {database_password: sec-…, cache_auth: sec-…}."""
+        return {item.spec["purpose"]: item.spec["resource_id"] for item in planned if item.kind == "secret" and item.spec.get("purpose")}
 
     def _existing_networks(self, request: InfrastructureRequest, principal, provider: CloudProvider) -> dict[str, NetworkResource]:
         """The networks a request names by id (network_id on compute, database, cache, cluster): visible, ready, same provider and region."""
@@ -216,26 +321,29 @@ class Orchestrator:
         return found
 
     @staticmethod
-    def _pending(item: PlannedResource, request: InfrastructureRequest, ctx: ProvisionContext, provider: str):
+    def _pending(item: PlannedResource, request: InfrastructureRequest, ctx: ProvisionContext, provider: str, links: dict[str, str]):
         common = {"id": item.spec["resource_id"], "name": item.name, "request_id": ctx.request_id, "provider": provider, "region": ctx.region, "status": ResourceStatus.PENDING}
         spec = item.spec
         if item.kind == "compute":
             accelerator = f"{spec['accelerator']['type']} x{spec['accelerator']['count']}" if spec.get("accelerator") else None
             return ComputeResource(**common, zone=spec["zone"], group=spec["group"], machine_type=spec["machine_type"], cpu=spec["cpu"], memory_gb=spec["memory_gb"],
-                                   os_image=spec["image"].rsplit("/", 1)[-1], boot_disk_gb=spec["boot_disk_gb"], accelerator=accelerator)
+                                   os_image=spec["image"].rsplit("/", 1)[-1], boot_disk_gb=spec["boot_disk_gb"], accelerator=accelerator, profile=spec.get("profile"),
+                                   secure_boot=spec.get("secure_boot"), autostop_idle_minutes=spec.get("autostop_idle_minutes"), max_run_hours=spec.get("max_run_hours"))
         if item.kind == "storage":
             return StorageResource(**common, zone=spec.get("zone"), type=spec["type"], size_gb=spec["size_gb"], performance=request.storage.performance)
         if item.kind == "network":
             return NetworkResource(**common, subnet=spec["subnet"], cidr=spec["cidr"], public_access=spec["public_access"])
         if item.kind == "database":
             return DatabaseResource(**common, engine=spec["engine"], version=spec["version"], tier=spec["tier"], storage_gb=spec["storage_gb"], high_availability=spec["high_availability"],
-                                    public_access=not spec["private"], port=spec["port"], database=request.database.database_name, username=request.database.username)
+                                    public_access=not spec["private"], port=spec["port"], database=request.database.database_name, username=request.database.username,
+                                    password_secret=links.get("database_password"))
         if item.kind == "cache":
-            return CacheResource(**common, version=spec["version"], tier=spec["tier"], memory_gb=spec["memory_gb"], high_availability=spec["tier"] == "STANDARD_HA")
+            return CacheResource(**common, version=spec["version"], tier=spec["tier"], memory_gb=spec["memory_gb"], high_availability=spec["tier"] == "STANDARD_HA",
+                                 auth_secret=links.get("cache_auth"))
         if item.kind == "queue":
             return QueueResource(**common, topic=f"pending/{item.name}", retention_hours=spec["retention_hours"])
         if item.kind == "secret":
-            return SecretResource(**common, resource_name=f"pending/{item.name}", versions=0)
+            return SecretResource(**common, resource_name=f"pending/{item.name}", versions=0, purpose=spec.get("purpose"))
         if item.kind == "cluster":
             return ClusterResource(**common, zone=spec["location"], location=spec["location"], node_count=spec["node_count"], machine_type=spec["machine_type"])
         return LoadBalancerResource(**common, type=spec["type"], port=spec["port"], backend_group=spec["backend_group"], health_check_path=spec.get("health_check_path"))
@@ -244,6 +352,7 @@ class Orchestrator:
         with bound(request_id=request_id, operation_id=operation_id, identity=ctx.owner):
             event("provisioning_started", provider=provider.name, resources=len(planned))
             created, computes, network, current = [], {}, None, None
+            links = self._links(planned)
             try:
                 self._check_quota(provider, request, planned)
                 for item in planned:
@@ -262,11 +371,11 @@ class Orchestrator:
                         computes[item.name] = resource
                     elif item.kind == "cache":
                         joined = network or existing.get(request.cache.network_id)
-                        resource = provider.create_cache(request.cache, item, ctx, joined)
+                        resource = provider.create_cache(request.cache, item, ctx, joined).model_copy(update={"auth_secret": links.get("cache_auth")})
                     elif item.kind == "queue":
                         resource = provider.create_queue(next(queue for queue in request.queues() if queue.name == item.spec["queue"]), item, ctx)
                     elif item.kind == "secret":
-                        resource = provider.create_secret(next(secret for secret in request.secrets() if secret.name == item.spec["secret"]), item, ctx)
+                        resource = self._create_secret(request, item, ctx, provider, created)
                     elif item.kind == "cluster":
                         joined = network or existing.get(request.cluster.network_id)
                         resource = provider.create_cluster(request.cluster, item, ctx, joined)
@@ -284,7 +393,8 @@ class Orchestrator:
                                 network = joined
                                 created = [joined if item.id == joined.id else item for item in created]
                         resource, _ = provider.create_database(request.database, item, ctx, joined)
-                        resource = resource.model_copy(update={"network": joined.id if joined is not None and not request.database.public_access else None})
+                        resource = resource.model_copy(update={"network": joined.id if joined is not None and not request.database.public_access else None,
+                                                               "password_secret": links.get("database_password")})
                     resource = resource.model_copy(update={"id": item.spec["resource_id"], "created_at": resource.created_at or self.state_now()})
                     created.append(resource)
                     self.state.save_resource(resource)
@@ -300,11 +410,13 @@ class Orchestrator:
                         computes[target] = machine
                         self.state.save_resource(machine)
                         event("storage_attached", storage=storage.id, compute=machine.id)
+                current = None
+                self._apply_grants(request_id, provider, ctx)
                 self.state.set_request_status(request_id, RequestStatus.READY)
                 self.state.finish_operation(operation_id, OperationStatus.SUCCEEDED, detail=f"{len(created)} resources created")
                 event("provisioning_completed", resources=[item.id for item in created])
             except Exception as exc:  # every failure becomes a structured FAILED state; nothing escapes the worker silently
-                cause = exc if isinstance(exc, InfrastructureError) else InfrastructureError(ErrorCode.INTERNAL_ERROR, f"Unexpected {type(exc).__name__}: {str(exc)[:200]}")
+                cause = self._cause(exc)
                 where = f" at {current.kind} {current.name}" if current is not None else ""
                 error = InfrastructureError(ErrorCode.PROVISIONING_FAILED, f"Provisioning failed{where}: {cause.message}", {"cause": cause.code.value, **cause.details},
                                             resource=current.spec["resource_id"] if current is not None else None)
@@ -317,6 +429,25 @@ class Orchestrator:
                 self.state.set_request_status(request_id, RequestStatus.FAILED, error=error.detail().model_dump(mode="json"))
                 self.state.finish_operation(operation_id, OperationStatus.FAILED, error=error.detail().model_dump(mode="json"),
                                             detail=f"cleanup: {len(cleanup['deleted'])} deleted, {len(cleanup['remaining'])} remaining")
+            finally:
+                ctx.database_password = None  # written to its secret, or lost with a failed request; never kept
+
+    def _create_secret(self, request: InfrastructureRequest, item: PlannedResource, ctx: ProvisionContext, provider: CloudProvider, created: list):
+        """A secret the request asked for, or one the service makes for the request's own credentials: the generated
+        database password, or the cache's AUTH string copied from the provider. Values are written, never returned or logged."""
+        purpose = item.spec.get("purpose")
+        if purpose is None:
+            return provider.create_secret(next(secret for secret in request.secrets() if secret.name == item.spec["secret"]), item, ctx)
+        resource = provider.create_secret(SecretRequest(name=item.spec["secret"]), item, ctx)
+        if purpose == "database_password":
+            value = ctx.database_password
+        else:
+            cache = next(found for found in created if found.kind == ResourceKind.cache)
+            value = provider.read_cache_auth(cache)
+        if value:
+            resource = provider.put_secret_value(resource, value, ctx)
+        event("credential_stored", purpose=purpose, resource_id=item.spec["resource_id"])
+        return resource
 
     @staticmethod
     def state_now():
@@ -355,7 +486,7 @@ class Orchestrator:
                     deleted.append(resource.id)
                     event("resource_deleted", kind=resource.kind.value, resource_id=resource.id, during="cleanup")
                 except Exception as exc:
-                    cause = exc if isinstance(exc, InfrastructureError) else InfrastructureError(ErrorCode.INTERNAL_ERROR, f"Unexpected {type(exc).__name__}: {str(exc)[:200]}")
+                    cause = self._cause(exc)
                     self.state.save_resource(resource.model_copy(update={"error": cause.detail()}))
                     remaining.append({"resource_id": resource.id, "name": resource.name, "error": cause.detail().model_dump(mode="json")})
             outcome = {"policy": "delete", "deleted": deleted, "remaining": remaining}
@@ -370,7 +501,7 @@ class Orchestrator:
             self._wait(request_id, wait_seconds)
             record = self.state.get_request(request_id)
         resources = self.state.resources_of(request_id)
-        if refresh and record["status"] not in (RequestStatus.DESTROYED, RequestStatus.PROVISIONING, RequestStatus.DESTROYING):
+        if refresh and record["status"] not in (RequestStatus.DESTROYED, *MOVING):
             resources = [self._refresh(record, resource) for resource in resources]
         return self._response(record, resources)
 
@@ -386,6 +517,11 @@ class Orchestrator:
         return fresh
 
     def _response(self, record: dict, resources) -> InfrastructureResponse:
+        now = self.wallclock()
+        if record["status"] not in (RequestStatus.DESTROYED, RequestStatus.DESTROYING) and record["provider"] in self.registry.names():
+            provider = self.registry.get(record["provider"])
+            resources = [item.model_copy(update={"connect": provider.connect_info(item, resources)}) if item.status in (ResourceStatus.READY, ResourceStatus.STOPPED) else item
+                         for item in resources]
         grouped = Resources()
         for resource in resources:
             getattr(grouped, resource.kind.value).append(resource)
@@ -398,22 +534,38 @@ class Orchestrator:
                               secret_names=[item.resource_name for item in grouped.secret if item.status == ResourceStatus.READY])
         return InfrastructureResponse(request_id=record["request_id"], name=record["name"], provider=record["provider"], region=record["region"], zone=record["zone"],
                                       status=record["status"], owner=record["owner"], labels=record["labels"], resources=grouped, endpoints=endpoints,
-                                      operations=self.state.operations_of(record["request_id"]), estimated_monthly_cost_usd=record["estimated_cost"],
+                                      lifecycle=lifecycle.view(record, resources, now), access=[AccessGrant(**entry) for entry in record["access"]],
+                                      warnings=lifecycle.warnings(record, now, self.config.limits.expiry_retention_days),
+                                      operations=self.state.operations_of(record["request_id"]),
+                                      estimated_monthly_cost_usd=record["estimated_cost"],
                                       error=record["error"], created_at=record["created_at"], updated_at=record["updated_at"])
 
-    def list_requests(self, principal, status: str | None = None, limit: int = 50) -> ListResponse:
+    def list_requests(self, principal, status: str | None = None, limit: int = 50, expiring_within_hours: int | None = None) -> ListResponse:
         if status is not None and status not in RequestStatus.__members__:
             raise InfrastructureError(ErrorCode.INVALID_REQUEST, f"status must be one of {', '.join(RequestStatus.__members__)}", {"field": "status"})
+        expires_before = None
+        if expiring_within_hours is not None:
+            if not 1 <= expiring_within_hours <= MAX_HOURS:
+                raise InfrastructureError(ErrorCode.INVALID_REQUEST, f"expiring_within_hours must be 1 to {MAX_HOURS}", {"field": "expiring_within_hours"})
+            expires_before = lifecycle.iso(self.wallclock() + datetime.timedelta(hours=expiring_within_hours))
         owner = None if principal.scope == "all" else principal.name
-        records = self.state.list_requests(owner=owner, status=status, limit=max(1, min(limit, 200)))
+        records = self.state.list_requests(owner=owner, status=status, limit=max(1, min(limit, 200)), expires_before=expires_before)
         found = [self._response(record, self.state.resources_of(record["request_id"])) for record in records]
         return ListResponse(requests=found, count=len(found))
 
     # ---- destroy
     def destroy(self, request_id: str, principal, wait_seconds: int = 0) -> InfrastructureResponse:
         self.require(principal, "destroy")
-        record = self._record(request_id, principal)
-        if record["status"] in (RequestStatus.PROVISIONING, RequestStatus.DESTROYING):
+        self._record(request_id, principal)
+        with self.lock(request_id):
+            self._begin_destroy(self.state.get_request(request_id), principal)
+        if wait_seconds:
+            self._wait(request_id, wait_seconds)
+        return self.status(request_id, principal, refresh=False)
+
+    def _begin_destroy(self, record: dict, principal) -> None:
+        request_id = record["request_id"]
+        if record["status"] in MOVING:
             raise InfrastructureError(ErrorCode.INVALID_STATE, f"Request {request_id} is {record['status'].value}; wait for it to finish", {"status": record["status"].value})
         if record["status"] == RequestStatus.DESTROYED:
             raise InfrastructureError(ErrorCode.INVALID_STATE, f"Request {request_id} is already destroyed", {"status": "DESTROYED"})
@@ -423,12 +575,11 @@ class Orchestrator:
                 raise InfrastructureError(ErrorCode.INVALID_STATE, f"Network {network.id} of this request still carries {len(tenants)} machines or databases of other requests; "
                                           "destroy or delete those first", {"network": network.id, "tenants": [item.id for item in tenants]})
         provider = self.registry.get(record["provider"])
+        previous = record["status"]
         self.state.set_request_status(request_id, RequestStatus.DESTROYING)
         operation_id = self.state.start_operation(request_id, "destroy", identity=principal.name)
-        self.executor.submit(self._run_destroy, request_id, self._context(record), provider, operation_id)
-        if wait_seconds:
-            self._wait(request_id, wait_seconds)
-        return self.status(request_id, principal, refresh=False)
+        self._submit(request_id, operation_id, lambda: self.state.set_request_status(request_id, previous, error=record["error"]),
+                     self._run_destroy, request_id, self._context(record), provider, operation_id)
 
     def _run_destroy(self, request_id, ctx, provider, operation_id):
         with bound(request_id=request_id, operation_id=operation_id, identity=ctx.owner):
@@ -436,13 +587,14 @@ class Orchestrator:
             event("destruction_started", provider=provider.name, resources=[item.id for item in resources])
             remaining = []
             for resource in sorted(resources, key=lambda item: DESTROY_ORDER.index(item.kind)):
+                resource = self._release_grants(provider, resource, ctx)
                 self.state.save_resource(resource.model_copy(update={"status": ResourceStatus.DELETING}))
                 try:
                     self._delete(provider, resource, ctx)
                     self.state.save_resource(resource.model_copy(update={"status": ResourceStatus.DELETED, "error": None}))
                     event("resource_deleted", kind=resource.kind.value, resource_id=resource.id, name=resource.name)
                 except Exception as exc:
-                    cause = exc if isinstance(exc, InfrastructureError) else InfrastructureError(ErrorCode.INTERNAL_ERROR, f"Unexpected {type(exc).__name__}: {str(exc)[:200]}")
+                    cause = self._cause(exc)
                     self.state.save_resource(resource.model_copy(update={"status": ResourceStatus.FAILED, "error": cause.detail()}))
                     remaining.append({"resource_id": resource.id, "name": resource.name, "error": cause.detail().model_dump(mode="json")})
             if remaining:
@@ -452,16 +604,350 @@ class Orchestrator:
                 self.state.finish_operation(operation_id, OperationStatus.FAILED, error=error.detail().model_dump(mode="json"), detail=f"{len(remaining)} remaining")
                 event("destruction_failed", remaining=[item["resource_id"] for item in remaining])
             else:
-                self.state.set_request_status(request_id, RequestStatus.DESTROYED)
+                with self.lock(request_id):
+                    entries = self.state.get_request(request_id)["access"]
+                    if entries:
+                        stamp = lifecycle.iso(self.wallclock())
+                        self.state.set_access(request_id, [{**entry, "status": "REVOKED", "resources": [], "error": None, "updated_at": stamp} for entry in entries])
+                    self.state.set_request_status(request_id, RequestStatus.DESTROYED)
                 self.state.finish_operation(operation_id, OperationStatus.SUCCEEDED, detail=f"{len(resources)} resources deleted")
                 event("destruction_completed", resources=[item.id for item in resources])
 
+    # ---- access: grants on what the request created, never on the project
+    def _grant_targets(self, request_id: str, provider: CloudProvider, removing: bool = False) -> list:
+        """The resources of a request that take grants. A removal reaches every one that may still exist, whatever state a
+        failed refresh or a change in flight left it in; a grant only those in a settled state."""
+        skipped = (ResourceStatus.DELETED, ResourceStatus.PENDING) if removing else (ResourceStatus.DELETED, ResourceStatus.PENDING, ResourceStatus.CREATING,
+                                                                                      ResourceStatus.DELETING, ResourceStatus.FAILED)
+        return [item for item in self.state.resources_of(request_id) if item.kind.value in provider.grantable_kinds and item.provider_id and item.status not in skipped]
+
+    def _apply_grants(self, request_id: str, provider: CloudProvider, ctx: ProvisionContext, only: str | None = None) -> None:
+        """Grant each pending member (or the one named) on every resource of the request that takes grants. A failure is
+        recorded on the member with its error and never fails the request; manage_infrastructure_access grants again."""
+        with self.lock(request_id):
+            entries = self.state.get_request(request_id)["access"]
+            if not entries:
+                return
+            targets = self._grant_targets(request_id, provider)
+            for entry in entries:
+                wanted = entry["member"] == only if only is not None else entry["status"] == "PENDING"
+                if not wanted:
+                    continue
+                granted, errors = [], []
+                for target in targets:
+                    try:
+                        roles = provider.grant(target, entry["member"], entry["level"], ctx)
+                    except Exception as exc:
+                        cause = self._cause(exc)
+                        errors.append(cause.detail().model_dump(mode="json"))
+                        event("access_grant_failed", member=entry["member"], resource_id=target.id, error=cause.code.value)
+                        continue
+                    if not roles:  # a resource of a grantable kind with no policy of its own (a disk)
+                        continue
+                    fresh = self.state.get_resource(target.id)
+                    kept = [grant for grant in fresh.access if grant.member != entry["member"]]
+                    self.state.save_resource(fresh.model_copy(update={"access": [*kept, *(Grant(member=entry["member"], role=role) for role in roles)]}))
+                    granted.append(target.id)
+                    event("access_granted", member=entry["member"], level=entry["level"], resource_id=target.id, roles=roles)
+                status, error = access_rules.outcome(granted, errors)
+                entry.update(status=status, resources=granted, error=error, updated_at=lifecycle.iso(self.wallclock()))
+            self.state.set_access(request_id, entries)
+
+    def _revoke(self, provider: CloudProvider, resource, member: str, ctx: ProvisionContext) -> dict | None:
+        """Remove a member from one resource's policy; the error as a dict when the provider refuses, else None."""
+        try:
+            provider.revoke(resource, member, ctx)
+        except Exception as exc:
+            cause = self._cause(exc)
+            event("access_revoke_failed", member=member, resource_id=resource.id, error=cause.code.value)
+            return cause.detail().model_dump(mode="json")
+        fresh = self.state.get_resource(resource.id) or resource
+        self.state.save_resource(fresh.model_copy(update={"access": [grant for grant in fresh.access if grant.member != member]}))
+        event("access_revoked", member=member, resource_id=resource.id)
+        return None
+
+    def _release_grants(self, provider: CloudProvider, resource, ctx: ProvisionContext):
+        """Before a machine is deleted, take its members out of the tunnel policy, which outlives the machine. Best effort:
+        that binding names the machine's numeric id, which no later machine reuses. Returns the resource as stored now."""
+        if resource.kind != ResourceKind.compute or not resource.access:
+            return resource
+        for member in dict.fromkeys(grant.member for grant in resource.access):
+            self._revoke(provider, resource, member, ctx)
+        return self.state.get_resource(resource.id) or resource
+
+    def manage_access(self, request_id: str, action: str, member: str, principal, level: str = "use") -> InfrastructureResponse:
+        """Grant a member access to what a request created, or revoke it. Grants go on each resource's own policy."""
+        self.require(principal, "provision")
+        if action not in ACCESS_ACTIONS:
+            raise InfrastructureError(ErrorCode.INVALID_REQUEST, f"action must be one of {', '.join(ACCESS_ACTIONS)}", {"field": "action"})
+        if level not in ("use", "admin"):
+            raise InfrastructureError(ErrorCode.INVALID_REQUEST, "level must be use or admin", {"field": "level"})
+        member = validation.check_member(member, "member")
+        self._record(request_id, principal)
+        with self.lock(request_id):
+            self._change_access(self.state.get_request(request_id), action, member, principal, level)
+        return self.status(request_id, principal, refresh=False)
+
+    def _change_access(self, record: dict, action: str, member: str, principal, level: str) -> None:
+        request_id = record["request_id"]
+        if record["status"] not in (RequestStatus.READY, RequestStatus.STOPPED):
+            raise InfrastructureError(ErrorCode.INVALID_STATE, f"Request {request_id} is {record['status'].value}; access changes on a READY or STOPPED request",
+                                      {"status": record["status"].value})
+        provider, ctx, entries = self.registry.get(record["provider"]), self._context(record), record["access"]
+        entry = next((item for item in entries if item["member"] == member), None)
+        if action == "grant":
+            if not access_rules.allowed(member, self.config):
+                raise InfrastructureError(ErrorCode.INVALID_ACCESS, access_rules.refusal(member, self.config), {"field": "member"})
+            others = [item for item in entries if item["status"] != "REVOKED" and item["member"] != member]
+            if len(others) + 1 > self.config.access.max_members:
+                raise InfrastructureError(ErrorCode.INVALID_ACCESS, f"At most {self.config.access.max_members} members per request", {"field": "member"})
+        elif entry is None or entry["status"] == "REVOKED":
+            raise InfrastructureError(ErrorCode.NOT_FOUND, f"{member} has no access on request {request_id}", {"member": member})
+        operation_id = self.state.start_operation(request_id, f"{action}_access", identity=principal.name)
+        with bound(request_id=request_id, operation_id=operation_id, identity=principal.name):
+            # Every resource that may still exist, not only those with a recorded grant: a grant that failed halfway may have
+            # reached one of a resource's policies (a machine's, not yet its tunnel's), and a removal must find it.
+            reachable = self._grant_targets(request_id, provider, removing=True)
+            if action == "grant" and entry is not None and entry["level"] != level:
+                # a changed level: take the old roles away first, so admin roles never outlive a change to use
+                errors = [error for error in (self._revoke(provider, item, member, ctx) for item in reachable) if error]
+                if errors:
+                    self.state.finish_operation(operation_id, OperationStatus.FAILED, error=errors[0], detail=f"{member}: the old level could not be removed")
+                    raise InfrastructureError(ErrorCode(errors[0]["code"]), f"Changing {member} to {level} failed: {errors[0]['message']}", {"member": member})
+            if action == "grant":
+                if entry is None:
+                    entry = {"member": member, "level": level, "status": "PENDING", "resources": [], "error": None, "updated_at": None}
+                    entries.append(entry)
+                entry.update(level=level, status="PENDING")
+                self.state.set_access(request_id, entries)
+                self._apply_grants(request_id, provider, ctx, only=member)
+                result = next(item for item in self.state.get_request(request_id)["access"] if item["member"] == member)
+            else:
+                errors = [error for error in (self._revoke(provider, item, member, ctx) for item in reachable) if error]
+                still = [item.id for item in self._grant_targets(request_id, provider, removing=True) if any(grant.member == member for grant in item.access)]
+                entry.update(status="REVOKED" if not errors else entry["status"], resources=still, error=errors[0] if errors else None,
+                             updated_at=lifecycle.iso(self.wallclock()))
+                self.state.set_access(request_id, entries)
+                result = entry
+            done = result["status"] in ("GRANTED", "REVOKED")
+            self.state.finish_operation(operation_id, OperationStatus.SUCCEEDED if done else OperationStatus.FAILED, error=None if done else result["error"],
+                                        detail=f"{member}: {result['status']}")
+
+    # ---- stop, start, extend, keep awake
+    def control(self, request_id: str, action: str, principal, hours: int | None = None, wait_seconds: int = 0) -> InfrastructureResponse:
+        if action not in CONTROL_ACTIONS:
+            raise InfrastructureError(ErrorCode.INVALID_REQUEST, f"action must be one of {', '.join(CONTROL_ACTIONS)}", {"field": "action"})
+        if action in ("extend", "keep_awake") and hours is None:
+            raise InfrastructureError(ErrorCode.INVALID_REQUEST, f"{action} needs hours", {"field": "hours"})
+        if action in ("stop", "start") and hours is not None:
+            raise InfrastructureError(ErrorCode.INVALID_REQUEST, f"hours is for extend and keep_awake, not {action}", {"field": "hours"})
+        if action == "stop":
+            return self.stop(request_id, principal, wait_seconds)
+        if action == "start":
+            return self.start(request_id, principal, wait_seconds)
+        if action == "extend":
+            return self.extend(request_id, principal, hours)
+        return self.keep_awake(request_id, principal, hours)
+
+    def _stoppable(self, record: dict, provider: CloudProvider) -> list:
+        """The request's resources that can stop and start, as the provider sees them now."""
+        return [self._refresh(record, item) for item in self.state.resources_of(record["request_id"])
+                if item.kind.value in provider.stoppable_kinds and item.provider_id and item.status not in (ResourceStatus.DELETED, ResourceStatus.PENDING)]
+
+    @staticmethod
+    def _settled(request_id: str, found: list) -> None:
+        changing = [item for item in found if item.status in (ResourceStatus.CREATING, ResourceStatus.UPDATING, ResourceStatus.DELETING)]
+        if changing:
+            names = ", ".join(f"{item.name} ({item.status.value})" for item in changing)
+            raise InfrastructureError(ErrorCode.INVALID_STATE, f"{names} of request {request_id} is changing; ask again once it has settled",
+                                      {"reason": "changing", "resources": [item.id for item in changing]})
+
+    def stop(self, request_id: str, principal, wait_seconds: int = 0, reason: str = "requested", expired_at: str | None = None) -> InfrastructureResponse:
+        """Stop every machine and database of a READY request. Disks, addresses and what cannot stop keep billing. With
+        expired_at (the sweeper's), the data is kept for the retention period from the moment the stop completes, unless
+        the request's expiry changed meanwhile."""
+        self.require(principal, "provision")
+        self._record(request_id, principal)
+        with self.lock(request_id):
+            record = self.state.get_request(request_id)
+            if record["status"] != RequestStatus.READY:
+                raise InfrastructureError(ErrorCode.INVALID_STATE, f"Request {request_id} is {record['status'].value}; a READY request stops",
+                                          {"status": record["status"].value, "reason": "state"})
+            provider = self.registry.get(record["provider"])
+            found = self._stoppable(record, provider)
+            if not found:
+                kinds = " and ".join(provider.stoppable_kinds) or "nothing"
+                raise InfrastructureError(ErrorCode.INVALID_STATE, f"Nothing in request {request_id} can stop; the {provider.name} adapter stops {kinds}. Destroy it instead",
+                                          {"stoppable_kinds": list(provider.stoppable_kinds), "reason": "nothing_to_stop"})
+            self._settled(request_id, found)
+            targets = [item for item in found if item.status != ResourceStatus.STOPPED]  # READY, and UNKNOWN or FAILED ones that may still run
+            self.state.set_request_status(request_id, RequestStatus.STOPPING)
+            operation_id = self.state.start_operation(request_id, "stop", identity=principal.name)
+            self._submit(request_id, operation_id, lambda: self.state.set_request_status(request_id, RequestStatus.READY),
+                         self._run_power, record, targets, provider, operation_id, "stop", reason, expired_at)
+        if wait_seconds:
+            self._wait(request_id, wait_seconds)
+        return self.status(request_id, principal, refresh=False)
+
+    def start(self, request_id: str, principal, wait_seconds: int = 0) -> InfrastructureResponse:
+        """Start what is stopped in a READY or STOPPED request that has not expired."""
+        self.require(principal, "provision")
+        self._record(request_id, principal)
+        with self.lock(request_id):
+            record = self.state.get_request(request_id)
+            if record["status"] not in (RequestStatus.READY, RequestStatus.STOPPED):
+                raise InfrastructureError(ErrorCode.INVALID_STATE, f"Request {request_id} is {record['status'].value}; a READY or STOPPED request starts",
+                                          {"status": record["status"].value})
+            expires_at = (record["lifecycle"] or {}).get("expires_at")
+            if expires_at and lifecycle.parse(expires_at) <= self.wallclock():
+                raise InfrastructureError(ErrorCode.INVALID_STATE, f"Request {request_id} expired at {expires_at}; extend it first (control_infrastructure extend)",
+                                          {"expires_at": expires_at})
+            provider = self.registry.get(record["provider"])
+            found = self._stoppable(record, provider)
+            self._settled(request_id, found)
+            targets = [item for item in found if item.status == ResourceStatus.STOPPED]
+            if not targets and record["status"] == RequestStatus.READY:
+                raise InfrastructureError(ErrorCode.INVALID_STATE, f"Nothing in request {request_id} is stopped", {"status": record["status"].value})
+            previous = record["status"]
+            self.state.set_request_status(request_id, RequestStatus.STARTING)
+            operation_id = self.state.start_operation(request_id, "start", identity=principal.name)
+            self._submit(request_id, operation_id, lambda: self.state.set_request_status(request_id, previous),
+                         self._run_power, record, targets, provider, operation_id, "start", None, None)
+        if wait_seconds:
+            self._wait(request_id, wait_seconds)
+        return self.status(request_id, principal, refresh=False)
+
+    def _run_power(self, record: dict, targets: list, provider: CloudProvider, operation_id: str, action: str, reason: str | None, expired_at: str | None) -> None:
+        request_id, ctx = record["request_id"], self._context(record)
+        # machines stop before the database they use, and start after it
+        order = RESOURCE_KINDS if action == "stop" else tuple(reversed(RESOURCE_KINDS))
+        with bound(request_id=request_id, operation_id=operation_id, identity=ctx.owner):
+            event(f"{action}_started", resources=[item.id for item in targets], reason=reason)
+            done, failed = [], []
+            for resource in sorted(targets, key=lambda item: order.index(item.kind.value)):
+                try:
+                    fresh = provider.stop(resource, ctx) if action == "stop" else provider.start(resource, ctx)
+                except Exception as exc:
+                    cause = self._cause(exc)
+                    if cause.code == ErrorCode.NOT_FOUND:  # gone at the provider: nothing left to stop, nothing to start
+                        self.state.save_resource(resource.model_copy(update={"status": ResourceStatus.DELETED, "error": None if action == "stop" else cause.detail()}))
+                        if action == "stop":
+                            done.append(resource.id)
+                            continue
+                    else:
+                        self.state.save_resource(resource.model_copy(update={"error": cause.detail()}))
+                    failed.append({"resource_id": resource.id, "name": resource.name, "error": cause.detail().model_dump(mode="json")})
+                    continue
+                update = {"error": None, **({"stop_reason": reason} if fresh.kind == ResourceKind.compute else {})}
+                self.state.save_resource(fresh.model_copy(update=update))
+                done.append(resource.id)
+                event("resource_stopped" if action == "stop" else "resource_started", kind=resource.kind.value, resource_id=resource.id, reason=reason)
+            with self.lock(request_id):
+                life = dict(self.state.get_request(request_id)["lifecycle"] or {})
+                if action == "stop":
+                    status = RequestStatus.READY if failed else RequestStatus.STOPPED
+                    if not failed:
+                        life.update({"stopped_at": lifecycle.iso(self.wallclock()), "stop_reason": reason})
+                        if expired_at is not None and life.get("expires_at") == expired_at:
+                            retain = self.wallclock() + datetime.timedelta(days=self.config.limits.expiry_retention_days)
+                            life["retain_until"] = lifecycle.iso(retain)
+                else:
+                    status = RequestStatus.STOPPED if failed and not done else RequestStatus.READY
+                    if status == RequestStatus.READY:
+                        for key in ("stopped_at", "stop_reason", "retain_until"):
+                            life.pop(key, None)
+                self.state.set_lifecycle(request_id, life)
+                self.state.set_request_status(request_id, status)
+            if failed:
+                first = failed[0]["error"]
+                error = {"code": first["code"], "message": f"{len(failed)} of {len(targets)} resources did not {action}: {first['message']}", "details": {"failed": failed}}
+                self.state.finish_operation(operation_id, OperationStatus.FAILED, error=error, detail=f"{len(done)} done, {len(failed)} failed")
+                event(f"{action}_failed", failed=[item["resource_id"] for item in failed])
+            else:
+                self.state.finish_operation(operation_id, OperationStatus.SUCCEEDED, detail=f"{len(done)} resources")
+                event(f"{action}_completed", resources=done, reason=reason)
+
+    def stop_resource(self, record: dict, resource, reason: str, principal):
+        """Stop one machine or database on the service's own initiative (an idle machine); the caller's thread waits."""
+        provider = self.registry.get(record["provider"])
+        operation_id = self.state.start_operation(record["request_id"], f"stop_{resource.kind.value}", resource_id=resource.id, identity=principal.name)
+        with bound(request_id=record["request_id"], operation_id=operation_id, identity=principal.name):
+            try:
+                stopped = provider.stop(resource, self._context(record))
+            except Exception as exc:
+                cause = self._cause(exc)
+                self.state.finish_operation(operation_id, OperationStatus.FAILED, error=cause.detail().model_dump(mode="json"))
+                raise cause from None
+            if stopped.kind == ResourceKind.compute:
+                stopped = stopped.model_copy(update={"stop_reason": reason})
+            self.state.save_resource(stopped)
+            self.state.finish_operation(operation_id, OperationStatus.SUCCEEDED, detail=reason)
+            event("resource_stopped", kind=resource.kind.value, resource_id=resource.id, reason=reason)
+        return stopped
+
+    def extend(self, request_id: str, principal, hours: int) -> InfrastructureResponse:
+        """Move a request's expiry later, up to the operator's maximum lifetime; a request stopped at expiry is kept again."""
+        self.require(principal, "provision")
+        if not 1 <= hours <= MAX_HOURS:
+            raise InfrastructureError(ErrorCode.INVALID_REQUEST, f"hours must be 1 to {MAX_HOURS}", {"field": "hours"})
+        self._record(request_id, principal)
+        with self.lock(request_id):
+            record = self.state.get_request(request_id)
+            if record["status"] not in (RequestStatus.READY, RequestStatus.STOPPED):
+                raise InfrastructureError(ErrorCode.INVALID_STATE, f"Request {request_id} is {record['status'].value}; extend a READY or STOPPED request",
+                                          {"status": record["status"].value})
+            life = dict(record["lifecycle"] or {})
+            expires = lifecycle.parse(life.get("expires_at"))
+            if expires is None:
+                raise InfrastructureError(ErrorCode.INVALID_STATE, f"Request {request_id} has no expiry to extend", {"request_id": request_id})
+            start = max(expires, self.wallclock())
+            until = start + datetime.timedelta(hours=hours)
+            cap = lifecycle.parse(life.get("max_expires_at"))
+            if cap is not None and until > cap:
+                left = max(0, int((cap - start).total_seconds() // 3600))
+                raise InfrastructureError(ErrorCode.LIMIT_EXCEEDED, f"The operator's maximum lifetime ends at {life['max_expires_at']}; at most {left} more hours",
+                                          {"max_expires_at": life["max_expires_at"], "hours_left": left})
+            life.update(expires_at=lifecycle.iso(until), warnings_sent=[], retain_until=None)
+            self.state.set_lifecycle(request_id, life)
+            operation_id = self.state.start_operation(request_id, "extend", identity=principal.name)
+            self.state.finish_operation(operation_id, OperationStatus.SUCCEEDED, detail=f"expires at {life['expires_at']}")
+        with bound(request_id=request_id, operation_id=operation_id, identity=principal.name):
+            event("lifetime_extended", hours=hours, expires_at=life["expires_at"])
+        return self.status(request_id, principal, refresh=False)
+
+    def keep_awake(self, request_id: str, principal, hours: int) -> InfrastructureResponse:
+        """Suspend idle stop for a while, for work that runs without using the CPU."""
+        self.require(principal, "provision")
+        limit = self.config.limits.max_keep_awake_hours
+        if hours < 1:
+            raise InfrastructureError(ErrorCode.INVALID_REQUEST, "hours must be at least 1", {"field": "hours"})
+        if hours > limit:
+            raise InfrastructureError(ErrorCode.LIMIT_EXCEEDED, f"keep_awake takes at most {limit} hours", {"field": "hours", "limit": limit})
+        self._record(request_id, principal)
+        with self.lock(request_id):
+            record = self.state.get_request(request_id)
+            if record["status"] not in (RequestStatus.READY, RequestStatus.STOPPED, RequestStatus.STOPPING, RequestStatus.STARTING):
+                raise InfrastructureError(ErrorCode.INVALID_STATE, f"Request {request_id} is {record['status'].value}", {"status": record["status"].value})
+            life = dict(record["lifecycle"] or {})
+            life["awake_until"] = lifecycle.iso(self.wallclock() + datetime.timedelta(hours=hours))
+            self.state.set_lifecycle(request_id, life)
+            operation_id = self.state.start_operation(request_id, "keep_awake", identity=principal.name)
+            self.state.finish_operation(operation_id, OperationStatus.SUCCEEDED, detail=f"awake until {life['awake_until']}")
+        with bound(request_id=request_id, operation_id=operation_id, identity=principal.name):
+            event("idle_stop_suspended", hours=hours, awake_until=life["awake_until"])
+        return self.status(request_id, principal, refresh=False)
+
     # ---- single-resource primitives
-    def create_compute(self, principal, *, region, cpu, memory_gb, provider="gcp", count=1, os="ubuntu", boot_disk_gb=20, public_ip=False, network_id=None, accelerator=None,
-                       accelerator_count=1, zone=None, name=None, labels=None, wait_seconds=0) -> InfrastructureResponse:
+    def create_compute(self, principal, *, region, cpu, memory_gb, provider="gcp", count=1, os=None, profile=None, boot_disk_gb=None, public_ip=False, network_id=None,
+                       accelerator=None, accelerator_count=1, autostop_idle_minutes=None, max_run_hours=None, lifetime_hours=None, zone=None, name=None, labels=None,
+                       wait_seconds=0) -> InfrastructureResponse:
         gpus = AcceleratorRequest(type=accelerator, count=accelerator_count) if accelerator else None
-        compute = ComputeRequest(count=count, cpu=cpu, memory_gb=memory_gb, os=os, boot_disk_gb=boot_disk_gb, public_ip=public_ip, network_id=network_id, accelerator=gpus)
-        return self.provision(InfrastructureRequest(provider=provider, region=region, zone=zone, name=name, labels=labels or {}, compute=compute), principal, wait_seconds)
+        optional = {"boot_disk_gb": boot_disk_gb} if boot_disk_gb is not None else {}  # left out, a machine with GPUs gets the GPU default
+        compute = ComputeRequest(count=count, cpu=cpu, memory_gb=memory_gb, os=os, profile=profile, public_ip=public_ip, network_id=network_id, accelerator=gpus,
+                                 autostop=AutostopRequest(idle_minutes=autostop_idle_minutes) if autostop_idle_minutes else None, max_run_hours=max_run_hours, **optional)
+        lifetime = LifetimeRequest(hours=lifetime_hours) if lifetime_hours else None
+        return self.provision(InfrastructureRequest(provider=provider, region=region, zone=zone, name=name, labels=labels or {}, compute=compute, lifetime=lifetime),
+                              principal, wait_seconds)
 
     def create_cache(self, principal, *, region, provider="gcp", memory_gb=1, high_availability=False, version=None, network_id=None, name=None, labels=None, wait_seconds=0):
         cache = CacheRequest(memory_gb=memory_gb, high_availability=high_availability, version=version, network_id=network_id)
@@ -498,8 +984,11 @@ class Orchestrator:
                                         description=definition.get("description")))
             kinds.append(ResourceKindInfo(kind=kind, description=(schema.get("description") or "").strip(), several_per_request=kind in SEVERAL, fields=fields,
                                           providers=[name for name, provider in providers.items() if kind in provider.supported_kinds]))
-        return ResourceKindsResponse(kinds=kinds, providers=list(providers), note="A request block of any other name is refused with UNSUPPORTED_RESOURCE_KIND; "
-                                     "network_id on compute, database, cache and cluster joins a network created earlier, and load_balancer.backends names machines created earlier.")
+        profiles = {name: [ProfileInfo(**item) for item in provider.profile_infos()] for name, provider in providers.items()}
+        return ResourceKindsResponse(kinds=kinds, providers=list(providers), profiles=profiles,
+                                     note="A request block of any other name is refused with UNSUPPORTED_RESOURCE_KIND; network_id on compute, database, cache and cluster joins "
+                                     "a network created earlier, and load_balancer.backends names machines created earlier. Beside the kinds, a request takes lifetime "
+                                     "(hours, on_expiry) and access (members granted on what it creates); compute.profile names one of the profiles listed here.")
 
     def create_storage(self, principal, *, region, size_gb, provider="gcp", type="persistent", performance="balanced", zone=None, name=None, labels=None, wait_seconds=0):
         storage = StorageRequest(type=type, size_gb=size_gb, performance=performance)
@@ -548,6 +1037,7 @@ class Orchestrator:
         with bound(request_id=record["request_id"], operation_id=operation_id, identity=ctx.owner):
             event("destruction_started", resources=[resource.id], single=True)
             try:
+                resource = self._release_grants(provider, resource, ctx)
                 self._delete(provider, resource, ctx)
                 self.state.save_resource(resource.model_copy(update={"status": ResourceStatus.DELETED, "error": None, "attached_to": None} if resource.kind == ResourceKind.storage
                                                              else {"status": ResourceStatus.DELETED, "error": None}))
@@ -557,7 +1047,7 @@ class Orchestrator:
                     self.state.set_request_status(record["request_id"], RequestStatus.DESTROYED)
                     event("destruction_completed", resources=[resource.id], reason="last resource of the request")
             except Exception as exc:
-                cause = exc if isinstance(exc, InfrastructureError) else InfrastructureError(ErrorCode.INTERNAL_ERROR, f"Unexpected {type(exc).__name__}: {str(exc)[:200]}")
+                cause = self._cause(exc)
                 self.state.save_resource(resource.model_copy(update={"status": ResourceStatus.FAILED, "error": cause.detail()}))
                 self.state.finish_operation(operation_id, OperationStatus.FAILED, error=cause.detail().model_dump(mode="json"))
                 event("destruction_failed", resource_id=resource.id, error=cause.detail().model_dump(mode="json"))
@@ -584,7 +1074,7 @@ class Orchestrator:
                     self.state.finish_operation(operation_id, OperationStatus.SUCCEEDED, detail=f"{resized.machine_type}")
                     event("resource_resized", resource_id=resource_id, cpu=cpu, memory_gb=memory_gb)
                 except Exception as exc:
-                    cause = exc if isinstance(exc, InfrastructureError) else InfrastructureError(ErrorCode.INTERNAL_ERROR, f"Unexpected {type(exc).__name__}: {str(exc)[:200]}")
+                    cause = self._cause(exc)
                     self.state.save_resource(self._refresh(record, resource.model_copy(update={"error": cause.detail()})))
                     self.state.finish_operation(operation_id, OperationStatus.FAILED, error=cause.detail().model_dump(mode="json"))
         self.executor.submit(run)
@@ -666,12 +1156,16 @@ class Orchestrator:
             record, resource = self._record(request_id, principal), None
         provider = self.registry.get(record["provider"])
         request = InfrastructureRequest.model_validate(record["request"])
-        estimate = provider.estimate_cost(planner.plan(request, self._context(record), provider))
+        estimate = provider.estimate_cost(planner.plan(request, self._context(record), provider, self.config))
         if resource is not None:
             lines = [line for line in estimate.lines if line.resource == resource.name]
-            estimate = estimate.model_copy(update={"lines": lines, "monthly_usd": round(sum(line.monthly_usd for line in lines), 2)})
+            estimate = estimate.model_copy(update={"lines": lines, "monthly_usd": round(sum(line.monthly_usd for line in lines), 2),
+                                                   "stopped_monthly_usd": round(sum(line.stopped_usd or 0 for line in lines), 2)})
+        stopped = resource.status == ResourceStatus.STOPPED if resource is not None else record["status"] == RequestStatus.STOPPED
+        current = estimate.stopped_monthly_usd if stopped and estimate.stopped_monthly_usd is not None else estimate.monthly_usd
         return {"request_id": record["request_id"], "resource_id": resource_id, "status": record["status"].value, "estimate": estimate.model_dump(mode="json"),
-                "actual": None, "note": "Actual spend needs a billing export; this service reports estimates from list prices only."}
+                "current_monthly_usd": current, "actual": None,
+                "note": "Actual spend needs a billing export; this service reports estimates from list prices only. current_monthly_usd is the stopped rate while stopped."}
 
     def operation(self, operation_id: str, principal):
         found = self.state.get_operation(operation_id)
@@ -687,14 +1181,16 @@ class Orchestrator:
             providers[name] = {"project": getattr(settings, "project_id", None), "allowed_regions": list(settings.allowed_regions), "planned": False}
         from ..providers import PLANNED_PROVIDERS
         return {"version": version, "providers": providers, "planned_providers": list(PLANNED_PROVIDERS), "limits": self.config.limits.model_dump(),
-                "cleanup_on_failure": self.config.cleanup_on_failure, "workers": self.config.workers, "labels": self.config.labels}
+                "cleanup_on_failure": self.config.cleanup_on_failure, "workers": self.config.workers, "labels": self.config.labels, "access": self.config.access.model_dump(),
+                "sweep_interval_seconds": self.config.sweep_interval_seconds, "return_database_password": self.config.return_database_password,
+                "profiles": {name: self.registry.get(name).profile_infos() for name in self.registry.names()}}
 
     # ---- waiting
     def _wait(self, request_id: str, seconds: int) -> None:
         deadline = self.clock() + max(0, min(seconds, MAX_WAIT_SECONDS))
         while True:
             record = self.state.get_request(request_id)
-            if record is None or record["status"] not in (RequestStatus.PROVISIONING, RequestStatus.DESTROYING) or self.clock() >= deadline:
+            if record is None or record["status"] not in MOVING or self.clock() >= deadline:
                 return
             self.sleep(POLL_SECONDS)
 

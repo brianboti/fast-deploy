@@ -10,6 +10,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..security import validation
+from .errors import ErrorCode, InfrastructureError
 
 OsFamily = Literal["ubuntu", "debian", "rocky"]
 StorageType = Literal["persistent", "object"]
@@ -17,6 +18,11 @@ StoragePerformance = Literal["standard", "balanced", "ssd"]
 DatabaseEngine = Literal["postgresql", "mysql"]
 DatabaseSize = Literal["small", "medium", "large"]
 AcceleratorType = Literal["t4", "l4", "a100", "h100"]
+AccessLevel = Literal["use", "admin"]
+PROFILE = r"^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$"  # a software profile's name, defined by the operator
+GPU_MIN_BOOT_DISK_GB = 40  # drivers and a CUDA toolkit; Google's GPU guide specifies at least 40 GiB
+GPU_DEFAULT_BOOT_DISK_GB = 50
+RESERVED_SECRETS = {"db-password": "database", "cache-auth": "cache"}  # secrets the service makes for a request's own credentials
 LoadBalancerType = Literal["http", "tcp"]
 GROUP = r"^[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?$"  # a group's, queue's or secret's short name: up to 12 characters, part of resource names
 # The kinds, in the order they are created; destruction is the reverse. Every top-level block of a request is one of these.
@@ -35,6 +41,29 @@ class AcceleratorRequest(StrictModel):
     count: int = Field(default=1, ge=1, le=8, description="GPUs per machine; the provider offers fixed counts per type.")
 
 
+class AutostopRequest(StrictModel):
+    """Stop a machine that has been idle: its busiest CPU sample in the window used fewer cores than the operator's threshold."""
+    idle_minutes: int = Field(ge=15, le=1440, description="The idle window, in minutes; the machine stops after this long without work.")
+
+
+class LifetimeRequest(StrictModel):
+    """How long a request lives. Warnings come 48 and 2 hours before the end; at the end it stops (keeping its data for the
+    operator's retention period, then destroyed) or is destroyed."""
+    hours: int = Field(ge=1, le=8760, description="Hours from creation; it can be extended up to the operator's maximum.")
+    on_expiry: Literal["stop", "destroy"] = Field(default="stop", description="stop (default) keeps disks and databases for the retention period; destroy deletes everything.")
+
+
+class AccessRequest(StrictModel):
+    """Someone to grant access to what the request creates: login on machines, reading secrets, using buckets and queues."""
+    member: str = Field(description="user:, group: or serviceAccount: and an email address in a domain the operator allows.")
+    level: AccessLevel = Field(default="use", description="use (log in, read and write data) or admin (administrator login, manage secret versions and objects).")
+
+    @field_validator("member")
+    @classmethod
+    def _member(cls, value):
+        return validation.check_member(value)
+
+
 class ComputeRequest(StrictModel):
     """Virtual machines of one shape: a group. A request may carry one group or a list of them."""
     group: str | None = Field(default=None, pattern=GROUP, description="The group's name, part of every machine name (<name>-<group>-<n>); vm when omitted. "
@@ -42,21 +71,44 @@ class ComputeRequest(StrictModel):
     count: int = Field(default=1, ge=1, le=100, description="How many identical machines.")
     cpu: int = Field(ge=1, le=224, description="Virtual CPUs per machine.")
     memory_gb: int = Field(ge=1, le=1872, description="Memory per machine, in GB.")
-    os: OsFamily = Field(default="ubuntu", description="Operating system family; the provider picks its current long-term image.")
-    boot_disk_gb: int = Field(default=20, ge=10, le=2000, description="Boot disk size, in GB.")
+    os: OsFamily | None = Field(default=None, description="Operating system family (ubuntu, debian, rocky); the provider picks its current long-term image. "
+                                                          "Ubuntu when neither os nor profile is given.")
+    profile: str | None = Field(default=None, pattern=PROFILE, description="A software profile the operator defines, such as a hardened base image or a GPU image "
+                                                                          "with drivers; list_resource_kinds names them. Use it instead of os.")
+    boot_disk_gb: int = Field(default=20, ge=10, le=2000, description="Boot disk size, in GB. Machines with GPUs default to 50 and need at least 40.")
     public_ip: bool = Field(default=False, description="Give each machine a public address. With a network block, network.public_access must be true.")
     network_id: str | None = Field(default=None, description="Place the machines in a network this service created earlier (net-…), instead of the request's own "
                                                              "network block or the operator's default network.")
     accelerator: AcceleratorRequest | None = Field(default=None, description="GPUs per machine; the machine family follows the GPU type.")
+    autostop: AutostopRequest | None = Field(default=None, description="Stop machines that have been idle this long; the operator may set a default.")
+    max_run_hours: int | None = Field(default=None, ge=1, le=2880, description="Stop each machine after it has run this many hours since its last start (at most 120 days).")
 
     @field_validator("network_id")
     @classmethod
     def _network_id(cls, value):
         return None if value is None else validation.check_identifier(value, "compute.network_id")
 
+    @model_validator(mode="after")
+    def _software_and_disk(self):
+        if self.profile is not None and self.os is not None:
+            raise InfrastructureError(ErrorCode.INVALID_COMPUTE_CONFIGURATION, "Give profile or os, not both: a profile names its own image",
+                                      {"field": "compute.profile"})
+        if self.accelerator is not None:
+            if "boot_disk_gb" not in self.model_fields_set:
+                self.boot_disk_gb = GPU_DEFAULT_BOOT_DISK_GB
+            elif self.boot_disk_gb < GPU_MIN_BOOT_DISK_GB:
+                raise InfrastructureError(ErrorCode.INVALID_COMPUTE_CONFIGURATION,
+                                          f"A machine with GPUs needs a boot disk of at least {GPU_MIN_BOOT_DISK_GB} GB for its drivers and toolkit; "
+                                          f"{self.boot_disk_gb} asked", {"field": "compute.boot_disk_gb"})
+        return self
+
     @property
     def group_name(self) -> str:
         return self.group or "vm"
+
+    @property
+    def os_family(self) -> str:
+        return self.os or "ubuntu"
 
 
 class StorageRequest(StrictModel):
@@ -192,6 +244,9 @@ class InfrastructureRequest(StrictModel):
     secret: SecretRequest | list[SecretRequest] | None = Field(default=None, description="One secret container, or a list of them.")
     cluster: ClusterRequest | None = None
     load_balancer: LoadBalancerRequest | None = None
+    lifetime: LifetimeRequest | None = Field(default=None, description="How long the request lives; the operator's default applies when omitted, and there is none unless the operator sets one.")
+    access: list[AccessRequest] = Field(default_factory=list, max_length=20, description="People, groups or service accounts to grant access to what is created; "
+                                                                                          "the requester is added when the operator maps it to an identity.")
 
     @field_validator("region")
     @classmethod
@@ -222,6 +277,13 @@ class InfrastructureRequest(StrictModel):
                 raise ValueError(f"{kind}: a list cannot be empty")
         if not any(getattr(self, kind) for kind in RESOURCE_KINDS):
             raise ValueError("A request needs at least one of " + ", ".join(RESOURCE_KINDS))
+        members = [item.member for item in self.access]
+        if len(set(members)) != len(members):
+            raise InfrastructureError(ErrorCode.INVALID_ACCESS, "access: each member once", {"field": "access"})
+        for secret in self.secrets():
+            owner = RESERVED_SECRETS.get(secret.name)
+            if owner and getattr(self, owner) is not None:
+                raise ValueError(f"secret: {secret.name} is the name of the secret the service makes for the request's {owner}; choose another")
         groups = self.compute_groups()
         if len(groups) > 1:
             names = [group.group for group in groups]
