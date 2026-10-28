@@ -56,6 +56,10 @@ def warnings(request: InfrastructureRequest, planned: list[PlannedResource]) -> 
                          "and the machine restarts rather than migrates on host maintenance")
     if request.database and request.database.size == "small":
         found.append("a small database is a shared-core instance: fine for development, not covered by the provider's SLA")
+    database = next((item.spec for item in planned if item.kind == "database"), None)
+    if database and database.get("extended_support"):
+        found.append(f"{database['engine']} {database['version']} is kept by the provider only under paid extended support; "
+                     f"{database.get('recommended_version')} is its current default, unless the application needs this version")
     if request.database and request.database.public_access:
         found.append("the database has a public address; connections are encrypted-only, and the Application Layer must manage its authorized networks")
     if request.cache:

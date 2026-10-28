@@ -3,6 +3,7 @@
 A test holds the registered tool set, their parameters and their safety hints to these records, and the rendered document
 to this file, so the catalog a reviewer reads is the catalog the server serves.
 """
+import re
 from dataclasses import dataclass
 
 from mcp.types import ToolAnnotations
@@ -76,6 +77,21 @@ class ToolSpec:
         return next(item.description for item in self.inputs if item.name == name)
 
     @property
+    def model_description(self) -> str:
+        """What the model reads: the purpose, what comes back, the safety rule, and what to call next. Claude's tool guidance
+        asks for at least three or four sentences; the catalog's columns are those sentences."""
+        security = re.sub(r"^Needs can_(provision|destroy)\.\s*", "", self.security)  # the hint sentence already says it
+        parts = [self.purpose, f"Returns {self.output}", f"{HINT_WORDS[self.hint]} {security}".rstrip()]
+        waits = any(item.name == "wait_seconds" for item in self.inputs)
+        if waits and self.hint == "destructive":
+            parts.append("It answers at once with the deletion running, or waits up to wait_seconds; follow it with get_infrastructure_status "
+                         "or get_operation until the resource is DELETED or the request DESTROYED.")
+        elif waits:
+            parts.append("It answers at once with the operation running, or waits up to wait_seconds; follow it with get_infrastructure_status "
+                         "or get_operation until the status is READY or FAILED.")
+        return " ".join(part.rstrip() if part.endswith(".") else part.rstrip() + "." for part in parts)
+
+    @property
     def annotations(self) -> ToolAnnotations:
         return HINTS[self.hint]
 
@@ -121,7 +137,8 @@ CATALOG: tuple[ToolSpec, ...] = (
               Input("accelerator", "GPUs per machine: t4, l4, a100 or h100; the machine family follows the type, and the driver is the Application Layer's to install."),
               Input("accelerator_count", "GPUs per machine (default 1); each type offers fixed counts."), ZONE, NAME, LABELS, WAIT),
              RESPONSE, ("INVALID_COMPUTE_CONFIGURATION", "INVALID_NETWORK_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
-             f"Needs can_provision. Machines get OS Login (IAM) and no service account; shielded VM settings on. {OWNERSHIP}",
+             f"Needs can_provision. Machines get OS Login (IAM) and no service account; vTPM and integrity monitoring on, and Secure Boot on unless a GPU is attached "
+             f"(the provider's driver installation needs it off). {OWNERSHIP}",
              "Compute Engine: compute.instances.insert with an E2 machine type (N1, G2, A2 or A3 with a GPU) and a public image family; compute.instances.get after."),
     ToolSpec("get_compute", "Compute", "Get a machine", "One machine's live state: status, addresses, machine type, attached disks.",
              (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only; the caller sees its own requests' resources (scope: all sees every one).", "Compute Engine: compute.instances.get."),

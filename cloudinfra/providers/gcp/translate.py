@@ -11,10 +11,13 @@ IMAGES = {
     "rocky": "projects/rocky-linux-cloud/global/images/family/rocky-linux-9",
 }
 DISK_TYPES = {"standard": "pd-standard", "balanced": "pd-balanced", "ssd": "pd-ssd"}
+# Cloud SQL's versions and defaults as of 2026-10-28 (docs.cloud.google.com/sql/docs/db-versions): PostgreSQL 18 and MySQL 8.4
+# are the provider's defaults; the versions under EXTENDED_SUPPORT are kept by the provider only under paid extended support.
 DB_VERSIONS = {
-    "postgresql": {"default": "16", "versions": {"13": "POSTGRES_13", "14": "POSTGRES_14", "15": "POSTGRES_15", "16": "POSTGRES_16", "17": "POSTGRES_17"}},
-    "mysql": {"default": "8.0", "versions": {"5.7": "MYSQL_5_7", "8.0": "MYSQL_8_0", "8.4": "MYSQL_8_4"}},
+    "postgresql": {"default": "18", "versions": {"13": "POSTGRES_13", "14": "POSTGRES_14", "15": "POSTGRES_15", "16": "POSTGRES_16", "17": "POSTGRES_17", "18": "POSTGRES_18"}},
+    "mysql": {"default": "8.4", "versions": {"5.7": "MYSQL_5_7", "8.0": "MYSQL_8_0", "8.4": "MYSQL_8_4", "9.7": "MYSQL_9_7"}},
 }
+EXTENDED_SUPPORT = {"postgresql": ("13",), "mysql": ("5.7",)}
 # small: shared core, the cheapest instance Cloud SQL offers; medium and large: dedicated vCPUs with Google's custom tiers.
 DB_TIERS = {"small": "db-f1-micro", "medium": "db-custom-2-7680", "large": "db-custom-4-15360"}
 DB_PORTS = {"postgresql": 5432, "mysql": 3306}

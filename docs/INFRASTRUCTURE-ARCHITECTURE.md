@@ -11,7 +11,7 @@ records why the split was made this way.
 Application Layer            any system: Claude, a CI job, another service, the Fast Deploy workflow
   │
   │  Infrastructure contract  InfrastructureRequest → InfrastructureResponse (cloudinfra/models)
-  │                           MCP (Streamable HTTP, 27 tools) or REST, bearer token per caller
+  │                           MCP (Streamable HTTP, 43 tools) or REST, bearer token per caller
   ▼
 ┌────────────────────────────────────────────────────────────────────────────────────┐
 │ Cloud Infrastructure MCP  (cloudinfra)                                             │
@@ -141,7 +141,7 @@ database was created and finds no trace of the password.
 | Authorization | `can_provision` for tools that create or change, `can_destroy` for deletes; `scope: own` sees only its own requests (another caller's request is NOT_FOUND, not merely forbidden); `scope: all` for an operator identity |
 | Budgets | Per-identity request budget, per-address failed-login budget (429 with Retry-After) |
 | Provider credential | Taken by the adapter from the host (metadata server, or gcloud with optional impersonation); never configured in a file, never accepted from a caller, never visible to the Application Layer |
-| Least privilege on what is created | Machines get OS Login (IAM) and no service account; SSH only from the identity-aware proxy range; subnets only in private ranges; buckets with uniform access and public-access prevention; databases encrypted-only with deletion protection and backups, turned off only by an explicit destroy; caches private with AUTH and TLS; cluster nodes with logging, monitoring and read-only storage scopes only, shielded, workload identity on; load balancers open only the backend port to the provider's health checkers |
+| Least privilege on what is created | Machines get OS Login (IAM) and no service account, vTPM and integrity monitoring, and Secure Boot except where a GPU's drivers need it off; SSH only from the identity-aware proxy range; subnets only in private ranges; buckets with uniform access and public-access prevention; databases encrypted-only with deletion protection and backups, turned off only by an explicit destroy; caches private with AUTH and TLS; cluster nodes with logging, monitoring and read-only storage scopes only, shielded, workload identity on; load balancers open only the backend port to the provider's health checkers |
 | No command execution | The contract carries no script, command, key or provider structure; names, ranges, ports and labels are validated (`security/validation.py`); strict models refuse unknown fields; the server refuses unknown arguments by name before a tool runs |
 | Structured errors | Provider exceptions never escape; every error has a code; provider messages are kept in `details`, truncated |
 | Cost controls | Limits on counts and sizes, a monthly cost ceiling per service and per caller, a cap on live requests per caller, quota checks, labels `managed-by`, `cloudinfra-request`, `cloudinfra-name`, `cloudinfra-owner` on every resource plus the operator's own, cleanup on failure, destroy on request, and estimates on every plan |

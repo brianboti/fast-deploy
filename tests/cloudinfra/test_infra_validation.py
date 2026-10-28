@@ -83,7 +83,7 @@ def test_public_ip_needs_public_access_on_the_requests_network():
 
 def test_database_version_must_be_offered():
     found = problems({"region": "us-central1", "database": {"engine": "mysql", "version": "9.9", "public_access": True}})
-    assert found[0].code == ErrorCode.INVALID_DATABASE_CONFIGURATION and "5.7, 8.0, 8.4" in found[0].message
+    assert found[0].code == ErrorCode.INVALID_DATABASE_CONFIGURATION and "5.7, 8.0, 8.4, 9.7" in found[0].message
 
 
 def test_cost_ceiling_per_service_and_per_caller():

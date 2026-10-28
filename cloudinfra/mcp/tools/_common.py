@@ -14,7 +14,7 @@ def field(tool: str, name: str):
 def register(mcp, wrap, fn):
     """Register a function as the catalog tool of the same name: title, description and safety hint come from the record."""
     spec = BY_NAME[fn.__name__]
-    return mcp.tool(name=spec.name, title=spec.title, description=spec.purpose, annotations=spec.annotations, structured_output=True)(wrap(fn))
+    return mcp.tool(name=spec.name, title=spec.title, description=spec.model_description, annotations=spec.annotations, structured_output=True)(wrap(fn))
 
 
 Result = dict[str, Any]
