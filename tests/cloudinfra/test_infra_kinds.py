@@ -120,6 +120,7 @@ def test_new_adapters_send_the_right_bodies_and_tear_down():
     body = next(call[2] for call in fake.calls if call[0] == "POST" and call[1].endswith("/instances") and call[2].get("name") == "platform-gpu-1")
     assert body["machineType"].endswith("/g2-standard-8") and body["guestAccelerators"] == [{"acceleratorType": "zones/us-central1-a/acceleratorTypes/nvidia-l4", "acceleratorCount": 1}]
     assert body["scheduling"]["onHostMaintenance"] == "TERMINATE" and gpu.accelerator == "nvidia-l4 x1" and gpu.group == "gpu" and gpu.cpu == 8 and gpu.memory_gb == 32
+    assert body["shieldedInstanceConfig"] == {"enableSecureBoot": False, "enableVtpm": True, "enableIntegrityMonitoring": True}, "drivers need Secure Boot off"
     cache = provider.create_cache(request.cache, planned["cache:platform-cache"], ctx, network)
     cache_body = next(call[2] for call in fake.calls if "redis.googleapis.com" in call[1] and call[0] == "POST")
     assert cache_body == {**cache_body, "tier": "BASIC", "memorySizeGb": 2, "redisVersion": "REDIS_7_2", "authEnabled": True, "transitEncryptionMode": "SERVER_AUTHENTICATION",
@@ -172,6 +173,7 @@ def test_tcp_load_balancer_is_regional_and_passthrough():
     assert [piece["kind"] for piece in balancer.components] == ["instance_group", "firewall", "health_check", "backend_service", "address", "forwarding_rule"]
     assert fake.regional["forwardingRules"]["db-lb-rule"]["ports"] == ["5432"] and fake.regional["backendServices"]["db-lb-backend"]["loadBalancingScheme"] == "EXTERNAL"
     assert fake.firewalls["db-lb-allow-health"]["network"].endswith("/global/networks/default")
+    assert fake.firewalls["db-lb-allow-health"]["sourceRanges"] == ["35.191.0.0/16", "209.85.204.0/22", "209.85.152.0/22"], "passthrough probes come from the 209.85 ranges too"
     with pytest.raises(InfrastructureError) as caught:
         provider.create_load_balancer(request.load_balancer, planned[1], ctx, [], None)
     assert caught.value.code == ErrorCode.INVALID_LOAD_BALANCER_CONFIGURATION
@@ -265,7 +267,9 @@ def test_plan_warnings_cover_every_new_kind(tmp_path):
     text = " ".join(plan.warnings)
     for expected in ("gpu: 1 l4 per machine as g2-standard-8", "AUTH string", "management fee", "public on port 8080", "shared-core", "whole internet"):
         assert expected in text, (expected, plan.warnings)
-    assert fake.calls == [] and len(plan.planned) == 13
+    assert fake.calls == [] and len(plan.planned) == 13 and "extended support" not in text
+    old = orchestrator.plan(InfrastructureRequest.model_validate({"region": "us-central1", "database": {"version": "13", "public_access": True}}), principal(orchestrator.config))
+    assert any("postgresql 13 is kept by the provider only under paid extended support; 18 is its current default" in warning for warning in old.warnings), old.warnings
 
 
 def test_list_resource_kinds_describes_the_contract(tmp_path):

@@ -6,7 +6,10 @@ from ...models.resources import LoadBalancerResource, ResourceStatus
 from . import translate
 from .api import COMPUTE
 
-HEALTH_CHECK_RANGES = ["130.211.0.0/22", "35.191.0.0/16"]  # Google's health checkers and proxies
+# Google's health checkers, per load balancer type (docs.cloud.google.com/load-balancing/docs/health-check-concepts, read
+# 2026-10-28): the global external application load balancer probes from 35.191.0.0/16 and its front ends reach backends from
+# 130.211.0.0/22; a backend-service passthrough network load balancer probes from 35.191.0.0/16, 209.85.204.0/22 and 209.85.152.0/22.
+HEALTH_CHECK_RANGES = {"http": ["130.211.0.0/22", "35.191.0.0/16"], "tcp": ["35.191.0.0/16", "209.85.204.0/22", "209.85.152.0/22"]}
 PORT_NAME = "app"
 
 
@@ -38,7 +41,7 @@ class GcpLoadBalancer:
         group = piece("instance_group", f"{COMPUTE}/projects/{self.api.project}/zones/{zone}/instanceGroups",
                       {"name": f"{name}-group", "description": translate.description(ctx), "network": network_link, "namedPorts": [{"name": PORT_NAME, "port": spec.port}]})
         self.api.wait_compute(self.api.post(f"{group}/addInstances", json={"instances": [{"instance": machine.provider_id} for machine in backends]}))
-        rule = self.network._add_rule(network_link, f"{name}-allow-health", ctx, [spec.port], HEALTH_CHECK_RANGES)
+        rule = self.network._add_rule(network_link, f"{name}-allow-health", ctx, [spec.port], HEALTH_CHECK_RANGES[spec.type])
         components.append({"kind": "firewall", "name": rule.name, "url": rule.provider_id})
         if spec.type == "http":
             health = piece("health_check", self._global("healthChecks"), {"name": f"{name}-health", "type": "HTTP", "checkIntervalSec": 10, "timeoutSec": 5,

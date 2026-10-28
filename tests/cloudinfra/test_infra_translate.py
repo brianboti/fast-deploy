@@ -24,8 +24,9 @@ def test_machine_type(cpu, memory, expected):
 def test_images_versions_and_tiers():
     assert translate.image("ubuntu").endswith("ubuntu-2404-lts-amd64") and translate.image("debian").endswith("debian-12")
     from cloudinfra.models import DatabaseRequest
-    assert translate.database_version(DatabaseRequest()) == ("16", "POSTGRES_16")
-    assert translate.database_version(DatabaseRequest(engine="mysql")) == ("8.0", "MYSQL_8_0")
+    assert translate.database_version(DatabaseRequest()) == ("18", "POSTGRES_18")
+    assert translate.database_version(DatabaseRequest(engine="mysql")) == ("8.4", "MYSQL_8_4")
+    assert translate.database_version(DatabaseRequest(version="13")) == ("13", "POSTGRES_13") and "13" in translate.EXTENDED_SUPPORT["postgresql"]
     assert translate.database_version(DatabaseRequest(engine="mysql", version="8.4")) == ("8.4", "MYSQL_8_4")
     assert translate.DB_TIERS == {"small": "db-f1-micro", "medium": "db-custom-2-7680", "large": "db-custom-4-15360"}
 
@@ -48,7 +49,7 @@ def test_plan_names_shapes_and_order():
                                                             ("compute", "analytics-vm-1"), ("compute", "analytics-vm-2"), ("database", "analytics-db-abcdef")]
     assert all(item.spec["resource_id"].startswith({"network": "net-", "storage": "sto-", "compute": "cmp-", "database": "db-"}[item.kind]) for item in planned)
     assert planned[1].spec["attach_to"] == "analytics-vm-1" and planned[3].spec["machine_type"] == "e2-standard-4" and planned[3].spec["zone"] == "us-central1-a"
-    assert planned[5].spec == {**planned[5].spec, "database_version": "POSTGRES_16", "tier": "db-custom-2-7680", "private": True, "network": "analytics-net", "port": 5432}
+    assert planned[5].spec == {**planned[5].spec, "database_version": "POSTGRES_18", "tier": "db-custom-2-7680", "private": True, "network": "analytics-net", "port": 5432}
     assert "servicenetworking.connections.create" in planned[5].provider_mapping and "compute.instances.insert" == planned[3].provider_mapping
 
 

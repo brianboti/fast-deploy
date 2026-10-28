@@ -57,12 +57,12 @@ Google API; a test fails if any other module of the core does.
 | `api.py` | `GcpApi`: one REST client with the bearer token, HTTP error → `InfrastructureError` translation (401 auth, 403 permission or quota, 404, 409/412 conflict, 429 and 5xx unavailable), and the operation waits for Compute Engine (`operations.wait`), Cloud SQL (poll) and Service Networking (poll). The single seam the unit tests replace with a fake. |
 | `translate.py` | Generic → Google shapes: `machine_type(cpu, memory_gb)` (E2 predefined when the ratio matches, E2 custom within 0.5 to 8 GB per vCPU, shared-core for one CPU), image families, disk types, database versions and tiers, the IAP range, zone table, labels and descriptions. |
 | `pricing.py` | Approximate list prices for us-central1 and the estimate; `verified` is null until someone checks them. |
-| `compute.py` | Instances: insert with OS Login, no service account, shielded VM, GPUs as guest accelerators with terminate-on-maintenance; get, aggregated list by labels, stop/setMachineType/start, delete, attachDisk. |
+| `compute.py` | Instances: insert with OS Login, no service account, shielded VM (Secure Boot off when a GPU is attached, so the provider's drivers install), GPUs as guest accelerators with terminate-on-maintenance; get, aggregated list by labels, stop/setMachineType/start, delete, attachDisk. |
 | `cache.py` | Memorystore for Redis: direct peering on the network, AUTH on, TLS, basic or standard-HA tier. |
 | `queue.py` | Pub/Sub: topic and pull subscription. |
 | `secret.py` | Secret Manager: container with automatic replication, optional generated first version. |
 | `cluster.py` | Kubernetes Engine: zonal cluster, one node pool, VPC-native, shielded nodes, workload identity, regular channel. |
-| `loadbalancer.py` | Instance group, health-check firewall rule, health check, backend service, URL map and target proxy (http), address, forwarding rule; global for http, regional for tcp. |
+| `loadbalancer.py` | Instance group, health-check firewall rule (the probe ranges differ by type), health check, backend service, URL map and target proxy (http), address, forwarding rule; global for http, regional for tcp. |
 | `storage.py` | Persistent disks and buckets (uniform access, public access prevention). |
 | `network.py` | Custom-mode VPC, one subnet with Private Google Access, firewall rules (internal, IAP SSH, public ports), Private Services Access (reserved range and peering) for private databases, teardown in the right order. |
 | `database.py` | Cloud SQL: instance (Enterprise edition, SSD, backups, encrypted-only, deletion protection, private or public address), database, user; delete after turning protection off. |
@@ -88,7 +88,7 @@ Google API; a test fails if any other module of the core does.
 | `storage.type: object` | a bucket `<project>-<name>-<6 hex>` in the region, STANDARD class |
 | `network` | VPC with `autoCreateSubnetworks: false`; subnet with the CIDR; rules `<name>-net-allow-internal`, `-allow-iap-ssh` (35.235.240.0/20), `-allow-public` |
 | private `database` | reserved range `<name>-net-services` (VPC_PEERING, /20) and a `servicenetworking.googleapis.com` connection |
-| `database.engine`, `version` | `POSTGRES_13…17`, `MYSQL_5_7`, `MYSQL_8_0`, `MYSQL_8_4` |
+| `database.engine`, `version` | `POSTGRES_13…18` (18 the default; 13 flagged as paid extended support), `MYSQL_5_7` (flagged), `MYSQL_8_0`, `MYSQL_8_4` (default), `MYSQL_9_7` |
 | `database.size` | `db-f1-micro`, `db-custom-2-7680`, `db-custom-4-15360` |
 | `database.high_availability` | `availabilityType: REGIONAL` |
 | ownership | labels `managed-by=cloudinfra`, `cloudinfra-request`, `cloudinfra-name`, `cloudinfra-owner`; a description on resources without labels |

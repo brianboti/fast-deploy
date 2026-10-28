@@ -71,16 +71,21 @@ def test_provision_status_and_destroy_through_mcp(served):
 def test_structured_errors_through_mcp(served):
     client, fake = served
     invalid = call(client, "provision_infrastructure", {"request": {"provider": "gcp", "region": "us-central1", "compute": {"cpu": "four", "memory_gb": 16}}})
-    assert invalid["structuredContent"]["status"] == "FAILED" and invalid["structuredContent"]["error"]["code"] == "INVALID_REQUEST"
-    unsupported = call(client, "provision_infrastructure", {"request": {**VM_REQUEST, "provider": "aws"}})["structuredContent"]
+    assert invalid["isError"] is True and invalid["structuredContent"]["status"] == "FAILED" and invalid["structuredContent"]["error"]["code"] == "INVALID_REQUEST"
+    assert json.loads(invalid["content"][0]["text"]) == invalid["structuredContent"], "the same error as text, for clients that read only text"
+    refused = call(client, "provision_infrastructure", {"request": {**VM_REQUEST, "provider": "aws"}})
+    assert refused["isError"] is True and json.loads(refused["content"][0]["text"])["error"]["code"] == "UNSUPPORTED_PROVIDER"
+    unsupported = refused["structuredContent"]
     assert unsupported == {"status": "FAILED", "error": {"code": "UNSUPPORTED_PROVIDER", "message": unsupported["error"]["message"],
                                                         "details": {"provider": "aws", "available": ["gcp"]}, "resource": None}}
     shape = call(client, "create_compute", {"region": "us-central1", "cpu": 3, "memory_gb": 16})["structuredContent"]
     assert shape["error"]["code"] == "INVALID_COMPUTE_CONFIGURATION" and "even number" in shape["error"]["message"]
     forbidden = call(client, "create_compute", {"region": "us-central1", "cpu": 2, "memory_gb": 8}, token="reader-token")["structuredContent"]
     assert forbidden["error"]["code"] == "PERMISSION_DENIED"
-    validated = call(client, "validate_infrastructure_request", {"request": {"region": "europe-west1", "compute": {"cpu": 2, "memory_gb": 8}, "database": {}}})["structuredContent"]
+    checked = call(client, "validate_infrastructure_request", {"request": {"region": "europe-west1", "compute": {"cpu": 2, "memory_gb": 8}, "database": {}}})
+    validated = checked["structuredContent"]
     assert validated["valid"] is False and validated["problems"][0]["code"] == "INVALID_DATABASE_CONFIGURATION"
+    assert not checked.get("isError"), "an invalid request reported by the validation tool is a result, not an execution error"
     missing = call(client, "get_infrastructure_status", {"request_id": "f" * 32})["structuredContent"]
     assert missing["error"]["code"] == "NOT_FOUND"
     unknown = call(client, "get_infrastructure_status", {"requestid": "f" * 32})

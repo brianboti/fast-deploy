@@ -23,7 +23,7 @@ from ..models.request import InfrastructureRequest
 from ..observability import logging as observability
 from ..orchestration.provisioner import Orchestrator
 from ..providers import ProviderRegistry
-from ..security.auth import Authenticate, audited, client_address, identity, invoke
+from ..security.auth import Authenticate, as_tool_error, audited, client_address, identity, invoke
 from ..state.state_manager import StateManager
 from .catalog import CATALOG, render_markdown
 from .tools import cache, cluster, compute, database, infrastructure, loadbalancer, network, operations, queue, secret, storage
@@ -96,7 +96,7 @@ class StrictMCP(FastMCP):
             error = InfrastructureError(first.code if first else ErrorCode.INVALID_REQUEST, first.message if first else "Invalid arguments",
                                         {"tool": name, "problems": [item.model_dump(mode="json") for item in problems]})
             self._refused(name, f"{error.code.value}: {error.message}")
-            return error.to_dict()
+            return as_tool_error(error.to_dict())
 
 
 def build_app(config, registry: ProviderRegistry | None = None, state: StateManager | None = None, executor=None) -> FastAPI:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lab-deploy"
-version = "1.36.0"
+version = "1.36.1"
 description = "A provider-independent Cloud Infrastructure MCP, and the Fast Deploy application delivery workflow on top of it"
 license = "MIT"
 license-files = ["LICENSE"]

@@ -7,10 +7,12 @@ import contextvars
 import functools
 import hashlib
 import hmac
+import json
 import threading
 import time
 
 import pydantic
+from mcp.types import CallToolResult, TextContent
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
@@ -121,8 +123,19 @@ def invoke(state, kind: str, name: str, fn, subject=None):
     return result.model_dump(mode="json") if hasattr(result, "model_dump") else result
 
 
+def failed(result: dict) -> bool:
+    return isinstance(result, dict) and result.get("status") == "FAILED" and "error" in result
+
+
+def as_tool_error(result: dict) -> CallToolResult:
+    """A FAILED result as the MCP specification wants an execution error: isError true, the structured error kept, and the
+    same JSON as text, so a client that reads either gets the code and the message."""
+    return CallToolResult(content=[TextContent(type="text", text=json.dumps(result, indent=1))], structuredContent=result, isError=True)
+
+
 def audited(state):
-    """Decorator for MCP tools: the call runs in the thread pool with the caller's identity, and is recorded."""
+    """Decorator for MCP tools: the call runs in the thread pool with the caller's identity, and is recorded; a FAILED result
+    is returned as an execution error with its structured payload."""
     def decorate(fn):
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
@@ -133,7 +146,8 @@ def audited(state):
                 identity.set(principal)
                 client_address.set(client)
                 return invoke(state, "tool", fn.__name__, lambda: fn(*args, **kwargs), subject if isinstance(subject, str) else None)
-            return await run_in_threadpool(call)
+            result = await run_in_threadpool(call)
+            return as_tool_error(result) if failed(result) else result
         wrapper.cloudinfra_audited = True
         return wrapper
     return decorate

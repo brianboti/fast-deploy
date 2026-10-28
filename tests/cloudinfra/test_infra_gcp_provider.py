@@ -113,7 +113,7 @@ def test_database_private_encrypted_protected_and_password_handed_over_once():
     database, password = provider.create_database(request.database, planned[1], ctx, network)
     body = next(call[2] for call in fake.calls if call[0] == "POST" and call[1].endswith("/instances") and "sqladmin" in call[1])
     settings = body["settings"]
-    assert body["databaseVersion"] == "POSTGRES_16" and settings["tier"] == "db-custom-2-7680" and settings["deletionProtectionEnabled"] is True
+    assert body["databaseVersion"] == "POSTGRES_18" and settings["tier"] == "db-custom-2-7680" and settings["deletionProtectionEnabled"] is True
     assert settings["ipConfiguration"] == {"ipv4Enabled": False, "sslMode": "ENCRYPTED_ONLY", "privateNetwork": network.provider_id}
     assert settings["backupConfiguration"]["enabled"] and settings["userLabels"]["managed-by"] == "cloudinfra" and "rootPassword" not in body
     assert password == "generated-by-the-orchestrator" and fake.sql_users["pg-db-aaaaaa"] == [{"name": "app", "password": password}]
@@ -131,7 +131,7 @@ def test_database_without_network_is_refused_and_public_uses_primary_address():
     with pytest.raises(InfrastructureError):
         provider.create_database(DatabaseRequest(), planned[0], ctx, None)
     database, _ = provider.create_database(request.database, planned[0], ctx, None)
-    assert database.host == "35.0.0.9" and database.port == 3306 and database.version == "8.0"
+    assert database.host == "35.0.0.9" and database.port == 3306 and database.version == "8.4"
 
 
 def test_health_usage_and_quota():

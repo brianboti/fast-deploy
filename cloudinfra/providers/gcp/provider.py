@@ -107,6 +107,8 @@ class GCPProvider(CloudProvider):
                                            spec={"engine": request.database.engine, "version": label, "database_version": api_version, "tier": translate.DB_TIERS[request.database.size],
                                                  "high_availability": request.database.high_availability, "storage_gb": request.database.storage_gb, "private": private_database,
                                                  "port": translate.DB_PORTS[request.database.engine],
+                                                 "extended_support": label in translate.EXTENDED_SUPPORT[request.database.engine],
+                                                 "recommended_version": translate.DB_VERSIONS[request.database.engine]["default"],
                                                  "network": (own_network or request.database.network_id) if private_database else None}))
         if request.cache:
             label, api_version = translate.cache_version(request.cache)

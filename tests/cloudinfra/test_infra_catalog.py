@@ -39,7 +39,8 @@ def test_registered_tools_match_the_catalog(tmp_path):
         assert set(tool.parameters.get("properties", {})) == {item.name for item in spec.inputs}, spec.name
         required = set(tool.parameters.get("required", []))
         assert required == {item.name for item in spec.inputs if item.required}, spec.name
-        assert tool.annotations == HINTS[spec.hint] and tool.title == spec.title and tool.description == spec.purpose
+        assert tool.annotations == HINTS[spec.hint] and tool.title == spec.title and tool.description == spec.model_description
+        assert tool.description.startswith(spec.purpose) and tool.description.count(". ") >= 2, f"{spec.name}: the model reads at least three sentences"
         assert getattr(tool.fn, "cloudinfra_audited", False), f"{spec.name} is not wrapped by audited()"
 
 

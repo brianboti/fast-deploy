@@ -1,3 +1,24 @@
+# 1.36.1: the first corrections from the review of 2026-10-28
+
+`docs/RESEARCH-2026-10-28-infrastructure-layer.md` reviewed the infrastructure layer against the MCP specification, industry
+patterns, the literature and Google's documentation. This release fixes what it found wrong today; the larger changes it
+ranks (idempotency keys, live prices, a two-step destroy, drift detection, the next kinds) follow in their own releases.
+
+- A tcp load balancer's health-check firewall rule now allows the ranges Google's passthrough probes come from
+  (35.191.0.0/16, 209.85.204.0/22, 209.85.152.0/22); it allowed the application load balancer's ranges, so a tcp load
+  balancer's backends never passed their health check. The http rule is unchanged.
+- Machines with a GPU are created with Secure Boot off (vTPM and integrity monitoring stay on): Google's driver installation
+  does not work with Secure Boot on, so every GPU machine the service created could not get its drivers.
+- A FAILED tool result now carries the MCP execution-error signal (`isError: true`) with the same structured payload and the
+  same JSON as text, as the specification asks; an invalid request reported by `validate_infrastructure_request` stays an
+  ordinary result. The REST API is unchanged.
+- Cloud SQL versions follow the provider's current offer: PostgreSQL 18 (now the default) and MySQL 9.7 added, MySQL 8.4 the
+  default; a plan warns when the version asked for (PostgreSQL 13, MySQL 5.7) is one the provider keeps only under paid
+  extended support.
+- Every tool's description, as the model reads it, now carries the purpose, what comes back, the safety rule and what to
+  call next (at least three sentences), composed from the catalog's columns; the catalog document is unchanged.
+- The architecture diagram said 27 tools; it says 43.
+
 # 1.36.0: five more kinds of infrastructure, GPUs, compute groups, and a catalog that explains itself
 
 The infrastructure layer provided four kinds in fixed shapes. A caller who asked for a load balancer, a GPU, a queue, a

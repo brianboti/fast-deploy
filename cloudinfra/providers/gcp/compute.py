@@ -49,6 +49,9 @@ class GcpCompute:
             gpu, count = shape["accelerator"]["type"], shape["accelerator"]["count"]
             body["guestAccelerators"] = [{"acceleratorType": f"zones/{zone}/acceleratorTypes/{gpu}", "acceleratorCount": count}]
             body["scheduling"] = {"onHostMaintenance": "TERMINATE", "automaticRestart": True}  # a machine with a GPU cannot live-migrate
+            # Google's GPU driver installation does not work with Secure Boot on (unsigned kernel modules); vTPM and integrity
+            # monitoring stay on, which is Google's own default for every machine.
+            body["shieldedInstanceConfig"]["enableSecureBoot"] = False
             accelerator = f"{gpu} x{count}"
         operation = self.api.post(self._instances(zone), json=body)
         self.api.wait_compute(operation)
