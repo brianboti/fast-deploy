@@ -1,0 +1,101 @@
+"""List prices for estimates. An estimate from these numbers is a bound for a decision, never a bill.
+
+The figures are approximate on-demand list prices for us-central1 entered by hand from Google's public pricing pages; `verified`
+stays null until someone checks them against those pages and writes the date. Sustained-use discounts, committed use, free
+tiers, egress, snapshots, backups beyond the first copy and operations are outside the estimate.
+"""
+from ...models.response import CostEstimate, CostLine, PlannedResource
+from .translate import machine_shape
+
+HOURS_PER_MONTH = 730
+PRICING = {
+    "source": "https://cloud.google.com/compute/vm-instance-pricing; https://cloud.google.com/compute/disks-image-pricing; "
+              "https://cloud.google.com/sql/pricing; https://cloud.google.com/storage/pricing; https://cloud.google.com/vpc/network-pricing",
+    "verified": None,
+    "currency": "USD",
+    "region": "us-central1",
+    "e2_vcpu_hour": 0.021811,
+    "e2_gb_hour": 0.002923,
+    # Other families, per vCPU-hour and GB-hour; the GPU is priced apart. A3 is sold by the machine, so its parts are in the GPU line.
+    "family_hour": {"n1": (0.0475, 0.0063), "g2": (0.0425, 0.0057), "a2": (0.0329, 0.0044), "a3": (0.0, 0.0)},
+    "gpu_hour": {"nvidia-tesla-t4": 0.35, "nvidia-l4": 0.56, "nvidia-tesla-a100": 2.933, "nvidia-h100-80gb": 11.06},
+    "cluster_management_hour": 0.10,
+    "cache_gb_hour": {"BASIC": 0.049, "STANDARD_HA": 0.062},
+    "secret_version_month": 0.06,
+    "forwarding_rule_hour": 0.025,
+    "shared_core_hour": {"e2-micro": 0.008376, "e2-small": 0.016751, "e2-medium": 0.033503},
+    "disk_gb_month": {"pd-standard": 0.04, "pd-balanced": 0.10, "pd-ssd": 0.17},
+    "external_ip_hour": 0.005,
+    "bucket_gb_month": 0.020,
+    "sql": {"db-f1-micro": 7.67, "db-g1-small": 25.55, "vcpu_hour": 0.0413, "gb_hour": 0.007, "storage_ssd_gb_month": 0.17, "ha_multiplier": 2.0},
+}
+NOTE = ("Approximate list prices for us-central1 (sustained-use discounts, free tiers, egress, snapshots and operations excluded); "
+        "verify against the pricing pages before relying on a figure. Never a bill.")
+
+
+def machine_month(machine: str) -> float:
+    if machine in PRICING["shared_core_hour"]:
+        return PRICING["shared_core_hour"][machine] * HOURS_PER_MONTH
+    shape = machine_shape(machine)
+    if shape is None:
+        return 0.0
+    cpu, memory_gb = shape
+    family = machine.split("-", 1)[0]
+    vcpu_hour, gb_hour = PRICING["family_hour"].get(family, (PRICING["e2_vcpu_hour"], PRICING["e2_gb_hour"]))
+    return (cpu * vcpu_hour + memory_gb * gb_hour) * HOURS_PER_MONTH
+
+
+def tier_month(tier: str) -> float:
+    sql = PRICING["sql"]
+    if tier in sql:
+        return sql[tier]
+    if tier.startswith("db-custom-"):
+        _, _, cpu, memory_mb = tier.split("-")
+        return (int(cpu) * sql["vcpu_hour"] + int(memory_mb) / 1024 * sql["gb_hour"]) * HOURS_PER_MONTH
+    return 0.0
+
+
+def line(planned: PlannedResource) -> CostLine:
+    spec = planned.spec
+    if planned.kind == "compute":
+        monthly = machine_month(spec["machine_type"]) + spec.get("boot_disk_gb", 0) * PRICING["disk_gb_month"]["pd-balanced"]
+        basis = f"{spec['machine_type']} for {HOURS_PER_MONTH} hours plus a {spec.get('boot_disk_gb', 0)} GB balanced boot disk"
+        if spec.get("accelerator"):
+            gpu, count = spec["accelerator"]["type"], spec["accelerator"]["count"]
+            monthly += PRICING["gpu_hour"].get(gpu, 0.0) * count * HOURS_PER_MONTH
+            basis += f" and {count} {gpu}"
+        if spec.get("public_ip"):
+            monthly += PRICING["external_ip_hour"] * HOURS_PER_MONTH
+            basis += " and one public address"
+    elif planned.kind == "storage" and spec.get("type") == "persistent":
+        monthly = spec["size_gb"] * PRICING["disk_gb_month"][spec["disk_type"]]
+        basis = f"{spec['size_gb']} GB of {spec['disk_type']}"
+    elif planned.kind == "storage":
+        monthly = spec.get("size_gb", 0) * PRICING["bucket_gb_month"]
+        basis = f"{spec.get('size_gb', 0)} GB of standard storage, if used; a bucket bills by what it holds"
+    elif planned.kind == "database":
+        monthly = tier_month(spec["tier"]) * (PRICING["sql"]["ha_multiplier"] if spec.get("high_availability") else 1.0) + spec["storage_gb"] * PRICING["sql"]["storage_ssd_gb_month"]
+        basis = f"{spec['tier']}{', high availability' if spec.get('high_availability') else ''} plus {spec['storage_gb']} GB of SSD storage"
+    elif planned.kind == "cache":
+        monthly = PRICING["cache_gb_hour"][spec["tier"]] * spec["memory_gb"] * HOURS_PER_MONTH
+        basis = f"{spec['memory_gb']} GB of {spec['tier'].replace('_', ' ').lower()} cache for {HOURS_PER_MONTH} hours"
+    elif planned.kind == "cluster":
+        nodes = machine_month(spec["machine_type"]) * spec["node_count"] + spec["node_count"] * spec.get("node_disk_gb", 0) * PRICING["disk_gb_month"]["pd-balanced"]
+        monthly = PRICING["cluster_management_hour"] * HOURS_PER_MONTH + nodes
+        basis = f"the cluster fee (one zonal cluster per account is free) plus {spec['node_count']} {spec['machine_type']} nodes with {spec.get('node_disk_gb', 0)} GB disks"
+    elif planned.kind == "load_balancer":
+        monthly = PRICING["forwarding_rule_hour"] * HOURS_PER_MONTH
+        basis = "one forwarding rule; data processed is billed by the GB on top"
+    elif planned.kind == "secret":
+        monthly = PRICING["secret_version_month"] * spec.get("versions", 0)
+        basis = f"{spec.get('versions', 0)} active versions; accesses are billed per 10,000 on top"
+    elif planned.kind == "queue":
+        monthly, basis = 0.0, "message delivery is billed by volume after the account's free allowance; nothing while idle"
+    else:
+        monthly, basis = 0.0, "a network, its subnet and firewall rules cost nothing while idle"
+    return CostLine(resource=planned.name, kind=planned.kind, monthly_usd=round(monthly, 2), basis=basis)
+
+
+def estimate(planned: list[PlannedResource]) -> CostEstimate:
+    lines = [line(item) for item in planned]
+    return CostEstimate(monthly_usd=round(sum(item.monthly_usd for item in lines), 2), lines=lines, source=PRICING["source"], verified=PRICING["verified"], note=NOTE)

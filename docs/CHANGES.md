@@ -1,3 +1,88 @@
+# 1.36.0: five more kinds of infrastructure, GPUs, compute groups, and a catalog that explains itself
+
+The infrastructure layer provided four kinds in fixed shapes. A caller who asked for a load balancer, a GPU, a queue, a
+secret, a Kubernetes cluster or a cache was refused with an unspecific error, and two different machine groups needed two
+requests. This release widens the contract to nine kinds and makes it discoverable, with the same rules as before: typed
+blocks, no provider structures, every creation priced, validated, labelled and destroyable.
+
+- Compute groups: `compute` takes one block or a list of groups, each with a `group` name that becomes part of the machine
+  names (`<name>-<group>-<n>`); `storage.group` attaches disks to one group; `load_balancer.backend_group` picks the group it
+  fronts. A single block keeps the old names.
+- Accelerators: `compute.accelerator` (`t4`, `l4`, `a100`, `h100` and a count). The machine family follows the GPU type on
+  Google Cloud (N1 custom or standard for T4, G2 for L4, A2 for A100, A3 for H100); fixed-shape families give the smallest
+  shape that covers the request, and the plan shows what was chosen. GPU machines are set to terminate on host maintenance.
+  Drivers are the Application Layer's. `limits.max_accelerators_per_instance` (0 refuses them all) is cost protection.
+- `load_balancer`: an external application load balancer (`http`, with a health check on a path) or a passthrough network
+  load balancer (`tcp`) in front of a compute group, or of machines created earlier (`backends`). Google's health checkers
+  are let through the firewall on the backend port; every piece is recorded on the resource and torn down in reverse.
+- `cache`: Memorystore for Redis on the request's network (or `network_id`): private, AUTH on, TLS, basic or
+  high-availability tier. The AUTH string never passes through this service; the Application Layer reads it with its own
+  identity.
+- `queue`: a Pub/Sub topic with, by default, one pull subscription (retention, acknowledgement deadline); several per request.
+- `secret`: a Secret Manager container, optionally with a generated random first version that is written to the provider
+  and never returned, logged or kept; several per request.
+- `cluster`: a zonal Kubernetes Engine cluster with one node pool (count, node shape, disk, optional version, optional
+  private nodes), VPC-native, shielded nodes, workload identity, regular release channel; credentials come from the
+  provider's IAM, never from this service.
+- Discoverable: `list_resource_kinds` returns every kind with its fields, whether several fit in one request and which
+  adapters provide it; an unknown block is refused with `UNSUPPORTED_RESOURCE_KIND` and the nearest kind ("loadbalancer:
+  did you mean load_balancer?"); an adapter that lacks a kind refuses it with the same code before any call.
+- The catalog grows to 43 tools: create, get and delete for each new kind, `list_resource_kinds`, and `accelerator` inputs on
+  `create_compute`. Creation order is network, storage, compute, database, cache, queue, secret, cluster, load balancer;
+  destruction is the reverse. Four new error codes: `INVALID_CACHE_CONFIGURATION`, `INVALID_CLUSTER_CONFIGURATION`,
+  `INVALID_LOAD_BALANCER_CONFIGURATION`, `UNSUPPORTED_RESOURCE_KIND`.
+- Limits: `max_accelerators_per_instance`, `max_cache_memory_gb`, `max_cluster_nodes`; the instance limit counts every group.
+- Tests: the kinds against the fake Google API (bodies, teardown), a request of every kind provisioned in order and destroyed
+  in reverse, a failure in the middle cleaning up eleven resources, the primitives composing through `network_id` and
+  `backends`, the kinds listing, and the unknown-kind refusals.
+
+Upgrade: nothing to do; existing requests and resource names are unchanged, except that disks attached to machines are now
+named `<name>-<group>-disk-<n>` (`<name>-vm-disk-1` for a single block).
+
+# 1.35.0: a provider-independent Cloud Infrastructure MCP, and Fast Deploy as the workflow on top of it
+
+The repository now holds two layers with one direction of dependency. `cloudinfra` is the infrastructure layer: an
+Application Layer asks for what infrastructure it needs (machines by CPU and memory, disks and buckets by size, a private
+network, a managed database) in a provider-neutral request, and the service validates it, plans it, provisions it through
+a provider adapter and reports resource ids, addresses, endpoints and status. It takes no repository, image, script, command
+or key, holds no GitHub credential, and decides nothing about an application. `labdeploy` (Fast Deploy) is unchanged in
+behaviour and becomes the optional application delivery workflow: repositories, builds, tests, images, releases and the
+Cloud Run specifics. The analysis behind the split is `docs/REFACTOR-2026-10-28.md`.
+
+- A typed contract (`cloudinfra/models`): `InfrastructureRequest` with `ComputeRequest`, `StorageRequest`, `NetworkRequest`
+  and `DatabaseRequest`; `InfrastructureResponse` with resources by kind, endpoints, operations, a cost estimate and a
+  structured error; strict models that refuse unknown fields; every failure is `{"status": "FAILED", "error": {code,
+  message, details}}` with one of 23 codes.
+- `CloudProvider` (`cloudinfra/providers/base.py`): the primitive interface every adapter implements; `GCPProvider` behind
+  it, calling Compute Engine, Cloud SQL, Cloud Storage, Service Networking and Cloud Monitoring through one REST client.
+  `aws`, `azure` and `jetstream` are refused with `UNSUPPORTED_PROVIDER` until their adapters exist; adding one changes
+  nothing above the registry.
+- An orchestrator (`cloudinfra/orchestration`): validate, plan, provision in dependency order in bounded workers, status
+  refreshed from the provider, destroy in reverse; a failure deletes what the request created and names what it could
+  not; quota checks, limits on counts and sizes, a monthly cost ceiling per service and per caller, a cap on live requests.
+- An MCP service catalog of 27 primitive tools in six groups (compute, storage, network, database, infrastructure
+  orchestration, operations), each with a safety hint, documented in `docs/MCP-CATALOG.md`, which is generated from the
+  code and held equal to the registered tools by a test. A small REST API mirrors the lifecycle tools.
+- Security: bearer principals with hashed tokens, `can_provision`, `can_destroy` and `scope`; rate limits; the provider
+  credential from the host only (`GoogleToken`, moved from `labdeploy/cloud.py` to `cloudinfra/providers/gcp/auth.py` and
+  re-exported); OS Login and no service account on machines, SSH from the identity-aware proxy only, private subnets only,
+  encrypted-only databases with deletion protection and backups, buckets never emptied; a database password returned once
+  and never stored or logged.
+- Observability: one JSON line per lifecycle event with request and operation ids, secrets redacted; an audit event per
+  call with identity, client, outcome and duration.
+- Tests at the boundary (`tests/cloudinfra`, 100+ cases against a fake Google API): request validation and every code,
+  provider selection, generic request to Google translation, provisioning order, failure with cleanup, destroy, status,
+  authorization, the server end to end, the catalog document, the import boundary, and the design test: one Ubuntu
+  machine with 4 CPUs and 16 GB from a request that names nothing about an application. Real-cloud tests live in
+  `tests/integration/cloudinfra` and run only with `CLOUDINFRA_INTEGRATION=1`.
+- Documents: `docs/INFRASTRUCTURE-ARCHITECTURE.md` (the two layers and what each owns, lifecycle, state, security,
+  observability, extension), `docs/MCP-CATALOG.md`, `docs/PROVIDER-INTERFACE.md`; `cloudinfra.example.yaml`; the
+  `cloud-infra` command (`token`, `catalog`, `validate`, `plan`).
+
+Upgrade: nothing to do for Fast Deploy installations; `labdeploy.cloud.GoogleToken` still imports. To run the infrastructure
+service, copy `cloudinfra.example.yaml`, add a principal from `cloud-infra token`, and start
+`uvicorn cloudinfra.mcp.server:create_app --factory` with `CLOUDINFRA_CONFIG` pointing at the file.
+
 # 1.34.0: a premium finish, a dark theme and pages for the long lists
 
 A second pass over the design system of 1.33.0, after reading what the best product interfaces share: hierarchy from weight

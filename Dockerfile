@@ -5,6 +5,9 @@ WORKDIR /app
 COPY requirements.lock .
 RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 COPY labdeploy ./labdeploy
+# The infrastructure layer (docs/INFRASTRUCTURE-ARCHITECTURE.md): the same image serves it with
+#   uvicorn cloudinfra.mcp.server:create_app --factory --host 0.0.0.0 --port 8100   (CLOUDINFRA_CONFIG names its configuration)
+COPY cloudinfra ./cloudinfra
 # The workflow templates and the files the checker drafts for applications (labdeploy/scaffold.py reads templates/repo).
 COPY templates ./templates
 RUN mkdir /data && chown 65532:65532 /data

@@ -13,6 +13,7 @@ gha-creds-*.json
 # Each environment's settings stay local: terraform.tfvars, staging.tfvars, production.tfvars
 *.tfvars
 config.local.yaml
+cloudinfra.local.yaml
 # Earlier versions of it, kept by the settings page beside the file
 /history/
 
