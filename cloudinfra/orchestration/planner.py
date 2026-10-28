@@ -41,14 +41,29 @@ def cost_problem(estimate: CostEstimate, config, principal) -> Problem | None:
 
 def warnings(request: InfrastructureRequest, planned: list[PlannedResource]) -> list[str]:
     found = []
-    if request.storage and request.storage.type == "persistent" and not request.compute:
+    groups = request.compute_groups()
+    if request.storage and request.storage.type == "persistent" and not groups:
         found.append("storage without compute: the disk is created unattached; attach_storage connects it to a machine later")
     if request.network and request.network.public_access and "0.0.0.0/0" in request.network.allowed_sources:
         found.append(f"network.public_access opens ports {', '.join(map(str, request.network.allowed_ports))} to the whole internet; narrow allowed_sources if you can")
-    if request.compute and request.compute.public_ip:
-        found.append("each machine gets a public address; it costs by the hour and is reachable from allowed_sources on allowed_ports")
+    if any(group.public_ip for group in groups):
+        found.append("machines with a public address cost by the hour and are reachable from allowed_sources on allowed_ports")
+    for group in groups:
+        if group.accelerator:
+            chosen = next((item.spec for item in planned if item.kind == "compute" and item.spec.get("group") == group.group_name), {})
+            shape = f" as {chosen['machine_type']} ({chosen['cpu']} CPUs, {chosen['memory_gb']} GB)" if chosen else ""
+            found.append(f"{group.group_name}: {group.accelerator.count} {group.accelerator.type} per machine{shape}; the GPU driver and toolkit are the Application Layer's to install, "
+                         "and the machine restarts rather than migrates on host maintenance")
     if request.database and request.database.size == "small":
         found.append("a small database is a shared-core instance: fine for development, not covered by the provider's SLA")
     if request.database and request.database.public_access:
         found.append("the database has a public address; connections are encrypted-only, and the Application Layer must manage its authorized networks")
+    if request.cache:
+        found.append("the cache's AUTH string is read from the provider by the Application Layer with its own identity; this service never sees it")
+    if request.cluster:
+        found.append("a cluster bills a management fee by the hour on top of its nodes (one zonal cluster per billing account is free); credentials come from the provider's IAM")
+        if request.cluster.private_nodes:
+            found.append("private nodes have no public address: the Application Layer needs the provider's NAT for them to reach the internet")
+    if request.load_balancer:
+        found.append(f"the load balancer is public on port {request.load_balancer.port}; it serves plain {request.load_balancer.type}, and TLS termination is a later feature")
     return found

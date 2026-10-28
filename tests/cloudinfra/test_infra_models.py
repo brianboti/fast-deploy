@@ -22,7 +22,7 @@ def test_request_carries_no_application_knowledge():
 
 
 @pytest.mark.parametrize("bad, code, text", [
-    ({"region": "us-central1"}, ErrorCode.INVALID_REQUEST, "at least one of compute"),
+    ({"region": "us-central1"}, ErrorCode.INVALID_REQUEST, "at least one of network, storage, compute"),
     ({"region": "US Central", "compute": {"cpu": 2, "memory_gb": 8}}, ErrorCode.INVALID_REGION, "not a region name"),
     ({"region": "us-central1", "compute": {"cpu": "4", "memory_gb": 16}}, ErrorCode.INVALID_REQUEST, "integer"),
     ({"region": "us-central1", "compute": {"cpu": 4, "memory_gb": 16, "image": "x"}}, ErrorCode.INVALID_REQUEST, "not a field"),
@@ -76,5 +76,6 @@ def test_validation_helpers():
 def test_response_model_round_trips_as_json():
     response = InfrastructureResponse(request_id="a" * 32, name="x", provider="gcp", region="us-central1", status=RequestStatus.READY, created_at="t", updated_at="t")
     data = response.model_dump(mode="json")
-    assert data["status"] == "READY" and data["resources"] == {"compute": [], "storage": [], "network": [], "database": []} and data["credentials"] is None
+    assert data["status"] == "READY" and data["resources"] == {kind: [] for kind in ("network", "storage", "compute", "database", "cache", "queue", "secret", "cluster", "load_balancer")}
+    assert data["credentials"] is None
     assert InfrastructureResponse.model_validate(data) == response

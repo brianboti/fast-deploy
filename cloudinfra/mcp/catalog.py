@@ -18,6 +18,10 @@ MEANINGS = {
     ErrorCode.INVALID_STORAGE_CONFIGURATION: "A storage request the provider cannot satisfy (attaching a bucket, a disk across zones).",
     ErrorCode.INVALID_NETWORK_CONFIGURATION: "A range, port or source outside the rules, or a public address without a public network.",
     ErrorCode.INVALID_DATABASE_CONFIGURATION: "An engine version the provider does not run, or a private database without a network.",
+    ErrorCode.INVALID_CACHE_CONFIGURATION: "A cache version the provider does not run, or a cache without a network.",
+    ErrorCode.INVALID_CLUSTER_CONFIGURATION: "A node shape the provider has no type for.",
+    ErrorCode.INVALID_LOAD_BALANCER_CONFIGURATION: "No machines behind it, or machines in different zones or regions.",
+    ErrorCode.UNSUPPORTED_RESOURCE_KIND: "A request block of a kind the contract or the chosen adapter does not provide; details name the nearest kind.",
     ErrorCode.LIMIT_EXCEEDED: "Above one of the operator's limits on counts, sizes or live requests.",
     ErrorCode.COST_LIMIT_EXCEEDED: "The estimate from list prices is above the ceiling for this service or this caller.",
     ErrorCode.QUOTA_EXCEEDED: "The provider's quota in the region has no room for the request.",
@@ -96,6 +100,7 @@ WAIT = Input("wait_seconds", "Wait up to this many seconds (0 to 45) for the out
 RESOURCE_ID = Input("resource_id", "The resource id this service issued.", True)
 REQUEST_ID = Input("request_id", "The request id this service issued (32 hex characters).", True)
 NETWORK_ID = Input("network_id", "A network this service created earlier (net-…), to join instead of the operator's default network.")
+PRIVATE_NETWORK_ID = Input("network_id", "A network this service created earlier (net-…); required, since the resource is private.", True)
 COMMON_ERRORS = ("PERMISSION_DENIED", "UNSUPPORTED_PROVIDER", "INVALID_REGION", "INVALID_RESOURCE_NAME", "LIMIT_EXCEEDED", "COST_LIMIT_EXCEEDED", "QUOTA_EXCEEDED",
                  "PROVIDER_AUTH_FAILED", "PROVIDER_PERMISSION_DENIED", "PROVIDER_CONFLICT", "PROVIDER_UNAVAILABLE", "PROVIDER_ERROR", "OPERATION_TIMEOUT", "PROVISIONING_FAILED")
 READ_ERRORS = ("NOT_FOUND", "PERMISSION_DENIED", "PROVIDER_AUTH_FAILED", "PROVIDER_PERMISSION_DENIED", "PROVIDER_UNAVAILABLE", "PROVIDER_ERROR")
@@ -112,10 +117,12 @@ CATALOG: tuple[ToolSpec, ...] = (
              "command is taken; access is through the provider's IAM-based login.",
              (REGION, Input("cpu", "Virtual CPUs per machine.", True), Input("memory_gb", "Memory per machine, in GB.", True), PROVIDER,
               Input("count", "How many identical machines (default 1)."), Input("os", "ubuntu (default), debian or rocky."), Input("boot_disk_gb", "Boot disk in GB (default 20)."),
-              Input("public_ip", "Give each machine a public address (default false)."), NETWORK_ID, ZONE, NAME, LABELS, WAIT),
+              Input("public_ip", "Give each machine a public address (default false)."), NETWORK_ID,
+              Input("accelerator", "GPUs per machine: t4, l4, a100 or h100; the machine family follows the type, and the driver is the Application Layer's to install."),
+              Input("accelerator_count", "GPUs per machine (default 1); each type offers fixed counts."), ZONE, NAME, LABELS, WAIT),
              RESPONSE, ("INVALID_COMPUTE_CONFIGURATION", "INVALID_NETWORK_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
              f"Needs can_provision. Machines get OS Login (IAM) and no service account; shielded VM settings on. {OWNERSHIP}",
-             "Compute Engine: compute.instances.insert with an E2 machine type and a public image family; compute.instances.get after."),
+             "Compute Engine: compute.instances.insert with an E2 machine type (N1, G2, A2 or A3 with a GPU) and a public image family; compute.instances.get after."),
     ToolSpec("get_compute", "Compute", "Get a machine", "One machine's live state: status, addresses, machine type, attached disks.",
              (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only; the caller sees its own requests' resources (scope: all sees every one).", "Compute Engine: compute.instances.get."),
     ToolSpec("list_compute", "Compute", "List machines", "Every machine this service created, as the provider sees them now, optionally for one request.",
@@ -175,10 +182,72 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Read-only; never returns a password.", "Cloud SQL Admin: sqladmin.instances.get."),
     ToolSpec("delete_database", "Database", "Delete a database", "Turn deletion protection off and delete the instance with its data and backups.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
              "Needs can_destroy. Irreversible: the data goes with the instance.", "Cloud SQL Admin: sqladmin.instances.patch (deletion protection off), sqladmin.instances.delete."),
+    # ---- cache
+    ToolSpec("create_cache", "Cache", "Create a cache", "Create a managed in-memory cache (Redis) on a network this service created: private, authenticated, encrypted in transit. "
+             "The Application Layer reads the AUTH string from the provider with its own identity.",
+             (REGION, PRIVATE_NETWORK_ID, PROVIDER, Input("memory_gb", "Memory in GB (default 1)."), Input("high_availability", "A replica in a second zone (default false)."),
+              Input("version", "Engine version (7.2); the provider's default when omitted."), NAME, LABELS, WAIT),
+             RESPONSE, ("INVALID_CACHE_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS), f"Needs can_provision. No credential passes through this service. {OWNERSHIP}",
+             "Memorystore for Redis: redis.projects.locations.instances.create (direct peering, AUTH on, TLS)."),
+    ToolSpec("get_cache", "Cache", "Get a cache", "Host, port, state, version and memory of one cache.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only; never returns the AUTH string.",
+             "Memorystore for Redis: redis.projects.locations.instances.get."),
+    ToolSpec("delete_cache", "Cache", "Delete a cache", "Delete one cache with its data.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS, "Needs can_destroy. The data goes with it.",
+             "Memorystore for Redis: redis.projects.locations.instances.delete."),
+    # ---- queue
+    ToolSpec("create_queue", "Queue", "Create a queue", "Create a message topic and, by default, one pull subscription of the same name.",
+             (REGION, Input("queue_name", "The queue's short name, part of the topic's name.", True), PROVIDER,
+              Input("retention_hours", "How long unacknowledged messages are kept (default 168, up to 744)."), Input("subscription", "Create one pull subscription (default true)."),
+              Input("ack_deadline_seconds", "Acknowledgement deadline (default 20)."), NAME, LABELS, WAIT),
+             RESPONSE, ("NOT_FOUND", *COMMON_ERRORS), f"Needs can_provision. Publishing and pulling are the Application Layer's, with its own identity. {OWNERSHIP}",
+             "Pub/Sub: pubsub.projects.topics.create, pubsub.projects.subscriptions.create."),
+    ToolSpec("get_queue", "Queue", "Get a queue", "A topic's full name, its subscription and state.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only.", "Pub/Sub: pubsub.projects.topics.get."),
+    ToolSpec("delete_queue", "Queue", "Delete a queue", "Delete the subscription and the topic; unread messages go with them.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS, "Needs can_destroy.",
+             "Pub/Sub: pubsub.projects.subscriptions.delete, pubsub.projects.topics.delete."),
+    # ---- secret
+    ToolSpec("create_secret", "Secret", "Create a secret", "Create a secret container. Optionally write a generated random value as its first version; a value is never returned, "
+             "logged or kept by this service, and the Application Layer reads and writes versions with its own identity.",
+             (REGION, Input("secret_name", "The secret's short name, part of its resource name.", True), PROVIDER,
+              Input("generate_value", "Write a generated random value as the first version (default false)."), NAME, LABELS, WAIT),
+             RESPONSE, ("NOT_FOUND", *COMMON_ERRORS), f"Needs can_provision. No value passes through a request or a response. {OWNERSHIP}",
+             "Secret Manager: secretmanager.projects.secrets.create, secretmanager.projects.secrets.addVersion."),
+    ToolSpec("get_secret", "Secret", "Get a secret", "A secret's resource name, how many versions this service wrote, and its state. Never a value.", (RESOURCE_ID,), RESOURCE,
+             READ_ERRORS, "Read-only; never returns a value.", "Secret Manager: secretmanager.projects.secrets.get."),
+    ToolSpec("delete_secret", "Secret", "Delete a secret", "Delete the secret and every version.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS, "Needs can_destroy.",
+             "Secret Manager: secretmanager.projects.secrets.delete."),
+    # ---- cluster
+    ToolSpec("create_cluster", "Cluster", "Create a Kubernetes cluster", "Create a managed Kubernetes cluster with one node pool of identical nodes: VPC-native, shielded nodes, "
+             "workload identity on, versions from the provider's regular release channel. Credentials come from the provider's IAM, never from this service.",
+             (REGION, PROVIDER, Input("node_count", "Nodes in the pool (default 1)."), Input("node_cpu", "Virtual CPUs per node (default 2)."),
+              Input("node_memory_gb", "Memory per node in GB (default 8)."), Input("node_disk_gb", "Node disk in GB (default 50)."),
+              Input("kubernetes_version", "A version the provider offers; its default channel when omitted."),
+              Input("private_nodes", "Nodes without public addresses (default false)."), NETWORK_ID, ZONE, NAME, LABELS, WAIT),
+             RESPONSE, ("INVALID_CLUSTER_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
+             f"Needs can_provision. Nodes get the logging, monitoring and read-only storage scopes only. {OWNERSHIP}",
+             "Kubernetes Engine: container.projects.locations.clusters.create (zonal, one node pool)."),
+    ToolSpec("get_cluster", "Cluster", "Get a cluster", "Endpoint, version, node count and state of one cluster.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only; never returns credentials.",
+             "Kubernetes Engine: container.projects.locations.clusters.get."),
+    ToolSpec("delete_cluster", "Cluster", "Delete a cluster", "Delete the cluster and its nodes; workloads and their disks go with it.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
+             "Needs can_destroy.", "Kubernetes Engine: container.projects.locations.clusters.delete."),
+    # ---- load balancer
+    ToolSpec("create_load_balancer", "Load balancer", "Create a load balancer", "Put a public load balancer in front of machines this service created: http (an application load "
+             "balancer with a health check on a path) or tcp (a passthrough network load balancer). Health checkers are allowed through the firewall on the backend port.",
+             (REGION, Input("backends", "The machines behind it (cmp-…), all in one zone.", True), PROVIDER, Input("type", "http (default) or tcp."),
+              Input("port", "The port the machines serve on; the public port is the same (default 80)."), Input("health_check_path", "The path an http health check requests (default /)."),
+              NAME, LABELS, WAIT),
+             RESPONSE, ("INVALID_LOAD_BALANCER_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
+             f"Needs can_provision. HTTP only; TLS termination is a later feature. {OWNERSHIP}",
+             "Compute Engine: instance group, firewall rule, health check, backend service, URL map and target proxy (http), address and forwarding rule."),
+    ToolSpec("get_load_balancer", "Load balancer", "Get a load balancer", "Public address, port, backends and state of one load balancer.", (RESOURCE_ID,), RESOURCE, READ_ERRORS,
+             "Read-only.", "Compute Engine: compute.globalForwardingRules.get or compute.forwardingRules.get."),
+    ToolSpec("delete_load_balancer", "Load balancer", "Delete a load balancer", "Delete every piece of the load balancer in reverse order; the machines behind it stay.",
+             (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS, "Needs can_destroy.", "Compute Engine: the delete of each piece, forwarding rule first."),
     # ---- orchestration
+    ToolSpec("list_resource_kinds", "Infrastructure", "List resource kinds", "What can be asked for: every kind of the contract with its fields, whether several fit in one request, "
+             "and which configured adapters provide it. Ask this before a request for something unusual; an unknown block is refused with UNSUPPORTED_RESOURCE_KIND.",
+             (), "ResourceKindsResponse: kinds (kind, description, several_per_request, fields, providers), providers, note.", (), "Read-only; no provider call.", "None."),
     ToolSpec("validate_infrastructure_request", "Infrastructure", "Validate a request", "Check a full InfrastructureRequest against the contract, the operator's regions and limits, "
              "the provider's shapes and the cost ceiling. Creates nothing.",
-             (Input("request", "The InfrastructureRequest: provider, region, and at least one of compute, storage, network, database.", True),),
+             (Input("request", "The InfrastructureRequest: provider, region, and at least one of network, storage, compute, database, cache, queue, secret, cluster, load_balancer.", True),),
              "ValidationResponse: valid, the normalized request, and problems (each with a code, a message and the field).", ("UNSUPPORTED_PROVIDER",),
              "Read-only. Every problem is reported, not only the first.", "None; the provider adapter is asked only for its shape rules."),
     ToolSpec("plan_infrastructure", "Infrastructure", "Plan a request", "The resources a request would create: names, provider operations, shapes, estimated monthly cost, warnings; "
@@ -188,7 +257,8 @@ CATALOG: tuple[ToolSpec, ...] = (
              ("UNSUPPORTED_PROVIDER", "INVALID_REGION", "INVALID_COMPUTE_CONFIGURATION", "INVALID_STORAGE_CONFIGURATION", "INVALID_NETWORK_CONFIGURATION",
               "INVALID_DATABASE_CONFIGURATION", "LIMIT_EXCEEDED", "COST_LIMIT_EXCEEDED"),
              "Read-only. The cost is an estimate from list prices, never a bill.", "Compute Engine: compute.regions.get for the quota, when asked."),
-    ToolSpec("provision_infrastructure", "Infrastructure", "Provision a request", "Validate, plan, record and provision a full request: network, storage, compute, database, in that order. "
+    ToolSpec("provision_infrastructure", "Infrastructure", "Provision a request", "Validate, plan, record and provision a full request: network, storage, compute, database, cache, "
+             "queue, secret, cluster, load balancer, in that order. "
              "Answers at once with PROVISIONING (or waits up to 45 seconds); follow it with get_infrastructure_status. A failure deletes what was created and reports it.",
              (Input("request", "The InfrastructureRequest.", True), WAIT), RESPONSE + " With credentials.database_password, once, when a database was requested.",
              ("INVALID_COMPUTE_CONFIGURATION", "INVALID_STORAGE_CONFIGURATION", "INVALID_NETWORK_CONFIGURATION", "INVALID_DATABASE_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
@@ -199,7 +269,8 @@ CATALOG: tuple[ToolSpec, ...] = (
     ToolSpec("list_infrastructure", "Infrastructure", "List requests", "The requests this caller may see, newest first, optionally by status.",
              (Input("status", "Only requests in this status (PROVISIONING, READY, FAILED, DESTROYING, DESTROYED, DESTROY_FAILED)."), Input("limit", "At most this many (default 50, up to 200).")),
              "ListResponse: requests and count.", ("INVALID_REQUEST",), "Read-only; from the service's own state, no provider call.", "None."),
-    ToolSpec("destroy_infrastructure", "Infrastructure", "Destroy a request", "Delete everything a request created, in reverse order: database, machines, storage, network. "
+    ToolSpec("destroy_infrastructure", "Infrastructure", "Destroy a request", "Delete everything a request created, in reverse order: load balancer, cluster, secrets, queues, "
+             "cache, database, machines, storage, network. "
              "Answers at once with DESTROYING (or waits up to 45 seconds). What could not be deleted is named; call again once the cause is fixed.",
              (REQUEST_ID, WAIT), RESPONSE, DELETE_ERRORS, "Needs can_destroy. Deletion protection on a database is turned off by this call only.",
              "The delete operation of every resource kind."),
@@ -221,7 +292,7 @@ CATALOG: tuple[ToolSpec, ...] = (
              (), "version, providers, planned_providers, limits, cleanup_on_failure, workers, labels.", (), "Read-only; no secret is included.", "None."),
 )
 BY_NAME = {spec.name: spec for spec in CATALOG}
-GROUPS = ("Compute", "Storage", "Network", "Database", "Infrastructure", "Operations")
+GROUPS = ("Compute", "Storage", "Network", "Database", "Cache", "Queue", "Secret", "Cluster", "Load balancer", "Infrastructure", "Operations")
 
 
 def render_markdown(catalog=CATALOG) -> str:

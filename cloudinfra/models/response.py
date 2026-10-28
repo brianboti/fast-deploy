@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .errors import ErrorDetail
 from .request import InfrastructureRequest
-from .resources import ComputeResource, DatabaseResource, NetworkResource, StorageResource
+from .resources import CacheResource, ClusterResource, ComputeResource, DatabaseResource, LoadBalancerResource, NetworkResource, QueueResource, SecretResource, StorageResource
 
 
 class RequestStatus(StrEnum):
@@ -49,16 +49,27 @@ class Endpoints(Model):
     database_host: str | None = None
     database_port: int | None = None
     bucket_urls: list[str] = Field(default_factory=list)
+    load_balancer_address: str | None = None
+    cache_host: str | None = None
+    cache_port: int | None = None
+    cluster_endpoint: str | None = None
+    queue_topics: list[str] = Field(default_factory=list)
+    secret_names: list[str] = Field(default_factory=list)
 
 
 class Resources(Model):
-    compute: list[ComputeResource] = Field(default_factory=list)
-    storage: list[StorageResource] = Field(default_factory=list)
     network: list[NetworkResource] = Field(default_factory=list)
+    storage: list[StorageResource] = Field(default_factory=list)
+    compute: list[ComputeResource] = Field(default_factory=list)
     database: list[DatabaseResource] = Field(default_factory=list)
+    cache: list[CacheResource] = Field(default_factory=list)
+    queue: list[QueueResource] = Field(default_factory=list)
+    secret: list[SecretResource] = Field(default_factory=list)
+    cluster: list[ClusterResource] = Field(default_factory=list)
+    load_balancer: list[LoadBalancerResource] = Field(default_factory=list)
 
     def all(self) -> list:
-        return [*self.network, *self.storage, *self.compute, *self.database]
+        return [*self.network, *self.storage, *self.compute, *self.database, *self.cache, *self.queue, *self.secret, *self.cluster, *self.load_balancer]
 
 
 class Credentials(Model):
@@ -152,10 +163,33 @@ class ResourceResponse(Model):
     """One resource after a primitive call: its state now, and the operation that changes it when one is still running."""
     status: str
     request_id: str
-    resource: ComputeResource | StorageResource | NetworkResource | DatabaseResource = Field(discriminator="kind")
+    resource: ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | SecretResource | ClusterResource | LoadBalancerResource = Field(
+        discriminator="kind")
     operation: OperationRecord | None = None
 
 
 class ListResponse(Model):
     requests: list[InfrastructureResponse]
     count: int
+
+
+class KindField(Model):
+    name: str
+    type: str
+    required: bool = False
+    default: Any = None
+    description: str | None = None
+
+
+class ResourceKindInfo(Model):
+    kind: str
+    description: str
+    several_per_request: bool = Field(description="Whether the block may be a list.")
+    fields: list[KindField]
+    providers: list[str] = Field(description="The configured providers whose adapters implement this kind.")
+
+
+class ResourceKindsResponse(Model):
+    kinds: list[ResourceKindInfo]
+    providers: list[str]
+    note: str

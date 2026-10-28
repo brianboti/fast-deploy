@@ -98,10 +98,10 @@ def test_destroy_failure_names_the_remaining_resources_and_can_be_retried(tmp_pa
     orchestrator, fake = make_orchestrator(tmp_path)
     who = principal(orchestrator.config)
     response = orchestrator.provision(InfrastructureRequest.model_validate({**FULL_REQUEST, "database": None}), who, wait_seconds=45)
-    fake.fail_on.append(("DELETE", "/disks/analytics-disk-2"))
+    fake.fail_on.append(("DELETE", "/disks/analytics-vm-disk-2"))
     failed = orchestrator.destroy(response.request_id, who, wait_seconds=45)
-    assert failed.status == RequestStatus.DESTROY_FAILED and failed.error.code == ErrorCode.DESTROY_FAILED and [item["name"] for item in failed.error.details["remaining"]] == ["analytics-disk-2"]
-    assert {resource.name: resource.status for resource in failed.resources.all()}["analytics-disk-2"] == ResourceStatus.FAILED
+    assert failed.status == RequestStatus.DESTROY_FAILED and failed.error.code == ErrorCode.DESTROY_FAILED and [item["name"] for item in failed.error.details["remaining"]] == ["analytics-vm-disk-2"]
+    assert {resource.name: resource.status for resource in failed.resources.all()}["analytics-vm-disk-2"] == ResourceStatus.FAILED
     fake.fail_on.clear()
     retried = orchestrator.destroy(response.request_id, who, wait_seconds=45)
     assert retried.status == RequestStatus.DESTROYED and not fake.disks and not fake.networks

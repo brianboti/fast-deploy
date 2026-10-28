@@ -19,6 +19,9 @@ limits:                                           # cost protection, checked bef
   max_memory_gb_per_instance: 128
   max_storage_gb_per_request: 2000
   max_database_storage_gb: 1000
+  max_accelerators_per_instance: 8                # 0 refuses every GPU request
+  max_cache_memory_gb: 64
+  max_cluster_nodes: 20
   max_monthly_cost_usd: 500                       # refuse a request whose estimate from list prices is higher
   max_active_requests_per_principal: 20
   operation_timeout_seconds: 900

@@ -5,6 +5,9 @@ from ._common import Result, Wait, field, register
 
 
 def tools(mcp, orchestrator, wrap, identity):
+    def list_resource_kinds() -> Result:
+        return orchestrator.resource_kinds()
+
     def validate_infrastructure_request(request: Annotated[InfrastructureRequest, field("validate_infrastructure_request", "request")]) -> Result:
         return orchestrator.validate(request, identity())
 
@@ -25,5 +28,5 @@ def tools(mcp, orchestrator, wrap, identity):
     def destroy_infrastructure(request_id: Annotated[str, field("destroy_infrastructure", "request_id")], wait_seconds: Wait = 0) -> Result:
         return orchestrator.destroy(request_id, identity(), wait_seconds)
 
-    for fn in (validate_infrastructure_request, plan_infrastructure, provision_infrastructure, get_infrastructure_status, list_infrastructure, destroy_infrastructure):
+    for fn in (list_resource_kinds, validate_infrastructure_request, plan_infrastructure, provision_infrastructure, get_infrastructure_status, list_infrastructure, destroy_infrastructure):
         register(mcp, wrap, fn)

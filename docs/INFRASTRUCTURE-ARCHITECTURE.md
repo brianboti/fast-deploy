@@ -39,14 +39,14 @@ Application Layer            any system: Claude, a CI job, another service, the 
 
 | APPLICATION LAYER OWNS | INFRASTRUCTURE LAYER OWNS |
 |---|---|
-| application source code | compute provisioning (virtual machines) |
-| application testing | network provisioning (networks, subnets, firewall rules) |
+| application source code | compute provisioning (virtual machines, in groups, with or without GPUs) |
+| application testing | network provisioning (networks, subnets, firewall rules, load balancers) |
 | application builds | storage provisioning (block disks, object buckets) |
-| Docker images and other application artifacts | managed database provisioning |
-| application release decisions and versions | the cloud resource lifecycle: validate, plan, provision, query, destroy |
-| application-level scaling behaviour | infrastructure status, health and usage |
-| application-level clustering and sessions | provider abstraction and the request/response contract |
-| application configuration and secrets | cloud authentication (the provider credential) |
+| Docker images and other application artifacts | managed data services: databases, caches, queues, secret containers |
+| application release decisions and versions | managed Kubernetes clusters (the control plane and node pool, not what runs on them) |
+| application-level scaling behaviour | the cloud resource lifecycle: validate, plan, provision, query, destroy |
+| application-level clustering and sessions | infrastructure status, health and usage |
+| application configuration, secret values, GPU drivers, cluster workloads | provider abstraction, the request/response contract, cloud authentication |
 | the GitHub workflow, if any | infrastructure cleanup, on failure and on request |
 
 The infrastructure layer does not clone a repository, run a test, build anything, hold a GitHub credential, choose an
@@ -57,19 +57,33 @@ line: `tests/cloudinfra/test_infra_catalog.py` fails if any module of `cloudinfr
 
 ## The contract
 
-A request is a provider name, a region and at least one block. Every field is a size, a count, a name, a version or a
-switch; the operator's project, credentials, limits and allowed regions are configuration, never request parameters.
+A request is a provider name, a region and at least one of nine blocks. Every field is a size, a count, a name, a version
+or a switch; the operator's project, credentials, limits and allowed regions are configuration, never request parameters.
+`list_resource_kinds` returns the blocks with their fields; a block of any other name is refused with
+`UNSUPPORTED_RESOURCE_KIND` and the nearest kind.
 
 ```yaml
 provider: gcp
 region: us-central1
-name: analytics                      # optional prefix of every resource name
+name: platform                       # optional prefix of every resource name
 labels: {team: data}
-compute:  {count: 2, cpu: 4, memory_gb: 16, os: ubuntu, boot_disk_gb: 20, public_ip: true}
-storage:  {type: persistent, size_gb: 200, performance: balanced}
-database: {engine: postgresql, version: "16", size: small, storage_gb: 10, high_availability: false, public_access: false}
 network:  {public_access: true, cidr: 10.10.0.0/24, allowed_ports: [80, 443], allowed_sources: ["0.0.0.0/0"], iap_ssh: true}
+compute:                             # one group, or a list of groups
+  - {group: web, count: 2, cpu: 2, memory_gb: 8, os: ubuntu, public_ip: false}
+  - {group: gpu, count: 1, cpu: 8, memory_gb: 32, accelerator: {type: l4, count: 1}}
+storage:  {type: persistent, size_gb: 200, performance: balanced, group: gpu}
+database: {engine: postgresql, version: "16", size: small, storage_gb: 10, high_availability: false, public_access: false}
+cache:    {engine: redis, memory_gb: 2, high_availability: false}
+queue:    [{name: events}, {name: jobs, subscription: false}]
+secret:   [{name: api-key, generate_value: true}, {name: token}]
+cluster:  {node_count: 2, node_cpu: 2, node_memory_gb: 8}
+load_balancer: {type: http, port: 8080, backend_group: web, health_check_path: /healthz}
 ```
+
+Blocks compose across requests: `network_id` on compute, database, cache and cluster joins a network created earlier,
+and `load_balancer.backends` fronts machines created earlier. Values that would be secrets never pass through: a
+database password is generated here and returned once; a generated secret value goes straight to the provider; a cache's
+AUTH string and a cluster's credentials come from the provider's IAM to the Application Layer directly.
 
 The response has the same shape for every provider: `request_id`, `status`, `resources` by kind (each with the id this
 service issued, the provider's own identifier, name, zone, state, addresses), `endpoints` (public and internal addresses,
@@ -93,15 +107,17 @@ REQUEST ──► VALIDATE ──► PLAN ──► PROVISION ──► READY �
   issues resource ids, prices them, and lists warnings. Planning is pure: no provider call, nothing recorded.
 - **Provision.** The request and its pending resources are recorded, an operation starts, and a bounded worker creates the
   resources in dependency order: network, storage, compute (then disks attach), database (after the network is prepared for
-  it). Quota headroom is checked first when the provider reports it. The call returns at once with `PROVISIONING`, or waits
+  it), cache, queues, secrets, cluster, load balancer (over the machines just created). Quota headroom is checked first when
+  the provider reports it. The call returns at once with `PROVISIONING`, or waits
   up to 45 seconds. A failure marks the request `FAILED` with the cause and deletes what this request created, in reverse
   order; what could not be deleted is named in `error.details.cleanup.remaining`. The operator may keep failed resources for
   inspection (`cleanup_on_failure: false`); the response says so.
 - **Query.** Status refreshes each resource from the provider; health reads the provider's state; usage reads Cloud
   Monitoring; cost re-prices the stored request. A provider that cannot be reached leaves a resource `UNKNOWN` with the
   error, never a crash.
-- **Destroy.** Reverse order: database (deletion protection off, then delete), machines, disks, buckets (only when empty),
-  network (rules, peering, subnet, network). `DESTROYED`, or `DESTROY_FAILED` with the remaining resources, and the call can
+- **Destroy.** Reverse order: load balancer (its pieces, forwarding rule first), cluster, secrets, queues, cache, database
+  (deletion protection off, then delete), machines, disks, buckets (only when empty), network (rules, peering, subnet,
+  network). `DESTROYED`, or `DESTROY_FAILED` with the remaining resources, and the call can
   be repeated once the cause is fixed. A network that still carries machines or databases, of any request, is refused.
 
 The primitives (`create_compute`, `create_network`, …) go through the same path: each creates a request of one block, so
@@ -125,7 +141,7 @@ database was created and finds no trace of the password.
 | Authorization | `can_provision` for tools that create or change, `can_destroy` for deletes; `scope: own` sees only its own requests (another caller's request is NOT_FOUND, not merely forbidden); `scope: all` for an operator identity |
 | Budgets | Per-identity request budget, per-address failed-login budget (429 with Retry-After) |
 | Provider credential | Taken by the adapter from the host (metadata server, or gcloud with optional impersonation); never configured in a file, never accepted from a caller, never visible to the Application Layer |
-| Least privilege on what is created | Machines get OS Login (IAM) and no service account; SSH only from the identity-aware proxy range; subnets only in private ranges; buckets with uniform access and public-access prevention; databases encrypted-only with deletion protection and backups; a database's deletion protection is turned off only by an explicit destroy |
+| Least privilege on what is created | Machines get OS Login (IAM) and no service account; SSH only from the identity-aware proxy range; subnets only in private ranges; buckets with uniform access and public-access prevention; databases encrypted-only with deletion protection and backups, turned off only by an explicit destroy; caches private with AUTH and TLS; cluster nodes with logging, monitoring and read-only storage scopes only, shielded, workload identity on; load balancers open only the backend port to the provider's health checkers |
 | No command execution | The contract carries no script, command, key or provider structure; names, ranges, ports and labels are validated (`security/validation.py`); strict models refuse unknown fields; the server refuses unknown arguments by name before a tool runs |
 | Structured errors | Provider exceptions never escape; every error has a code; provider messages are kept in `details`, truncated |
 | Cost controls | Limits on counts and sizes, a monthly cost ceiling per service and per caller, a cap on live requests per caller, quota checks, labels `managed-by`, `cloudinfra-request`, `cloudinfra-name`, `cloudinfra-owner` on every resource plus the operator's own, cleanup on failure, destroy on request, and estimates on every plan |
@@ -176,7 +192,8 @@ python -m pytest tests/cloudinfra -q                # the boundary tests, no clo
 CLOUDINFRA_INTEGRATION=1 CLOUDINFRA_PROJECT=my-project python -m pytest tests/integration/cloudinfra -q   # one real machine, then destroyed
 ```
 
-The MCP endpoint is `/mcp`; the REST endpoints are `POST /infrastructure/validate`, `POST /infrastructure/plan`,
+The catalog has 43 tools: create, get and delete for each of the nine kinds (plus list, resize, attach and firewall
+configuration where they apply), the lifecycle tools, and the operations tools. The MCP endpoint is `/mcp`; the REST endpoints are `POST /infrastructure/validate`, `POST /infrastructure/plan`,
 `POST /infrastructure`, `GET /infrastructure`, `GET /infrastructure/{id}`, `DELETE /infrastructure/{id}`, `GET /catalog`
 and `GET /status`. The same Docker image as Fast Deploy carries the package; its command is the uvicorn line above. The
 Fast Deploy controller and this service are separate processes with separate principals, state files and credentials;

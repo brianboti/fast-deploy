@@ -33,7 +33,7 @@ def test_catalog_document_is_current():
 def test_registered_tools_match_the_catalog(tmp_path):
     app = built(tmp_path)
     tools = {tool.name: tool for tool in app.state.mcp._tool_manager.list_tools()}
-    assert sorted(tools) == sorted(spec.name for spec in CATALOG) and len(CATALOG) == 27
+    assert sorted(tools) == sorted(spec.name for spec in CATALOG) and len(CATALOG) == 43
     for spec in CATALOG:
         tool = tools[spec.name]
         assert set(tool.parameters.get("properties", {})) == {item.name for item in spec.inputs}, spec.name

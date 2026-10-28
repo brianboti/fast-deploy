@@ -42,6 +42,9 @@ class FakeGcpApi(GcpApi):
         self.calls = []
         self.fail_on = []
         self.instances, self.disks, self.networks, self.subnets, self.firewalls, self.addresses, self.sql, self.buckets, self.sql_users, self.sql_databases = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+        self.topics, self.subscriptions, self.secrets, self.secret_versions, self.clusters, self.redis, self.instance_groups, self.regional = {}, {}, {}, {}, {}, {}, {}, {}
+        for collection in ("healthChecks", "backendServices", "urlMaps", "targetHttpProxies", "forwardingRules"):
+            setattr(self, collection, {})
         self.bucket_objects = set()
         self.peerings = set()
         self.quotas = {"CPUS": {"limit": 24, "usage": 0}, "INSTANCES": {"limit": 10, "usage": 0}, "DISKS_TOTAL_GB": {"limit": 4096, "usage": 0}, "IN_USE_ADDRESSES": {"limit": 8, "usage": 0}}
@@ -61,16 +64,30 @@ class FakeGcpApi(GcpApi):
         for fail_method, fragment in self.fail_on:
             if method == fail_method and fragment in url:
                 raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"planted failure on {method} {fragment}", {"http_status": 400, "planted": True})
-        path = url.split("googleapis.com", 1)[1]
+        host, path = url.split("://", 1)[1].split("/", 1)
+        path = "/" + path.split("?", 1)[0]
         handlers = (
+            (r"^/v1/projects/[^/]+/(topics|subscriptions)/([^/]+)$", self._pubsub) if host.startswith("pubsub") else (r"^$", None),
+            (r"^/v1/projects/[^/]+/secrets$", self._secrets) if host.startswith("secretmanager") else (r"^$", None),
+            (r"^/v1/projects/[^/]+/secrets/([^/:]+)(:addVersion)?$", self._secret) if host.startswith("secretmanager") else (r"^$", None),
+            (r"^/v1/projects/[^/]+/locations/([^/]+)/clusters$", self._clusters) if host.startswith("container") else (r"^$", None),
+            (r"^/v1/projects/[^/]+/locations/([^/]+)/clusters/([^/]+)$", self._cluster) if host.startswith("container") else (r"^$", None),
+            (r"^/v1/projects/[^/]+/locations/([^/]+)/operations/([^/]+)$", lambda m, *a: {"name": m.group(2), "status": "DONE", "done": True}),
+            (r"^/v1/projects/[^/]+/locations/([^/]+)/instances$", self._redis_instances) if host.startswith("redis") else (r"^$", None),
+            (r"^/v1/projects/[^/]+/locations/([^/]+)/instances/([^/]+)$", self._redis_instance) if host.startswith("redis") else (r"^$", None),
+            (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instanceGroups$", self._instance_groups),
+            (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instanceGroups/([^/]+)$", self._instance_group),
+            (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instanceGroups/([^/]+)/(addInstances|setNamedPorts|removeInstances)$", self._instance_group_action),
+            (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/(healthChecks|backendServices|forwardingRules|addresses)$", self._regional_collection),
+            (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/(healthChecks|backendServices|forwardingRules|addresses)/([^/]+)$", self._regional_item),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances$", self._instances),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances/([^/]+)$", self._instance),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances/([^/]+)/(stop|start|setMachineType|attachDisk)$", self._instance_action),
             (r"^/compute/v1/projects/[^/]+/aggregated/instances$", self._aggregated),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/disks$", self._disks),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/disks/([^/]+)$", self._disk),
-            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses)$", self._global_collection),
-            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses)/([^/]+)$", self._global_item),
+            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses|healthChecks|backendServices|urlMaps|targetHttpProxies|forwardingRules)$", self._global_collection),
+            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses|healthChecks|backendServices|urlMaps|targetHttpProxies|forwardingRules)/([^/]+)$", self._global_item),
             (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/subnetworks$", self._subnets),
             (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/subnetworks/([^/]+)$", self._subnet),
             (r"^/compute/v1/projects/[^/]+/regions/([^/]+)$", self._region),
@@ -88,10 +105,10 @@ class FakeGcpApi(GcpApi):
             (r"^/v3/projects/[^/]+/timeSeries$", lambda m, *a: {"timeSeries": [{"points": [{"value": {"doubleValue": self.monitoring_value}}]}]}),
         )
         for pattern, handler in handlers:
-            found = re.match(pattern, path)
+            found = handler and re.match(pattern, path)
             if found:
                 return handler(found, method, json or {}, params or {})
-        raise AssertionError(f"the fake has no handler for {method} {path}")
+        raise AssertionError(f"the fake has no handler for {method} {host}{path}")
 
     @staticmethod
     def _not_found(what):
@@ -163,7 +180,106 @@ class FakeGcpApi(GcpApi):
     def _global_collection(self, found, method, body, params):
         store = getattr(self, found.group(1))
         store[body["name"]] = {**body, "selfLink": f"https://compute.googleapis.com/compute/v1/projects/{self.project}/global/{found.group(1)}/{body['name']}"}
+        if found.group(1) == "addresses" and body.get("purpose") != "VPC_PEERING":
+            store[body["name"]]["address"] = f"34.120.0.{len(store)}"
         return self._op()
+
+    def _regional_collection(self, found, method, body, params):
+        store = self.regional.setdefault(found.group(2), {})
+        store[body["name"]] = {**body, "region": found.group(1)}
+        if found.group(2) == "addresses":
+            store[body["name"]]["address"] = f"35.200.0.{len(store)}"
+        return self._op()
+
+    def _regional_item(self, found, method, body, params):
+        store, name = self.regional.setdefault(found.group(2), {}), found.group(3)
+        if name not in store:
+            raise self._not_found(name)
+        if method == "DELETE":
+            del store[name]
+            return self._op()
+        return store[name]
+
+    def _instance_groups(self, found, method, body, params):
+        self.instance_groups[(found.group(1), body["name"])] = {**body, "members": []}
+        return self._op()
+
+    def _instance_group(self, found, method, body, params):
+        key = (found.group(1), found.group(2))
+        if key not in self.instance_groups:
+            raise self._not_found(key[1])
+        if method == "DELETE":
+            del self.instance_groups[key]
+            return self._op()
+        return self.instance_groups[key]
+
+    def _instance_group_action(self, found, method, body, params):
+        key = (found.group(1), found.group(2))
+        if key not in self.instance_groups:
+            raise self._not_found(key[1])
+        if found.group(3) == "addInstances":
+            self.instance_groups[key]["members"].extend(item["instance"] for item in body["instances"])
+        return self._op()
+
+    # ---- pubsub, secrets, clusters, redis
+    def _pubsub(self, found, method, body, params):
+        store, name = (self.topics if found.group(1) == "topics" else self.subscriptions), found.group(2)
+        if method == "PUT":
+            store[name] = dict(body)
+            return store[name]
+        if name not in store:
+            raise self._not_found(name)
+        if method == "DELETE":
+            del store[name]
+            return {}
+        return store[name]
+
+    def _secrets(self, found, method, body, params):
+        self.secrets[params["secretId"]] = dict(body)
+        return {"name": f"projects/{self.project}/secrets/{params['secretId']}"}
+
+    def _secret(self, found, method, body, params):
+        name = found.group(1)
+        if name not in self.secrets:
+            raise self._not_found(name)
+        if found.group(2):
+            assert set(body) == {"payload"} and set(body["payload"]) == {"data"}
+            self.secret_versions.setdefault(name, []).append(body["payload"]["data"])
+            return {"name": f"projects/{self.project}/secrets/{name}/versions/{len(self.secret_versions[name])}"}
+        if method == "DELETE":
+            del self.secrets[name]
+            return {}
+        return {"name": f"projects/{self.project}/secrets/{name}"}
+
+    def _clusters(self, found, method, body, params):
+        cluster = body["cluster"]
+        self.clusters[(found.group(1), cluster["name"])] = {**cluster, "status": "RUNNING", "endpoint": "35.201.0.7", "currentMasterVersion": "1.31.1-gke.1", "createTime": "2026-10-28T10:00:00Z",
+                                                            "currentNodeCount": cluster["nodePools"][0]["initialNodeCount"]}
+        return {"name": f"operation-{self.counter}", "status": "DONE", "selfLink": f"https://container.googleapis.com/v1/projects/{self.project}/locations/{found.group(1)}/operations/op"}
+
+    def _cluster(self, found, method, body, params):
+        key = (found.group(1), found.group(2))
+        if key not in self.clusters:
+            raise self._not_found(key[1])
+        if method == "DELETE":
+            del self.clusters[key]
+            return {"name": "operation-delete", "status": "DONE", "selfLink": f"https://container.googleapis.com/v1/projects/{self.project}/locations/{key[0]}/operations/op"}
+        return self.clusters[key]
+
+    def _redis_instances(self, found, method, body, params):
+        name = params["instanceId"]
+        self.redis[(found.group(1), name)] = {**body, "name": f"projects/{self.project}/locations/{found.group(1)}/instances/{name}", "state": "READY", "host": "10.30.0.3", "port": 6379,
+                                              "createTime": "2026-10-28T10:00:00Z"}
+        return {"name": f"projects/{self.project}/locations/{found.group(1)}/operations/redis-op", "done": True}
+
+    def _redis_instance(self, found, method, body, params):
+        key = (found.group(1), found.group(2))
+        if key not in self.redis:
+            raise self._not_found(key[1])
+        if method == "DELETE":
+            del self.redis[key]
+            return {"name": f"projects/{self.project}/locations/{key[0]}/operations/redis-del", "done": True}
+        return self.redis[key]
 
     def _global_item(self, found, method, body, params):
         store, name = getattr(self, found.group(1)), found.group(2)
@@ -264,6 +380,10 @@ def principal(config, name="app-layer"):
 
 
 VM_REQUEST = {"provider": "gcp", "region": "us-central1", "compute": {"cpu": 4, "memory_gb": 16, "os": "ubuntu"}}
+EVERYTHING_REQUEST = {"provider": "gcp", "region": "us-central1", "name": "platform", "network": {"public_access": True},
+                      "compute": [{"group": "web", "count": 2, "cpu": 2, "memory_gb": 8}, {"group": "gpu", "cpu": 8, "memory_gb": 32, "accelerator": {"type": "l4"}}],
+                      "storage": {"size_gb": 50, "group": "gpu"}, "database": {}, "cache": {"memory_gb": 2}, "queue": [{"name": "events"}, {"name": "jobs", "subscription": False}],
+                      "secret": [{"name": "api-key", "generate_value": True}, {"name": "token"}], "cluster": {"node_count": 2}, "load_balancer": {"backend_group": "web", "port": 8080}}
 FULL_REQUEST = {"provider": "gcp", "region": "us-central1", "name": "analytics", "labels": {"team": "data"},
                 "compute": {"count": 2, "cpu": 4, "memory_gb": 16, "os": "ubuntu", "public_ip": True},
                 "storage": {"type": "persistent", "size_gb": 200},

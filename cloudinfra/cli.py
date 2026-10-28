@@ -6,11 +6,13 @@ import secrets
 import sys
 from pathlib import Path
 
+import pydantic
 import yaml
 
 from . import __version__
 from .config import Config, load_config
 from .mcp.catalog import render_markdown
+from .models.errors import InfrastructureError, problems_from
 from .models.request import InfrastructureRequest
 from .orchestration import planner, validator
 from .providers import ProviderRegistry
@@ -19,10 +21,14 @@ OFFLINE = {"providers": {"gcp": {"project_id": "example-project", "allowed_regio
            "principals": [{"name": "offline", "token_sha256": "0" * 64, "can_provision": True}]}
 
 
-def read_request(path: str) -> InfrastructureRequest:
+def read_request(path: str) -> InfrastructureRequest | list:
+    """The request a file holds, or the list of problems the contract found with it."""
     text = Path(path).read_text()
     data = json.loads(text) if path.endswith(".json") else yaml.safe_load(text)
-    return InfrastructureRequest.model_validate(data)
+    try:
+        return InfrastructureRequest.model_validate(data)
+    except pydantic.ValidationError as exc:
+        return problems_from(exc)
 
 
 def config_or_offline(path: str | None) -> Config:
@@ -58,8 +64,15 @@ def main(argv=None) -> int:
         return 0
     config = config_or_offline(args.config)
     request = read_request(args.file)
+    if isinstance(request, list):
+        print(json.dumps({"valid": False, "problems": [item.model_dump(mode="json") for item in request]}, indent=1))
+        return 1
     registry = ProviderRegistry(config)
-    provider = registry.get(request.provider)
+    try:
+        provider = registry.get(request.provider)
+    except InfrastructureError as exc:
+        print(json.dumps({"valid": False, "problems": [exc.detail().model_dump(mode="json")]}, indent=1))
+        return 1
     problems = validator.validate(request, config, provider)
     principal = config.principals[0]
     if problems:

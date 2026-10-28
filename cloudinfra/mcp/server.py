@@ -26,11 +26,12 @@ from ..providers import ProviderRegistry
 from ..security.auth import Authenticate, audited, client_address, identity, invoke
 from ..state.state_manager import StateManager
 from .catalog import CATALOG, render_markdown
-from .tools import compute, database, infrastructure, network, operations, storage
+from .tools import cache, cluster, compute, database, infrastructure, loadbalancer, network, operations, queue, secret, storage
 
 INSTRUCTIONS = (
-    "Cloud Infrastructure MCP: a provider-independent infrastructure service. You ask for what infrastructure is needed (machines by CPU and memory, "
-    "disks and buckets by size, a private network, a managed database) in a provider-neutral request; the service validates it, plans it, provisions it "
+    "Cloud Infrastructure MCP: a provider-independent infrastructure service. You ask for what infrastructure is needed (machines by CPU, memory and GPU, "
+    "disks and buckets by size, a private network, a managed database, a cache, queues, secrets, a Kubernetes cluster, a load balancer) in a provider-neutral "
+    "request; list_resource_kinds says exactly what can be asked for; the service validates it, plans it, provisions it "
     "through the provider adapter and reports resource ids, addresses, endpoints and status. It takes no source code, image, repository, script or "
     "command, and decides nothing about an application. Start with validate_infrastructure_request or plan_infrastructure; provision_infrastructure "
     "answers at once with PROVISIONING and get_infrastructure_status follows it; destroy_infrastructure removes everything a request created. Every "
@@ -107,7 +108,7 @@ def build_app(config, registry: ProviderRegistry | None = None, state: StateMana
                     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=config.allowed_hosts, allowed_origins=[]))
     mcp._mcp_server.version = __version__
     wrap = audited(state)
-    for module in (compute, storage, network, database, infrastructure, operations):
+    for module in (compute, storage, network, database, cache, queue, secret, cluster, loadbalancer, infrastructure, operations):
         module.tools(mcp, orchestrator, wrap, identity.get)
     registered = {tool.name for tool in mcp._tool_manager.list_tools()}
     missing = {spec.name for spec in CATALOG} ^ registered

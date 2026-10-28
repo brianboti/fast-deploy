@@ -15,14 +15,15 @@ Cloud Infrastructure MCP (cloudinfra): validation, catalog, orchestration, provi
 GCPProvider → Google Cloud          (AWS, Azure, Jetstream: adapters to come; nothing above changes)
 ```
 
-The infrastructure layer provisions machines, disks, buckets, networks and managed databases from a request such as
+The infrastructure layer provisions machines (in groups, with or without GPUs), disks, buckets, networks, load balancers,
+managed databases, caches, queues, secret containers and Kubernetes clusters from a request such as
 `{"provider": "gcp", "region": "us-central1", "compute": {"cpu": 4, "memory_gb": 16, "os": "ubuntu"}}`, and returns
 resource ids, addresses, endpoints and status. It takes no repository, image, script or command, holds no GitHub
 credential, and decides nothing about an application; those are the Application Layer's. Fast Deploy keeps owning
 repositories, builds, tests, images and releases, and never has to be present for the infrastructure layer to work.
 
 - Architecture and ownership: [docs/INFRASTRUCTURE-ARCHITECTURE.md](docs/INFRASTRUCTURE-ARCHITECTURE.md)
-- The 27 MCP tools: [docs/MCP-CATALOG.md](docs/MCP-CATALOG.md)
+- The 43 MCP tools: [docs/MCP-CATALOG.md](docs/MCP-CATALOG.md)
 - The provider interface and the Google Cloud adapter: [docs/PROVIDER-INTERFACE.md](docs/PROVIDER-INTERFACE.md)
 - The analysis behind the split: [docs/REFACTOR-2026-10-28.md](docs/REFACTOR-2026-10-28.md)
 
