@@ -235,7 +235,12 @@ Steps, each its own pull request:
    command, volume or privilege) and a ClusterIP Service; a pod stuck in `ImagePullBackOff`, `CrashLoopBackOff` and the
    like fails the rollout at once, and its log comes back scrubbed. Tests against a fake Kubernetes API
    (`tests/appdelivery/kube_fakes.py`).
-3. **A real run** on a GKE cluster in the sandbox project, then everything deleted.
+3. **A real run** on a GKE cluster in the sandbox project, then everything deleted. Done 2026-10-29
+   (docs/DELIVERY-SPIKE.md section 11): deploy, a failed rollout put back with its rollback kept, rollback and remove
+   all held. It found four defects, all fixed (GKE takes the network by name; gcloud tokens may be near expiry; the
+   environment's token needs `userinfo.email` so GKE sees the account's email; a timed-out condition outlives the
+   restore), and one still open in `cloudinfra`: a resource whose create fails after Google accepted it is not deleted
+   with the request.
 
 ### Not planned: Cloud Run
 
