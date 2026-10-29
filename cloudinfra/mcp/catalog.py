@@ -159,11 +159,13 @@ CATALOG: tuple[ToolSpec, ...] = (
              READ_ERRORS, "Read-only; selects by the ownership labels, so a caller with scope own sees its own machines only.",
              "Compute Engine: compute.instances.aggregatedList with a label filter."),
     ToolSpec("resize_compute", "Compute", "Resize a machine",
-             "Change a machine's CPUs and memory: a running machine is stopped, resized and started again; a stopped one is resized and stays stopped. Its addresses "
-             "stay unless the provider reassigns an ephemeral one.",
+             "Change a machine's CPUs and memory: a running machine is stopped, resized and started again; a stopped one is resized and stays stopped. A machine "
+             "with GPUs keeps them and their machine family, where a family of fixed shapes gives the smallest that covers what is asked. Its addresses stay "
+             "unless the provider reassigns an ephemeral one.",
              (RESOURCE_ID, Input("cpu", "The new number of virtual CPUs.", True), Input("memory_gb", "The new memory, in GB.", True), WAIT),
              RESOURCE, ("INVALID_COMPUTE_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", "LIMIT_EXCEEDED", "PERMISSION_DENIED", "PROVIDER_ERROR", "PROVIDER_UNAVAILABLE", "OPERATION_TIMEOUT"),
-             "Needs can_provision. A running machine is unavailable while it restarts; refused while its request is stopping, starting or otherwise changing.",
+             "Needs can_provision. A running machine is unavailable while it restarts; refused while its request is stopping, starting or otherwise changing, and "
+             "refused before the machine is touched when its family cannot take the shape.",
              "Compute Engine: compute.instances.stop, setMachineType, start."),
     ToolSpec("delete_compute", "Compute", "Delete a machine", "Delete one machine. Its boot disk goes with it; disks attached with attach_storage stay.",
              (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS, "Needs can_destroy.", "Compute Engine: compute.instances.delete."),

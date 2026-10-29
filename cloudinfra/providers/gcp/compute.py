@@ -1,7 +1,9 @@
 """Compute Engine instances behind the generic compute primitives."""
 from ...models.errors import ErrorCode, InfrastructureError
+from ...models.request import ComputeRequest
 from ...models.resources import ComputeResource, ResourceStatus
 from ...observability.logging import event
+from ..base import Problem
 from . import translate
 from .api import COMPUTE
 
@@ -121,12 +123,22 @@ class GcpCompute:
             if not page:
                 return found
 
+    def shape(self, resource: ComputeResource, cpu: int, memory_gb: int) -> tuple[str, int, int] | Problem:
+        """The machine type a new shape gives a machine, or the problem. A machine with GPUs keeps them, and so their family:
+        the shape is chosen as at creation, where a fixed-shape family (L4, A100, H100) gives the smallest shape covering it."""
+        gpus = translate.accelerator_of(resource.accelerator)
+        if resource.accelerator and gpus is None:
+            return Problem(ErrorCode.INVALID_COMPUTE_CONFIGURATION, f"{resource.name} carries GPUs this adapter does not know ({resource.accelerator}); it is not resized",
+                           "accelerator")
+        return translate.compute_shape(ComputeRequest(cpu=cpu, memory_gb=memory_gb, accelerator=gpus))
+
     def resize(self, resource: ComputeResource, cpu: int, memory_gb: int, ctx) -> ComputeResource:
-        machine = translate.machine_type(cpu, memory_gb)
-        if machine is None:
-            from ...models.request import ComputeRequest
-            problem = translate.compute_problems(ComputeRequest(cpu=cpu, memory_gb=memory_gb))[0]
-            raise InfrastructureError(problem.code, problem.message, {"cpu": cpu, "memory_gb": memory_gb})
+        shape = self.shape(resource, cpu, memory_gb)
+        if isinstance(shape, Problem):
+            raise InfrastructureError(shape.code, shape.message, {"cpu": cpu, "memory_gb": memory_gb, "accelerator": resource.accelerator})
+        machine, cpu, memory_gb = shape
+        if machine == resource.machine_type:
+            return self.get(resource)  # already that shape: nothing to stop or change
         base = f"{self._instances(resource.zone)}/{resource.name}"
         event("provider_resize", provider="gcp", resource=resource.id, machine_type=machine)
         running = self.get(resource).status != ResourceStatus.STOPPED  # a stopped machine is resized and stays stopped

@@ -2,7 +2,7 @@
 
 A review of 1.37.0 read the change from ten angles; a separate verifier checked every candidate against the code and the
 fake Google Cloud, and a last pass looked for what the first had missed. It found 43 defects. All are fixed here, each with
-a test that fails on 1.37.0 (`tests/cloudinfra/test_infra_release_a_review.py`).
+a test that fails on 1.37.0 (`tests/cloudinfra/test_infra_release_a_review.py`), and so is one more found while testing them.
 
 - **Permissions.** Every lifetime ends in a destroy, so a request that sets one now needs `can_destroy`: a caller without
   it could have its requests, databases included, destroyed by the sweeper. An expiry the operator sets still applies to
@@ -58,8 +58,10 @@ databases until the operator sets one of those, or `return_database_password`. C
 credential secrets' names, or a grant's status (`RECORDED`) see the changes above; a caller that sets a lifetime needs
 `can_destroy`.
 
-Not fixed here, found while testing: `resize_compute` on a machine with GPUs picks an E2 machine type, which cannot carry
-GPUs; it is older than release A.
+Found while testing, older than release A: `resize_compute` on a machine with GPUs picked an E2 machine type, which cannot
+carry GPUs, so the resize could only fail, after the machine had been stopped. A resize now keeps the machine's GPUs and their
+family, chosen as at creation (an L4 machine asked for 8 CPUs and 64 GB becomes `g2-standard-16`, the smallest G2 shape
+that covers it), and a shape the family cannot offer is refused before the machine is touched.
 
 # 1.37.0: release A, so that a developer can use what the service creates
 

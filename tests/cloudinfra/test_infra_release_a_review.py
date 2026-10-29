@@ -550,3 +550,32 @@ def test_no_credential_reaches_the_audit_trail_or_the_log(tmp_path, caplog):
 def test_the_catalog_says_what_a_resize_of_a_stopped_machine_does():
     spec = next(item for item in CATALOG if item.name == "resize_compute")
     assert "a stopped one is resized and stays stopped" in spec.purpose and "it is stopped, resized and started;" not in spec.purpose
+
+
+# ---- found while testing these fixes, older than release A: a resize keeps a GPU machine's family
+def test_a_resize_keeps_a_gpu_machines_family(tmp_path):
+    orchestrator, fake, _, who = orchestrated(tmp_path)
+    l4 = provision(orchestrator, who, {"compute": {"cpu": 4, "memory_gb": 16, "accelerator": {"type": "l4"}}}).resources.compute[0]
+    resized = orchestrator.resize_compute(l4.id, 8, 64, who, wait_seconds=45).resource
+    assert resized.machine_type == "g2-standard-16" and (resized.cpu, resized.memory_gb) == (16, 64) and resized.accelerator == "nvidia-l4 x1", \
+        "the smallest G2 shape with one L4 that covers 8 CPUs and 64 GB"
+    assert next(call[2] for call in fake.calls if call[1].endswith(f"/{l4.name}/setMachineType")) == {"machineType": f"zones/{l4.zone}/machineTypes/g2-standard-16"}
+    t4 = provision(orchestrator, who, {"compute": {"cpu": 4, "memory_gb": 16, "accelerator": {"type": "t4"}}}).resources.compute[0]
+    assert orchestrator.resize_compute(t4.id, 8, 30, who, wait_seconds=45).resource.machine_type == "n1-standard-8"
+    basis = orchestrator.cost(who, resource_id=l4.id)["estimate"]["lines"][0]["basis"]
+    assert basis.startswith("g2-standard-16 ") and "nvidia-l4" in basis
+
+
+def test_a_shape_the_gpu_family_cannot_offer_is_refused_before_the_machine_is_touched(tmp_path):
+    orchestrator, fake, _, who = orchestrated(tmp_path)
+    response = provision(orchestrator, who, {"compute": {"cpu": 4, "memory_gb": 16, "accelerator": {"type": "t4"}}})
+    [machine] = response.resources.compute
+    fake.calls.clear()
+    error = refused(ErrorCode.INVALID_COMPUTE_CONFIGURATION, orchestrator.resize_compute, machine.id, 2, 16, who)
+    assert "With a t4" in error.message and fake.calls == [], "8 GB per CPU is more than N1 offers"
+    assert orchestrator.state.get_resource(machine.id).status == ResourceStatus.READY and not operations(orchestrator, response.request_id, "resize_compute")
+    plain = provision(orchestrator, who, VM_REQUEST).resources.compute[0]
+    assert orchestrator.resize_compute(plain.id, 8, 32, who, wait_seconds=45).resource.machine_type == "e2-standard-8", "a machine without GPUs, as before"
+    fake.calls.clear()
+    again = orchestrator.resize_compute(plain.id, 8, 32, who, wait_seconds=45)
+    assert again.operation.status == "SUCCEEDED" and not any(call[1].endswith(("/stop", "/start", "/setMachineType")) for call in fake.calls), "already that shape"

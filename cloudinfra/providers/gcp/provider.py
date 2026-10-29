@@ -211,6 +211,10 @@ class GCPProvider(CloudProvider):
     def resize_compute(self, resource, cpu, memory_gb, ctx):
         return self.compute.resize(resource, cpu, memory_gb, ctx)
 
+    def resize_problem(self, resource, cpu, memory_gb):
+        shape = self.compute.shape(resource, cpu, memory_gb)
+        return shape if isinstance(shape, Problem) else None
+
     def delete_compute(self, resource, ctx):
         self.compute.delete(resource, ctx)
 

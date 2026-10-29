@@ -170,7 +170,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 ### `resize_compute`
 
-**Purpose.** Change a machine's CPUs and memory: a running machine is stopped, resized and started again; a stopped one is resized and stays stopped. Its addresses stay unless the provider reassigns an ephemeral one.
+**Purpose.** Change a machine's CPUs and memory: a running machine is stopped, resized and started again; a stopped one is resized and stays stopped. A machine with GPUs keeps them and their machine family, where a family of fixed shapes gives the smallest that covers what is asked. Its addresses stay unless the provider reassigns an ephemeral one.
 
 **Inputs.**
 
@@ -188,7 +188,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Possible errors.** `INVALID_COMPUTE_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `LIMIT_EXCEEDED`, `PERMISSION_DENIED`, `PROVIDER_ERROR`, `PROVIDER_UNAVAILABLE`, `OPERATION_TIMEOUT`.
 
-**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. A running machine is unavailable while it restarts; refused while its request is stopping, starting or otherwise changing.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. A running machine is unavailable while it restarts; refused while its request is stopping, starting or otherwise changing, and refused before the machine is touched when its family cannot take the shape.
 
 **Provider mapping (Google Cloud).** Compute Engine: compute.instances.stop, setMachineType, start.
 

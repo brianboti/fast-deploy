@@ -229,6 +229,11 @@ class CloudProvider(ABC):
         """Whether a resource of this kind (for storage, of this type: a bucket or a disk) has an access policy of its own."""
         return kind in self.grantable_kinds
 
+    def resize_problem(self, resource: ComputeResource, cpu: int, memory_gb: int) -> Problem | None:
+        """Why a machine cannot take a new shape (a machine with GPUs keeps their family), checked before any provider call;
+        None when it can."""
+        return None
+
     def boot_disk_gb(self, group: ComputeRequest) -> int:
         """The boot disk a compute group's machines get, which the adapter's software may make larger than asked."""
         return group.boot_disk_gb

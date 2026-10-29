@@ -2,7 +2,7 @@
 import re
 
 from ...models.errors import ErrorCode
-from ...models.request import CacheRequest, ClusterRequest, ComputeRequest, DatabaseRequest
+from ...models.request import AcceleratorRequest, CacheRequest, ClusterRequest, ComputeRequest, DatabaseRequest
 from ..base import Problem
 
 IMAGES = {
@@ -129,6 +129,14 @@ def compute_shape(spec: ComputeRequest) -> tuple[str, int, int] | Problem:
     else:
         text = f"Google Cloud allows 0.5 to 8 GB of memory per CPU: {spec.cpu} CPUs take {spec.cpu // 2} to {spec.cpu * 8} GB"
     return Problem(ErrorCode.INVALID_COMPUTE_CONFIGURATION, text, "compute")
+
+
+def accelerator_of(described: str | None) -> AcceleratorRequest | None:
+    """The contract's GPUs for a machine's GPUs as stored (nvidia-l4 x1), so that a new shape keeps them and their family;
+    None for a machine without GPUs or with GPUs this adapter does not know."""
+    name, _, count = (described or "").rpartition(" x")
+    kind = next((key for key, value in ACCELERATORS.items() if value == name), None)
+    return AcceleratorRequest(type=kind, count=int(count)) if kind and count.isdigit() else None
 
 
 def compute_problems(spec: ComputeRequest) -> list[Problem]:

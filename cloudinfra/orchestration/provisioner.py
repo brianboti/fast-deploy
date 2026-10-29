@@ -1187,6 +1187,9 @@ class Orchestrator:
         if cpu > limits.max_cpu_per_instance or memory_gb > limits.max_memory_gb_per_instance:
             raise InfrastructureError(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_cpu_per_instance} CPUs and {limits.max_memory_gb_per_instance} GB per machine")
         provider = self.registry.get(record["provider"])
+        problem = provider.resize_problem(resource, cpu, memory_gb)  # refused now, before the machine is touched
+        if problem is not None:
+            raise InfrastructureError(problem.code, problem.message, {"field": problem.field, "cpu": cpu, "memory_gb": memory_gb})
         with self.lock(record["request_id"]):
             record, resource = self.state.get_request(record["request_id"]), self.state.get_resource(resource_id)
             self._refuse_if_busy(record)  # never under a stop, a start or a destroy of its request, nor another change
