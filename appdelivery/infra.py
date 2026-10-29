@@ -99,9 +99,19 @@ class InfraRequest(View):
     def groups(self) -> list[str]:
         return sorted({machine.group for machine in self.resources.compute if machine.status != "DELETED"})
 
-    def cluster(self) -> Cluster | None:
-        """The request's cluster: a request has at most one."""
-        return next((cluster for cluster in self.resources.cluster if cluster.status != "DELETED"), None)
+    def clusters(self) -> list[Cluster]:
+        return [cluster for cluster in self.resources.cluster if cluster.status != "DELETED"]
+
+    def cluster_name(self, cluster: Cluster) -> str:
+        """The name the request's cluster block gave it: cloudinfra names the cluster <request name>-<name>."""
+        return cluster.name.removeprefix(f"{self.name}-")
+
+    def cluster(self, name: bool | str = True) -> Cluster | None:
+        """A cluster by its name in the request, or (true) the request's only one."""
+        found = self.clusters()
+        if name is True:
+            return found[0] if len(found) == 1 else None
+        return next((cluster for cluster in found if self.cluster_name(cluster) == name), None)
 
     def network(self, network_id: str | None) -> Network | None:
         return next((network for network in self.resources.network if network.id == network_id), None)

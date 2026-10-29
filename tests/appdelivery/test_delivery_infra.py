@@ -1,10 +1,10 @@
 """Reading a request from the infrastructure layer over HTTP, and the shape of its answer."""
 import httpx
 import pytest
-from delivery_fakes import REQUEST_ID, cluster_response, infra_response, infra_transport, make_config
+from delivery_fakes import REQUEST_ID, cluster_response, infra_response, infra_transport, make_config, two_clusters
 
 from appdelivery.errors import DeliveryError, ErrorCode
-from appdelivery.infra import InfraClient
+from appdelivery.infra import InfraClient, InfraRequest
 
 
 def client(**kwargs):
@@ -19,6 +19,16 @@ def test_the_fake_answer_is_one_the_infrastructure_layer_itself_would_give():
     InfrastructureResponse.model_validate(infra_response())
     with_cluster = InfrastructureResponse.model_validate(cluster_response())
     assert with_cluster.resources.cluster[0].namespace == "shop", "the cluster's namespace and CA are cloudinfra's own fields"
+    InfrastructureResponse.model_validate(two_clusters())
+
+
+def test_the_delivery_service_reads_a_clusters_name_as_cloudinfra_makes_it():
+    """cloudinfra names a request's cluster <request name>-<name>; a target names it by <name>."""
+    from cloudinfra.models import InfrastructureRequest
+    request = InfrastructureRequest.model_validate({"region": "us-central1", "name": "shop", "cluster": [{"name": "blue"}, {"name": "green"}]})
+    names = [f"{request.name}-{cluster.cluster_name}" for cluster in request.clusters()]
+    infra = InfraRequest.model_validate(two_clusters())
+    assert names == [cluster.name for cluster in infra.clusters()] and [infra.cluster_name(cluster) for cluster in infra.clusters()] == ["blue", "green"]
 
 
 def test_a_request_is_read_with_the_environment_token_and_kept_to_what_a_release_needs():

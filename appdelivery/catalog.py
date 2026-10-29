@@ -78,7 +78,7 @@ class ToolSpec:
 
 
 RELEASE = Input("release", "The release: environment, request_id (the infrastructure layer's request), target ({group} for every machine of a compute group, or "
-                           "{cluster: true, workload, replicas} for the request's cluster), image (host/path@sha256:digest; a tag is refused), "
+                           "{cluster: NAME, workload, replicas} for a workload on one of the request's clusters; cluster: true for its only one), image (host/path@sha256:digest; a tag is refused), "
                            "port, health {path, timeout_seconds}, env (NAME: {value} or {endpoint} or {secret}), note. No source, command or mount is accepted.", True)
 RELEASE_ID = Input("release_id", "The release id this service issued (rel-<12 hex>).", True)
 WAIT = Input("wait_seconds", "Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the work running.")

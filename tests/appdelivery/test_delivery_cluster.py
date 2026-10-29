@@ -7,7 +7,7 @@ import sqlite3
 import httpx
 import pydantic
 import pytest
-from delivery_fakes import CLUSTER_ID, DIGEST, cluster_response, make_config, principal, release_dict
+from delivery_fakes import CLUSTER_ID, DIGEST, cluster_response, make_config, principal, release_dict, two_clusters
 from fleet_fakes import SECRET_VALUE, V1, V2, V3, World
 from kube_fakes import NAMESPACE
 
@@ -216,3 +216,56 @@ def test_the_client_uses_the_environments_token_and_codes_refusals():
     with pytest.raises(DeliveryError) as caught:
         client(403)[0].get(DEPLOYMENTS)
     assert "container.clusterViewer" in caught.value.message and json.dumps(caught.value.to_dict())
+
+
+# ---- several clusters on one request (phase 3, step 2)
+def plan_on(cluster, answer):
+    config = make_config()
+    release = ReleaseRequest.model_validate(release_dict(environment="prod", image=f"us-central1-docker.pkg.dev/acme-apps/shop/web@sha256:{DIGEST}",
+                                                         target={"cluster": cluster, "workload": "web"}))
+    return planner.plan(release, principal(config), config, InfraRequest.model_validate(answer))
+
+
+def test_a_target_names_one_of_the_requests_clusters():
+    for name, resource in (("blue", "clu-b10e00000000"), ("green", "clu-6ee000000000")):
+        planned = plan_on(name, two_clusters())
+        assert [item.resource for item in planned.machines] == [resource] and planned.namespace == "shop"
+
+
+@pytest.mark.parametrize("cluster, code, said", [(True, ErrorCode.INVALID_RELEASE, "2 clusters (blue, green); name one"),
+                                                 ("red", ErrorCode.NOT_FOUND, "no cluster red; it has blue, green")])
+def test_a_target_that_does_not_say_which_cluster_or_names_none_is_refused(cluster, code, said):
+    with pytest.raises(DeliveryError) as caught:
+        plan_on(cluster, two_clusters())
+    assert caught.value.code == code and said in caught.value.message
+
+
+def test_a_cluster_name_is_a_short_name():
+    with pytest.raises((DeliveryError, pydantic.ValidationError)):
+        ReleaseRequest.model_validate(release_dict(target={"cluster": "Shop_Blue", "workload": "web"}))
+
+
+def test_releases_are_kept_per_cluster_and_workload():
+    assert ReleaseRequest.model_validate(release_dict(target=CLUSTER)).target.key() == "cluster:web", "the key releases had before clusters had names"
+    assert ReleaseRequest.model_validate(release_dict(target={"cluster": "cluster", "workload": "web"})).target.key() == "cluster:web"
+    assert ReleaseRequest.model_validate(release_dict(target={"cluster": "blue", "workload": "web"})).target.key() == "cluster:blue:web"
+
+
+def test_true_and_the_only_clusters_name_are_one_target():
+    """A release asked for with cluster: true is kept under the only cluster's name, so the next one asked for by name replaces it."""
+    data = cluster_response()
+    data["resources"]["cluster"][0]["name"] = "shop-blue"
+    infra = InfraRequest.model_validate(data)
+    resolved = planner.resolve(ReleaseRequest.model_validate(release_dict(target=CLUSTER)), infra)
+    assert resolved.target.cluster == "blue" and resolved.target.key() == "cluster:blue:web"
+    unnamed = planner.resolve(ReleaseRequest.model_validate(release_dict(target=CLUSTER)), InfraRequest.model_validate(cluster_response()))
+    assert unnamed.target.cluster == "cluster" and unnamed.target.key() == "cluster:web"
+
+
+def test_a_release_by_name_replaces_one_asked_for_with_true():
+    world = World(cluster=True)
+    first = deploy(world)
+    second = world.delivery.deploy(ReleaseRequest.model_validate(release_dict(environment="dev", image=V2, target={"cluster": "cluster", "workload": "web", "replicas": 2})),
+                                   world.team)
+    assert second.status == "RUNNING" and second.previous == first.release_id
+    assert world.delivery.get(first.release_id, world.team).status == "SUPERSEDED"

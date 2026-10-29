@@ -124,15 +124,20 @@ class Delivery:
 
     # ---- plan and deploy
     def plan(self, release: ReleaseRequest, principal):
+        return self._plan(release, principal)[1]
+
+    def _plan(self, release: ReleaseRequest, principal):
+        """(the release with its cluster named, its plan)."""
         planner.authorize(release, principal, self.config)
         infra = self.infra(release.environment).get_request(release.request_id)
+        release = planner.resolve(release, infra)
         planned = planner.plan(release, principal, self.config, infra)
         running = self.state.running_release(release.request_id, release.target.key())
         planned.replaces = running["release_id"] if running else None
-        return planned
+        return release, planned
 
     def deploy(self, release: ReleaseRequest, principal, wait_seconds: int = 0) -> ReleaseResponse:
-        planned = self.plan(release, principal)
+        release, planned = self._plan(release, principal)
         group = release.target.key()
         with self.lock(release.request_id, group):
             busy = self.state.busy_release(release.request_id, group)
@@ -181,8 +186,8 @@ class Delivery:
         return infra, (self.clusters if release.target.cluster else self.machines)(release.environment)
 
     @staticmethod
-    def _cluster_target(infra: InfraRequest) -> ClusterTarget:
-        cluster = infra.cluster()
+    def _cluster_target(infra: InfraRequest, release: ReleaseRequest) -> ClusterTarget:
+        cluster = infra.cluster(release.target.cluster)
         return ClusterTarget(cluster.id, cluster.name, cluster.endpoint, cluster.ca_certificate, cluster.namespace)
 
     def _registry_token(self, release: ReleaseRequest, environment) -> str | None:
@@ -230,7 +235,7 @@ class Delivery:
         self.state.set_target(release_id, target["resource_id"], "DEPLOYING", started=True)
         event("cluster_deploying", cluster=target["name"], workload=workload, replicas=release.target.replicas)
         try:
-            report = deployer.deploy(self._cluster_target(infra), release_id, release, dict(values), self._previous(record))
+            report = deployer.deploy(self._cluster_target(infra, release), release_id, release, dict(values), self._previous(record))
         except DeliveryError as exc:
             self.state.set_target(release_id, target["resource_id"], "FAILED", exc.detail().model_dump(mode="json"), finished=True)
             error = DeliveryError(ErrorCode.ROLLOUT_FAILED, f"The rollout of {workload} stopped: {exc.message}", {"cluster": target["name"], "cause": exc.detail().model_dump(mode="json")})
@@ -391,7 +396,7 @@ class Delivery:
                 [target] = record["targets"]
                 previous_id, previous = self._previous(record)
                 try:
-                    report = session.rollback(self._cluster_target(infra), release_id, previous_id, previous)
+                    report = session.rollback(self._cluster_target(infra, release), release_id, previous_id, previous)
                     problem = None if report.result == "rolled_back" else DeliveryError(ErrorCode.ROLLBACK_FAILED, f"{target['name']} answered {report.result}",
                                                                                          {"cluster": target["name"], **report.fields})
                 except DeliveryError as exc:
@@ -439,7 +444,7 @@ class Delivery:
             if release.target.cluster:
                 [target] = record["targets"]
                 try:
-                    session.remove(self._cluster_target(infra), release.target.workload)
+                    session.remove(self._cluster_target(infra, release), release.target.workload)
                     self.state.set_target(release_id, target["resource_id"], "REMOVED")
                 except DeliveryError as exc:
                     self.state.set_target(release_id, target["resource_id"], "UNDO_FAILED", exc.detail().model_dump(mode="json"))
@@ -484,7 +489,7 @@ class Delivery:
                     try:
                         if release.target.cluster:
                             infra = self.infra(record["environment"]).get_request(request_id)
-                            report = session.status(self._cluster_target(infra), release.target.workload)
+                            report = session.status(self._cluster_target(infra, release), release.target.workload)
                         else:
                             report = session.status(Machine(target["name"], target["zone"]))
                         machine.update(running=report.fields.get("running") == "yes", image=report.fields.get("image") or None,

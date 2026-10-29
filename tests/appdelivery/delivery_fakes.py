@@ -138,3 +138,13 @@ def cluster_response(**overrides):
     data["access"][0]["resources"].append(CLUSTER_ID)
     data["endpoints"]["cluster_endpoint"] = "35.201.0.7"
     return data
+
+
+def two_clusters():
+    """The request with clusters blue and green (cloudinfra names them <request>-<name>), the account granted on both."""
+    data = cluster_response()
+    blue = {**data["resources"]["cluster"][0], "id": "clu-b10e00000000", "name": "shop-blue"}
+    green = {**data["resources"]["cluster"][0], "id": "clu-6ee000000000", "name": "shop-green", "endpoint": "35.201.0.8"}
+    data["resources"]["cluster"] = [blue, green]
+    data["access"][0]["resources"] = [item for item in data["access"][0]["resources"] if item != CLUSTER_ID] + [blue["id"], green["id"]]
+    return data
