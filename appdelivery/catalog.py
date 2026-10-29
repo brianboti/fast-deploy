@@ -25,6 +25,8 @@ MEANINGS = {
     ErrorCode.SECRET_UNAVAILABLE: "A bound secret could not be read as the environment's service account.",
     ErrorCode.MACHINE_UNREACHABLE: "The SSH session to a machine failed, after waiting out IAP's passing refusals.",
     ErrorCode.MACHINE_ERROR: "The host script on a machine stopped or ended without a report.",
+    ErrorCode.CLUSTER_UNREACHABLE: "The cluster's API could not be reached, or refused this environment's service account (its namespace grant, or container.clusterViewer).",
+    ErrorCode.CLUSTER_ERROR: "The cluster's API refused a change to the workload; details carry its answer.",
     ErrorCode.PULL_FAILED: "A machine could not log in to the registry or pull the image; nothing changed there.",
     ErrorCode.UNHEALTHY: "The container did not answer 2xx on the health path in time; the machine runs its previous container again.",
     ErrorCode.ROLLOUT_FAILED: "The rollout stopped at a machine; the machines done before it were put back, the rest skipped.",
@@ -75,7 +77,8 @@ class ToolSpec:
         return HINTS[self.hint]
 
 
-RELEASE = Input("release", "The release: environment, request_id (the infrastructure layer's request), target.group, image (host/path@sha256:digest; a tag is refused), "
+RELEASE = Input("release", "The release: environment, request_id (the infrastructure layer's request), target ({group} for every machine of a compute group, or "
+                           "{cluster: true, workload, replicas} for the request's cluster), image (host/path@sha256:digest; a tag is refused), "
                            "port, health {path, timeout_seconds}, env (NAME: {value} or {endpoint} or {secret}), note. No source, command or mount is accepted.", True)
 RELEASE_ID = Input("release_id", "The release id this service issued (rel-<12 hex>).", True)
 WAIT = Input("wait_seconds", "Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the work running.")
@@ -84,7 +87,8 @@ RELEASE_OUT = ("ReleaseResponse: release_id, status, environment, request_id, gr
 FOLLOW = "It answers at once with the work running, or waits up to wait_seconds; follow it with get_release until the status is RUNNING, FAILED, ROLLED_BACK or REMOVED."
 PLAN_ERRORS = ("INVALID_RELEASE", "INVALID_BINDING", "UNKNOWN_ENVIRONMENT", "PERMISSION_DENIED", "NOT_FOUND", "INVALID_STATE", "NOT_GRANTED", "UNSUPPORTED_TARGET",
                "UNREACHABLE_TARGET", "REGISTRY_NOT_ALLOWED", "INFRA_UNAVAILABLE", "INFRA_AUTH_FAILED")
-RUN_ERRORS = ("ATTESTATION_FAILED", "SECRET_UNAVAILABLE", "GOOGLE_AUTH_FAILED", "MACHINE_UNREACHABLE", "MACHINE_ERROR", "PULL_FAILED", "UNHEALTHY", "ROLLOUT_FAILED")
+RUN_ERRORS = ("ATTESTATION_FAILED", "SECRET_UNAVAILABLE", "GOOGLE_AUTH_FAILED", "MACHINE_UNREACHABLE", "MACHINE_ERROR", "CLUSTER_UNREACHABLE", "CLUSTER_ERROR",
+              "PULL_FAILED", "UNHEALTHY", "ROLLOUT_FAILED")
 
 CATALOG = (
     ToolSpec("plan_release", "Plan a release",
@@ -93,9 +97,10 @@ CATALOG = (
              (RELEASE,), "PlanResponse: status PLANNED, machines, env sources, attestation_required, approval_required, replaces, warnings.", PLAN_ERRORS,
              "Needs can_deploy in the release's environment. Every problem is reported at once, each with a code.", "read_only"),
     ToolSpec("deploy_release", "Deploy a release",
-             "Record a release and roll it out to every machine of the group, one at a time: pull, start, health check. The first machine that fails stops "
-             "the rollout and the machines done before it are put back, so a group never runs two versions. In an environment that requires approval it "
-             "waits for approve_release.",
+             "Record a release and roll it out. On machines: one at a time (pull, start, health check); the first machine that fails stops the rollout and "
+             "the machines done before it are put back, so a group never runs two versions. On a cluster: a Deployment, a Service and a Secret of the "
+             "release in the request's namespace, rolled by Kubernetes without dropping below the wanted replicas, and the previous release put back if "
+             "it does not become healthy. In an environment that requires approval it waits for approve_release.",
              (RELEASE, WAIT), RELEASE_OUT, (*PLAN_ERRORS, *RUN_ERRORS), "Needs can_deploy in the release's environment.", "changes", FOLLOW),
     ToolSpec("approve_release", "Approve a release",
              "Approve a release waiting for approval and start its rollout; everything is checked again as it is when the rollout starts.",
@@ -107,18 +112,18 @@ CATALOG = (
              (Input("request_id", "Only releases on this infrastructure request (32 hex characters)."), Input("environment", "Only releases in this environment."),
               Input("limit", "At most this many releases (1 to 200, default 50).")),
              "{count, releases: [ReleaseResponse]}.", ("PERMISSION_DENIED",), "Any principal; it sees its own team's releases only.", "read_only"),
-    ToolSpec("get_running", "What runs where", "The release running on each group of a request, and with live, what each machine reports running now and "
-             "whether it matches.",
+    ToolSpec("get_running", "What runs where", "The release running on each group or cluster workload of a request, and with live, what each machine or "
+             "the cluster reports running now and whether it matches.",
              (Input("request_id", "The infrastructure request (32 hex characters).", True), Input("live", "Ask each machine what it runs now (slower; reaches every machine).")),
              "{request_id, groups: [{group, release_id, image, environment, machines: [{resource, name, status, running, image, matches}]}]}.",
-             ("NOT_FOUND", "PERMISSION_DENIED", "MACHINE_UNREACHABLE"), "Any principal of the team that owns the request.", "read_only"),
+             ("NOT_FOUND", "PERMISSION_DENIED", "MACHINE_UNREACHABLE", "CLUSTER_UNREACHABLE"), "Any principal of the team that owns the request.", "read_only"),
     ToolSpec("rollback_release", "Roll back a release",
-             "Start the previous release again on every machine of the group. Offered only for the release running on its group while its machines keep the "
-             "previous container: not for a group's first release, and not for one a rollback restored.",
+             "Start the previous release again on every machine of the group, or apply it again on the cluster. Offered only for the release running on its "
+             "target while the previous one is kept: not for a target's first release, and not for one a rollback restored.",
              (RELEASE_ID, WAIT), RELEASE_OUT, ("NOT_FOUND", "PERMISSION_DENIED", "INVALID_STATE", "MACHINE_UNREACHABLE", "MACHINE_ERROR", "ROLLBACK_FAILED"),
              "Needs can_deploy in the release's environment.", "changes", FOLLOW),
-    ToolSpec("remove_release", "Remove a release", "Stop and delete the release's containers, and the previous ones, from every machine of the group; the "
-             "machines stay as the infrastructure layer made them.",
+    ToolSpec("remove_release", "Remove a release", "Stop and delete the release's containers, and the previous ones, from every machine of the group, or "
+             "its Deployment, Service and Secrets from the cluster; the machines and the cluster stay as the infrastructure layer made them.",
              (RELEASE_ID, WAIT), RELEASE_OUT, ("NOT_FOUND", "PERMISSION_DENIED", "INVALID_STATE", "MACHINE_UNREACHABLE", "MACHINE_ERROR", "REMOVE_FAILED"),
              "Needs can_deploy in the release's environment.", "destructive", FOLLOW),
     ToolSpec("get_service_status", "Get the service status", "The service's version, the infrastructure layer it reads, and its environments with their rules.",

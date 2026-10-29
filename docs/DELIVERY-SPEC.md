@@ -227,9 +227,14 @@ Steps, each its own pull request:
 1. **`cloudinfra`: the namespace and RBAC grants.** `ClusterResource.namespace`, the namespace made after creation,
    clusters in `grantable_kinds`, grant and revoke as RoleBindings, the connect block naming the namespace. Tests
    against a fake Kubernetes API.
-2. **`appdelivery`: the cluster target.** The contract, the plan's checks (cluster READY, the environment's account
-   granted `admin` on it), a Kubernetes session (GKE endpoint and CA through the container API as the environment's
-   account, then the cluster's API), the rollout, rollback, remove and live status. Tests against a fake Kubernetes API.
+2. **`appdelivery`: the cluster target.** Built 2026-10-29. `Target` takes `{cluster: true, workload, replicas}` (keyed
+   `cluster:<workload>`, so machines and a workload on one request are kept apart); the plan checks the cluster READY,
+   its namespace, its address and CA, and the environment's account granted on it; `appdelivery/kube.py` reaches the
+   cluster with the address and CA certificate `cloudinfra` reports and the environment's Google token, and applies the
+   release's Secret, the Deployment (`maxUnavailable: 0`, readiness probe, `automountServiceAccountToken: false`, no
+   command, volume or privilege) and a ClusterIP Service; a pod stuck in `ImagePullBackOff`, `CrashLoopBackOff` and the
+   like fails the rollout at once, and its log comes back scrubbed. Tests against a fake Kubernetes API
+   (`tests/appdelivery/kube_fakes.py`).
 3. **A real run** on a GKE cluster in the sandbox project, then everything deleted.
 
 ### Not planned: Cloud Run

@@ -1,7 +1,7 @@
 """Reading a request from the infrastructure layer over HTTP, and the shape of its answer."""
 import httpx
 import pytest
-from delivery_fakes import REQUEST_ID, infra_response, infra_transport, make_config
+from delivery_fakes import REQUEST_ID, cluster_response, infra_response, infra_transport, make_config
 
 from appdelivery.errors import DeliveryError, ErrorCode
 from appdelivery.infra import InfraClient
@@ -17,6 +17,8 @@ def test_the_fake_answer_is_one_the_infrastructure_layer_itself_would_give():
     of that contract shows here rather than on a real machine."""
     from cloudinfra.models.response import InfrastructureResponse
     InfrastructureResponse.model_validate(infra_response())
+    with_cluster = InfrastructureResponse.model_validate(cluster_response())
+    assert with_cluster.resources.cluster[0].namespace == "shop", "the cluster's namespace and CA are cloudinfra's own fields"
 
 
 def test_a_request_is_read_with_the_environment_token_and_kept_to_what_a_release_needs():

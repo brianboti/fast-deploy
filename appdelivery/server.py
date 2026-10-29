@@ -24,15 +24,16 @@ from .releases import Delivery
 from .state import ProcessLock, StateManager
 
 INSTRUCTIONS = (
-    "Application delivery: runs an image that already exists on machines the Cloud Infrastructure service already created. You name the image by digest "
-    "(host/path@sha256:…), the infrastructure request and a group of its machines, the port, the health path, and where each environment value comes from "
+    "Application delivery: runs an image that already exists on machines or a Kubernetes cluster the Cloud Infrastructure service already created. You name "
+    "the image by digest (host/path@sha256:…), the infrastructure request and a group of its machines or its cluster with a workload name and replicas, the "
+    "port, the health path, and where each environment value comes from "
     "(a literal, an endpoint of the request, or a secret of the request). It takes no source, Dockerfile, build or command. The request must name this "
-    "environment's service account in its access list as admin. Start with plan_release; deploy_release rolls out one machine at a time and puts the group "
-    "back if a machine fails; get_release follows it; rollback_release and remove_release act on the release running on a group. Every result carries "
-    "status; a FAILED one carries error.code and error.message."
+    "environment's service account in its access list as admin. Start with plan_release; deploy_release rolls out one machine at a time, or through "
+    "Kubernetes on a cluster, and puts the previous release back if it fails; get_release follows it; rollback_release and remove_release act on the "
+    "release running on a target. Every result carries status; a FAILED one carries error.code and error.message."
 )
 HTTP_STATUS = {"NOT_FOUND": 404, "PERMISSION_DENIED": 403, "INVALID_STATE": 409, "NOT_GRANTED": 409, "INFRA_UNAVAILABLE": 502, "INFRA_AUTH_FAILED": 502,
-               "GOOGLE_AUTH_FAILED": 502, "SECRET_UNAVAILABLE": 502, "MACHINE_UNREACHABLE": 502, "INTERNAL_ERROR": 500}
+               "GOOGLE_AUTH_FAILED": 502, "SECRET_UNAVAILABLE": 502, "MACHINE_UNREACHABLE": 502, "CLUSTER_UNREACHABLE": 502, "INTERNAL_ERROR": 500}
 
 
 def unknown_arguments(tool, valid, arguments):

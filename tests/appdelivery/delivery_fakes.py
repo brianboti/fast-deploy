@@ -119,3 +119,22 @@ class Runner:
                 config = json.load(handle)
         self.calls.append({"argv": list(argv), "stdin": stdin, "env": env, "timeout": timeout, "docker_config": config})
         return self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+
+
+CLUSTER_ID = "clu-444444444444"
+
+
+def cluster_resource(**fields):
+    base = {"location": "us-central1-a", "version": "1.31.1-gke.1", "endpoint": "35.201.0.7", "ca_certificate": "RkFLRSBDQQ==", "namespace": "shop", "node_count": 2,
+            "machine_type": "e2-standard-2", "node_disk_gb": 50, "node_pool": "default-pool", "network": "net-aaaaaaaaaaaa"}
+    base.update(fields)
+    return _resource("cluster", CLUSTER_ID, "shop-cluster", **base)
+
+
+def cluster_response(**overrides):
+    """The same request with a cluster too, its namespace made, and the prod service account granted on it."""
+    data = infra_response(**overrides)
+    data["resources"]["cluster"] = [cluster_resource()]
+    data["access"][0]["resources"].append(CLUSTER_ID)
+    data["endpoints"]["cluster_endpoint"] = "35.201.0.7"
+    return data

@@ -66,10 +66,21 @@ class Secret(View):
     purpose: str | None = None
 
 
+class Cluster(View):
+    id: str
+    name: str
+    status: str
+    location: str = ""
+    endpoint: str | None = None
+    ca_certificate: str | None = None
+    namespace: str | None = None
+
+
 class Resources(View):
     network: list[Network] = Field(default_factory=list)
     compute: list[Machine] = Field(default_factory=list)
     secret: list[Secret] = Field(default_factory=list)
+    cluster: list[Cluster] = Field(default_factory=list)
 
 
 class InfraRequest(View):
@@ -87,6 +98,10 @@ class InfraRequest(View):
 
     def groups(self) -> list[str]:
         return sorted({machine.group for machine in self.resources.compute if machine.status != "DELETED"})
+
+    def cluster(self) -> Cluster | None:
+        """The request's cluster: a request has at most one."""
+        return next((cluster for cluster in self.resources.cluster if cluster.status != "DELETED"), None)
 
     def network(self, network_id: str | None) -> Network | None:
         return next((network for network in self.resources.network if network.id == network_id), None)
