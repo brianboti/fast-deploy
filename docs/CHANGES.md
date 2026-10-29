@@ -1,3 +1,20 @@
+# Unreleased: a cluster's front door
+
+Phase 3, step 5 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECTURE.md, "A cluster's front door"):
+
+- **`cluster.public`** with `hostnames`: the cluster gets Gateway API, a reserved global address, a Google-managed
+  certificate for the hostnames and one Gateway, `cloudinfra-gateway/public` (`gke-l7-global-external-managed`), serving
+  HTTPS and redirecting HTTP, taking routes from the request's namespace only. Without hostnames, plain HTTP on the
+  address. Hostnames must be in the operator's `providers.gcp.public_domains`. Also `create_cluster`'s `public` and
+  `hostnames`.
+- **Routes for `edit`.** Every new cluster gets a ClusterRole aggregated into `edit` that writes HTTPRoutes, so a
+  request's namespace attaches its workloads; Gateways stay out of `edit`.
+- **Reported:** `ClusterResource.public` with the address, the hostnames, the Gateway and the certificate's state.
+- **Delete in order.** The Gateway first; the cluster waits until GKE's forwarding rules on the address are gone, then
+  goes, then the certificate and the address. A front door that failed half way is closed the same way.
+- **Priced:** a forwarding rule per listener. The plan says DNS must point at the address before the certificate is
+  ACTIVE.
+
 # Unreleased: a request's namespace cannot open a public address of its own
 
 Phase 3, step 4 (docs/DELIVERY-SPEC.md, section 4). `edit` lets a namespace make a Service of type `LoadBalancer`, an

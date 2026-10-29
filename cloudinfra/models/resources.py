@@ -160,6 +160,16 @@ class SecretResource(Resource):
     purpose: str | None = Field(default=None, description="database_password or cache_auth when the service made the secret for a request's own credential.")
 
 
+class FrontDoor(BaseModel):
+    """A cluster's front door: the public address, the Gateway in front of it, and the certificate for its hostnames."""
+    address: str | None = Field(default=None, description="The public IP address; the operator's DNS points the hostnames at it.")
+    hostnames: list[str] = Field(default_factory=list)
+    gateway: str = Field(default="cloudinfra-gateway/public", description="namespace/name of the Gateway a workload's HTTPRoute names as its parent.")
+    certificate: str | None = Field(default=None, description="The managed certificate's state (PROVISIONING until DNS points at the address, then ACTIVE); none for plain HTTP.")
+    address_name: str
+    certificate_name: str | None = None
+
+
 class ClusterResource(Resource):
     kind: Literal[ResourceKind.cluster] = ResourceKind.cluster
     location: str
@@ -174,6 +184,7 @@ class ClusterResource(Resource):
     network: str | None = None
     node_service_account: str | None = Field(default=None, description="The account the nodes run as, made for this cluster; none on a cluster made before.")
     registries: list[str] = Field(default_factory=list, description="Artifact Registry repositories the nodes may pull images from.")
+    public: FrontDoor | None = Field(default=None, description="The front door, when the request asked for one.")
 
 
 class LoadBalancerResource(Resource):

@@ -13,6 +13,7 @@ from cloudinfra.providers.gcp.kubernetes import ADMISSION, NO_PUBLIC_ENTRY, TENA
 
 POLICY = f"{ADMISSION}/validatingadmissionpolicies/{NO_PUBLIC_ENTRY}"
 BINDING = f"{ADMISSION}/validatingadmissionpolicybindings/{NO_PUBLIC_ENTRY}"
+ROUTES_ROLE = "/apis/rbac.authorization.k8s.io/v1/clusterroles/cloudinfra-routes"
 
 
 def provision(tmp_path, clusters):
@@ -24,7 +25,7 @@ def provision(tmp_path, clusters):
 def test_every_cluster_gets_the_policy_and_the_requests_namespace_its_label(tmp_path):
     fake, response = provision(tmp_path, [{"name": "blue"}, {"name": "green"}])
     for cluster in response.resources.cluster:
-        assert {path for endpoint, path in fake.cluster_objects if endpoint == cluster.endpoint} == {POLICY, BINDING}
+        assert {path for endpoint, path in fake.cluster_objects if endpoint == cluster.endpoint} == {POLICY, BINDING, ROUTES_ROLE}
         assert fake.namespace_labels[(cluster.endpoint, "shop")]["cloudinfra-tenant"] == "true"
         binding = fake.cluster_objects[(cluster.endpoint, BINDING)]
         assert binding["spec"]["matchResources"]["namespaceSelector"] == {"matchLabels": TENANT} and binding["spec"]["validationActions"] == ["Deny"]

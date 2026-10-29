@@ -13,6 +13,7 @@ from .request import (
     LifetimeRequest,
     LoadBalancerRequest,
     NetworkRequest,
+    PublicRequest,
     QueueRequest,
     SecretRequest,
     StorageRequest,
@@ -59,6 +60,7 @@ from .response import (
 __all__ = ["RESOURCE_KINDS", "AcceleratorRequest", "AccessGrant", "AccessRequest", "AutostopRequest", "CacheRequest", "CacheResource", "ClusterRequest", "ClusterResource",
            "ComputeRequest", "ComputeResource", "ConnectInfo", "CostEstimate", "CostLine", "Credentials", "DatabaseRequest", "DatabaseResource", "Endpoints", "ErrorCode",
            "ErrorDetail", "FirewallRule", "Grant", "Health", "InfrastructureError", "InfrastructureRequest", "InfrastructureResponse", "Lifecycle", "LifetimeRequest",
-           "ListResponse", "LoadBalancerRequest", "LoadBalancerResource", "NetworkRequest", "NetworkResource", "OperationRecord", "OperationStatus", "PlanResponse",
+           "ListResponse", "LoadBalancerRequest", "LoadBalancerResource", "NetworkRequest",
+    "PublicRequest", "NetworkResource", "OperationRecord", "OperationStatus", "PlanResponse",
            "PlannedResource", "ProfileInfo", "QueueRequest", "QueueResource", "RequestStatus", "ResourceKind", "ResourceKindsResponse", "ResourceResponse", "ResourceStatus",
            "Resources", "SecretRequest", "SecretResource", "StorageRequest", "StorageResource", "Usage", "ValidationResponse"]

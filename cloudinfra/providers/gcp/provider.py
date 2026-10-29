@@ -76,6 +76,11 @@ class GCPProvider(CloudProvider):
                 problems.append(version)
         for cluster in request.clusters():
             problems.extend(translate.cluster_problems(cluster))
+            outside = [name for name in (cluster.public.hostnames if cluster.public else [])
+                       if not any(name == domain or name.endswith("." + domain) for domain in self.settings.public_domains)]
+            if outside:
+                problems.append(Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, f"Not in a domain the operator lets a front door serve: {', '.join(outside)}; "
+                                        f"allowed: {', '.join(self.settings.public_domains) or 'none (plain HTTP on the address only)'}", "cluster.public.hostnames"))
             if cluster.registries and not self.settings.cluster_node_accounts:
                 problems.append(Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, "This operator runs cluster nodes as the project's default account, so a request "
                                         "cannot give them registries (providers.gcp.cluster_node_accounts)", "cluster.registries"))
@@ -149,11 +154,14 @@ class GCPProvider(CloudProvider):
         for cluster in request.clusters():
             mapping = "container.clusters.create" + (", iam.serviceAccounts.create, projects.setIamPolicy (node role)" if self.settings.cluster_node_accounts else "")
             mapping += ", artifactregistry.repositories.setIamPolicy" if cluster.registries else ""
+            mapping += ", compute.globalAddresses.insert" + (", compute.sslCertificates.insert" if cluster.public and cluster.public.hostnames else "") \
+                if cluster.public else ""
             planned.append(PlannedResource(kind="cluster", name=f"{prefix}-{cluster.cluster_name}", provider_mapping=mapping,
                                            spec={"cluster": cluster.cluster_name, "location": zone, "registries": list(cluster.registries),
                                                  "machine_type": translate.machine_type(cluster.node_cpu, cluster.node_memory_gb),
                                                  "node_count": cluster.node_count, "node_disk_gb": cluster.node_disk_gb, "private_nodes": cluster.private_nodes,
-                                                 "network": own_network or cluster.network_id or self.settings.default_network}))
+                                                 "network": own_network or cluster.network_id or self.settings.default_network,
+                                                 "public": {"hostnames": list(cluster.public.hostnames)} if cluster.public else None}))
         if request.load_balancer:
             balancer = request.load_balancer
             group = request.group(balancer.backend_group)

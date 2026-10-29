@@ -42,6 +42,42 @@ def no_public_entry(labels: dict[str, str]) -> list[tuple[str, dict]]:
     return [(f"{ADMISSION}/validatingadmissionpolicies", policy), (f"{ADMISSION}/validatingadmissionpolicybindings", binding)]
 
 
+GATEWAY_API = "/apis/gateway.networking.k8s.io/v1"
+DOOR_NAMESPACE, DOOR = "cloudinfra-gateway", "public"
+GATEWAYS = f"{GATEWAY_API}/namespaces/{DOOR_NAMESPACE}/gateways"
+ROUTES = f"{GATEWAY_API}/namespaces/{DOOR_NAMESPACE}/httproutes"
+GATEWAY_CLASS = "gke-l7-global-external-managed"
+
+
+def routes_role(labels: dict[str, str]) -> tuple[str, dict]:
+    """HTTPRoutes added to the built-in edit role by aggregation: Kubernetes' Gateway API ships no such rules, and a
+    namespace with edit then attaches its workloads to the front door. Gateways stay out of edit."""
+    return ("/apis/rbac.authorization.k8s.io/v1/clusterroles",
+            {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole",
+             "metadata": {"name": "cloudinfra-routes", "labels": {**labels, "rbac.authorization.k8s.io/aggregate-to-edit": "true"}},
+             "rules": [{"apiGroups": ["gateway.networking.k8s.io"], "resources": ["httproutes"],
+                        "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]}]})
+
+
+def front_door(tenant: str, address_name: str, certificate_name: str | None, labels: dict[str, str]) -> list[tuple[str, dict]]:
+    """The Gateway on the reserved address, taking routes from the request's namespace only (matched by its name, which
+    no tenant can change), and with a certificate a route that sends plain HTTP to HTTPS."""
+    from_tenant = {"namespaces": {"from": "Selector", "selector": {"matchLabels": {"kubernetes.io/metadata.name": tenant}}}}
+    if certificate_name:
+        listeners = [{"name": "https", "protocol": "HTTPS", "port": 443, "allowedRoutes": from_tenant,
+                      "tls": {"mode": "Terminate", "options": {"networking.gke.io/pre-shared-certs": certificate_name}}},
+                     {"name": "http", "protocol": "HTTP", "port": 80, "allowedRoutes": {"namespaces": {"from": "Same"}}}]
+    else:
+        listeners = [{"name": "http", "protocol": "HTTP", "port": 80, "allowedRoutes": from_tenant}]
+    found = [(GATEWAYS, {"apiVersion": "gateway.networking.k8s.io/v1", "kind": "Gateway", "metadata": {"name": DOOR, "namespace": DOOR_NAMESPACE, "labels": labels},
+                         "spec": {"gatewayClassName": GATEWAY_CLASS, "addresses": [{"type": "NamedAddress", "value": address_name}], "listeners": listeners}})]
+    if certificate_name:
+        found.append((ROUTES, {"apiVersion": "gateway.networking.k8s.io/v1", "kind": "HTTPRoute", "metadata": {"name": "to-https", "namespace": DOOR_NAMESPACE, "labels": labels},
+                               "spec": {"parentRefs": [{"name": DOOR, "sectionName": "http"}],
+                                        "rules": [{"filters": [{"type": "RequestRedirect", "requestRedirect": {"scheme": "https", "statusCode": 301}}]}]}}))
+    return found
+
+
 def ca_context(ca_certificate: str) -> ssl.SSLContext:
     """A TLS context that trusts only the cluster's own CA (GKE gives it base64-encoded PEM)."""
     return ssl.create_default_context(cadata=base64.b64decode(ca_certificate).decode())
@@ -83,6 +119,9 @@ class KubeApi:
             self.request("PUT", path, {**body, "metadata": {**body["metadata"], "resourceVersion": found["metadata"]["resourceVersion"]}})
         else:
             self.request("POST", collection, body)
+
+    def delete(self, path: str) -> None:
+        self.request("DELETE", path, missing_ok=True)
 
     def put_role_binding(self, namespace: str, name: str, cluster_role: str, member: str, labels: dict[str, str]) -> None:
         """Create or replace one RoleBinding of one member to one built-in ClusterRole, in the namespace only."""
