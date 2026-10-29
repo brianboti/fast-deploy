@@ -11,14 +11,15 @@ class GcpQueue:
 
     def create(self, spec, planned, ctx) -> QueueResource:
         topic = f"projects/{self.api.project}/topics/{planned.name}"
+        subscription = f"projects/{self.api.project}/subscriptions/{planned.name}" if spec.subscription else None
+        resource = QueueResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region, provider_id=topic, topic=topic,
+                                 subscription=subscription, retention_hours=spec.retention_hours, status=ResourceStatus.READY, labels=translate.labels(ctx))
         self.api.put(f"{PUBSUB}/{topic}", json={"labels": translate.labels(ctx)})
-        subscription = None
-        if spec.subscription:
-            subscription = f"projects/{self.api.project}/subscriptions/{planned.name}"
+        ctx.accepted(resource.model_copy(update={"status": ResourceStatus.CREATING}))  # the topic is known from here: a failed subscription still deletes it
+        if subscription:
             self.api.put(f"{PUBSUB}/{subscription}", json={"topic": topic, "ackDeadlineSeconds": spec.ack_deadline_seconds, "messageRetentionDuration": f"{spec.retention_hours * 3600}s",
                                                             "expirationPolicy": {}, "labels": translate.labels(ctx)})
-        return QueueResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region, provider_id=topic, topic=topic,
-                             subscription=subscription, retention_hours=spec.retention_hours, status=ResourceStatus.READY, labels=translate.labels(ctx))
+        return resource
 
     def get(self, resource: QueueResource) -> QueueResource:
         try:

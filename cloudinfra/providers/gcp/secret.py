@@ -15,14 +15,15 @@ class GcpSecret:
 
     def create(self, spec, planned, ctx) -> SecretResource:
         resource_name = f"projects/{self.api.project}/secrets/{planned.name}"
+        resource = SecretResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region, provider_id=resource_name,
+                                  resource_name=resource_name, versions=0, status=ResourceStatus.READY, labels=translate.labels(ctx), purpose=planned.spec.get("purpose"))
         self.api.post(f"{SECRETS}/projects/{self.api.project}/secrets", json={"replication": {"automatic": {}}, "labels": translate.labels(ctx)}, secretId=planned.name)
-        versions = 0
-        if spec.generate_value:
-            payload = base64.b64encode(secrets.token_urlsafe(32).encode()).decode()
-            self.api.post(f"{SECRETS}/{resource_name}:addVersion", json={"payload": {"data": payload}})
-            versions = 1
-        return SecretResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region, provider_id=resource_name,
-                              resource_name=resource_name, versions=versions, status=ResourceStatus.READY, labels=translate.labels(ctx), purpose=planned.spec.get("purpose"))
+        if not spec.generate_value:
+            return resource
+        ctx.accepted(resource.model_copy(update={"status": ResourceStatus.CREATING}))  # known from here: a failed first version still deletes it
+        payload = base64.b64encode(secrets.token_urlsafe(32).encode()).decode()
+        self.api.post(f"{SECRETS}/{resource_name}:addVersion", json={"payload": {"data": payload}})
+        return resource.model_copy(update={"versions": 1})
 
     def put_value(self, resource: SecretResource, value: str, ctx) -> SecretResource:
         payload = base64.b64encode(value.encode()).decode()

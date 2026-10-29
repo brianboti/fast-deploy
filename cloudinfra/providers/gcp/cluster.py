@@ -52,12 +52,13 @@ class GcpCluster:
             cluster["initialClusterVersion"] = spec.kubernetes_version
         if spec.private_nodes:
             cluster["privateClusterConfig"] = {"enablePrivateNodes": True, "enablePrivateEndpoint": False}
-        operation = self.api.post(self._clusters(location), json={"cluster": cluster})
-        self.api.wait_container(operation)
         resource = ClusterResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region, zone=location,
                                    provider_id=f"{self._clusters(location)}/{planned.name}", location=location, node_count=spec.node_count, machine_type=planned.spec["machine_type"],
-                                   node_disk_gb=planned.spec.get("node_disk_gb"),
+                                   node_disk_gb=planned.spec.get("node_disk_gb"), status=ResourceStatus.CREATING,
                                    node_pool="default-pool", network=network.id if network else None, labels=translate.labels(ctx))
+        operation = self.api.post(self._clusters(location), json={"cluster": cluster})
+        ctx.accepted(resource)  # known from here: a failed wait, or a failed namespace, still deletes the cluster
+        self.api.wait_container(operation)
         resource = self.get(resource)
         self.kube(resource.endpoint, resource.ca_certificate).ensure_namespace(ctx.name, {"managed-by": "cloudinfra", "cloudinfra-request": ctx.request_id})
         return resource.model_copy(update={"namespace": ctx.name})

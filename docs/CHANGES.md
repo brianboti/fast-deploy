@@ -1,3 +1,22 @@
+# Unreleased: a resource Google accepted is deleted even when the wait for it fails
+
+Found on 2026-10-29 in a run on Google Kubernetes Engine (docs/DELIVERY-SPIKE.md section 11): Google accepted a
+cluster's create, the request then failed while waiting on the operation, and the cluster was saved `FAILED` with no
+provider id. Cleanup and destroy act only on resources with one, so the cluster kept running, and billing, after its
+request was destroyed, until it was deleted by hand.
+
+- **Known before the wait.** An adapter now calls `ProvisionContext.accepted(resource)` as soon as the provider has taken
+  a create, and the orchestrator saves the resource with its provider id before the adapter waits. A failure while
+  waiting (an expired token, a timeout, a 5xx) leaves it `FAILED` with its id, and cleanup, or destroy when the operator
+  keeps failures, deletes it. A delete that finds nothing passes, as before.
+- **Every kind that waits, and every part.** Machine, disk, network, database, cache, cluster and load balancer. A
+  network is recorded with its subnet and firewall rules once Google takes its name, and with its reserved services range
+  before the peering; a load balancer with each piece as Google takes it; a database before its own database and user
+  are made. A queue's topic is recorded before its subscription, a generated secret before its first version.
+- **Restart.** A request interrupted while provisioning deletes what it had begun to create along with what it created.
+  The error now says that only a resource whose create call had not yet been answered at the restart can exist at the
+  provider without an id here.
+
 # Unreleased: clusters take grants, as RoleBindings in one namespace
 
 The first step of the delivery service's phase 2 (docs/DELIVERY-SPEC.md, section 4). IAM's Kubernetes roles cannot be

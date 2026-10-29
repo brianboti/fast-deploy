@@ -170,13 +170,16 @@ class Orchestrator:
         request_id, status = record["request_id"], record["status"]
         if status == RequestStatus.PROVISIONING:
             for resource in self.state.resources_of(request_id):
-                if resource.provider_id is None and resource.status in (ResourceStatus.PENDING, ResourceStatus.CREATING):
+                if resource.status in (ResourceStatus.PENDING, ResourceStatus.CREATING):
                     self.state.save_resource(resource.model_copy(update={"status": ResourceStatus.FAILED}))
+            # a resource whose create the provider had taken has its id here (ProvisionContext.accepted) and goes with the rest
             created = [item for item in self.state.resources_of(request_id) if item.provider_id and item.status != ResourceStatus.DELETED]
             cleaning = bool(created) and self.config.cleanup_on_failure and record["provider"] in self.registry.names()
-            what = "What it created is deleted now, as after any failure" if cleaning else "Destroy the request to delete what it created"
-            error = InfrastructureError(ErrorCode.PROVISIONING_FAILED, f"Provisioning was interrupted by a restart of the service. {what}; a resource being created "
-                                        "at that moment may exist at the provider without an id here, and its labels name this request", {"cause": "INTERRUPTED"})
+            what = ("What it created, or had begun to create, is deleted now, as after any failure" if cleaning
+                    else "Destroy the request to delete what it created, or had begun to create")
+            error = InfrastructureError(ErrorCode.PROVISIONING_FAILED, f"Provisioning was interrupted by a restart of the service. {what}; only a resource whose "
+                                        "create call had not yet been answered at that moment may exist at the provider without an id here, and its labels name "
+                                        "this request", {"cause": "INTERRUPTED"})
             self.state.set_request_status(request_id, RequestStatus.FAILED, error=error.detail().model_dump(mode="json"))
             if cleaning:
                 self.executor.submit(self._cleanup, request_id, created, self._context(record), self.registry.get(record["provider"]))
@@ -367,6 +370,14 @@ class Orchestrator:
             event("provisioning_started", provider=provider.name, resources=len(planned))
             created, computes, network, current = [], {}, None, None
             links = self._links(planned)
+
+            def accepted(resource):
+                # the provider took a create: from here the resource is in state with its provider id, so that cleanup, destroy
+                # and a restart delete it even when the wait for it fails; one already created (a network gaining parts) is updated
+                resource = resource.model_copy(update={"created_at": resource.created_at or self.state_now()})
+                self.state.save_resource(resource)
+                created[:] = [resource if item.id == resource.id else item for item in created]
+            ctx.on_accepted = accepted
             try:
                 self._check_quota(provider, request, planned)
                 for item in planned:
@@ -436,8 +447,10 @@ class Orchestrator:
                 error = InfrastructureError(ErrorCode.PROVISIONING_FAILED, f"Provisioning failed{where}: {cause.message}", {"cause": cause.code.value, **cause.details},
                                             resource=current.spec["resource_id"] if current is not None else None)
                 if current is not None and current.spec["resource_id"] not in [item.id for item in created]:
-                    failed = self.state.get_resource(current.spec["resource_id"])
-                    self.state.save_resource(failed.model_copy(update={"status": ResourceStatus.FAILED, "error": cause.detail()}))
+                    failed = self.state.get_resource(current.spec["resource_id"]).model_copy(update={"status": ResourceStatus.FAILED, "error": cause.detail()})
+                    self.state.save_resource(failed)
+                    if failed.provider_id:  # the provider took its create before the failure: it may exist, so it is cleaned up with the rest
+                        created.append(failed)
                 event("provisioning_failed", error=error.detail().model_dump(mode="json"), created=[item.id for item in created])
                 cleanup = self._cleanup(request_id, created, ctx, provider) if self.config.cleanup_on_failure else {"policy": "kept", "deleted": [], "remaining": [item.id for item in created]}
                 error.details["cleanup"] = cleanup
@@ -447,6 +460,7 @@ class Orchestrator:
                                             detail=f"cleanup: {len(cleanup['deleted'])} deleted, {len(cleanup['remaining'])} remaining")
             finally:
                 ctx.database_password = None  # written to its secret, or lost with a failed request; never kept
+                ctx.on_accepted = None
 
     def _create_secret(self, request: InfrastructureRequest, item: PlannedResource, ctx: ProvisionContext, provider: CloudProvider, created: list):
         """A secret the request asked for, or one the service makes for the request's own credentials: the generated
