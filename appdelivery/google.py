@@ -13,7 +13,10 @@ from .errors import DeliveryError, ErrorCode
 METADATA = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
 IAM_CREDENTIALS = "https://iamcredentials.googleapis.com/v1"
 SECRET_MANAGER = "https://secretmanager.googleapis.com/v1"  # noqa: S105 - an API address, not a credential
-SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+# userinfo.email lets GKE see the account as its email, which is how the request's RoleBinding names it; without it a
+# cluster sees only the account's number and refuses everything (found on a real cluster on 2026-10-29;
+# https://cloud.google.com/kubernetes-engine/docs/how-to/role-based-access-control)
+SCOPES = ["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email"]
 LIFETIME_SECONDS = 900  # long enough for one machine's pull, short enough to be worthless soon after
 
 
@@ -63,7 +66,7 @@ class ServiceAccountTokens:
         for refreshed in (False, True):
             try:
                 response = self.client.post(f"{IAM_CREDENTIALS}/projects/-/serviceAccounts/{service_account}:generateAccessToken",
-                                            headers={"Authorization": f"Bearer {self.host_token()}"}, json={"scope": [SCOPE], "lifetime": f"{LIFETIME_SECONDS}s"})
+                                            headers={"Authorization": f"Bearer {self.host_token()}"}, json={"scope": SCOPES, "lifetime": f"{LIFETIME_SECONDS}s"})
             except httpx.HTTPError as exc:
                 raise DeliveryError(ErrorCode.GOOGLE_AUTH_FAILED, f"Google's IAM Credentials API did not answer: {type(exc).__name__}") from None
             if response.status_code != 401 or refreshed or not hasattr(self.host_token, "invalidate"):

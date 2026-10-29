@@ -129,6 +129,19 @@ def test_an_unhealthy_release_puts_the_previous_one_back_and_keeps_its_rollback(
     assert SECRET_VALUE not in caplog.text
 
 
+def test_a_rollout_kubernetes_gave_up_on_puts_the_previous_one_back_while_the_timeout_is_still_shown():
+    """On a real cluster the timed-out condition outlived the restore and was read as the restore failing (2026-10-29)."""
+    world = World(cluster=True)
+    deploy(world)
+    second = deploy(world, V2)
+    world.kube.slow_images.add(V3)
+    world.kube.lagging = True
+    failed = deploy(world, V3)
+    assert failed.status == "FAILED" and "timed out progressing" in failed.targets[0].error["message"]
+    assert "previous release runs again" in failed.targets[0].error["message"] and world.kube.image() == V2
+    assert world.delivery.get(second.release_id, world.team).can_roll_back
+
+
 def test_a_workloads_first_release_that_fails_leaves_nothing():
     world = World(cluster=True)
     world.kube.bad_images.add(V1)

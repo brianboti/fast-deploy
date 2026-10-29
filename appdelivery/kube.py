@@ -55,7 +55,8 @@ class KubeClient:
             return None
         if response.status_code in (401, 403):
             raise DeliveryError(ErrorCode.CLUSTER_UNREACHABLE, f"The cluster refused this environment's service account ({response.status_code}) for {method} {path}: it "
-                                "needs the request's admin grant (its namespace) and container.clusterViewer", {"path": path, "status": response.status_code})
+                                "needs the request's admin grant (its namespace) and container.clusterViewer",
+                                {"path": path, "status": response.status_code, "said": response.text[:300]})
         if response.status_code >= 400:
             raise DeliveryError(ErrorCode.CLUSTER_ERROR, f"The cluster's API answered {response.status_code} to {method} {path}",
                                 {"path": path, "status": response.status_code, "said": response.text[:300]})
@@ -147,7 +148,9 @@ class ClusterDeployer:
             current = status.get("observedGeneration", 0) >= deployment.get("metadata", {}).get("generation", 1)
             if current and status.get("updatedReplicas", 0) == wanted and status.get("availableReplicas", 0) >= wanted and status.get("replicas", 0) == wanted:
                 return True, ""
-            for condition in status.get("conditions", []):
+            # a timed-out condition stays on the Deployment until Kubernetes has seen the next change, as after putting the
+            # previous release back (found on a real cluster on 2026-10-29), so it counts only for the generation now wanted
+            for condition in status.get("conditions", []) if current else []:
                 if condition.get("type") == "Progressing" and condition.get("reason") == "ProgressDeadlineExceeded":
                     return False, condition.get("message") or "Kubernetes gave up: the progress deadline passed"
             stuck = self._stuck(kube, where, release_id)
