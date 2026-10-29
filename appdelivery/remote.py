@@ -1,6 +1,6 @@
 """The only module that runs a command, and only these: the gcloud CLI and Cosign, each with a fixed argument list built
-here from validated values, never a shell string. Phase 1's machine session (gcloud compute ssh through IAP) joins them
-here. Everything else in the package calls these functions, so tests replace one runner."""
+here from validated values, never a shell string. Everything else in the package calls these functions, so tests replace
+one runner."""
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -46,3 +46,13 @@ def cosign_verify_attestation(image: str, signer, attestation_type: str, docker_
         argv += ["--certificate-identity", signer.identity, "--certificate-oidc-issuer", signer.issuer]
     argv += ["--output", "json", image]
     return runner(argv, None, {**(base_env or {}), "DOCKER_CONFIG": docker_config}, 120)
+
+
+def gcloud_ssh(name: str, zone: str, project: str, service_account: str, stdin: str, runner: Runner = run, timeout: int = 600) -> Completed:
+    """Run `sudo bash -s` on a machine through IAP's tunnel as the environment's service account (OS Login), with the host
+    script and its inputs on standard input. IAP authenticates the path to the instance, and gcloud keeps each machine's
+    host key under its numeric id, so a new machine's key is accepted on first contact and a replaced machine never
+    inherits an old one."""
+    argv = ["gcloud", "compute", "ssh", name, "--zone", zone, "--project", project, "--tunnel-through-iap", "--impersonate-service-account", service_account,
+            "--quiet", "--strict-host-key-checking=no", "--command", "sudo bash -s"]
+    return runner(argv, stdin, None, timeout)
