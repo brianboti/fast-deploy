@@ -319,7 +319,8 @@ class FakeGcpApi(GcpApi):
             if "/" in (cluster.get(field) or ""):  # as GKE does: these fields take a name only
                 raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f'Google Cloud refused the request: Malformed value for {field} field: "{cluster[field]}".',
                                           {"http_status": 400})
-        self.clusters[(found.group(1), cluster["name"])] = {**cluster, "status": "RUNNING", "endpoint": "35.201.0.7", "currentMasterVersion": "1.31.1-gke.1", "createTime": "2026-10-28T10:00:00Z",
+        endpoint = f"35.201.0.{7 + len(self.clusters)}"  # each cluster its own address
+        self.clusters[(found.group(1), cluster["name"])] = {**cluster, "status": "RUNNING", "endpoint": endpoint, "currentMasterVersion": "1.31.1-gke.1", "createTime": "2026-10-28T10:00:00Z",
                                                             "masterAuth": {"clusterCaCertificate": "RkFLRSBDQQ=="},
                                                             "currentNodeCount": cluster["nodePools"][0]["initialNodeCount"]}
         return {"name": f"operation-{self.counter}", "status": "DONE", "selfLink": f"https://container.googleapis.com/v1/projects/{self.project}/locations/{found.group(1)}/operations/op"}

@@ -1,3 +1,15 @@
+# Unreleased: a request may carry several clusters
+
+Phase 3, step 1 of the delivery service (docs/DELIVERY-SPEC.md, section 4). `cluster` takes one cluster or a list, as
+`compute`, `queue` and `secret` do:
+
+- **Names.** Each cluster has an optional `name` (12 characters at most, as a group's), part of its provider name
+  `<request>-<name>`; `cluster` when omitted, so one cluster is still `<request>-cluster`. Required and unique in a list
+  of several; at most 4 clusters per request.
+- **Each its own.** Every cluster has its own namespace named after the request and its own grants; destroying the
+  request deletes them all.
+- **Limits.** `max_cluster_nodes` now counts the nodes of every cluster of the request.
+
 # Unreleased: a resource Google accepted is deleted even when the wait for it fails
 
 Found on 2026-10-29 in a run on Google Kubernetes Engine (docs/DELIVERY-SPIKE.md section 11): Google accepted a

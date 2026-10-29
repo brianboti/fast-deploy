@@ -81,7 +81,7 @@ database: {engine: postgresql, version: "16", size: small, storage_gb: 10, high_
 cache:    {engine: redis, memory_gb: 2, high_availability: false}
 queue:    [{name: events}, {name: jobs, subscription: false}]
 secret:   [{name: api-key, generate_value: true}, {name: token}]
-cluster:  {node_count: 2, node_cpu: 2, node_memory_gb: 8}
+cluster:  {node_count: 2, node_cpu: 2, node_memory_gb: 8}   # one cluster, or a list of named ones (name: blue)
 load_balancer: {type: http, port: 8080, backend_group: web, health_check_path: /healthz}
 lifetime: {hours: 168, on_expiry: stop}       # optional; none unless asked or set by the operator
 access:   [{member: "group:data-team@example.com", level: use}]

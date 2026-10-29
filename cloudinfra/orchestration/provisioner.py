@@ -307,7 +307,7 @@ class Orchestrator:
     def _existing_networks(self, request: InfrastructureRequest, principal, provider: CloudProvider) -> dict[str, NetworkResource]:
         """The networks a request names by id (network_id on compute, database, cache, cluster): visible, ready, same provider and region."""
         found = {}
-        for block in (*request.compute_groups(), request.database, request.cache, request.cluster):
+        for block in (*request.compute_groups(), request.database, request.cache, *request.clusters()):
             network_id = getattr(block, "network_id", None)
             if not network_id:
                 continue
@@ -402,8 +402,9 @@ class Orchestrator:
                     elif item.kind == "secret":
                         resource = self._create_secret(request, item, ctx, provider, created)
                     elif item.kind == "cluster":
-                        joined = network or existing.get(request.cluster.network_id)
-                        resource = provider.create_cluster(request.cluster, item, ctx, joined)
+                        cluster = request.cluster_named(item.spec.get("cluster"))
+                        joined = network or existing.get(cluster.network_id)
+                        resource = provider.create_cluster(cluster, item, ctx, joined)
                     elif item.kind == "load_balancer":
                         backends = [computes[name] for name in item.spec["backends"] if name in computes] or list(external_backends)
                         group = request.group(request.load_balancer.backend_group)

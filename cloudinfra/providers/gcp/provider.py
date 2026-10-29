@@ -74,8 +74,8 @@ class GCPProvider(CloudProvider):
             version = translate.cache_version(request.cache)
             if isinstance(version, Problem):
                 problems.append(version)
-        if request.cluster:
-            problems.extend(translate.cluster_problems(request.cluster))
+        for cluster in request.clusters():
+            problems.extend(translate.cluster_problems(cluster))
         return problems
 
     def plan(self, request: InfrastructureRequest, ctx: ProvisionContext) -> list[PlannedResource]:
@@ -140,11 +140,11 @@ class GCPProvider(CloudProvider):
                 planned.append(PlannedResource(kind="secret", name=f"{prefix}-{secret}-{ctx.request_id[:6]}",
                                                provider_mapping="secretmanager.secrets.create, secretmanager.secrets.addVersion",
                                                spec={"secret": secret, "versions": 1, "purpose": purpose}))
-        if request.cluster:
-            planned.append(PlannedResource(kind="cluster", name=f"{prefix}-cluster", provider_mapping="container.clusters.create",
-                                           spec={"location": zone, "machine_type": translate.machine_type(request.cluster.node_cpu, request.cluster.node_memory_gb),
-                                                 "node_count": request.cluster.node_count, "node_disk_gb": request.cluster.node_disk_gb, "private_nodes": request.cluster.private_nodes,
-                                                 "network": own_network or request.cluster.network_id or self.settings.default_network}))
+        for cluster in request.clusters():
+            planned.append(PlannedResource(kind="cluster", name=f"{prefix}-{cluster.cluster_name}", provider_mapping="container.clusters.create",
+                                           spec={"cluster": cluster.cluster_name, "location": zone, "machine_type": translate.machine_type(cluster.node_cpu, cluster.node_memory_gb),
+                                                 "node_count": cluster.node_count, "node_disk_gb": cluster.node_disk_gb, "private_nodes": cluster.private_nodes,
+                                                 "network": own_network or cluster.network_id or self.settings.default_network}))
         if request.load_balancer:
             balancer = request.load_balancer
             group = request.group(balancer.backend_group)

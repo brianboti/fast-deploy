@@ -29,6 +29,7 @@ GROUP = r"^[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?$"  # a group's, queue's or secret's
 RESOURCE_KINDS = ("network", "storage", "compute", "database", "cache", "queue", "secret", "cluster", "load_balancer")
 MAX_QUEUES = 8
 MAX_SECRETS = 16
+MAX_CLUSTERS = 4
 
 
 class StrictModel(BaseModel):
@@ -171,7 +172,10 @@ class SecretRequest(StrictModel):
 class ClusterRequest(StrictModel):
     """A managed Kubernetes cluster with one node pool of identical nodes, and one namespace named after the request where
     the request's members are granted access (use: view, admin: edit). Fetching credentials needs the provider's
-    project-level cluster viewer role; what runs in the cluster is the Application Layer's."""
+    project-level cluster viewer role; what runs in the cluster is the Application Layer's. A request may carry one
+    cluster or a list of them."""
+    name: str | None = Field(default=None, pattern=GROUP, description="The cluster's name, part of its provider name (<request>-<name>); cluster when omitted. "
+                                                                      "Required and unique when a request has several clusters.")
     node_count: int = Field(default=1, ge=1, le=100, description="Nodes in the pool.")
     node_cpu: int = Field(default=2, ge=1, le=96, description="Virtual CPUs per node.")
     node_memory_gb: int = Field(default=8, ge=1, le=640, description="Memory per node, in GB.")
@@ -185,6 +189,10 @@ class ClusterRequest(StrictModel):
     @classmethod
     def _network_id(cls, value):
         return None if value is None else validation.check_identifier(value, "cluster.network_id")
+
+    @property
+    def cluster_name(self) -> str:
+        return self.name or "cluster"
 
 
 class LoadBalancerRequest(StrictModel):
@@ -244,7 +252,7 @@ class InfrastructureRequest(StrictModel):
     cache: CacheRequest | None = None
     queue: QueueRequest | list[QueueRequest] | None = Field(default=None, description="One topic, or a list of them.")
     secret: SecretRequest | list[SecretRequest] | None = Field(default=None, description="One secret container, or a list of them.")
-    cluster: ClusterRequest | None = None
+    cluster: ClusterRequest | list[ClusterRequest] | None = Field(default=None, description="One cluster, or a list of them.")
     load_balancer: LoadBalancerRequest | None = None
     lifetime: LifetimeRequest | None = Field(default=None, description="How long the request lives; the operator's default applies when omitted, and there is none unless the operator sets one.")
     access: list[AccessRequest] = Field(default_factory=list, max_length=20, description="People, groups or service accounts to grant access to what is created; "
@@ -274,7 +282,7 @@ class InfrastructureRequest(StrictModel):
 
     @model_validator(mode="after")
     def _consistent(self):
-        for kind in ("compute", "queue", "secret"):
+        for kind in ("compute", "queue", "secret", "cluster"):
             if getattr(self, kind) == []:
                 raise ValueError(f"{kind}: a list cannot be empty")
         if not any(getattr(self, kind) for kind in RESOURCE_KINDS):
@@ -293,6 +301,15 @@ class InfrastructureRequest(StrictModel):
                 raise ValueError("compute: every group of a list needs a group name")
             if len(set(names)) != len(names):
                 raise ValueError("compute: group names must be unique")
+        clusters = self.clusters()
+        if len(clusters) > MAX_CLUSTERS:
+            raise ValueError(f"cluster: at most {MAX_CLUSTERS} per request")
+        if len(clusters) > 1:
+            names = [cluster.name for cluster in clusters]
+            if any(name is None for name in names):
+                raise ValueError("cluster: every cluster of a list needs a name")
+            if len(set(names)) != len(names):
+                raise ValueError("cluster: names must be unique")
         for kind, items, limit in (("queue", self.queues(), MAX_QUEUES), ("secret", self.secrets(), MAX_SECRETS)):
             names = [item.name for item in items]
             if len(names) > limit:
@@ -324,6 +341,15 @@ class InfrastructureRequest(StrictModel):
 
     def secrets(self) -> list[SecretRequest]:
         return [] if self.secret is None else (self.secret if isinstance(self.secret, list) else [self.secret])
+
+    def clusters(self) -> list[ClusterRequest]:
+        return [] if self.cluster is None else (self.cluster if isinstance(self.cluster, list) else [self.cluster])
+
+    def cluster_named(self, name: str | None) -> ClusterRequest | None:
+        clusters = self.clusters()
+        if name is None:  # a plan made before clusters had names
+            return clusters[0] if len(clusters) == 1 else None
+        return next((cluster for cluster in clusters if cluster.cluster_name == name), None)
 
     def group(self, name: str | None) -> ComputeRequest | None:
         groups = self.compute_groups()

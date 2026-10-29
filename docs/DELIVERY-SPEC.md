@@ -240,7 +240,70 @@ Steps, each its own pull request:
    all held. It found four defects, all fixed (GKE takes the network by name; gcloud tokens may be near expiry; the
    environment's token needs `userinfo.email` so GKE sees the account's email; a timed-out condition outlives the
    restore), and one still open in `cloudinfra`: a resource whose create fails after Google accepted it is not deleted
-   with the request.
+   with the request (fixed in #205).
+
+### Phase 3: several clusters, private images, a front door
+
+**Decided on 2026-10-29 by the operator:** the front door (a public address with HTTPS) is infrastructure, made by
+`cloudinfra`; team namespaces may not make public load balancers themselves; a request may carry several clusters.
+Checked on Google's and Kubernetes' pages first:
+
+- GKE's Gateway API is Google's recommended way in, and GKE Ingress is in maintenance mode
+  ([Ingress](https://docs.cloud.google.com/kubernetes-engine/docs/concepts/ingress)). On a Standard cluster it is turned
+  on with `networkConfig.gatewayApiConfig.channel: CHANNEL_STANDARD`, needs a VPC-native cluster (ours are) and the
+  HTTP load balancing add-on ([deploying Gateways](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/deploying-gateways)).
+  A Gateway in one namespace accepts routes from the namespaces it allows (`allowedRoutes`); a reserved address is given
+  by `NamedAddress`; a Google-managed certificate by a pre-shared certificate or a Certificate Manager map
+  ([securing Gateways](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/secure-gateway)).
+- Kubernetes' Gateway API treats making a Gateway as privileged, and ships no rules that add its kinds to `edit`
+  ([security model](https://gateway-api.sigs.k8s.io/concepts/security-model/)); routes need their own Role.
+- `edit` lets a namespace make a Service of type `LoadBalancer`, which on GKE is a public network load balancer
+  ([Service load balancers](https://docs.cloud.google.com/kubernetes-engine/docs/concepts/service-load-balancer)). A
+  ValidatingAdmissionPolicy, stable since Kubernetes 1.30 and built in, can refuse it
+  ([admission policy](https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/)).
+- Nodes pull images as the node pool's service account, which needs `roles/artifactregistry.reader`, grantable on one
+  repository; Google recommends a dedicated node account with `roles/container.defaultNodeServiceAccount` instead of
+  the Compute Engine default ([service accounts](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/service-accounts)),
+  which in a new project has no rights at all. Private nodes reach Artifact Registry through Private Google Access;
+  Docker Hub needs NAT or a copy in Artifact Registry.
+
+The design:
+
+- **Several clusters (`cloudinfra`).** `cluster` takes one cluster or a list, as `compute`, `queue` and `secret` do;
+  each has a `name` (`cluster` when omitted, so `<request>-cluster` as today), required and unique in a list. Each
+  cluster has its own namespace named after the request and its own grants.
+- **A cluster target names its cluster (`appdelivery`).** `{cluster: NAME, workload, replicas}`; `cluster: true`
+  still means the request's only cluster. Releases are keyed `cluster:<name>:<workload>`; a release stored before keeps
+  its key.
+- **Each cluster's own node account (`cloudinfra`).** A service account per cluster with
+  `roles/container.defaultNodeServiceAccount`, set as the pool's `nodeConfig.serviceAccount`, deleted with the cluster.
+  `cluster.registries` lists Artifact Registry repositories (`LOCATION-docker.pkg.dev/PROJECT/REPO`) the nodes may pull
+  from; the account gets `roles/artifactregistry.reader` on each, and on nothing else.
+- **No public load balancer from a team namespace (`cloudinfra`).** `cloudinfra` labels the namespaces it makes for
+  requests, and installs in every cluster a ValidatingAdmissionPolicy and its binding that refuse, in labelled
+  namespaces, a Service of type `LoadBalancer` and any Gateway. `edit` cannot change a namespace's labels, so a team
+  cannot lift it.
+- **The front door (`cloudinfra`).** `cluster.public: {hostnames: [...]}` turns on Gateway API, reserves a global
+  address, makes a Google-managed certificate for the hostnames, and puts one Gateway of class
+  `gke-l7-global-external-managed` in the platform's own namespace `cloudinfra-gateway`, listening on 443 (and on 80,
+  redirecting) and accepting routes only from the request's namespace, matched by its name. Members at `admin` also get
+  a Role to write HTTPRoutes and read Gateways in their namespace. The cluster reports the address, the hostnames and
+  the certificate's state; the operator points DNS at the address.
+- **Exposing a workload (`appdelivery`).** A cluster release may carry `expose: {hostname, path}`; the delivery service
+  then keeps an HTTPRoute for the workload, attached to the cluster's Gateway, sending that hostname and path to the
+  workload's Service. The plan refuses a hostname the cluster does not serve. Remove deletes the route.
+- **Still not here:** an internal (VPC-only) front door, several Gateways per cluster, Docker Hub through NAT.
+
+Steps, each its own pull request:
+
+1. **`cloudinfra`: several clusters per request.**
+2. **`appdelivery`: a cluster target names its cluster.**
+3. **`cloudinfra`: each cluster's own node account and the registries it may pull from.**
+4. **`cloudinfra`: no public load balancer from a team namespace.**
+5. **`cloudinfra`: the front door.**
+6. **`appdelivery`: exposing a workload.**
+7. **A real run on Google Cloud:** the delivery service from its image, an image from a private repository, two
+   clusters, and the workload reached over HTTPS from the internet; then everything deleted.
 
 ### Not planned: Cloud Run
 
