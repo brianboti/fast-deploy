@@ -1,3 +1,18 @@
+# Unreleased: clusters take grants, as RoleBindings in one namespace
+
+The first step of the delivery service's phase 2 (docs/DELIVERY-SPEC.md, section 4). IAM's Kubernetes roles cannot be
+limited to one cluster, so a cluster's access lives in the cluster:
+
+- **A namespace per cluster**, named after the request, made as soon as the cluster runs (`ClusterResource.namespace`).
+- **Clusters take grants.** `use` binds the member to the built-in ClusterRole `view` in that namespace, `admin` to
+  `edit`; a level change leaves one binding, a revoke none, and destroying the request needs no revoke. A
+  `serviceAccount:` or `user:` member is a `User` named by its email, a `group:` member a `Group` (Google Groups for
+  RBAC). A grant the cluster refuses is recorded on the member like any other.
+- **The cluster's own API** is called only inside the Google adapter (`providers/gcp/kubernetes.py`), with the service's
+  Google token and the cluster's CA certificate (`ClusterResource.ca_certificate`, public).
+- The connect block names the namespace; members still need the project-level `container.clusterViewer` to fetch
+  credentials, as before.
+
 # Unreleased: calls to Google are counted against the operator's project and tried again when rate limited
 
 Found while running the delivery service against `cloudinfra` on a laptop (docs/DELIVERY-SPIKE.md section 8): an access

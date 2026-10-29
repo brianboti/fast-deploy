@@ -80,3 +80,48 @@ def test_the_setting_reaches_the_client():
                                     "principals": [{"name": "app-layer", "token_sha256": "0" * 64}]})
     provider = GCPProvider(config.providers.gcp, token=lambda: "token")
     assert provider.api.quota_project == "billing-project"
+
+
+class Token:
+    """A token provider like GoogleToken: a new token after invalidate()."""
+
+    def __init__(self):
+        self.issued, self.invalidated = 0, 0
+
+    def __call__(self):
+        return f"token-{self.issued}"
+
+    def invalidate(self):
+        self.invalidated += 1
+        self.issued += 1
+
+
+def test_a_token_google_refuses_is_replaced_once():
+    """Found on a laptop on 2026-10-29: gcloud handed back a token with minutes left, cached for half an hour, and every
+    call of a long cluster creation, and of its cleanup, then failed with 401."""
+    seen, token = [], Token()
+
+    def handle(request):
+        seen.append(request.headers["Authorization"])
+        return httpx.Response(401 if request.headers["Authorization"] == "Bearer token-0" else 200, json={"projectNumber": "123"})
+    gcp = GcpApi("test-project", token, client=httpx.Client(transport=httpx.MockTransport(handle)), sleep=lambda seconds: None)
+    assert gcp.project_number() == "123" and seen == ["Bearer token-0", "Bearer token-1"] and token.invalidated == 1
+
+
+def test_a_second_refusal_is_reported():
+    token = Token()
+    gcp = GcpApi("test-project", token, client=httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(401, json={}))), sleep=lambda seconds: None)
+    with pytest.raises(InfrastructureError) as caught:
+        gcp.get(URL)
+    assert caught.value.code == ErrorCode.PROVIDER_AUTH_FAILED and token.invalidated == 1
+
+
+def test_gclouds_token_is_kept_five_minutes_and_can_be_dropped():
+    from cloudinfra.providers.gcp.auth import GoogleToken
+    now, tokens = [1000.0], iter(["first", "second", "third"])
+    google = GoogleToken(client=httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(404))), runner=lambda args: next(tokens), clock=lambda: now[0])
+    assert google() == "first" and google() == "first"
+    now[0] += 301
+    assert google() == "second"
+    google.invalidate()
+    assert google() == "third"

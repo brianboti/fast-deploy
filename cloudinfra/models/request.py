@@ -169,8 +169,9 @@ class SecretRequest(StrictModel):
 
 
 class ClusterRequest(StrictModel):
-    """A managed Kubernetes cluster with one node pool of identical nodes. Access is through the provider's IAM; the
-    Application Layer fetches its own credentials."""
+    """A managed Kubernetes cluster with one node pool of identical nodes, and one namespace named after the request where
+    the request's members are granted access (use: view, admin: edit). Fetching credentials needs the provider's
+    project-level cluster viewer role; what runs in the cluster is the Application Layer's."""
     node_count: int = Field(default=1, ge=1, le=100, description="Nodes in the pool.")
     node_cpu: int = Field(default=2, ge=1, le=96, description="Virtual CPUs per node.")
     node_memory_gb: int = Field(default=8, ge=1, le=640, description="Memory per node, in GB.")
