@@ -156,4 +156,37 @@ class PlanResponse(BaseModel):
     env: dict[str, str] = Field(description="Each name and where its value comes from; never a secret's value.")
     attestation_required: bool
     approval_required: bool
+    replaces: str | None = Field(default=None, description="The release running on this group now, which this one would replace.")
     warnings: list[str] = Field(default_factory=list)
+
+
+class TargetView(BaseModel):
+    resource: str
+    name: str
+    zone: str
+    status: Literal["PENDING", "DEPLOYING", "HEALTHY", "UNHEALTHY", "FAILED", "RESTORED", "SKIPPED", "ROLLED_BACK", "REMOVED", "UNDO_FAILED"]
+    started_at: str | None = None
+    finished_at: str | None = None
+    error: dict | None = None
+    log: str | None = Field(default=None, description="The container's last log lines when it failed, every secret value the release read removed.")
+
+
+class ReleaseResponse(BaseModel):
+    release_id: str
+    status: Literal["AWAITING_APPROVAL", "ROLLING_OUT", "RUNNING", "FAILED", "SUPERSEDED", "ROLLING_BACK", "ROLLED_BACK", "ROLLBACK_FAILED", "REMOVING", "REMOVED",
+                    "REMOVE_FAILED"]
+    environment: str
+    request_id: str
+    group: str
+    image: str
+    previous: str | None = Field(default=None, description="The release this one replaced; what a rollback restores.")
+    can_roll_back: bool = False
+    requested_by: str
+    approved_by: str | None = None
+    note: str | None = None
+    env: dict[str, str] = Field(default_factory=dict, description="Each name and where its value comes from; never a secret's value.")
+    warnings: list[str] = Field(default_factory=list)
+    targets: list[TargetView] = Field(default_factory=list)
+    error: dict | None = None
+    created_at: str
+    updated_at: str
