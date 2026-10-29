@@ -309,6 +309,14 @@ principals:
   - {name: shop-oncall, token_sha256: "…", infra_owner: shop-team, environments: [prod], can_approve: true}
 ```
 
+### Running it on Google Cloud
+
+As proven on 2026-10-29 ([DELIVERY-SPIKE.md](DELIVERY-SPIKE.md) section 10): the image on a machine whose service
+account has Token Creator on each environment's service account and read access to the image's repository, and nothing
+else for the delivery service. The data volume (`/data`) holds the state, the log and gcloud's SSH key. On
+Container-Optimized OS, a service on the host network needs its port opened in the host's firewall (`iptables`); with
+`-p` it does not. Reach the service through IAP or an internal load balancer; it holds bearer tokens, not TLS.
+
 ## 9. What `cloudinfra` needs
 
 **For phase 1: nothing in code.** One principal per `appdelivery` environment (read-only, `scope: all`, `identity` set)
@@ -464,4 +472,5 @@ On a new branch from `main`, in this order; each step ends green on `python -m p
     with a test: a failed rollout that puts a machine back spends that machine's previous container, so the release
     running again can no longer be rolled back there; it now says so (`can_roll_back` false) and a rollback is refused
     up front. The delivery service ran from the repository rather than its image (the operator's token is not handed to a
-    container); a run on Google Cloud, signed in through the metadata server, is the first thing to do there.
+    container). It then ran from its image on Google Cloud, signed in through the metadata server, on 2026-10-29
+    ([DELIVERY-SPIKE.md](DELIVERY-SPIKE.md) section 10).

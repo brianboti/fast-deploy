@@ -278,3 +278,41 @@ Also fixed: the warning that a port is open only inside the network was repeated
 Everything was destroyed or deleted afterwards: the request through `cloudinfra` (`DESTROYED`; no instance, network,
 firewall rule or secret left), then the service account, the custom role and its binding. Compute, IAP, OS Login, IAM
 Credentials and Secret Manager APIs stay enabled.
+
+## 10. The first run on Google Cloud
+
+Run on 2026-10-29 between 18:20 and 19:00 UTC by Claude for the operator, in the same sandbox project. This is the path
+section 9 could not take: the delivery service from its own image, signed in through the metadata server.
+
+- **Images.** Cloud Build built `Dockerfile.appdelivery` and a `cloudinfra`-only image in the project, as a build service
+  account allowed only to read the uploaded source, write to one Artifact Registry repository and write logs (the
+  project's default Compute Engine account has no rights in a new project). The checksums held.
+- **Platform machine.** One Container-Optimized OS machine with its own service account (Compute Admin, IAP Admin,
+  Secret Manager Admin and Browser for `cloudinfra`; Token Creator on the environment's service account for the delivery
+  service; reader on the repository). Both services ran as containers on the host network. Its boot configuration
+  carried token hashes only; the token the delivery service uses to read `cloudinfra` was made on the machine at boot.
+  The operator's laptop reached the two services through IAP tunnels.
+
+| Step | Result |
+|---|---|
+| `cloudinfra` makes two `container-host` machines and a secret, as its own service account | `READY`, the delivery service account `GRANTED` on all three; no rate limit this time (a service account's calls count against its own project) |
+| `plan_release` (MCP) | `PLANNED`, both machines |
+| deploy 1.0, approved by the on-call principal | `RUNNING` on both machines after 52 seconds: the image signed in through the metadata server, took the environment's token, read the secret, and ran `gcloud compute ssh` through IAP as the named user |
+| deploy 2.0 | `RUNNING`; `running?live=true` matches on both machines |
+| roll back 2.0 | `ROLLED_BACK`; 1.0 `RUNNING` again |
+| remove 1.0 | `REMOVED`; nothing runs |
+| the secret | absent from every file both services wrote (databases, logs, gcloud's own files) and from the container's output |
+
+Found on the way:
+
+- **Container-Optimized OS closes every port but SSH on the host.** A container on the host network (as both services
+  were) needs an `iptables -A INPUT -p tcp --dport PORT -j ACCEPT`; a container started with `-p`, as the host script
+  starts applications, goes through Docker's own rules and needs none.
+- **gcloud wrote a log file for every SSH call** into the service's data volume. The image now sets
+  `CLOUDSDK_CORE_DISABLE_FILE_LOGGING=1`.
+- **Cloud Build's docker step has no BuildKit**, so it does not set `TARGETARCH`: the build passes
+  `--build-arg TARGETARCH=amd64`, and the Dockerfile says so.
+
+Everything was destroyed or deleted afterwards: the target machines, network and secret through `cloudinfra`; then the
+platform machine, its firewall rule, the image repository, Cloud Build's bucket, the three service accounts, the custom
+role and every binding. Artifact Registry and Cloud Build APIs stay enabled with the others.
