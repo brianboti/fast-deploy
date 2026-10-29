@@ -52,6 +52,9 @@ class FakeGcpApi(GcpApi):
             setattr(self, collection, {})
         self.bucket_objects = set()
         self.peerings = set()
+        self.namespaces: dict[str, set[str]] = {}  # cluster endpoint -> namespaces
+        self.role_bindings: dict[tuple[str, str, str], dict] = {}  # (endpoint, namespace, name) -> {"role", "member"}
+        self.kube_fail = None  # an InfrastructureError the fake Kubernetes API raises once, when set
         self.policies = {}  # IAM policies by resource: ("instance", zone, name), ("tunnel", zone, id), ("secret", name), ("bucket", name), ("topics" | "subscriptions", name)
         self.started_at = "2026-10-28T10:00:00Z"  # what lastStartTimestamp says after a create or a start
         self.quotas = {"CPUS": {"limit": 24, "usage": 0}, "INSTANCES": {"limit": 10, "usage": 0}, "DISKS_TOTAL_GB": {"limit": 4096, "usage": 0}, "IN_USE_ADDRESSES": {"limit": 8, "usage": 0}}
@@ -312,7 +315,12 @@ class FakeGcpApi(GcpApi):
 
     def _clusters(self, found, method, body, params):
         cluster = body["cluster"]
+        for field in ("network", "subnetwork"):
+            if "/" in (cluster.get(field) or ""):  # as GKE does: these fields take a name only
+                raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f'Google Cloud refused the request: Malformed value for {field} field: "{cluster[field]}".',
+                                          {"http_status": 400})
         self.clusters[(found.group(1), cluster["name"])] = {**cluster, "status": "RUNNING", "endpoint": "35.201.0.7", "currentMasterVersion": "1.31.1-gke.1", "createTime": "2026-10-28T10:00:00Z",
+                                                            "masterAuth": {"clusterCaCertificate": "RkFLRSBDQQ=="},
                                                             "currentNodeCount": cluster["nodePools"][0]["initialNodeCount"]}
         return {"name": f"operation-{self.counter}", "status": "DONE", "selfLink": f"https://container.googleapis.com/v1/projects/{self.project}/locations/{found.group(1)}/operations/op"}
 
@@ -433,9 +441,35 @@ class FakeGcpApi(GcpApi):
         return self._op("sn")
 
 
+class FakeKubeApi:
+    """A cluster's Kubernetes API, as far as the adapter uses it: namespaces and RoleBindings, kept on the fake."""
+
+    def __init__(self, fake: FakeGcpApi, endpoint: str, ca_certificate: str):
+        assert endpoint and ca_certificate, "the adapter must know the cluster's address and CA before calling it"
+        self.fake, self.endpoint = fake, endpoint
+
+    def _maybe_fail(self):
+        if self.fake.kube_fail is not None:
+            error, self.fake.kube_fail = self.fake.kube_fail, None
+            raise error
+
+    def ensure_namespace(self, name, labels):
+        self._maybe_fail()
+        self.fake.namespaces.setdefault(self.endpoint, set()).add(name)
+
+    def put_role_binding(self, namespace, name, cluster_role, member, labels):
+        self._maybe_fail()
+        assert namespace in self.fake.namespaces.get(self.endpoint, set()), f"no namespace {namespace}"
+        self.fake.role_bindings[(self.endpoint, namespace, name)] = {"role": cluster_role, "member": member, "labels": labels}
+
+    def delete_role_binding(self, namespace, name):
+        self._maybe_fail()
+        self.fake.role_bindings.pop((self.endpoint, namespace, name), None)
+
+
 def make_provider(config, fake=None):
     fake = fake or FakeGcpApi()
-    return GCPProvider(config.providers.gcp, api=fake), fake
+    return GCPProvider(config.providers.gcp, api=fake, kube=lambda endpoint, ca: FakeKubeApi(fake, endpoint, ca)), fake
 
 
 def make_orchestrator(tmp_path, config=None, fake=None, executor=None):

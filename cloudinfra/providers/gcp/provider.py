@@ -29,9 +29,9 @@ class GCPProvider(CloudProvider):
     name = "gcp"
     supported_kinds = RESOURCE_KINDS
     stoppable_kinds = ("compute", "database")
-    grantable_kinds = ("compute", "storage", "secret", "queue")
+    grantable_kinds = ("compute", "storage", "secret", "queue", "cluster")
 
-    def __init__(self, settings, api: GcpApi | None = None, token=None):
+    def __init__(self, settings, api: GcpApi | None = None, token=None, kube=None):
         self.settings = settings
         self.api = api or GcpApi(settings.project_id, token or GoogleToken(impersonate=settings.impersonate_service_account), quota_project=settings.quota_project)
         self.compute = GcpCompute(self.api, settings)
@@ -41,7 +41,7 @@ class GCPProvider(CloudProvider):
         self.cache = GcpCache(self.api, settings)
         self.queue = GcpQueue(self.api, settings)
         self.secret = GcpSecret(self.api, settings)
-        self.cluster = GcpCluster(self.api, settings)
+        self.cluster = GcpCluster(self.api, settings, kube)
         self.load_balancer = GcpLoadBalancer(self.api, settings, self.network)
         self.monitoring = GcpMonitoring(self.api)
         self.iam = GcpIam(self.api)
@@ -289,11 +289,16 @@ class GCPProvider(CloudProvider):
         return self.database.start(resource, ctx)
 
     def grant(self, resource, member, level, ctx) -> list[str]:
+        if resource.kind.value == "cluster":
+            return self.cluster.grant(resource, member, level)  # a RoleBinding in the request's namespace, not IAM
         if resource.kind.value == "compute" and resource.instance_id is None:
             resource = self.compute.get(resource)  # the IAP tunnel grant is bound to the numeric id
         return self.iam.grant(resource, member, level)
 
     def revoke(self, resource, member, ctx) -> None:
+        if resource.kind.value == "cluster":
+            self.cluster.revoke(resource, member)
+            return
         if resource.kind.value == "compute" and resource.instance_id is None:
             resource = self.compute.get(resource)
         self.iam.revoke(resource, member)

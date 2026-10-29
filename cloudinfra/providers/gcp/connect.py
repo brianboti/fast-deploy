@@ -79,7 +79,12 @@ def info(resource, resources: list, project: str, drivers: bool = False) -> Conn
             commands["pull"] = f"gcloud pubsub subscriptions pull {subscription} --auto-ack --project {project}"
         return ConnectInfo(commands=commands, notes=[] if resource.access else [NOT_GRANTED])
     if kind == "cluster":
-        return ConnectInfo(commands={"credentials": f"gcloud container clusters get-credentials {resource.name} --location {resource.location} --project {project}"},
+        commands = {"credentials": f"gcloud container clusters get-credentials {resource.name} --location {resource.location} --project {project}"}
+        notes = list(stopped)
+        if resource.namespace:
+            commands["namespace"] = f"kubectl config set-context --current --namespace {resource.namespace}"
+            notes.append(f"Access is granted in namespace {resource.namespace} only: use binds the ClusterRole view there, admin binds edit")
+        return ConnectInfo(commands=commands, notes=notes + ([] if resource.access else [NOT_GRANTED]),
                            prerequisites=["A project-level container.clusterViewer role, which the platform team grants once", "The gke-gcloud-auth-plugin"])
     if kind == "load_balancer":
         address = resource.address or "ADDRESS"

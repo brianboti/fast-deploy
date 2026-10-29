@@ -165,6 +165,8 @@ class ClusterResource(Resource):
     location: str
     version: str | None = None
     endpoint: str | None = Field(default=None, description="The control plane's address; credentials come from the provider's IAM, never from this service.")
+    ca_certificate: str | None = Field(default=None, description="The control plane's CA certificate (base64 PEM) a client verifies against; public, not a secret.")
+    namespace: str | None = Field(default=None, description="The request's namespace in the cluster, where its members' access is granted.")
     node_count: int
     machine_type: str
     node_disk_gb: int | None = Field(default=None, description="Each node's disk, in GB; priced in estimates.")

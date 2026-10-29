@@ -171,10 +171,15 @@ policy.
   | secret (the database password and cache AUTH string among them) | `roles/secretmanager.secretAccessor` | the same and `roles/secretmanager.secretVersionAdder` |
   | storage (a bucket) | `roles/storage.objectUser` | `roles/storage.objectAdmin` |
   | queue | `roles/pubsub.publisher` on the topic, `roles/pubsub.subscriber` on the subscription | the same |
+  | cluster | a RoleBinding to the built-in ClusterRole `view` in the request's namespace | a RoleBinding to `edit` there |
 
-  A database and a cache are reached through their secrets and the request's network; a cluster through the project-level
-  `container.clusterViewer` role. The tunnel grant names the machine's numeric id, so a later machine with the same name
-  never inherits it.
+  A database and a cache are reached through their secrets and the request's network. A cluster gets one namespace,
+  named after the request, when it is created, and its grants are Kubernetes RoleBindings in that namespace only: IAM's
+  Kubernetes roles cannot be limited to one cluster. A `user:` or `serviceAccount:` member is bound as a `User` named by
+  its email, a `group:` member as a `Group` (which needs Google Groups for RBAC); `edit` changes workloads, services,
+  config maps and secrets, never RBAC or the namespace. The service makes these calls to the cluster's own API with its
+  Google token, checking the server against the cluster's CA certificate. The tunnel grant names the machine's numeric
+  id, so a later machine with the same name never inherits it.
 - **Project-level prerequisites** are the platform team's, once: a role with `compute.projects.get` and
   `compute.instances.get` so that gcloud finds a machine, `cloudsql.client` for the Cloud SQL Auth Proxy,
   `container.clusterViewer` for cluster credentials. Each connect block names the ones it needs.
@@ -188,7 +193,8 @@ policy.
   a stop). The service only ever grants or removes the roles above.
 - **The service's own identity** needs the `getIamPolicy` and `setIamPolicy` permissions of those resource types (Compute
   Engine instances, IAP tunnel instances, secrets, buckets, topics and subscriptions); a custom role that lists exactly
-  those is the narrowest way to give them.
+  those is the narrowest way to give them. For clusters it needs to create namespaces and RoleBindings in the clusters
+  it made, which the Kubernetes Engine role it creates them with already allows.
 
 ## Time: stop, start, idle stop and expiry
 
