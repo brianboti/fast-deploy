@@ -11,6 +11,7 @@
 #   - Cosign from its GitHub release, by the SHA-256 that both its checksums file and GitHub's asset digest publish:
 #       gh release view vX.Y.Z -R sigstore/cosign --json assets --jq '.assets[] | select(.name|test("^cosign-linux-")) | .name + " " + .digest'
 # Build:  docker build -f Dockerfile.appdelivery -t appdelivery .     (--platform linux/amd64 for Google Cloud)
+#   A builder without BuildKit (Cloud Build's docker step) does not set TARGETARCH: pass --build-arg TARGETARCH=amd64.
 FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 # set by the builder from --platform; no default, so an image is never built with another architecture's binaries
 ARG TARGETARCH
@@ -20,7 +21,9 @@ ARG GCLOUD_SHA256_ARM64=f5e5df0433f77c0e7f5df9fd4bce2e46c7b7967e79cf66e31b1164d3
 ARG COSIGN_VERSION=v3.1.3
 ARG COSIGN_SHA256_AMD64=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
 ARG COSIGN_SHA256_ARM64=c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a
-ENV PATH=/opt/google-cloud-sdk/bin:$PATH CLOUDSDK_CORE_DISABLE_PROMPTS=1 CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK=1 CLOUDSDK_CORE_DISABLE_USAGE_REPORTING=1
+# No file logs: gcloud otherwise writes one per command under HOME, and the service runs one per machine action, for ever
+ENV PATH=/opt/google-cloud-sdk/bin:$PATH CLOUDSDK_CORE_DISABLE_PROMPTS=1 CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK=1 CLOUDSDK_CORE_DISABLE_USAGE_REPORTING=1 \
+    CLOUDSDK_CORE_DISABLE_FILE_LOGGING=1
 RUN set -eux; \
     case "$TARGETARCH" in \
       amd64) gcloud_arch=x86_64; gcloud_sum="$GCLOUD_SHA256_AMD64"; cosign_sum="$COSIGN_SHA256_AMD64" ;; \

@@ -48,3 +48,8 @@ def test_it_runs_as_a_user_with_a_writable_home_and_serves_the_delivery_app():
     assert "HOME=/data" in TEXT and "chown 65532:65532 /data" in TEXT
     assert "useradd --system --uid 65532" in TEXT, "ssh, which gcloud compute ssh runs, refuses a uid without a passwd entry"
     assert INSTRUCTIONS[-1] == 'CMD ["uvicorn", "appdelivery.server:create_app", "--factory", "--host", "0.0.0.0", "--port", "8200"]'
+
+
+def test_gcloud_keeps_no_file_logs_that_would_grow_for_ever():
+    """Found on Google Cloud on 2026-10-29: gcloud wrote a log file per SSH call into the service's data volume."""
+    assert "CLOUDSDK_CORE_DISABLE_FILE_LOGGING=1" in TEXT
