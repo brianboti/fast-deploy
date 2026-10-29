@@ -237,8 +237,9 @@ deploy ──► AWAITING_APPROVAL ──approve──► ROLLING_OUT ──► 
   one version. On success the release it replaced becomes `SUPERSEDED`.
 - `rollback_release` is offered only for the release running on its group when its machines still keep the previous
   container (`can_roll_back`): not for a group's first release, and not for a release a rollback restored, whose
-  machines keep nothing earlier. It starts `previous` again on each machine; the rolled-back release becomes
-  `ROLLED_BACK` and the previous one `RUNNING` again.
+  machines keep nothing earlier, and not after a failed rollout put any of its machines back, since that started their
+  previous container. It starts `previous` again on each machine; the rolled-back release becomes `ROLLED_BACK` and the
+  previous one `RUNNING` again.
 - `remove_release` deletes both containers from each machine and leaves the machine as `cloudinfra` made it.
 - A release belongs to a request and a group, whatever its environment: those are the machines. A production release
   on the machines a dev release runs on replaces it. Give each environment its own `cloudinfra` request.
@@ -457,5 +458,10 @@ On a new branch from `main`, in this order; each step ends green on `python -m p
    answers health, status, REST and MCP with a real configuration. Google's apt repository keeps only recent gcloud
    versions and publishes a SHA-256 only for the current unversioned archive; how the pinned sums were derived is
    written in the Dockerfile. The spike ran gcloud 539.0.0; step 10 runs this image's 591.0.0. A README section.
-10. **Real run.** The acceptance of section 11, phase 1, on the company's project, with
-    `tests/integration/appdelivery/` marked `integration` and skipped unless `APPDELIVERY_INTEGRATION=1`.
+10. **Real run.** Done 2026-10-29 ([DELIVERY-SPIKE.md](DELIVERY-SPIKE.md) section 9): plan, approval by another
+    principal, two releases across two machines, a broken release stopped at the first machine and restored, a
+    rollback, a remove, and no trace of a bound secret in either service's state or log. It found one defect, fixed
+    with a test: a failed rollout that puts a machine back spends that machine's previous container, so the release
+    running again can no longer be rolled back there; it now says so (`can_roll_back` false) and a rollback is refused
+    up front. The delivery service ran from the repository rather than its image (the operator's token is not handed to a
+    container); a run on Google Cloud, signed in through the metadata server, is the first thing to do there.

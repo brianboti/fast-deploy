@@ -90,7 +90,7 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
                                          f"{', '.join(infra.secret_names()) or 'none'}", field=f"env.{name}"))
             elif secret.status != "READY":
                 problems.append(_problem(ErrorCode.INVALID_BINDING, f"env.{name}: secret {binding.secret} is {secret.status}", field=f"env.{name}"))
-    return problems, warnings
+    return problems, list(dict.fromkeys(warnings))  # machines on one network warn once
 
 
 def plan(release: ReleaseRequest, principal, config, infra: InfraRequest) -> PlanResponse:

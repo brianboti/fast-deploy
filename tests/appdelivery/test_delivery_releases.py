@@ -257,3 +257,39 @@ def test_one_process_per_state_file(tmp_path):
     first.release()
     second.acquire()
     second.release()
+
+
+def test_a_failed_rollout_that_touched_a_machine_takes_away_the_running_releases_rollback():
+    """Found on a real machine on 2026-10-29: putting a machine back starts its previous container, so the machine keeps
+    nothing older, and a rollback of the release running again would fail there."""
+    world = World()
+    world.deploy()
+    second = world.deploy(V2)
+    assert second.can_roll_back
+    world.fleet.unhealthy.add(V3)
+    failed = world.deploy(V3)
+    assert failed.status == "FAILED" and world.fleet.previous["shop-web-1"] is None, "the fake spends the previous container as the script does"
+    running = world.delivery.get(second.release_id, world.team)
+    assert running.status == "RUNNING" and running.can_roll_back is False
+    with pytest.raises(DeliveryError) as caught:
+        world.delivery.rollback(second.release_id, world.team)
+    assert caught.value.code == ErrorCode.INVALID_STATE, "refused up front, not half done on the machines"
+
+
+def test_a_rollout_that_changed_no_machine_keeps_the_running_releases_rollback():
+    world = World()
+    world.deploy()
+    second = world.deploy(V2)
+    world.fleet.pull_fails.add(V3)
+    world.deploy(V3)
+    assert world.delivery.get(second.release_id, world.team).can_roll_back is True
+    world.fleet.unreachable.add("shop-web-1")
+    world.deploy(V3)
+    assert world.delivery.get(second.release_id, world.team).can_roll_back is True
+
+
+def test_machines_on_one_network_warn_once():
+    world = World()
+    world.infra.answers["dev"]["resources"]["network"][0]["firewall_rules"].pop()
+    warnings = world.delivery.plan(world.release(), world.team).warnings
+    assert len([item for item in warnings if "open only inside" in item]) == 1
