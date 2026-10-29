@@ -1,0 +1,159 @@
+"""The release contract. Strict, unknown fields refused: a release names an image by digest, a request, a group of its
+machines, a port, a health path and where each environment value comes from. Nothing in it can carry source, a build,
+a command, an entrypoint, a volume or a privilege, and a test holds that."""
+import re
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from .errors import DeliveryError, ErrorCode
+
+# host[:port]/path@sha256:digest; a tag is refused, so what runs is exactly what was verified.
+IMAGE = re.compile(r"^(?P<host>[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[0-9]{1,5})?)/(?P<path>[a-z0-9]+(?:[._/-][a-z0-9]+)*)@sha256:(?P<digest>[a-f0-9]{64})$")
+REQUEST_ID = re.compile(r"^[a-f0-9]{32}$")
+GROUP = re.compile(r"^[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?$")
+ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]{0,63}$")
+HEALTH_PATH = re.compile(r"^/[A-Za-z0-9._~/-]{0,200}(?:\?[A-Za-z0-9._~=&%-]{0,200})?$")
+SECRET_NAME = re.compile(r"^[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?$|^db-password$|^cache-auth$")
+# The infrastructure layer's endpoints that are one value each; lists (addresses of several machines) are not bindable.
+ENDPOINTS = ("database_host", "database_port", "cache_host", "cache_port", "load_balancer_address", "cluster_endpoint")
+# A literal under a name with one of these words (or pairs of words) is a credential in plain text: it belongs in a secret.
+CREDENTIAL_WORDS = frozenset({"PASSWORD", "PASSWD", "PWD", "SECRET", "TOKEN", "APIKEY", "CREDENTIAL", "CREDENTIALS", "AUTH"})
+CREDENTIAL_PAIRS = frozenset({("PRIVATE", "KEY"), ("API", "KEY"), ("ACCESS", "KEY"), ("SIGNING", "KEY")})
+MAX_ENV = 64
+MAX_VALUE = 4096
+
+
+def looks_like_credential(name: str) -> bool:
+    words = [word for word in name.split("_") if word]
+    return any(word in CREDENTIAL_WORDS for word in words) or any(pair in CREDENTIAL_PAIRS for pair in zip(words, words[1:], strict=False))
+
+
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class Binding(StrictModel):
+    """Where one environment value comes from: exactly one of a literal, an endpoint of the request, or a secret of it."""
+    value: str | None = Field(default=None, max_length=MAX_VALUE)
+    endpoint: Literal[ENDPOINTS] | None = None
+    secret: str | None = Field(default=None, description="A secret of the same request, by its short name (db-password, cache-auth, or one the request named).")
+
+    @model_validator(mode="after")
+    def _one_source(self):
+        given = [name for name in ("value", "endpoint", "secret") if getattr(self, name) is not None]
+        if len(given) != 1:
+            raise DeliveryError(ErrorCode.INVALID_BINDING, f"an environment value comes from exactly one of value, endpoint or secret; got {', '.join(given) or 'none'}")
+        if self.value is not None and ("\n" in self.value or "\r" in self.value or "\0" in self.value):
+            raise DeliveryError(ErrorCode.INVALID_BINDING, "a value cannot hold a line break or a NUL: Docker's env file takes one line per variable")
+        if self.secret is not None and not SECRET_NAME.match(self.secret):
+            raise DeliveryError(ErrorCode.INVALID_BINDING, f"{self.secret!r} is not a secret name of a request")
+        return self
+
+    def source(self) -> str:
+        """The binding as a caller may see it: never a secret's value, and a literal only as 'value'."""
+        if self.endpoint is not None:
+            return f"endpoint {self.endpoint}"
+        if self.secret is not None:
+            return f"secret {self.secret}"
+        return "value"
+
+
+class Target(StrictModel):
+    group: str = Field(description="A compute group of the request; every machine in it is a target.")
+
+    @field_validator("group")
+    @classmethod
+    def _group(cls, value):
+        if not GROUP.match(value):
+            raise DeliveryError(ErrorCode.INVALID_RELEASE, f"{value!r} is not a group name: lowercase, up to 12 characters")
+        return value
+
+
+class Health(StrictModel):
+    path: str = "/"
+    timeout_seconds: int = Field(default=60, ge=5, le=600)
+
+    @field_validator("path")
+    @classmethod
+    def _path(cls, value):
+        if not HEALTH_PATH.match(value):
+            raise DeliveryError(ErrorCode.INVALID_RELEASE, f"health.path {value!r}: an absolute path of letters, digits and ._~/- with an optional simple query")
+        return value
+
+
+class ReleaseRequest(StrictModel):
+    environment: str = Field(pattern=r"^[a-z][a-z0-9-]{1,20}$")
+    request_id: str = Field(description="The cloudinfra request that holds the target machines.")
+    target: Target
+    image: str = Field(description="host/path@sha256:digest; a tag is refused.")
+    port: int = Field(ge=1, le=65535, description="The container's port, published on the same port of each machine.")
+    health: Health = Field(default_factory=Health)
+    env: dict[str, Binding] = Field(default_factory=dict)
+    note: str | None = Field(default=None, max_length=300)
+
+    @field_validator("request_id")
+    @classmethod
+    def _request_id(cls, value):
+        if not REQUEST_ID.match(value):
+            raise DeliveryError(ErrorCode.INVALID_RELEASE, "request_id is the 32 hexadecimal characters cloudinfra issued")
+        return value
+
+    @field_validator("image")
+    @classmethod
+    def _image(cls, value):
+        if "@sha256:" not in value:
+            raise DeliveryError(ErrorCode.INVALID_RELEASE, "image must name a digest (host/path@sha256:…): a tag can change after it is checked")
+        if not IMAGE.match(value):
+            raise DeliveryError(ErrorCode.INVALID_RELEASE, f"{value!r} is not host/path@sha256:<64 hex characters>")
+        return value
+
+    @field_validator("port")
+    @classmethod
+    def _port(cls, value):
+        if value == 22:
+            raise DeliveryError(ErrorCode.INVALID_RELEASE, "port 22 is the machine's SSH, through which this service reaches it")
+        return value
+
+    @field_validator("env")
+    @classmethod
+    def _env(cls, value):
+        if len(value) > MAX_ENV:
+            raise DeliveryError(ErrorCode.INVALID_BINDING, f"at most {MAX_ENV} environment values")
+        for name, binding in value.items():
+            if not ENV_NAME.match(name):
+                raise DeliveryError(ErrorCode.INVALID_BINDING, f"{name!r}: environment names are uppercase letters, digits and underscores")
+            if binding.value is not None and looks_like_credential(name):
+                raise DeliveryError(ErrorCode.INVALID_BINDING, f"{name} looks like a credential: put it in a secret of the request and bind {{secret: NAME}}",
+                                    {"field": f"env.{name}"})
+        return value
+
+    def registry(self) -> str:
+        return IMAGE.match(self.image).group("host")
+
+    def repository(self) -> str:
+        """host/path, without the digest: what allowed_registries prefixes are compared with."""
+        found = IMAGE.match(self.image)
+        return f"{found.group('host')}/{found.group('path')}"
+
+
+class PlannedMachine(BaseModel):
+    resource: str
+    name: str
+    zone: str
+    instance_id: str | None = None
+    internal_ip: str | None = None
+
+
+class PlanResponse(BaseModel):
+    """What a release would do, checked against the request as the infrastructure layer reports it now. Nothing ran."""
+    status: Literal["PLANNED"] = "PLANNED"
+    environment: str
+    request_id: str
+    image: str
+    service_account: str
+    machines: list[PlannedMachine]
+    env: dict[str, str] = Field(description="Each name and where its value comes from; never a secret's value.")
+    attestation_required: bool
+    approval_required: bool
+    warnings: list[str] = Field(default_factory=list)

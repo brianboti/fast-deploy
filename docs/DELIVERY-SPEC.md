@@ -1,0 +1,408 @@
+# Application delivery service: specification (draft)
+
+Draft of 2026-10-29. Nothing here is built yet. The decision it follows: deploying a container onto what the
+infrastructure layer built is the job of a **small separate service**, a new package beside `cloudinfra`
+([RESEARCH-2026-10-29-delivery-layer.md](RESEARCH-2026-10-29-delivery-layer.md)). It neither uses nor depends on
+`labdeploy`: that package will not be used and is to be removed, so nothing here may rely on it, borrow its code, or
+assume it exists.
+The working name is `appdelivery` (CLI `app-delivery`); the name is not a decision.
+
+## 1. What it is
+
+The service takes **an image that already exists** and runs it on **resources a `cloudinfra` request already created**,
+checks that it is healthy, and can put the previous version back. It is the middle band of three:
+
+```
+Application teams      code · CI · build · image in a registry               (their own tools)
+        │  image@sha256:… + request_id + port + env bindings
+        ▼
+appdelivery            verify image · resolve bindings · run · health · roll back · record   (this spec)
+        │  reads the request over cloudinfra's REST API; acts on the machines with the IAM grants the request gave it
+        ▼
+cloudinfra             machines · networks · databases · secrets · clusters, with access grants   (unchanged)
+```
+
+| It owns | It does not own |
+|---|---|
+| Running a given image on a given request's machines (later: clusters) | Building, testing or signing images |
+| Turning bindings into environment values at run time | Creating, resizing or deleting infrastructure |
+| The health check that decides a rollout, and the rollback | Firewall rules, load balancers, machine sizes |
+| Which release runs where, who asked, and the one before it | Cloud Run services (not offered; section 4) |
+| Approval of a release in an environment that asks for one | The application's own logs, metrics and alerts beyond the rollout |
+
+### A correction to the research note
+
+The research note put Cloud Run first among targets, on the grounds that existing code already did it. That reason is
+gone (`labdeploy` is not used), and the target was wrong for this service anyway: `cloudinfra` has no Cloud Run kind, so a
+Cloud Run target would not run on "our resources" at all. The targets are therefore **machines first, clusters second**;
+Cloud Run is not planned (section 4).
+
+## 2. Who trusts whom
+
+Three identities, and a release needs all three to agree:
+
+1. **The application team** calls `appdelivery` with its own bearer token. In `appdelivery`'s configuration the team's
+   principal names the `cloudinfra` owner it speaks for (`infra_owner`). A team can deploy only onto requests whose
+   `owner` is that name: team A can never deploy onto team B's machines.
+2. **`appdelivery` in `cloudinfra`** is a read-only principal: `scope: all`, `can_provision: false`, `can_destroy:
+   false`, `identity` set to its Google service account. It reads a request's resources, endpoints, access list and
+   lifecycle, and nothing else. It never creates or deletes infrastructure.
+3. **`appdelivery` in Google Cloud** is a service account per environment (dev, staging, prod are separate accounts,
+   as Cloud Deploy and Google's enterprise blueprint both insist). Its power on a machine comes **only** from the team
+   naming it in the request's access list:
+
+   ```yaml
+   access:
+     - {member: "serviceAccount:appdelivery-prod@infra-project.iam.gserviceaccount.com", level: admin}
+   ```
+
+   `cloudinfra` then grants it `roles/compute.osAdminLogin` and the IAP tunnel on those machines and
+   `secretAccessor` on the request's secrets, and nowhere else. `admin` is needed because running containers on the
+   machine needs root; the grant is the team's explicit consent to that.
+
+Before every action `appdelivery` checks, from `cloudinfra`'s answer: the request's `owner` is the caller's
+`infra_owner`; its status is `READY`; its `access` list holds this environment's service account with status `GRANTED`
+and level `admin`. Any "no" is a refusal with a code, before anything touches a machine.
+
+## 3. The contract
+
+### Release request
+
+```yaml
+environment: prod                     # one of the operator's environments; picks the identity and the policy
+request_id: 3f6c…e2a1                 # the cloudinfra request that holds the target
+target: {group: web}                  # a compute group of that request: every machine in it (later: {cluster: clu-…})
+image: us-central1-docker.pkg.dev/acme-apps/shop/web@sha256:9b2f…   # a digest is required; a tag is refused
+port: 8080                            # the container's port, published on the same port of the machine
+health: {path: /healthz, timeout_seconds: 60}
+env:                                  # names are the application's; each value comes from exactly one source
+  LOG_LEVEL:    {value: info}
+  DB_HOST:      {endpoint: database_host}       # a field of cloudinfra's endpoints for this request
+  DB_PORT:      {endpoint: database_port}
+  DB_PASSWORD:  {secret: db-password}            # a secret of this request, read with appdelivery's own grant
+  REDIS_AUTH:   {secret: cache-auth}
+note: "fix checkout rounding"         # optional, recorded with the release
+```
+
+Rules, all checked before anything runs:
+
+- No field for source, a repository, a Dockerfile, a build, a command, an entrypoint, arguments, volumes, privileges or
+  host mounts. Unknown fields are refused (strict models, like `cloudinfra`). The image runs as its author built it.
+- `image` must carry `@sha256:`; its registry must be in the operator's `allowed_registries`.
+- `env` values are a literal, an endpoint of this request, or a secret of this request; never a secret of another
+  request. A literal that looks like a credential (by the same key list `cloudinfra`'s redaction uses) is refused: put it
+  in a secret.
+- `port` must be one the request's network opens (`allowed_ports`), or the plan warns that only the machine itself can
+  reach it.
+- In an environment with `require_attestation`, the image must carry an attestation signed by one of the environment's
+  `trusted_signers` (Cosign with a KMS key, or a keyless identity), checked by digest.
+
+### Release response
+
+```yaml
+release_id: rel-5c1e09ab77d2
+status: RUNNING                       # see section 5
+environment: prod
+request_id: 3f6c…e2a1
+image: …@sha256:9b2f…
+previous: rel-0a7d3c55e910            # what a rollback restores; null for the first release
+targets:
+  - {resource: cmp-1a2b3c4d5e6f, name: shop-web-1, status: HEALTHY, started_at: …}
+  - {resource: cmp-6f5e4d3c2b1a, name: shop-web-2, status: HEALTHY, started_at: …}
+env: [LOG_LEVEL, DB_HOST, DB_PORT, DB_PASSWORD, REDIS_AUTH]   # names only, never values
+approved_by: null
+error: null                           # {code, message, details} on failure, as in cloudinfra
+```
+
+## 4. Targets
+
+### Phase 1: machines
+
+**What the machine must be.** A machine of a `cloudinfra` request built from an operator profile on
+Container-Optimized OS, which ships Docker and is Google's supported way to run containers on a VM now that the
+container startup agent is gone (shut down 2026-07-31). The profile is `cloudinfra` configuration, no code change:
+
+```yaml
+providers:
+  gcp:
+    profiles:
+      container-host:
+        image: projects/cos-cloud/global/images/family/cos-133-lts
+        description: Container-Optimized OS 133 LTS for appdelivery
+        accelerator: none
+```
+
+A pinned LTS family, not `cos-stable`: an LTS milestone keeps about two years of support, and the operator moves it on
+purpose. Container-Optimized OS supports OS Login and Shielded VM on every current LTS (117 to 133), ships Docker,
+containerd and `cloud-init`, has no package manager and no gcloud CLI, and downloads updates weekly that take effect at
+the next reboot (section 13).
+
+A plain Ubuntu machine has no Docker; `appdelivery` refuses it with a message that names the profile, rather than
+installing software on it.
+
+**Where the machine must be.** The plan refuses a machine that `appdelivery` could not reach or that could not pull:
+
+- **SSH.** IAP needs a firewall rule from `35.235.240.0/20` on port 22. A request's own network has it when `iap_ssh` is
+  on (the default). A machine in the operator's default network is accepted only when the operator's configuration says
+  that network has the rule (`default_network_iap: true`).
+- **Pull.** A request's own subnet has Private Google Access, so Artifact Registry (`*-docker.pkg.dev`) is reachable
+  without a public address. Any other registry needs the internet, which a machine without `public_ip` does not have
+  (`cloudinfra` offers no NAT). So `allowed_registries` defaults to Artifact Registry hosts, and a registry outside them
+  is refused for a machine without a public address.
+- **Time.** A target group with `autostop` or `max_run_hours` is one that `cloudinfra` will stop by design; the plan
+  warns, since a quiet web service is exactly what idle stop looks for.
+
+**How it reaches the machine.** Over SSH through the IAP tunnel as the environment's service account, through the
+gcloud CLI on the host where `appdelivery` runs: `gcloud compute ssh NAME --zone ZONE --project PROJECT
+--tunnel-through-iap --impersonate-service-account ENV_SA --command "sudo bash -s"`, the `connect.ssh` command
+`cloudinfra` already returns plus impersonation. IAP's tunnel protocol is not documented for other clients, so gcloud
+is the only supported way in. OS Login gives the service account a POSIX user named `sa_…`; its key is created per
+session and expires with it. Docker on Container-Optimized OS needs root for an OS Login user, which is why the grant is
+`admin` (`roles/compute.osAdminLogin`, sudo). The identity `appdelivery` itself runs as needs Token Creator on each
+environment's service account, and each environment's service account needs the project-level role with
+`compute.projects.get` and `compute.instances.get` that every `cloudinfra` connect block already names.
+
+**What runs on the machine.** One fixed script, a file in `appdelivery`'s package, checked against its recorded hash and
+sent on standard input to `sudo bash -s`. Its inputs are prepended as shell variable assignments whose values are
+**base64 text only** (image reference, container port, health path, timeout, the environment file, the token), each
+validated before encoding, so nothing a caller sends can become shell syntax and the script needs no JSON parser
+(Container-Optimized OS has none). Then:
+
+1. Make a temporary `DOCKER_CONFIG` directory (writing `/root/.docker` is not permitted on Container-Optimized OS), log
+   in to the registry with `docker login -u oauth2accesstoken --password-stdin https://LOCATION-docker.pkg.dev` using a
+   short-lived access token of the environment's service account (valid for 60 minutes; the machine has no service
+   account of its own, so it cannot pull a private image by itself), pull `image@digest`, delete the directory.
+2. Write the environment to a root-only file under `/run` (memory). Docker's `--env-file` takes one `NAME=value` per
+   line with no quoting, so a value with a newline is refused at plan time (store a PEM file in a secret and bind it as
+   base64, or wait for the later machine service account).
+3. Rename the running container to `app-previous` and stop it; start the new one as `app` with `--restart=always`,
+   `--env-file`, the port, and nothing else.
+4. Check `http://127.0.0.1:PORT/PATH` until it answers 2xx or `timeout_seconds` passes, with bash's own `/dev/tcp`
+   (an HTTP/1.0 GET read for its status line), because the host's tools are minimal and curl is not promised.
+5. Healthy: remove the env file, delete images older than `app-previous`'s. Unhealthy: stop `app`, start
+   `app-previous` again, report the container's last 50 log lines.
+
+The values handed to the container stay in Docker's container record on the machine's disk, readable by root on that
+machine. That is inherent in environment variables and is stated in the response's notes.
+
+**A group of machines** is released one machine at a time. The first unhealthy machine stops the rollout, and the
+machines already done are rolled back. Releases on the same request are serialized.
+
+**What the `cloudinfra` lifecycle does to it.** A stop by `cloudinfra` (asked, idle or expiry) stops the machine;
+on start, Docker's restart policy starts `app` again with the values it was given. Destroying the request ends the
+release: its targets show `GONE`.
+
+### Phase 2: clusters
+
+A Kubernetes Deployment in one namespace per team on a cluster of the request, through the cluster credentials Google's
+IAM gives the service account; rollout, health and rollback are Kubernetes' own (`maxUnavailable`, readiness probe,
+`rollout undo`). It waits on one gap in `cloudinfra`: clusters take no per-resource grant today, only the project-level
+`container.clusterViewer` prerequisite, which cannot write. Section 9 lists the choices.
+
+### Not planned: Cloud Run
+
+With `labdeploy` going away, nothing in this repository will put an image on Cloud Run. That is acceptable for the
+first two phases: a stateless web service runs on a machine group behind `cloudinfra`'s load balancer, or on a cluster.
+If the company wants Cloud Run back, it is two pieces, in this order: `cloudinfra` gains a `service` kind that creates
+the empty Cloud Run service with its identity, ingress and limits (infrastructure), and this service deploys revisions
+onto it (delivery). The second piece alone would mean this service creating infrastructure, which section 1 rules out.
+Decision 5 in section 12.
+
+## 5. A release's life
+
+```
+PLANNED ──deploy──► AWAITING_APPROVAL ──approve──► ROLLING_OUT ──► RUNNING ──rollback──► ROLLED_BACK
+   │ (environments without approval skip it)            │                │
+   │                                                    └─► FAILED (machines done were restored)
+   └─ refused (no change anywhere)                                       └─remove──► REMOVED
+```
+
+- `plan_release` checks everything in sections 2 and 3, resolves the bindings to names (never values), lists the
+  machines and the release it would replace. Pure: nothing on a machine, nothing recorded.
+- `deploy_release` records the release; in an environment with `require_approval` it waits for `approve_release` by a
+  principal with `can_approve` other than the one that asked.
+- `rollback_release` starts `previous` again on the same machines. `remove_release` stops and deletes the container
+  and leaves the machine as `cloudinfra` made it.
+- After a restart of the service, a release left `ROLLING_OUT` becomes `FAILED` with "interrupted"; the next deploy or
+  rollback puts each machine in a known state, since the script is idempotent by container name.
+
+## 6. Interface
+
+The same shape as `cloudinfra`, so a caller that knows one knows the other: FastAPI with a Streamable HTTP MCP endpoint
+and a small REST API, bearer token per principal stored as a SHA-256 hash, rate limits, one audit event per call,
+`{"status": "FAILED", "error": {code, message, details}}` for every failure.
+
+| MCP tool | REST | Needs |
+|---|---|---|
+| `plan_release` | `POST /releases/plan` | `can_deploy` |
+| `deploy_release` | `POST /releases` | `can_deploy` |
+| `approve_release` | `POST /releases/{id}/approve` | `can_approve`, another principal |
+| `get_release` | `GET /releases/{id}` | read |
+| `list_releases` | `GET /releases?request_id=&environment=` | read |
+| `get_running` | `GET /running?request_id=` | read: what runs on each machine now |
+| `rollback_release` | `POST /releases/{id}/rollback` | `can_deploy` |
+| `remove_release` | `DELETE /releases/{id}` | `can_deploy` |
+| `get_service_status` | `GET /status` | read |
+
+## 7. State
+
+One SQLite file, its own, never `cloudinfra`'s: `releases` (request, environment, image digest, bindings by name,
+status, previous, approver), `targets` (release, resource id, status, times, last error), `events` (audit). No secret
+value is ever stored, logged or returned; a test reads the database and the log after a release with a secret binding
+and finds no trace of the value, as `cloudinfra`'s does for the database password.
+
+## 8. Operator configuration
+
+```yaml
+database: appdelivery.db
+cloudinfra:
+  url: https://infra.internal.example.com
+gcp:
+  project_id: infra-project              # the project cloudinfra provisions in
+  default_network_iap: false             # true only if the operator's default network admits 35.235.240.0/20 on port 22
+environments:
+  dev:
+    token_env: APPDELIVERY_DEV_INFRA_TOKEN          # cloudinfra token of this environment's read-only principal
+    service_account: appdelivery-dev@infra-project.iam.gserviceaccount.com
+    allowed_registries: [us-central1-docker.pkg.dev/acme-apps]
+  prod:
+    token_env: APPDELIVERY_PROD_INFRA_TOKEN
+    service_account: appdelivery-prod@infra-project.iam.gserviceaccount.com
+    allowed_registries: [us-central1-docker.pkg.dev/acme-apps-release]
+    require_attestation: true
+    trusted_signers: ["gcpkms://projects/acme-sec/locations/global/keyRings/release/cryptoKeys/attestor"]
+    require_approval: true
+principals:
+  - {name: shop-team, token_sha256: "…", infra_owner: shop-team, environments: [dev, prod], can_deploy: true}
+  - {name: shop-oncall, token_sha256: "…", infra_owner: shop-team, environments: [prod], can_approve: true}
+```
+
+## 9. What `cloudinfra` needs
+
+**For phase 1: nothing in code.** One principal per `appdelivery` environment (read-only, `scope: all`, `identity` set)
+and the `container-host` profile. Teams add the environment's service account to `access` with `admin`.
+
+**Recommended, small:** a `scope: granted` for principals, which sees only the requests whose access list names the
+principal's `identity`. Today `appdelivery` must read every request (`scope: all`) and filter; with it, `cloudinfra`
+itself enforces that `appdelivery` sees only what teams handed it.
+
+**For phase 2, one of:**
+- a `deploy` access level on clusters that `cloudinfra` turns into a Kubernetes RoleBinding in a namespace (it then
+  talks to the Kubernetes API, a new dependency for it);
+- the platform team grants the delivery service account `roles/container.developer` on the project once, and
+  `appdelivery` limits itself to clusters whose request names it (simple, but the limit is in `appdelivery`, not IAM);
+- `cloudinfra` creates clusters with Google groups for RBAC and adds members to them (cleanest, more setup).
+
+**Later, optional:** a machine service account chosen by the request, so an application on the machine can read its
+own secrets and pull its own images; then `appdelivery` would pass secret names instead of values.
+
+## 10. Boundaries that tests hold
+
+As `tests/cloudinfra/test_infra_catalog.py` does for `cloudinfra`:
+
+- `appdelivery` imports neither `cloudinfra` nor `labdeploy`; it speaks to `cloudinfra` only over HTTP, and `cloudinfra`
+  never imports `appdelivery`. No source, test, configuration or document of `appdelivery` names `labdeploy`, and its
+  tests pass with the `labdeploy` directory deleted: they live in `tests/appdelivery/` and use none of the shared test
+  helpers under `tests/` (the root `tests/conftest.py` belongs to the old tests).
+- It has its own console script and container image; it does not ride in the image that runs `labdeploy` today. It
+  needs no Python dependency beyond those `cloudinfra` already pins (mcp, fastapi, httpx, pydantic, PyYAML, uvicorn). Its
+  image adds two pinned binaries: the gcloud CLI and Cosign 3.1.x.
+- It copies nothing from `cloudinfra` by import. The bearer-token gate, rate limiter and audit wrapper are small and are
+  written again in `appdelivery`; a shared library can come later if a third service needs them.
+- The release models have no field that could carry source, a build, a command or a mount (section 3).
+- A command runs only in one module, with a fixed argument list (`gcloud compute ssh … --tunnel-through-iap`, `cosign
+  verify-attestation`); the host script is a file in the package, checked against its hash before it is sent.
+- An image without a digest is refused; a secret value never reaches the database, a log line or a response.
+- Tests live in `tests/appdelivery/` with a fake `cloudinfra` API and a fake machine session; no cloud.
+
+## 11. Phases and what "done" means
+
+1. **Phase 1, machines.** Plan, deploy, health, rollback, remove on one machine and on a group; attestation and
+   approval per environment; the boundary tests. Done when one real run on the company's project takes an image by
+   digest onto a `container-host` machine of a `cloudinfra` request, answers on its health path, rolls back on a broken
+   image, and leaves no secret value in the state or the log.
+2. **Phase 2, clusters,** once section 9's cluster choice is made.
+3. **Phase 3, convenience:** a Score file as an alternative input; `cloudinfra`'s `scope: granted`.
+
+## 12. Decisions that are yours
+
+1. The name (`appdelivery` is a placeholder).
+2. Whether attestation is required in every environment or only in production.
+3. Phase 2's cluster choice (section 9).
+4. Whether a release on a group may run on several machines at once (faster) or always one at a time (safer; the draft).
+5. Whether Cloud Run comes back later, as a `cloudinfra` kind plus a target here (section 4), or stays out.
+
+## 13. Checked before building (2026-10-29)
+
+What the design rests on, checked on the primary page or in `cloudinfra`'s code:
+
+| Fact | Where | Consequence |
+|---|---|---|
+| Container-Optimized OS LTS 117 to 133 support OS Login and Shielded VM; the gcloud CLI is not installed | [Google's OS details](https://docs.cloud.google.com/compute/docs/images/os-details) | The `container-host` profile works with `cloudinfra`'s OS Login and Shielded VM settings as they are |
+| It ships Docker, containerd and `cloud-init`; no package manager; weekly updates applied at reboot | [Container-Optimized OS overview](https://docs.cloud.google.com/container-optimized-os/docs/concepts/features-and-benefits) | Nothing is installed on the machine; `--restart=always` brings `app` back after an update reboot |
+| An OS Login user runs Docker with sudo unless added to the `docker` group; `/root/.docker/config.json` is not permitted | [Running containers on Container-Optimized OS](https://docs.cloud.google.com/container-optimized-os/docs/how-to/run-container-instance) | `admin` grant; a temporary `DOCKER_CONFIG` |
+| Docker logs in to Artifact Registry with `-u oauth2accesstoken --password-stdin`; the token lasts 60 minutes | [Artifact Registry authentication](https://docs.cloud.google.com/artifact-registry/docs/docker/authentication) | Pull with a fresh token per machine |
+| SSH through IAP needs the tunnel role, a project-level role with `compute.projects.get`, and a rule from 35.235.240.0/20 on port 22; a VM with a service account would also need `serviceAccountUser`, and `cloudinfra`'s machines have none | [Set up OS Login](https://docs.cloud.google.com/compute/docs/oslogin/set-up-oslogin), `cloudinfra/providers/gcp/connect.py`, `compute.py` | The checks in section 4 |
+| OS Login names a service account's user `sa_…`; 2-step verification is not enforced on service accounts | [OS Login](https://docs.cloud.google.com/compute/docs/oslogin), [Set up OS Login](https://docs.cloud.google.com/compute/docs/oslogin/set-up-oslogin) | Non-interactive SSH is possible |
+| A request's subnet has Private Google Access; `cloudinfra` offers no NAT | `cloudinfra/providers/gcp/network.py` | Artifact Registry only, unless the machine has a public address |
+| `cloudinfra`'s status answer carries `owner`, `access` (member, level, status), `endpoints`, `lifecycle`, and each machine's zone, numeric id and network | `cloudinfra/models/response.py`, `resources.py` | Every check in section 2 reads one existing endpoint; no `cloudinfra` change for phase 1 |
+| A principal's `identity` may be named in `access` even outside `allowed_domains` | `cloudinfra/orchestration/access.py` | The delivery service account needs no domain exception |
+| Cosign 3.1.x verifies both the old signature format and the new bundle format; v4 is planned and v3 stays supported | [Cosign releases](https://newreleases.io/project/github/sigstore/cosign/release/v3.1.2) | Pin 3.1.x in the image |
+| The container startup agent stopped working on 2026-07-31 | [Google's shutdown notice](https://docs.cloud.google.com/compute/docs/containers/prepare-for-container-agent-shutdown) | Nothing here uses `gce-container-declaration` |
+
+Not confirmed on any page, so the first step of the build is a real run that proves them (section 14, step 0):
+
+1. `gcloud compute ssh … --tunnel-through-iap --impersonate-service-account … --command "sudo bash -s"` forwards
+   standard input to the remote shell as a service account, without a prompt.
+2. The OS Login user of a service account with `osAdminLogin` gets sudo on Container-Optimized OS 133.
+3. `base64` is on the Container-Optimized OS host and bash there has `/dev/tcp`.
+4. A container started with `--restart=always` comes back after the machine is stopped and started by `cloudinfra`.
+
+If one fails, the fallback is known: for 1, `gcloud compute start-iap-tunnel` to a local port and a plain `ssh` with
+an OS Login key; for 3, run the health check from a pinned, allowed helper image with `--network host`.
+
+## 14. Phase 1 build plan
+
+On a new branch from `main`, in this order; each step ends green on `python -m pytest tests/appdelivery -q` and
+`python -m ruff check .`.
+
+0. **Spike, on a real project.** One `container-host` machine made by `cloudinfra`, the delivery service account
+   added to its `access` as `admin`, and the four checks of section 13 run by hand. Record the results in this file.
+   Steps 1 to 5 do not depend on the answers and can go ahead meanwhile; step 6 waits until they pass or their
+   fallback is chosen.
+1. **Skeleton and boundaries.** Built 2026-10-29. `appdelivery/__init__.py` (0.1.0), `config.py` (section 8, strict),
+   `cli.py` (`token`, `check-config`, and `plan FILE --config --as PRINCIPAL`, which reads the request from `cloudinfra`
+   and runs every check; the tool catalog moves to step 8 with the server), the `app-delivery` script in
+   `pyproject.toml`, `appdelivery.example.yaml`, and `tests/appdelivery/test_delivery_boundaries.py`: no import of
+   `cloudinfra` or `labdeploy` in the package and none of `appdelivery` in either of them, `labdeploy` named nowhere in
+   the package or its tests, no shared test helper and no `conftest.py`, commands only in `remote.py`, no field in the
+   contract that could run or build something, and the whole directory run again in a fresh interpreter where
+   importing `labdeploy` fails.
+2. **Contract.** Built. `models.py` and `errors.py`: digest required, the three binding sources, credential-looking
+   names refused as literals (by whole words, so `AUTHOR_NAME` passes and `API_KEY` does not), plain health paths only,
+   port 22 refused. Every refusal of section 3 has a test.
+3. **The `cloudinfra` client.** Built. `infra.py` keeps only the fields a release needs and ignores what the layer adds
+   later. The fixture every delivery test uses is checked against `cloudinfra`'s own response model (a contract test).
+4. **Plan.** Built. `planner.py`: owner (answered NOT_FOUND, as `cloudinfra` answers another caller), READY, the grant
+   (admin, GRANTED, covering each machine), Container-Optimized OS, IAP SSH on the machine's network or the operator's
+   word for the default network, registry allowed by whole path parts, Artifact Registry unless the machine has a public
+   address, bindings that exist, and warnings for a port open only inside the network, autostop and max_run_hours.
+   Every problem is reported at once.
+5. **Secrets and images.** Built. `google.py`: this host's token (metadata server, else gcloud), each environment's
+   token from the IAM Credentials API (15 minutes, cached), and Secret Manager reads; `bindings.py` turns bindings into
+   values and the env file; `attest.py` runs `cosign verify-attestation` per trusted signer with a registry login written
+   to a private directory for that one call, the token never on a command line. `remote.py` runs only `gcloud` and
+   `cosign`.
+6. **The machine session.** `remote.py` gains `gcloud compute ssh`, and `host/release.sh` (section 4's script) comes with
+   its hash. Tests with a fake session that records what would be sent and replays a machine's answers, and a shell
+   test of `release.sh` against a fake `docker` on the developer's machine.
+7. **State and the orchestrator.** `state.py` (section 7, SQLite WAL, one writer, a process lock) and `releases.py`:
+   deploy one machine at a time, stop at the first failure, roll back what was done, rollback and remove, approval,
+   recovery after a restart. A test reads the database and the log after a release with a secret binding and finds no
+   trace of the value.
+8. **Server.** `server.py`: FastAPI with the MCP endpoint and the REST routes of section 6, bearer tokens as hashes,
+   rate limits, an audit event per call, the catalog checked against the registered tools at start.
+9. **Image and docs.** `Dockerfile.appdelivery` (Python, pinned gcloud CLI and Cosign 3.1.x),
+   a generated `docs/DELIVERY-CATALOG.md`, and a README line.
+10. **Real run.** The acceptance of section 11, phase 1, on the company's project, with
+    `tests/integration/appdelivery/` marked `integration` and skipped unless `APPDELIVERY_INTEGRATION=1`.
