@@ -364,3 +364,49 @@ Everything was destroyed or deleted afterwards: the request through `cloudinfra`
 secret), the cluster left by the failed attempt by hand, then the environment's service account and its
 `container.clusterViewer` binding. No cluster, machine, disk, secret or GKE firewall rule is left. The Kubernetes Engine
 API stays enabled with the others.
+
+## 12. Phase 3, the run on Google Cloud
+
+Run on 2026-10-29 between 22:28 and 23:55 UTC by Claude for the operator, in the same sandbox project, from branch
+`phase3-expose` (PRs #206 to #211). As in section 10, Cloud Build built both services' images, and a Container-Optimized
+OS platform machine ran them as containers, signed in through the metadata server as its own service account. That
+account held exactly the roles the architecture document lists for node accounts, Project IAM Admin among them limited
+by the condition `modifiedGrantsByRole … hasOnly(['roles/container.defaultNodeServiceAccount'])`. Cloud Build also
+copied Google's `hello-app` 1.0 and 2.0 into a private Artifact Registry repository, `apps`, which the operator's
+`providers.gcp.registries` listed. The front door had no hostnames: the operator chose plain HTTP for this run, since
+HTTPS needs a domain whose DNS they control.
+
+`cloudinfra` made one request with two clusters: `blue` (one node, the `apps` registry, a front door) and `green` (one
+node, the `apps` registry), a generated secret, and the environment's service account at `admin`.
+
+| Step | Result |
+|---|---|
+| the two clusters | `READY`: `shop-blue` and `shop-green`, each with the namespace `shop` and its own node account (`node-<request>-blue`, `node-<request>-green`, as GKE's `nodeConfig.serviceAccount` confirmed); `blue` with Gateway API on and its front door on a reserved address |
+| `cluster: true` with two clusters | refused, `INVALID_RELEASE`: "The request has 2 clusters (blue, green); name one" |
+| `expose` on `green` | refused, `UNSUPPORTED_TARGET`: no front door |
+| the guard, in `shop` on `blue` | a Service of type `LoadBalancer`, an Ingress and a Gateway each refused (422) by `cloudinfra-no-public-entry`, even for the project's owner, since the policy binds by namespace; a ClusterIP Service and an HTTPRoute allowed (dry runs) |
+| deploy 1.0 on `blue`, exposed at `/` | `RUNNING` from the private repository; the HTTPRoute `Accepted` and `ResolvedRefs`; Google's load balancer answered `http://<address>/` with "Version: 1.0.0" from the internet 347 seconds later |
+| deploy 2.0, health path `/healthz` | `RUNNING`; a HealthCheckPolicy for `/healthz`, written as the environment's account through the role aggregated into `edit`; the address answered "Version: 2.0.0" within a second |
+| deploy 1.0 on `green`, not exposed | `RUNNING` |
+| 2.0 with `PORT=9999` | `FAILED` after 54 seconds; the address kept answering 2.0, and 2.0 kept its rollback |
+| roll back 2.0 | `ROLLED_BACK`; the address answered 1.0 twenty seconds later |
+| remove both | `REMOVED`; the route gone from the door; nothing runs |
+| the secret | in no file and no log line of either service |
+| destroy the request | the Gateway deleted at 23:32:59; `cloudinfra` waited 46 seconds until GKE had deleted the forwarding rule on the address; the cluster deleted at 23:33:45, then the address and the node accounts. No forwarding rule, proxy, URL map, backend service, health check, network endpoint group, GKE firewall rule, address, node account, project binding or repository grant was left |
+
+Found on the way, and fixed:
+
+- **GKE does not know a new node account as soon as IAM does.** The first request's second cluster was refused with
+  "failed to check status for node-…; Verify if principal exists", after IAM had already taken the account's grants.
+  The cluster create is now tried again for up to a minute (commit 74fee98). The failed request's cleanup then deleted
+  everything it had made, the first cluster with its front door included, which this run counts as a check of #205 and
+  of the front door's delete order on a real project.
+
+Not checked here: a Google-managed certificate on a real domain (HTTPS), which needs a short run with a domain the
+operator controls. Acting as the environment's account from the laptop was refused by the session's safety rules (a
+grant of Token Creator to the operator), so the guard was checked as the owner; the delivery service itself wrote the
+route and the health check as the environment's account.
+
+Everything was destroyed or deleted afterwards: the request through `cloudinfra`; then the platform machine, its
+firewall rule, both repositories, the build bucket, the three service accounts and every binding, the conditional one
+included. Kubernetes Engine, Artifact Registry and Cloud Build APIs stay enabled with the others.

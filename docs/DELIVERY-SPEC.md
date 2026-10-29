@@ -313,7 +313,9 @@ Steps, each its own pull request:
    rollback puts the previous release's route back. GKE's Gateway load balancer checks `/` and does not read the
    readiness probe, so a health path other than `/` also gets a HealthCheckPolicy (which `edit` may now write).
 7. **A real run on Google Cloud:** the delivery service from its image, an image from a private repository, two
-   clusters, and the workload reached over HTTPS from the internet; then everything deleted.
+   clusters, and the workload reached over HTTPS from the internet; then everything deleted. Done 2026-10-29 over plain
+   HTTP (docs/DELIVERY-SPIKE.md section 12): everything held; it found one defect, fixed (GKE learns a new node account
+   later than IAM). HTTPS on a real domain is still to be run.
 
 ### Not planned: Cloud Run
 
