@@ -27,11 +27,15 @@ class KubeApi:
         self.client = client or httpx.Client(verify=ca_context(ca_certificate), timeout=30, follow_redirects=False)
 
     def request(self, method: str, path: str, json=None, missing_ok: bool = False, exists_ok: bool = False) -> dict:
-        try:
-            response = self.client.request(method, self.base + path, json=json, headers={"Authorization": "Bearer " + self.token()})
-        except httpx.RequestError as exc:
-            raise InfrastructureError(ErrorCode.PROVIDER_UNAVAILABLE, f"The cluster's API could not be reached ({type(exc).__name__})", {"path": path}) from None
-        event("provider_call", provider="gcp", method=method, url=f"kubernetes:{path}", status=response.status_code)
+        for refreshed in (False, True):
+            try:
+                response = self.client.request(method, self.base + path, json=json, headers={"Authorization": "Bearer " + self.token()})
+            except httpx.RequestError as exc:
+                raise InfrastructureError(ErrorCode.PROVIDER_UNAVAILABLE, f"The cluster's API could not be reached ({type(exc).__name__})", {"path": path}) from None
+            event("provider_call", provider="gcp", method=method, url=f"kubernetes:{path}", status=response.status_code)
+            if response.status_code != 401 or refreshed or not hasattr(self.token, "invalidate"):
+                break
+            self.token.invalidate()  # the token expired; one more try with a fresh one
         status = response.status_code
         if (status == 404 and missing_ok) or (status == 409 and exists_ok):
             return {}
