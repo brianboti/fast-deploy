@@ -297,6 +297,16 @@ machine with an address, an operation record and a cost estimate, having given n
 workflow, test or build; the test also asserts that nothing sent to the provider mentions any of those, and
 `test_infra_models.py` asserts that the contract has no field that could.
 
+## Calls to Google
+
+Every call goes through one client (`providers/gcp/api.py`). A call Google rate limited (HTTP 429, refused before it
+ran) is tried again up to four times, after the pause Google names in `Retry-After` or else after 1, 2 and 4 seconds; a
+read Google answered with a 5xx is tried again the same way, and a write is not, since it may have been done. Each retry
+is a `provider_retry` event. On a laptop with a person's sign-in, set `providers.gcp.quota_project`: Google then counts
+the calls against that project (`X-Goog-User-Project`) instead of gcloud's own shared one, whose per-minute limits a
+single provisioning reached on 2026-10-29. The person needs `serviceusage.services.use` on it; a service account on
+Google Cloud needs neither the setting nor the permission.
+
 ## Running it
 
 ```bash

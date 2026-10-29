@@ -21,6 +21,9 @@ SECRETS = "https://secretmanager.googleapis.com/v1"
 CONTAINER = "https://container.googleapis.com/v1"
 REDIS = "https://redis.googleapis.com/v1"
 LONG_POLL_SECONDS = 10
+RETRIES = 4  # attempts of a call Google rate limited, or of a read it answered 5xx
+RETRY_PAUSE_SECONDS = 1.0  # doubled after each attempt, unless Google says how long in Retry-After
+MAX_RETRY_PAUSE_SECONDS = 30
 SQL_POLL_SECONDS = 5
 SERVICE_NETWORKING_POLL_SECONDS = 5
 
@@ -60,23 +63,45 @@ def translate_http_error(response: httpx.Response) -> InfrastructureError:
     return InfrastructureError(ErrorCode.PROVIDER_ERROR, f"Google Cloud refused the request: {message[:200]}", details)
 
 
+def retry_pause(response: httpx.Response, attempt: int) -> float:
+    """How long to wait before the next attempt: Google's Retry-After when it gives one in seconds, else doubling."""
+    try:
+        asked = float(response.headers.get("Retry-After", ""))
+    except ValueError:
+        asked = RETRY_PAUSE_SECONDS * 2 ** attempt
+    return min(max(asked, 0.0), MAX_RETRY_PAUSE_SECONDS)
+
+
 class GcpApi:
-    def __init__(self, project: str, token, client=None, sleep=time.sleep, clock=time.monotonic, operation_timeout: int = 900):
+    def __init__(self, project: str, token, client=None, sleep=time.sleep, clock=time.monotonic, operation_timeout: int = 900, quota_project: str | None = None):
         self.project, self.token, self.sleep, self.clock, self.operation_timeout = project, token, sleep, clock, operation_timeout
         self.client = client or httpx.Client(timeout=60, follow_redirects=False)
+        self.quota_project = quota_project
         self._project_number = None
 
     # ---- plain requests
     def request(self, method: str, url: str, json=None, params=None) -> dict:
-        try:
-            token = self.token()
-        except ValueError as exc:
-            raise InfrastructureError(ErrorCode.PROVIDER_AUTH_FAILED, str(exc)) from None
-        try:
-            response = self.client.request(method, url, json=json, params=params, headers={"Authorization": "Bearer " + token})
-        except httpx.RequestError as exc:
-            raise InfrastructureError(ErrorCode.PROVIDER_UNAVAILABLE, f"Google Cloud could not be reached ({type(exc).__name__})", {"url": url}) from None
-        event("provider_call", provider="gcp", method=method, url=url, status=response.status_code)
+        """One call. A call Google rate limited (429: refused before it ran) is tried again, and so is a read Google answered
+        with a 5xx; a write that met a 5xx is not, since it may have been done. Each retry is a provider_retry event."""
+        for attempt in range(RETRIES):
+            try:
+                token = self.token()
+            except ValueError as exc:
+                raise InfrastructureError(ErrorCode.PROVIDER_AUTH_FAILED, str(exc)) from None
+            headers = {"Authorization": "Bearer " + token}
+            if self.quota_project:
+                headers["X-Goog-User-Project"] = self.quota_project
+            try:
+                response = self.client.request(method, url, json=json, params=params, headers=headers)
+            except httpx.RequestError as exc:
+                raise InfrastructureError(ErrorCode.PROVIDER_UNAVAILABLE, f"Google Cloud could not be reached ({type(exc).__name__})", {"url": url}) from None
+            event("provider_call", provider="gcp", method=method, url=url, status=response.status_code)
+            retryable = response.status_code == 429 or (method == "GET" and response.status_code in (500, 502, 503, 504))
+            if not retryable or attempt == RETRIES - 1:
+                break
+            pause = retry_pause(response, attempt)
+            event("provider_retry", provider="gcp", method=method, url=url, status=response.status_code, attempt=attempt + 1, pause_seconds=pause)
+            self.sleep(pause)
         if response.status_code >= 400:
             raise translate_http_error(response)
         if not response.content:
