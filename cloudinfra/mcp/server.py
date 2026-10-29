@@ -5,15 +5,17 @@ provider project is all it needs. `python -m uvicorn cloudinfra.mcp.server:creat
 """
 import contextlib
 import difflib
+import json
 import os
 import re
-from typing import Any, Literal
+from typing import Literal
 
 import pydantic
 from fastapi import FastAPI, Request
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 from .. import __version__
@@ -25,7 +27,7 @@ from ..orchestration.provisioner import Orchestrator
 from ..orchestration.sweeper import Sweeper
 from ..providers import ProviderRegistry
 from ..security.auth import Authenticate, as_tool_error, audited, client_address, identity, invoke
-from ..state.state_manager import StateManager
+from ..state.state_manager import ProcessLock, StateManager
 from .catalog import CATALOG, render_markdown
 from .tools import cache, cluster, compute, database, infrastructure, loadbalancer, network, operations, queue, secret, storage
 
@@ -76,6 +78,15 @@ class AccessBody(pydantic.BaseModel):
     action: Literal["grant", "revoke"]
     member: str
     level: Literal["use", "admin"] = "use"
+
+
+def read_body(raw: bytes) -> dict:
+    """A REST body as data, read inside the call: one that is not JSON is INVALID_REQUEST, recorded like any other refusal."""
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        raise InfrastructureError(ErrorCode.INVALID_REQUEST, "The body is not JSON: send one JSON object", {"field": "body"}) from None
+    return data if isinstance(data, dict) else {"_": data}
 
 
 def body_of_model(model, body: dict):
@@ -144,16 +155,24 @@ def build_app(config, registry: ProviderRegistry | None = None, state: StateMana
     if missing:
         raise RuntimeError(f"The catalog and the registered tools differ: {sorted(missing)}")
 
+    process_lock = ProcessLock(config.database)
+
     @contextlib.asynccontextmanager
     async def lifespan(app):
-        orchestrator.recover()  # what a restart interrupted is put where it can be retried or destroyed
-        sweeper.start()  # expiry and idle stop; off when sweep_interval_seconds is 0
+        process_lock.acquire()  # one process per state file, or a second would recover the first's work as interrupted
         try:
-            async with mcp.session_manager.run():
-                yield
+            orchestrator.recover()  # what a restart interrupted is put where it can be retried or destroyed
+            sweeper.start()  # expiry and idle stop; off when sweep_interval_seconds is 0
+            try:
+                async with mcp.session_manager.run():
+                    yield
+            finally:
+                sweeper.stop()
+                # work under way finishes before the lock goes, so the next process never recovers it while it runs; work not
+                # yet started is dropped, and its request is recovered at the next start
+                orchestrator.executor.shutdown(wait=True, cancel_futures=True)
         finally:
-            sweeper.stop()
-            orchestrator.executor.shutdown(wait=False)
+            process_lock.release()
 
     app = FastAPI(title="Cloud Infrastructure MCP", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.mcp, app.state.orchestrator, app.state.state, app.state.sweeper = mcp, orchestrator, state, sweeper
@@ -163,6 +182,17 @@ def build_app(config, registry: ProviderRegistry | None = None, state: StateMana
         result = invoke(state, "rest", name, fn, subject)
         code = (result.get("error") or {}).get("code") if isinstance(result, dict) and result.get("status") == "FAILED" and "error" in result else None
         return JSONResponse(result, status_code=HTTP_STATUS.get(code, 400) if code else 200)
+
+    async def rest_in_worker(name, fn, subject=None):
+        """rest() for the async routes: the call runs in the thread pool with the caller's identity, so a provider call, a
+        lock or a wait never holds the event loop that serves every other caller."""
+        principal, client = identity.get(None), client_address.get(None)
+
+        def call():
+            identity.set(principal)
+            client_address.set(client)
+            return rest(name, fn, subject)
+        return await run_in_threadpool(call)
 
     @app.get("/healthz")
     def health():
@@ -179,25 +209,21 @@ def build_app(config, registry: ProviderRegistry | None = None, state: StateMana
                            "output": spec.output, "errors": list(spec.errors), "security": spec.security, "mapping": spec.mapping} for spec in CATALOG],
                 "markdown": render_markdown()}
 
-    async def body_of(request: Request) -> dict[str, Any]:
-        """The JSON body as data; the contract validates it inside `invoke`, so a bad one is a structured error, not a 422."""
-        data = await request.json()
-        return data if isinstance(data, dict) else {"_": data}
-
+    # The POST routes read the raw body and parse it inside the call, so a bad one is a structured error, not a 422 or a 500.
     @app.post("/infrastructure/validate")
     async def validate(request: Request):
-        body = await body_of(request)
-        return rest("validate", lambda: orchestrator.validate(InfrastructureRequest.model_validate(body), identity.get()))
+        raw = await request.body()
+        return await rest_in_worker("validate", lambda: orchestrator.validate(InfrastructureRequest.model_validate(read_body(raw)), identity.get()))
 
     @app.post("/infrastructure/plan")
     async def plan(request: Request, check_quota: bool = False):
-        body = await body_of(request)
-        return rest("plan", lambda: orchestrator.plan(InfrastructureRequest.model_validate(body), identity.get(), check_quota))
+        raw = await request.body()
+        return await rest_in_worker("plan", lambda: orchestrator.plan(InfrastructureRequest.model_validate(read_body(raw)), identity.get(), check_quota))
 
     @app.post("/infrastructure")
     async def provision(request: Request, wait_seconds: int = 0):
-        body = await body_of(request)
-        return rest("provision", lambda: orchestrator.provision(InfrastructureRequest.model_validate(body), identity.get(), wait_seconds))
+        raw = await request.body()
+        return await rest_in_worker("provision", lambda: orchestrator.provision(InfrastructureRequest.model_validate(read_body(raw)), identity.get(), wait_seconds))
 
     @app.get("/infrastructure")
     def list_requests(status: str | None = None, limit: int = 50, expiring_within_hours: int | None = None):
@@ -213,21 +239,21 @@ def build_app(config, registry: ProviderRegistry | None = None, state: StateMana
 
     @app.post("/infrastructure/{request_id}/actions")
     async def control(request_id: str, request: Request):
-        body = await body_of(request)
+        raw = await request.body()
 
         def run():
-            asked = body_of_model(ControlBody, body)
+            asked = body_of_model(ControlBody, read_body(raw))
             return orchestrator.control(request_id, asked.action, identity.get(), asked.hours, asked.wait_seconds)
-        return rest("control", run, request_id)
+        return await rest_in_worker("control", run, request_id)
 
     @app.post("/infrastructure/{request_id}/access")
     async def access(request_id: str, request: Request):
-        body = await body_of(request)
+        raw = await request.body()
 
         def run():
-            asked = body_of_model(AccessBody, body)
+            asked = body_of_model(AccessBody, read_body(raw))
             return orchestrator.manage_access(request_id, asked.action, asked.member, identity.get(), asked.level)
-        return rest("access", run, request_id)
+        return await rest_in_worker("access", run, request_id)
 
     app.mount("/", mcp.streamable_http_app())
     return app

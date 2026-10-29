@@ -42,8 +42,8 @@ class GcpCompute:
             # Application Layer attaches one with its own permissions if it needs Google APIs from inside.
             "metadata": {"items": [{"key": "enable-oslogin", "value": "TRUE"}]},
             "serviceAccounts": [],
-            # vTPM and integrity monitoring always; Secure Boot as the planned software allows: on, except a plain image on a
-            # GPU machine, whose drivers Google's installer builds unsigned. A profile with signed drivers keeps it on.
+            # vTPM and integrity monitoring always; Secure Boot as the planned software allows: on, except an image without GPU
+            # drivers on a GPU machine, whose drivers Google's installer builds unsigned. A GPU profile with signed drivers keeps it on.
             "shieldedInstanceConfig": {"enableSecureBoot": shape.get("secure_boot", True), "enableVtpm": True, "enableIntegrityMonitoring": True},
         }
         accelerator, scheduling = None, {}
@@ -71,7 +71,10 @@ class GcpCompute:
         return self.get(resource)
 
     def start(self, resource: ComputeResource, ctx) -> ComputeResource:
-        self.api.wait_compute(self.api.post(f"{self._instances(resource.zone)}/{resource.name}/start"))
+        """Start a stopped machine, or resume a suspended one: Compute Engine starts only a stopped instance."""
+        base = f"{self._instances(resource.zone)}/{resource.name}"
+        action = "resume" if self.api.get(base).get("status") == "SUSPENDED" else "start"
+        self.api.wait_compute(self.api.post(f"{base}/{action}"))
         return self.get(resource.model_copy(update={"stop_reason": None}))
 
     def get(self, resource: ComputeResource) -> ComputeResource:

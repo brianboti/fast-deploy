@@ -21,7 +21,9 @@ class GcpProfile(BaseModel):
     description: str = Field(default="", max_length=200)
     secure_boot: bool = Field(default=True, description="Turn off only for images whose kernel modules are not signed.")
     min_boot_disk_gb: int = Field(default=10, ge=10, le=2000, description="The image's own size or more; smaller boot disks are raised to it.")
-    accelerator: Literal["required", "optional", "none"] = Field(default="optional", description="required for a GPU image, none for one that must not get GPUs.")
+    accelerator: Literal["required", "optional", "none"] = Field(
+        default="optional", description="required for a GPU image, which carries its drivers; optional for an image without them, which a GPU machine boots "
+                                        "with Secure Boot off so that drivers can be installed; none for one that must not get GPUs.")
 
 
 class GcpSettings(BaseModel):

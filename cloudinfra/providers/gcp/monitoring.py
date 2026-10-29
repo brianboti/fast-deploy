@@ -10,6 +10,15 @@ def _iso(moment):
     return moment.astimezone(datetime.UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def _cpu(resource) -> str:
+    """The CPU utilisation series of one machine: by its numeric id, which no other machine has, or, before the id is known,
+    by its name and zone, since names are unique within a zone only."""
+    base = 'metric.type="compute.googleapis.com/instance/cpu/utilization" AND resource.type="gce_instance"'
+    if resource.instance_id:
+        return f'{base} AND resource.labels.instance_id="{resource.instance_id}"'
+    return f'{base} AND metric.labels.instance_name="{resource.name}" AND resource.labels.zone="{resource.zone}"'
+
+
 class GcpMonitoring:
     def __init__(self, api, clock=None):
         self.api = api
@@ -40,14 +49,13 @@ class GcpMonitoring:
     def busy_cores(self, resource, minutes: int) -> float | None:
         """The busiest CPU sample of a machine in the window, in cores: Compute Engine reports utilisation as a share of all
         vCPUs, so one busy core on a large machine is a small share. None when nothing was recorded."""
-        condition = f'metric.type="compute.googleapis.com/instance/cpu/utilization" AND resource.type="gce_instance" AND metric.labels.instance_name="{resource.name}"'
-        busiest = self._series(condition, minutes, "ALIGN_MAX", busiest=True)
+        busiest = self._series(_cpu(resource), minutes, "ALIGN_MAX", busiest=True)
         return None if busiest is None else round(busiest * resource.cpu, 3)
 
     def usage(self, resource, minutes: int) -> Usage:
         kind = resource.kind.value
         if kind == "compute":
-            condition = f'metric.type="compute.googleapis.com/instance/cpu/utilization" AND resource.type="gce_instance" AND metric.labels.instance_name="{resource.name}"'
+            condition = _cpu(resource)
             metrics = {"cpu_utilization_mean": self._series(condition, minutes, "ALIGN_MEAN"), "cpu_utilization_max": self._series(condition, minutes, "ALIGN_MAX")}
             note = "CPU utilisation of the machine from Cloud Monitoring; memory and disk need the guest agent, which this service does not install."
         elif kind == "database":

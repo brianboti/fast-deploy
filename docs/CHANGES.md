@@ -1,3 +1,66 @@
+# 1.37.1: what the review of release A found
+
+A review of 1.37.0 read the change from ten angles; a separate verifier checked every candidate against the code and the
+fake Google Cloud, and a last pass looked for what the first had missed. It found 43 defects. All are fixed here, each with
+a test that fails on 1.37.0 (`tests/cloudinfra/test_infra_release_a_review.py`).
+
+- **Permissions.** Every lifetime ends in a destroy, so a request that sets one now needs `can_destroy`: a caller without
+  it could have its requests, databases included, destroyed by the sweeper. An expiry the operator sets still applies to
+  every caller.
+- **Credential secrets.** They are named `<name>-db-password-<6 hex>` and `<name>-cache-auth-<6 hex>`: secret ids are
+  unique in a project and request names are not, so a second database or cache of the same name failed. `delete_database`
+  and `delete_cache` take the secret with them, so the request ends (it stayed live and counted against
+  `max_active_requests_per_principal`). A secret whose value could not be written is cleaned up or destroyed instead of
+  outliving the request. A database is refused when the operator's settings let the service grant access to no one and
+  the password is not returned, since nobody could then read it; the plan says when nobody has been granted the secret
+  yet, and when the creating response carries the password.
+- **Access.** A principal's own identity may always be granted, in any domain. A member of a request where nothing has a
+  policy of its own (disks only) is `RECORDED`, not `GRANTED`, and the plan says the members are recorded only; a grant
+  that met a resource still being created says so. A level change grants the new roles wherever the member had access,
+  failed resources included. A revoke reaches what a failed request or a failed destroy left behind, and a revoke that
+  fails is a failed operation. Grants recorded on a resource are kept when the provider's view of it is saved after a
+  resize, a refresh, a stop or an attach. A single delete takes the resource off the access list; the last one revokes it.
+- **Stop, start, resize and delete.** A request is STOPPED only when nothing in it that can stop still runs: a start that
+  failed on an idle-stopped machine marked a running request STOPPED, and idle stop and expiry then passed it over. Stop,
+  start, destroy, a resize and a single delete wait for each other (`INVALID_STATE`, reason `changing`), and work that
+  finishes late never overwrites a status set meanwhile. A delete or a resize the workers refuse at shutdown leaves the
+  resource as it was. A suspended machine is resumed rather than started. `resize_compute`'s contract says a stopped
+  machine stays stopped.
+- **The sweeper.** A sweep reports what it started (`stopping`, `destroying`, `idle_stopping`) and the expired requests it
+  keeps (`kept`): its stops and destroys run in the workers, and a destroy that failed was reported as done. A failed
+  expiry destroy is tried again; while one is refused, what can stop is stopped; a request that failed, or whose destroy
+  failed, is destroyed at its expiry. Every failed attempt waits longer before the next (5 minutes, doubling, at most a
+  day) instead of adding a failed operation at every sweep. A request with nothing that can stop is kept until its
+  retention ends without saying it stopped. Idle machines are stopped in the workers, each on its own: the sweeper no
+  longer holds a request's lock while Google stops a machine, and one machine that cannot be measured or stopped no
+  longer keeps the others running. Idle samples are the machine's own, by its numeric id, not those of a namesake in
+  another zone. With `sweep_interval_seconds: 0` requests may not set a lifetime or idle stop, and the operator's time
+  defaults are refused at start.
+- **Restarts and processes.** The server holds a lock on `<database>.lock`: a second process on the same state file
+  refuses to start instead of recovering the first's work as interrupted. Shutdown lets work under way finish before the
+  lock goes. What an interrupted provisioning created is deleted at the next start, as after any failure. The table of
+  per-request locks forgets requests nobody is working on.
+- **Validation and cost.** The per-request disk limit counts the boot disk a profile gives. `create_compute` refuses 0 for
+  `lifetime_hours` and `autostop_idle_minutes` instead of reading it as none. A GPU machine on a profile that is not a GPU
+  profile (`accelerator: required`) boots with Secure Boot off, so that its driver can load. The boot-disk warning names a
+  size only when one was asked. `get_resource_cost` prices the resources as they exist (after a resize, for requests an
+  earlier release stored, after the operator's profiles change), each stopped one at its stopped rate.
+- **The server.** The REST routes run in the thread pool, the older POST routes too, so a slow call no longer holds the
+  event loop that serves every other caller. A body that is not JSON is `INVALID_REQUEST` with an audit event, not a 500.
+- **Connect blocks and the command line.** A connect block names another request's network or machine that a resource
+  uses. The IAP prerequisite says forwarded ports need a firewall rule too. Offline `validate` and `plan` accept access
+  members, saying they are not checked.
+- **Tests.** The fake Google Cloud refuses an existing secret id, honours the monitoring filter, and resumes a suspended
+  instance; the audit-trail test now provisions a cache and a database, where the old one could not fail.
+
+Upgrading: a 1.37.0 configuration with no `access.allowed_domains` and no principal identity can no longer create
+databases until the operator sets one of those, or `return_database_password`. Callers reading the sweeper's results, the
+credential secrets' names, or a grant's status (`RECORDED`) see the changes above; a caller that sets a lifetime needs
+`can_destroy`.
+
+Not fixed here, found while testing: `resize_compute` on a machine with GPUs picks an E2 machine type, which cannot carry
+GPUs; it is older than release A.
+
 # 1.37.0: release A, so that a developer can use what the service creates
 
 `docs/RESEARCH-2026-10-28-positioning.md` (added in this release) placed the service against the infrastructure products

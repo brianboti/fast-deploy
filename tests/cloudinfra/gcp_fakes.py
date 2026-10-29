@@ -20,7 +20,10 @@ TOKEN = "test-token"
 
 
 def config_dict(**overrides):
-    base = {"database": ":memory:", "allowed_hosts": ["127.0.0.1:*", "localhost:*", "testserver"], "sweep_interval_seconds": 0,
+    # The sweeper's thread waits a day before its first sweep, so tests drive Sweeper.tick() themselves; lifetimes and idle
+    # stop need the sweeper on. Members in example.com may be granted, so a database's password secret can be.
+    base = {"database": ":memory:", "allowed_hosts": ["127.0.0.1:*", "localhost:*", "testserver"], "sweep_interval_seconds": 86400,
+            "access": {"allowed_domains": ["example.com"]},
             "providers": {"gcp": {"project_id": PROJECT, "allowed_regions": ["us-central1", "europe-west1"]}},
             "principals": [{"name": "app-layer", "token_sha256": hashlib.sha256(TOKEN.encode()).hexdigest(), "can_provision": True, "can_destroy": True},
                            {"name": "reader", "token_sha256": hashlib.sha256(b"reader-token").hexdigest()},
@@ -53,6 +56,8 @@ class FakeGcpApi(GcpApi):
         self.started_at = "2026-10-28T10:00:00Z"  # what lastStartTimestamp says after a create or a start
         self.quotas = {"CPUS": {"limit": 24, "usage": 0}, "INSTANCES": {"limit": 10, "usage": 0}, "DISKS_TOTAL_GB": {"limit": 4096, "usage": 0}, "IN_USE_ADDRESSES": {"limit": 8, "usage": 0}}
         self.monitoring_value = 0.42
+        self.monitoring_by_instance = {}  # an instance id's own CPU share, when a test sets one; the filter names the id
+        self.monitoring_filters = []
         self.counter = 0
 
     def _op(self, kind="compute"):
@@ -89,7 +94,7 @@ class FakeGcpApi(GcpApi):
             (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/(healthChecks|backendServices|forwardingRules|addresses)/([^/]+)$", self._regional_item),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances$", self._instances),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances/([^/]+)$", self._instance),
-            (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances/([^/]+)/(stop|start|setMachineType|attachDisk)$", self._instance_action),
+            (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances/([^/]+)/(stop|start|resume|setMachineType|attachDisk)$", self._instance_action),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances/([^/]+)/(getIamPolicy|setIamPolicy)$", self._instance_policy),
             (r"^/compute/v1/projects/[^/]+/aggregated/instances$", self._aggregated),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/disks$", self._disks),
@@ -111,7 +116,7 @@ class FakeGcpApi(GcpApi):
             (r"^/v1/services/servicenetworking\.googleapis\.com/connections/[^:]+:deleteConnection$", self._unpeer),
             (r"^/v1/operations/[^/]+$", lambda m, *a: {"name": "operations/x", "done": True}),
             (r"^/v1/projects/[^/]+$", lambda m, *a: {"projectNumber": "123456789"}),
-            (r"^/v3/projects/[^/]+/timeSeries$", lambda m, *a: {"timeSeries": [{"points": [{"value": {"doubleValue": self.monitoring_value}}]}]}),
+            (r"^/v3/projects/[^/]+/timeSeries$", self._time_series),
         )
         for pattern, handler in handlers:
             found = handler and re.match(pattern, path)
@@ -156,7 +161,9 @@ class FakeGcpApi(GcpApi):
         instance = self.instances[key]
         if action == "stop":
             instance["status"] = "TERMINATED"
-        elif action == "start":
+        elif action == "start" and instance["status"] == "SUSPENDED":
+            raise InfrastructureError(ErrorCode.PROVIDER_ERROR, "a suspended instance is resumed, not started", {"http_status": 400})
+        elif action in ("start", "resume"):
             instance["status"] = "RUNNING"
             instance["lastStartTimestamp"] = self.started_at
         elif action == "setMachineType":
@@ -282,6 +289,8 @@ class FakeGcpApi(GcpApi):
         return store[name]
 
     def _secrets(self, found, method, body, params):
+        if params["secretId"] in self.secrets:  # secret ids are unique in a project
+            raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, f"Secret [{params['secretId']}] already exists", {"http_status": 409})
         self.secrets[params["secretId"]] = dict(body)
         return {"name": f"projects/{self.project}/secrets/{params['secretId']}"}
 
@@ -330,6 +339,13 @@ class FakeGcpApi(GcpApi):
             del self.redis[key]
             return {"name": f"projects/{self.project}/locations/{key[0]}/operations/redis-del", "done": True}
         return self.redis[key]
+
+    def _time_series(self, found, method, body, params):
+        condition = params.get("filter", "")
+        self.monitoring_filters.append(condition)
+        named = re.search(r'resource\.labels\.instance_id="([0-9]+)"', condition)
+        value = self.monitoring_by_instance.get(named.group(1), self.monitoring_value) if named else self.monitoring_value
+        return {"timeSeries": [{"points": [{"value": {"doubleValue": value}}]}]}
 
     def _redis_auth(self, found, method, body, params):
         assert method == "GET"

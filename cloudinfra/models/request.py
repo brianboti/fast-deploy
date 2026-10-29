@@ -96,6 +96,7 @@ class ComputeRequest(StrictModel):
         if self.accelerator is not None:
             if "boot_disk_gb" not in self.model_fields_set:
                 self.boot_disk_gb = GPU_DEFAULT_BOOT_DISK_GB
+                self.__pydantic_fields_set__.discard("boot_disk_gb")  # a default, not a size the caller asked for
             elif self.boot_disk_gb < GPU_MIN_BOOT_DISK_GB:
                 raise InfrastructureError(ErrorCode.INVALID_COMPUTE_CONFIGURATION,
                                           f"A machine with GPUs needs a boot disk of at least {GPU_MIN_BOOT_DISK_GB} GB for its drivers and toolkit; "

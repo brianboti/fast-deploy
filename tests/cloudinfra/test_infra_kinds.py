@@ -94,10 +94,11 @@ def test_plan_for_everything_names_shapes_and_order():
     assert [(item.kind, item.name) for item in planned] == [
         ("network", "platform-net"), ("storage", "platform-gpu-disk-1"), ("compute", "platform-web-1"), ("compute", "platform-web-2"), ("compute", "platform-gpu-1"),
         ("database", "platform-db-abcdef"), ("cache", "platform-cache"), ("queue", "platform-events"), ("queue", "platform-jobs"), ("secret", "platform-api-key"),
-        ("secret", "platform-token"), ("secret", "platform-db-password"), ("secret", "platform-cache-auth"), ("cluster", "platform-cluster"), ("load_balancer", "platform-lb")]
+        ("secret", "platform-token"), ("secret", "platform-db-password-abcdef"), ("secret", "platform-cache-auth-abcdef"), ("cluster", "platform-cluster"),
+        ("load_balancer", "platform-lb")]
     by_name = {item.name: item for item in planned}
-    assert by_name["platform-db-password"].spec == {**by_name["platform-db-password"].spec, "secret": "db-password", "versions": 1, "purpose": "database_password"}
-    assert by_name["platform-cache-auth"].spec["purpose"] == "cache_auth"
+    assert by_name["platform-db-password-abcdef"].spec == {**by_name["platform-db-password-abcdef"].spec, "secret": "db-password", "versions": 1, "purpose": "database_password"}
+    assert by_name["platform-cache-auth-abcdef"].spec["purpose"] == "cache_auth"
     assert by_name["platform-gpu-1"].spec["machine_type"] == "g2-standard-8" and by_name["platform-gpu-1"].spec["accelerator"] == {"type": "nvidia-l4", "count": 1}
     assert by_name["platform-gpu-disk-1"].spec["attach_to"] == "platform-gpu-1" and by_name["platform-web-1"].spec["network"] == "platform-net"
     assert by_name["platform-cache"].spec == {**by_name["platform-cache"].spec, "tier": "BASIC", "redis_version": "REDIS_7_2", "network": "platform-net"}
@@ -194,8 +195,9 @@ def test_everything_provisions_in_order_and_destroys_in_reverse(tmp_path):
     assert endpoints.load_balancer_address == response.resources.load_balancer[0].address and endpoints.load_balancer_address.startswith("34.120.0.")
     assert endpoints.cache_host == "10.30.0.3" and endpoints.cache_port == 6379 and endpoints.cluster_endpoint == "35.201.0.7"
     assert endpoints.queue_topics == ["projects/test-project/topics/platform-events", "projects/test-project/topics/platform-jobs"]
+    rid = response.request_id[:6]
     assert endpoints.secret_names == ["projects/test-project/secrets/platform-api-key", "projects/test-project/secrets/platform-token",
-                                      "projects/test-project/secrets/platform-db-password", "projects/test-project/secrets/platform-cache-auth"]
+                                      f"projects/test-project/secrets/platform-db-password-{rid}", f"projects/test-project/secrets/platform-cache-auth-{rid}"]
     assert endpoints.database_host == "10.20.0.3" and len(response.endpoints.internal_ips) == 3
     secrets_by_purpose = {secret.purpose: secret for secret in response.resources.secret}
     credentials = response.credentials
@@ -204,8 +206,8 @@ def test_everything_provisions_in_order_and_destroys_in_reverse(tmp_path):
     assert [secret.name for secret in response.resources.secret if secret.purpose is None] == ["platform-api-key", "platform-token"]
     assert response.resources.database[0].password_secret == credentials.database_password_secret and response.resources.cache[0].auth_secret == credentials.cache_auth_secret
     password = fake.sql_users["platform-db-" + response.request_id[:6]][0]["password"]
-    assert [base64.b64decode(value).decode() for value in fake.secret_versions["platform-db-password"]] == [password]
-    assert [base64.b64decode(value).decode() for value in fake.secret_versions["platform-cache-auth"]] == ["fake-redis-auth-string"]
+    assert [base64.b64decode(value).decode() for value in fake.secret_versions[f"platform-db-password-{rid}"]] == [password]
+    assert [base64.b64decode(value).decode() for value in fake.secret_versions[f"platform-cache-auth-{rid}"]] == ["fake-redis-auth-string"]
     assert password not in json.dumps(response.model_dump(mode="json")) and "fake-redis-auth-string" not in json.dumps(response.model_dump(mode="json"))
     groups = {machine.name: machine.group for machine in response.resources.compute}
     assert groups == {"platform-web-1": "web", "platform-web-2": "web", "platform-gpu-1": "gpu"}

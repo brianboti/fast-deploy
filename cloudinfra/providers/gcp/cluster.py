@@ -42,6 +42,7 @@ class GcpCluster:
         self.api.wait_container(operation)
         resource = ClusterResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region, zone=location,
                                    provider_id=f"{self._clusters(location)}/{planned.name}", location=location, node_count=spec.node_count, machine_type=planned.spec["machine_type"],
+                                   node_disk_gb=planned.spec.get("node_disk_gb"),
                                    node_pool="default-pool", network=network.id if network else None, labels=translate.labels(ctx))
         return self.get(resource)
 

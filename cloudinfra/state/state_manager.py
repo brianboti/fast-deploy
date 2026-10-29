@@ -1,13 +1,19 @@
 """Infrastructure state only: requests, the resources they created, operations and audit events, in SQLite.
 
-No application state lives here, and no credential: a database password is returned once and never written. Every value
-is JSON in a text column next to the few fields the service filters on, so a provider can add detail without a migration.
+No application state lives here, and no credential: a generated database password goes straight to a secret at the
+provider. Every value is JSON in a text column next to the few fields the service filters on, so a provider can add detail
+without a migration. One service process works on a state file at a time, which ProcessLock enforces.
 """
 import contextlib
 import datetime
 import json
 import sqlite3
 import uuid
+
+try:
+    import fcntl
+except ImportError:  # not on Windows; the service runs on Linux and macOS
+    fcntl = None
 
 from ..models.resources import load_resource
 from ..models.response import OperationRecord, OperationStatus, RequestStatus
@@ -35,10 +41,12 @@ LIST_REQUESTS = ("SELECT * FROM requests WHERE (? IS NULL OR owner = ?) AND (? I
                  "ORDER BY created_at DESC, request_id LIMIT ?")
 COUNT_ACTIVE = ("SELECT COUNT(*) FROM requests WHERE owner = ? AND status IN "
                 "('PROVISIONING', 'READY', 'STOPPING', 'STOPPED', 'STARTING', 'FAILED', 'DESTROYING', 'DESTROY_FAILED')")
-SWEEPABLE = "SELECT * FROM requests WHERE status IN ('READY', 'STOPPED') ORDER BY created_at, request_id"
+SWEEPABLE = ("SELECT * FROM requests WHERE status IN ('READY', 'STOPPED') OR (status IN ('FAILED', 'DESTROY_FAILED') AND expires_at IS NOT NULL) "
+             "ORDER BY created_at, request_id")
 UPDATE_LIFECYCLE = "UPDATE requests SET expires_at = ?, lifecycle_json = ?, updated_at = ? WHERE request_id = ?"
 UPDATE_ACCESS = "UPDATE requests SET access_json = ?, updated_at = ? WHERE request_id = ?"
 UPDATE_REQUEST = "UPDATE requests SET status = ?, error_json = ?, updated_at = ? WHERE request_id = ?"
+TRANSITION = "UPDATE requests SET status = ?, error_json = ?, updated_at = ? WHERE request_id = ? AND status IN ({})"
 UPSERT_RESOURCE = ("INSERT INTO resources (resource_id, request_id, kind, name, status, resource_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
                    "ON CONFLICT(resource_id) DO UPDATE SET status = excluded.status, resource_json = excluded.resource_json, updated_at = excluded.updated_at")
 SELECT_RESOURCE = "SELECT resource_json FROM resources WHERE resource_id = ?"
@@ -49,6 +57,7 @@ FINISH_OPERATION = "UPDATE operations SET status = ?, finished_at = ?, error_jso
 SELECT_OPERATION = "SELECT * FROM operations WHERE operation_id = ?"
 OPERATIONS_OF = "SELECT * FROM operations WHERE request_id = ? ORDER BY rowid"
 RUNNING_OPERATIONS = "SELECT * FROM operations WHERE status = 'RUNNING' ORDER BY rowid"
+RUNNING_OPERATIONS_OF = "SELECT * FROM operations WHERE request_id = ? AND status = 'RUNNING' ORDER BY rowid"
 EXPIRING = "AND expires_at IS NOT NULL AND expires_at <= ? AND status IN ('READY', 'STOPPING', 'STOPPED', 'STARTING') ORDER BY"
 INSERT_EVENT = "INSERT INTO events (at, request_id, operation_id, identity, client, kind, name, outcome, duration_ms, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 RECENT_EVENTS = "SELECT * FROM events WHERE (? IS NULL OR request_id = ?) AND (? IS NULL OR identity = ?) ORDER BY id DESC LIMIT ?"
@@ -60,6 +69,32 @@ def now() -> str:
 
 def new_id() -> str:
     return uuid.uuid4().hex
+
+
+class ProcessLock:
+    """One service process per state file: an exclusive lock on <database>.lock from start to the end of shutdown. A second
+    process refuses to start rather than recover, as interrupted, requests the first is still working on."""
+
+    def __init__(self, database: str):
+        self.path = None if database == ":memory:" or fcntl is None else f"{database}.lock"
+        self._file = None
+
+    def acquire(self) -> None:
+        if self.path is None:
+            return
+        handle = open(self.path, "a+")  # noqa: SIM115 - held open for the life of the process
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            raise RuntimeError(f"Another process of this service is using its state file ({self.path} is locked); one process per state file") from None
+        self._file = handle
+
+    def release(self) -> None:
+        if self._file is not None:
+            fcntl.flock(self._file, fcntl.LOCK_UN)
+            self._file.close()
+            self._file = None
 
 
 class StateManager:
@@ -113,7 +148,7 @@ class StateManager:
         return [self._request(row) for row in rows]
 
     def sweepable_requests(self) -> list[dict]:
-        """Requests the sweeper looks at: ready or stopped."""
+        """Requests the sweeper looks at: ready or stopped, and failed ones with a lifetime, which expiry destroys."""
         with self.connect() as db:
             rows = db.execute(SWEEPABLE).fetchall()
         return [self._request(row) for row in rows]
@@ -133,6 +168,14 @@ class StateManager:
     def set_request_status(self, request_id, status, error=None) -> None:
         with self.connect() as db:
             db.execute(UPDATE_REQUEST, (str(status), json.dumps(error) if error else None, now(), request_id))
+
+    def transition(self, request_id, expected, status, error=None) -> bool:
+        """Move a request to a status only from one it is expected to be in, so that work finishing late never overwrites a
+        status set meanwhile (a request destroyed while a stop was on its way). True when it moved."""
+        states = [str(item) for item in expected]
+        with self.connect() as db:
+            moved = db.execute(TRANSITION.format(", ".join("?" * len(states))), (str(status), json.dumps(error) if error else None, now(), request_id, *states)).rowcount
+        return moved == 1
 
     @staticmethod
     def _request(row) -> dict:
@@ -189,6 +232,11 @@ class StateManager:
     def running_operations(self) -> list[OperationRecord]:
         with self.connect() as db:
             rows = db.execute(RUNNING_OPERATIONS).fetchall()
+        return [self._operation(row) for row in rows]
+
+    def running_operations_of(self, request_id) -> list[OperationRecord]:
+        with self.connect() as db:
+            rows = db.execute(RUNNING_OPERATIONS_OF, (request_id,)).fetchall()
         return [self._operation(row) for row in rows]
 
     def operations_of(self, request_id) -> list[OperationRecord]:

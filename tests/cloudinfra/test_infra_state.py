@@ -37,7 +37,7 @@ def test_no_password_reaches_the_database_file_or_the_log(tmp_path, caplog):
         response = orchestrator.provision(InfrastructureRequest.model_validate(FULL_REQUEST), principal(orchestrator.config), wait_seconds=45)
     password = fake.sql_users[response.resources.database[0].name][0]["password"]
     assert response.credentials.database_password is None, "by default the password reaches the request's secret only"
-    assert [base64.b64decode(value).decode() for value in fake.secret_versions["analytics-db-password"]] == [password]
+    assert [base64.b64decode(value).decode() for value in fake.secret_versions[f"analytics-db-password-{response.request_id[:6]}"]] == [password]
     assert password not in json.dumps(response.model_dump(mode="json"))
     raw = (tmp_path / "cloudinfra.db").read_bytes()
     assert password.encode() not in raw

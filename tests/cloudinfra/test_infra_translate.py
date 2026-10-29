@@ -47,7 +47,7 @@ def test_plan_names_shapes_and_order():
     planned = planner.plan(request, ctx, provider)
     assert [(item.kind, item.name) for item in planned] == [("network", "analytics-net"), ("storage", "analytics-vm-disk-1"), ("storage", "analytics-vm-disk-2"),
                                                             ("compute", "analytics-vm-1"), ("compute", "analytics-vm-2"), ("database", "analytics-db-abcdef"),
-                                                            ("secret", "analytics-db-password")]
+                                                            ("secret", "analytics-db-password-abcdef")]
     assert all(item.spec["resource_id"].startswith({"network": "net-", "storage": "sto-", "compute": "cmp-", "database": "db-", "secret": "sec-"}[item.kind]) for item in planned)
     assert planned[1].spec["attach_to"] == "analytics-vm-1" and planned[3].spec["machine_type"] == "e2-standard-4" and planned[3].spec["zone"] == "us-central1-a"
     assert planned[5].spec == {**planned[5].spec, "database_version": "POSTGRES_18", "tier": "db-custom-2-7680", "private": True, "network": "analytics-net", "port": 5432}

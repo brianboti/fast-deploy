@@ -1,16 +1,19 @@
 """Who is granted access to what a request creates. The requester comes first when the operator maps its principal to an
-identity; then the request's own access list, each member checked against the operator's allowed domains. With no allowed
-domains, only principals' own identities may be named."""
+identity; then the request's own access list, each member checked against the operator's allowed domains. Principals' own
+identities may always be named; anyone else must be in one of the allowed domains."""
 from ..models.errors import ErrorCode
 from ..providers.base import Problem
 from ..security import validation
 
 
 def allowed(member: str, config) -> bool:
-    domains = [domain.lower() for domain in config.access.allowed_domains]
-    if domains:
-        return validation.member_domain(member) in domains
-    return member in {principal.identity for principal in config.principals if principal.identity}
+    identities = {principal.identity for principal in config.principals if principal.identity}
+    return member in identities or validation.member_domain(member) in [domain.lower() for domain in config.access.allowed_domains]
+
+
+def grants_nobody(config) -> bool:
+    """True when the operator's settings let this service grant access to no one at all."""
+    return config.access.max_members == 0 or not (config.access.allowed_domains or any(principal.identity for principal in config.principals))
 
 
 def refusal(member: str, config) -> str:
@@ -24,6 +27,10 @@ def problems(request, config, principal=None) -> list[Problem]:
     count = len(members(request, principal, config))
     if count > config.access.max_members:
         found.append(Problem(ErrorCode.INVALID_ACCESS, f"At most {config.access.max_members} members per request, the requester included; {count} asked", "access"))
+    if request.database is not None and not config.return_database_password and grants_nobody(config):
+        found.append(Problem(ErrorCode.INVALID_ACCESS, "Nobody could read this database's password: it is written to a secret that only access members read, and this "
+                             "service grants access to no one. The operator sets access.allowed_domains or a principal's identity, or return_database_password",
+                             "database"))
     return found
 
 
@@ -41,10 +48,14 @@ def members(request, principal, config) -> list[dict]:
     return [{**item, "status": "PENDING", "resources": [], "error": None, "updated_at": None} for item in found]
 
 
-def outcome(granted: list[str], errors: list) -> tuple[str, dict | None]:
-    """The status of one member after a round of grants, and the first error."""
+def outcome(granted: list[str], errors: list, changing: list[str] = ()) -> tuple[str, dict | None]:
+    """The status of one member after a round of grants, and the first error. Resources in the middle of a change are not
+    granted on, and say so; with nothing in the request to grant on at all, the member is RECORDED, not GRANTED."""
+    if not errors and changing:
+        errors = [{"code": "INVALID_STATE", "message": f"{len(changing)} resources were changing ({', '.join(changing)}); grant again once they have settled",
+                   "details": {"resources": list(changing)}}]
     if errors and not granted:
         return "FAILED", errors[0]
     if errors:
         return "PARTIAL", errors[0]
-    return "GRANTED", None
+    return ("GRANTED" if granted else "RECORDED"), None

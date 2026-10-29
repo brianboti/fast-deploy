@@ -1,13 +1,16 @@
 """Time on a request: when it expires, how close that is, and what keeps billing while it is stopped.
 
 A request's lifecycle is a small record kept beside it: expires_at, on_expiry, max_expires_at, stopped_at, stop_reason
-(requested, expired or idle), retain_until, awake_until and the warnings already sent. Nothing here calls a provider."""
+(requested, expired or idle), retain_until, awake_until, the warnings already sent, and the sweeper's attempts at expiry and
+idle stop (expiry_attempts, expiry_attempted_at, idle_attempts). Nothing here calls a provider."""
 import datetime
 
 from ..models.resources import ResourceKind, ResourceStatus
 from ..models.response import Lifecycle
 
 WARNINGS = (("48h", 48), ("2h", 2))  # labels and hours before expiry
+STOP_KEYS = ("stopped_at", "stop_reason", "retain_until")  # what a stop records on the request, and a start clears
+RETRY_SECONDS, RETRY_LIMIT_SECONDS = 300, 86400  # after a failed attempt the sweeper waits 5 minutes, doubling, at most a day
 
 
 def iso(moment: datetime.datetime) -> str:
@@ -72,9 +75,23 @@ def view(record: dict, resources, now: datetime.datetime) -> Lifecycle | None:
                      still_billing=still_billing(resources) if stopped_any else [])
 
 
+def destroys_at_expiry(on_expiry: str | None, retention_days: int) -> bool:
+    """Whether expiry destroys a request at once, rather than stopping it and keeping its data for the retention period."""
+    return on_expiry == "destroy" or retention_days == 0
+
+
+def retry_due(attempts: int, attempted_at: str | None, now: datetime.datetime) -> bool:
+    """Whether the sweeper may try again after failed attempts: it waits longer after each one, so a lasting failure adds a
+    failed operation a day rather than one at every sweep."""
+    moment = parse(attempted_at)
+    if not attempts or moment is None:
+        return True
+    return now >= moment + datetime.timedelta(seconds=min(RETRY_SECONDS * 2 ** (attempts - 1), RETRY_LIMIT_SECONDS))
+
+
 def then(on_expiry: str | None, retention_days: int) -> str:
     """What happens at expiry, as the sweeper does it."""
-    if on_expiry == "destroy" or retention_days == 0:
+    if destroys_at_expiry(on_expiry, retention_days):
         return "it is destroyed"
     return f"it stops, and is destroyed {retention_days} days later"
 
