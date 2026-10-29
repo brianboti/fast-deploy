@@ -45,9 +45,16 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
                                  "admin, GRANTED", level=grant.level, grant_status=grant.status))
 
     if release.target.cluster:
-        cluster = infra.cluster()
-        if cluster is None:
+        cluster = infra.cluster(release.target.cluster)
+        names = sorted(infra.cluster_name(item) for item in infra.clusters())
+        if cluster is None and not names:
             problems.append(_problem(ErrorCode.NOT_FOUND, "The request has no cluster; ask cloudinfra for one with a cluster block", field="target.cluster"))
+        elif cluster is None and release.target.cluster is True:
+            problems.append(_problem(ErrorCode.INVALID_RELEASE, f"The request has {len(names)} clusters ({', '.join(names)}); name one in target.cluster",
+                                     field="target.cluster", clusters=names))
+        elif cluster is None:
+            problems.append(_problem(ErrorCode.NOT_FOUND, f"The request has no cluster {release.target.cluster}; it has {', '.join(names)}", field="target.cluster",
+                                     clusters=names))
         else:
             if cluster.status != "READY":
                 problems.append(_problem(ErrorCode.INVALID_STATE, f"Cluster {cluster.name} is {cluster.status}", resource=cluster.id))
@@ -109,6 +116,14 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
     return problems, list(dict.fromkeys(warnings))  # machines on one network warn once
 
 
+def resolve(release: ReleaseRequest, infra: InfraRequest) -> ReleaseRequest:
+    """cluster: true named as the request's only cluster is named, so a release is kept under one key however it was asked for."""
+    cluster = infra.cluster(True) if release.target.cluster is True else None
+    if cluster is None:
+        return release
+    return release.model_copy(update={"target": release.target.model_copy(update={"cluster": infra.cluster_name(cluster)})})
+
+
 def plan(release: ReleaseRequest, principal, config, infra: InfraRequest) -> PlanResponse:
     """The plan of a release, or a DeliveryError with every problem found (the first one's code, all in details.problems)."""
     authorize(release, principal, config)
@@ -120,7 +135,7 @@ def plan(release: ReleaseRequest, principal, config, infra: InfraRequest) -> Pla
     environment = config.environments[release.environment]
     extra = {}
     if release.target.cluster:
-        cluster = infra.cluster()
+        cluster = infra.cluster(release.target.cluster)
         machines = [PlannedMachine(resource=cluster.id, name=cluster.name, zone=cluster.location)]
         extra = {"target": "cluster", "namespace": cluster.namespace, "workload": release.target.workload, "replicas": release.target.replicas}
     else:

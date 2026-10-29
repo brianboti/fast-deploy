@@ -54,7 +54,7 @@ Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DE
 
 | Field | Required | Description |
 |---|---|---|
-| `release` | yes | The release: environment, request_id (the infrastructure layer's request), target ({group} for every machine of a compute group, or {cluster: true, workload, replicas} for the request's cluster), image (host/path@sha256:digest; a tag is refused), port, health {path, timeout_seconds}, env (NAME: {value} or {endpoint} or {secret}), note. No source, command or mount is accepted. |
+| `release` | yes | The release: environment, request_id (the infrastructure layer's request), target ({group} for every machine of a compute group, or {cluster: NAME, workload, replicas} for a workload on one of the request's clusters; cluster: true for its only one), image (host/path@sha256:digest; a tag is refused), port, health {path, timeout_seconds}, env (NAME: {value} or {endpoint} or {secret}), note. No source, command or mount is accepted. |
 
 **Output.** PlanResponse: status PLANNED, machines, env sources, attestation_required, approval_required, replaces, warnings.
 
@@ -70,7 +70,7 @@ Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DE
 
 | Field | Required | Description |
 |---|---|---|
-| `release` | yes | The release: environment, request_id (the infrastructure layer's request), target ({group} for every machine of a compute group, or {cluster: true, workload, replicas} for the request's cluster), image (host/path@sha256:digest; a tag is refused), port, health {path, timeout_seconds}, env (NAME: {value} or {endpoint} or {secret}), note. No source, command or mount is accepted. |
+| `release` | yes | The release: environment, request_id (the infrastructure layer's request), target ({group} for every machine of a compute group, or {cluster: NAME, workload, replicas} for a workload on one of the request's clusters; cluster: true for its only one), image (host/path@sha256:digest; a tag is refused), port, health {path, timeout_seconds}, env (NAME: {value} or {endpoint} or {secret}), note. No source, command or mount is accepted. |
 | `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the work running. |
 
 **Output.** ReleaseResponse: release_id, status, environment, request_id, group, image, previous, can_roll_back, requested_by, approved_by, env (each name and its source, never a value), warnings, targets (each machine with its status, times, error and the failed container's scrubbed log), error.

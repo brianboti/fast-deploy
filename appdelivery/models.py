@@ -61,9 +61,10 @@ class Binding(StrictModel):
 
 
 class Target(StrictModel):
-    """Where a release runs: every machine of one compute group, or one workload on the request's cluster."""
+    """Where a release runs: every machine of one compute group, or one workload on one of the request's clusters."""
     group: str | None = Field(default=None, description="A compute group of the request; every machine in it is a target.")
-    cluster: bool = Field(default=False, description="The request's Kubernetes cluster, in the namespace the infrastructure layer made for the request.")
+    cluster: bool | str = Field(default=False, description="A cluster of the request by the name its cluster block gave it (cluster when it gave none), or true for "
+                                                            "the request's only cluster; the release runs in the namespace the infrastructure layer made there.")
     workload: str | None = Field(default=None, description="On a cluster: the Deployment and Service name (lowercase letters, digits, dashes).")
     replicas: int = Field(default=1, ge=1, le=20, description="On a cluster: how many copies run.")
 
@@ -72,6 +73,13 @@ class Target(StrictModel):
     def _group(cls, value):
         if value is not None and not GROUP.match(value):
             raise DeliveryError(ErrorCode.INVALID_RELEASE, f"{value!r} is not a group name: lowercase, up to 12 characters")
+        return value
+
+    @field_validator("cluster")
+    @classmethod
+    def _cluster(cls, value):
+        if isinstance(value, str) and not GROUP.match(value):
+            raise DeliveryError(ErrorCode.INVALID_RELEASE, f"{value!r} is not a cluster name: lowercase, up to 12 characters, as the request's cluster block names it")
         return value
 
     @field_validator("workload")
@@ -84,7 +92,7 @@ class Target(StrictModel):
     @model_validator(mode="after")
     def _one_kind(self):
         if (self.group is None) == (not self.cluster):
-            raise DeliveryError(ErrorCode.INVALID_RELEASE, "target names either a group of machines or cluster: true, not both and not neither")
+            raise DeliveryError(ErrorCode.INVALID_RELEASE, "target names either a group of machines or a cluster, not both and not neither")
         if self.cluster and self.workload is None:
             raise DeliveryError(ErrorCode.INVALID_RELEASE, "a cluster target names its workload")
         if self.group is not None and (self.workload is not None or self.replicas != 1):  # a stored release carries the default back
@@ -92,8 +100,12 @@ class Target(StrictModel):
         return self
 
     def key(self) -> str:
-        """What one release at a time is kept for: a group of machines, or a workload on the cluster."""
-        return f"cluster:{self.workload}" if self.cluster else self.group
+        """What one release at a time is kept for: a group of machines, or a workload on one cluster. The unnamed cluster
+        keeps the key releases had before clusters had names; true is resolved to a name before a release is kept."""
+        if not self.cluster:
+            return self.group
+        name = "cluster" if self.cluster is True else self.cluster
+        return f"cluster:{self.workload}" if name == "cluster" else f"cluster:{name}:{self.workload}"
 
 
 class Health(StrictModel):
