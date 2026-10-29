@@ -54,6 +54,8 @@ class FakeGcpApi(GcpApi):
         self.peerings = set()
         self.namespaces: dict[str, set[str]] = {}  # cluster endpoint -> namespaces
         self.role_bindings: dict[tuple[str, str, str], dict] = {}  # (endpoint, namespace, name) -> {"role", "member"}
+        self.namespace_labels: dict[tuple[str, str], dict] = {}  # (endpoint, namespace) -> its labels
+        self.cluster_objects: dict[tuple[str, str], dict] = {}  # (endpoint, path) -> other objects the adapter put in a cluster
         self.service_accounts: dict[str, dict] = {}  # email -> the account
         self.repositories = {"us-central1-docker.pkg.dev/test-project/apps", "us-central1-docker.pkg.dev/test-project/shared"}
         self.unknown_for = 0  # how many more grants naming a new service account IAM refuses as unknown, as it does for seconds after a create
@@ -507,6 +509,11 @@ class FakeKubeApi:
     def ensure_namespace(self, name, labels):
         self._maybe_fail()
         self.fake.namespaces.setdefault(self.endpoint, set()).add(name)
+        self.fake.namespace_labels.setdefault((self.endpoint, name), dict(labels))
+
+    def put(self, collection, body):
+        self._maybe_fail()
+        self.fake.cluster_objects[(self.endpoint, f"{collection}/{body['metadata']['name']}")] = body
 
     def put_role_binding(self, namespace, name, cluster_role, member, labels):
         self._maybe_fail()

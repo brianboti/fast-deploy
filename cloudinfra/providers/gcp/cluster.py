@@ -3,7 +3,8 @@ shielded nodes, workload identity on, a release channel for versions. Credential
 
 Each cluster gets one namespace, named after the request, and access to what a request created is granted there: a
 member at `use` is bound to the built-in ClusterRole view, at `admin` to edit, through RoleBindings in that namespace
-only (docs/DELIVERY-SPEC.md, phase 2). Fetching credentials still needs the project-level container.clusterViewer.
+only (docs/DELIVERY-SPEC.md, phase 2). Fetching credentials still needs the project-level container.clusterViewer. An
+admission policy keeps that namespace from opening a public address of its own (phase 3).
 
 The nodes run as an account made for the cluster (nodeaccount.py), allowed to pull from the request's registries."""
 import hashlib
@@ -12,7 +13,7 @@ from ...models.errors import ErrorCode, InfrastructureError
 from ...models.resources import ClusterResource, ResourceStatus
 from . import translate
 from .api import CONTAINER
-from .kubernetes import CLUSTER_ROLES, KubeApi
+from .kubernetes import CLUSTER_ROLES, TENANT, KubeApi, no_public_entry
 from .nodeaccount import NodeAccounts, account_id
 
 STATUS = {"PROVISIONING": ResourceStatus.CREATING, "RUNNING": ResourceStatus.READY, "RECONCILING": ResourceStatus.UPDATING, "STOPPING": ResourceStatus.DELETING,
@@ -77,7 +78,11 @@ class GcpCluster:
         ctx.accepted(resource)  # known from here: a failed wait, or a failed namespace, still deletes the cluster
         self.api.wait_container(operation)
         resource = self.get(resource)
-        self.kube(resource.endpoint, resource.ca_certificate).ensure_namespace(ctx.name, {"managed-by": "cloudinfra", "cloudinfra-request": ctx.request_id})
+        kube = self.kube(resource.endpoint, resource.ca_certificate)
+        labels = {"managed-by": "cloudinfra", "cloudinfra-request": ctx.request_id}
+        for collection, body in no_public_entry(labels):  # before the namespace, so no moment exists without it
+            kube.put(collection, body)
+        kube.ensure_namespace(ctx.name, {**labels, **TENANT})
         return resource.model_copy(update={"namespace": ctx.name})
 
     def get(self, resource: ClusterResource) -> ClusterResource:

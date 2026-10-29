@@ -303,7 +303,8 @@ Steps, each its own pull request:
 3. **`cloudinfra`: each cluster's own node account and the registries it may pull from.** Built 2026-10-29; the
    operator chose one account per cluster over one shared account, accepting the extra rights the service needs
    (docs/INFRASTRUCTURE-ARCHITECTURE.md, "A cluster's nodes").
-4. **`cloudinfra`: no public load balancer from a team namespace.**
+4. **`cloudinfra`: no public load balancer from a team namespace.** Built 2026-10-29. An Ingress is refused too: on
+   GKE it also makes a public load balancer.
 5. **`cloudinfra`: the front door.**
 6. **`appdelivery`: exposing a workload.**
 7. **A real run on Google Cloud:** the delivery service from its image, an image from a private repository, two
