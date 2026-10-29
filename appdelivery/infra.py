@@ -66,6 +66,13 @@ class Secret(View):
     purpose: str | None = None
 
 
+class FrontDoor(View):
+    address: str | None = None
+    hostnames: list[str] = Field(default_factory=list)
+    gateway: str
+    certificate: str | None = None
+
+
 class Cluster(View):
     id: str
     name: str
@@ -74,6 +81,7 @@ class Cluster(View):
     endpoint: str | None = None
     ca_certificate: str | None = None
     namespace: str | None = None
+    public: FrontDoor | None = None
 
 
 class Resources(View):

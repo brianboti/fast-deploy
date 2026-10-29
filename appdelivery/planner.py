@@ -66,6 +66,8 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
                                          resource=cluster.id))
             if grant is not None and grant.resources and cluster.id not in grant.resources:
                 problems.append(_problem(ErrorCode.NOT_GRANTED, f"{environment.service_account} was not granted on cluster {cluster.name}", resource=cluster.id))
+            if release.target.expose is not None:
+                _check_exposure(release, cluster, problems, warnings)
     else:
         machines = infra.group(release.target.group)
         if not machines:
@@ -116,6 +118,29 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
     return problems, list(dict.fromkeys(warnings))  # machines on one network warn once
 
 
+def _check_exposure(release: ReleaseRequest, cluster, problems: list, warnings: list) -> None:
+    door, hostname = cluster.public, release.target.expose.hostname
+    if door is None:
+        problems.append(_problem(ErrorCode.UNSUPPORTED_TARGET, f"Cluster {cluster.name} has no front door; ask the infrastructure layer for one (cluster.public)",
+                                 resource=cluster.id, field="target.expose"))
+    elif hostname is not None and hostname not in door.hostnames:
+        served = f"serves {', '.join(door.hostnames)}" if door.hostnames else "serves plain HTTP on its address, with no hostnames"
+        problems.append(_problem(ErrorCode.INVALID_RELEASE, f"Cluster {cluster.name}'s front door {served}, not {hostname}", field="target.expose.hostname"))
+    elif door.hostnames and door.certificate != "ACTIVE":
+        warnings.append(f"The front door's certificate is {door.certificate or 'not reported'}: HTTPS works once DNS for {', '.join(door.hostnames)} points at "
+                        f"{door.address} and Google has issued it")
+
+
+def url(release: ReleaseRequest, cluster) -> str | None:
+    """Where an exposed workload is reached from outside."""
+    expose, door = release.target.expose, cluster.public
+    if expose is None or door is None:
+        return None
+    if door.hostnames:
+        return f"https://{expose.hostname or door.hostnames[0]}{expose.path}"
+    return f"http://{door.address}{expose.path}"
+
+
 def resolve(release: ReleaseRequest, infra: InfraRequest) -> ReleaseRequest:
     """cluster: true named as the request's only cluster is named, so a release is kept under one key however it was asked for."""
     cluster = infra.cluster(True) if release.target.cluster is True else None
@@ -137,7 +162,8 @@ def plan(release: ReleaseRequest, principal, config, infra: InfraRequest) -> Pla
     if release.target.cluster:
         cluster = infra.cluster(release.target.cluster)
         machines = [PlannedMachine(resource=cluster.id, name=cluster.name, zone=cluster.location)]
-        extra = {"target": "cluster", "namespace": cluster.namespace, "workload": release.target.workload, "replicas": release.target.replicas}
+        extra = {"target": "cluster", "namespace": cluster.namespace, "workload": release.target.workload, "replicas": release.target.replicas,
+                 "url": url(release, cluster)}
     else:
         machines = [PlannedMachine(resource=machine.id, name=machine.name, zone=machine.zone or "", instance_id=machine.instance_id, internal_ip=machine.internal_ip)
                     for machine in infra.group(release.target.group)]

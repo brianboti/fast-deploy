@@ -7,7 +7,7 @@ import sqlite3
 import httpx
 import pydantic
 import pytest
-from delivery_fakes import CLUSTER_ID, DIGEST, cluster_response, make_config, principal, release_dict, two_clusters
+from delivery_fakes import CLUSTER_ID, DIGEST, cluster_response, make_config, principal, release_dict, two_clusters, with_door
 from fleet_fakes import SECRET_VALUE, V1, V2, V3, World
 from kube_fakes import NAMESPACE
 
@@ -269,3 +269,106 @@ def test_a_release_by_name_replaces_one_asked_for_with_true():
                                    world.team)
     assert second.status == "RUNNING" and second.previous == first.release_id
     assert world.delivery.get(first.release_id, world.team).status == "SUPERSEDED"
+
+
+# ---- exposing a workload through the cluster's front door (phase 3, step 6)
+ROUTES = f"/apis/gateway.networking.k8s.io/v1/namespaces/{NAMESPACE}/httproutes"
+HEALTH_CHECKS = f"/apis/networking.gke.io/v1/namespaces/{NAMESPACE}/healthcheckpolicies"
+
+
+def exposed(answer, expose):
+    config = make_config()
+    release = ReleaseRequest.model_validate(release_dict(environment="prod", image=f"us-central1-docker.pkg.dev/acme-apps/shop/web@sha256:{DIGEST}",
+                                                         target={"cluster": True, "workload": "web", "expose": expose}))
+    return planner.plan(release, principal(config), config, InfraRequest.model_validate(answer))
+
+
+def test_an_exposed_workload_plans_its_url():
+    assert exposed(with_door(cluster_response()), {"hostname": "shop.example.com", "path": "/api"}).url == "https://shop.example.com/api"
+    assert exposed(with_door(cluster_response()), {}).url == "https://shop.example.com/", "the door's first hostname"
+    assert exposed(with_door(cluster_response(), hostnames=()), {"path": "/"}).url == "http://34.120.0.9/"
+    assert exposed(cluster_response(), None).url is None
+
+
+@pytest.mark.parametrize("answer, expose, code, said", [
+    (cluster_response(), {}, ErrorCode.UNSUPPORTED_TARGET, "has no front door"),
+    (with_door(cluster_response()), {"hostname": "other.example.com"}, ErrorCode.INVALID_RELEASE, "serves shop.example.com, not other.example.com"),
+    (with_door(cluster_response(), hostnames=()), {"hostname": "shop.example.com"}, ErrorCode.INVALID_RELEASE, "plain HTTP on its address"),
+])
+def test_an_exposure_the_front_door_cannot_serve_is_refused(answer, expose, code, said):
+    with pytest.raises(DeliveryError) as caught:
+        exposed(answer, expose)
+    assert caught.value.code == code and said in caught.value.message
+
+
+def test_a_certificate_not_yet_active_is_a_warning():
+    planned = exposed(with_door(cluster_response(), certificate="PROVISIONING"), {})
+    assert any("certificate is PROVISIONING" in warning and "34.120.0.9" in warning for warning in planned.warnings)
+
+
+@pytest.mark.parametrize("target", [{"group": "web", "expose": {}}, {"cluster": True, "workload": "web", "expose": {"hostname": "Shop.Example.com"}},
+                                    {"cluster": True, "workload": "web", "expose": {"path": "api"}}])
+def test_expose_belongs_to_a_cluster_target_and_names_a_host_and_path(target):
+    with pytest.raises((DeliveryError, pydantic.ValidationError)):
+        ReleaseRequest.model_validate(release_dict(target=target))
+
+
+def door_world(hostnames=("shop.example.com",)):
+    world = World(cluster=True)
+    world.infra.answers["dev"] = with_door(world.infra.answers["dev"], hostnames=hostnames)
+    return world
+
+
+def deploy_exposed(world, image=V1, expose=None, health="/"):
+    target = {"cluster": True, "workload": "web", "replicas": 2, "expose": {"path": "/"} if expose is None else expose}
+    release = release_dict(environment="dev", image=image, target=target, health={"path": health, "timeout_seconds": 60})
+    return world.delivery.deploy(ReleaseRequest.model_validate(release), world.team)
+
+
+def test_a_healthy_exposed_release_is_routed_from_the_front_door():
+    world = door_world()
+    done = deploy_exposed(world, expose={"hostname": "shop.example.com", "path": "/"})
+    assert done.status == "RUNNING"
+    route = world.kube.objects[f"{ROUTES}/web"]
+    assert route["spec"]["parentRefs"] == [{"group": "gateway.networking.k8s.io", "kind": "Gateway", "namespace": "cloudinfra-gateway", "name": "public", "sectionName": "https"}]
+    assert route["spec"]["hostnames"] == ["shop.example.com"]
+    assert route["spec"]["rules"] == [{"matches": [{"path": {"type": "PathPrefix", "value": "/"}}], "backendRefs": [{"name": "web", "port": 8080}]}]
+    assert f"{HEALTH_CHECKS}/web" not in world.kube.objects, "the load balancer's own check of / is right"
+
+
+def test_a_health_path_other_than_root_gets_the_load_balancer_a_health_check():
+    world = door_world(hostnames=())
+    deploy_exposed(world, health="/healthz")
+    check = world.kube.objects[f"{HEALTH_CHECKS}/web"]["spec"]
+    assert check["default"]["config"]["httpHealthCheck"] == {"port": 8080, "requestPath": "/healthz"} and check["targetRef"]["name"] == "web"
+    assert world.kube.objects[f"{ROUTES}/web"]["spec"]["parentRefs"][0]["sectionName"] == "http" and "hostnames" not in world.kube.objects[f"{ROUTES}/web"]["spec"]
+
+
+def test_a_failed_release_leaves_the_route_to_the_previous_one():
+    world = door_world()
+    deploy_exposed(world, expose={"path": "/"})
+    world.kube.bad_images.add(V3)
+    failed = deploy_exposed(world, V3, expose={"path": "/v3"})
+    assert failed.status == "FAILED" and world.kube.objects[f"{ROUTES}/web"]["spec"]["rules"][0]["matches"][0]["path"]["value"] == "/"
+
+
+def test_a_release_without_expose_takes_the_workload_off_the_door_and_rollback_puts_it_back():
+    world = door_world()
+    first = deploy_exposed(world, expose={"path": "/"})
+    second = world.delivery.deploy(ReleaseRequest.model_validate(cluster_release(V2)), world.team)
+    assert second.status == "RUNNING" and f"{ROUTES}/web" not in world.kube.objects
+    world.delivery.rollback(second.release_id, world.team)
+    assert world.delivery.get(first.release_id, world.team).status == "RUNNING" and f"{ROUTES}/web" in world.kube.objects
+
+
+def test_remove_takes_the_route_and_health_check_away():
+    world = door_world()
+    done = deploy_exposed(world, health="/healthz")
+    world.delivery.remove(done.release_id, world.team)
+    assert f"{ROUTES}/web" not in world.kube.objects and f"{HEALTH_CHECKS}/web" not in world.kube.objects
+
+
+def test_a_first_release_that_fails_leaves_no_route():
+    world = door_world()
+    world.kube.bad_images.add(V1)
+    assert deploy_exposed(world).status == "FAILED" and f"{ROUTES}/web" not in world.kube.objects

@@ -14,6 +14,8 @@ REQUEST_ID = re.compile(r"^[a-f0-9]{32}$")
 GROUP = re.compile(r"^[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?$")
 WORKLOAD = re.compile(r"^[a-z](?:[a-z0-9-]{0,38}[a-z0-9])?$")  # a Kubernetes name, short enough for the release Secret's name
 ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]{0,63}$")
+HOSTNAME = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
+ROUTE_PATH = re.compile(r"^/[A-Za-z0-9._~/-]{0,200}$")
 HEALTH_PATH = re.compile(r"^/[A-Za-z0-9._~/-]{0,200}(?:\?[A-Za-z0-9._~=&%-]{0,200})?$")
 SECRET_NAME = re.compile(r"^[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?$|^db-password$|^cache-auth$")
 # The infrastructure layer's endpoints that are one value each; lists (addresses of several machines) are not bindable.
@@ -60,6 +62,26 @@ class Binding(StrictModel):
         return "value"
 
 
+class Expose(StrictModel):
+    """A workload reached from outside through its cluster's front door, which the infrastructure layer made."""
+    hostname: str | None = Field(default=None, description="One of the front door's hostnames; every one of them when omitted. None on a plain HTTP front door.")
+    path: str = Field(default="/", description="The path prefix sent to the workload.")
+
+    @field_validator("hostname")
+    @classmethod
+    def _hostname(cls, value):
+        if value is not None and not HOSTNAME.fullmatch(value):
+            raise DeliveryError(ErrorCode.INVALID_RELEASE, f"{value!r} is not a lowercase DNS name")
+        return value
+
+    @field_validator("path")
+    @classmethod
+    def _path(cls, value):
+        if not ROUTE_PATH.fullmatch(value):
+            raise DeliveryError(ErrorCode.INVALID_RELEASE, f"{value!r} is not a path prefix: /, then letters, digits and . _ ~ / -")
+        return value
+
+
 class Target(StrictModel):
     """Where a release runs: every machine of one compute group, or one workload on one of the request's clusters."""
     group: str | None = Field(default=None, description="A compute group of the request; every machine in it is a target.")
@@ -67,6 +89,7 @@ class Target(StrictModel):
                                                             "the request's only cluster; the release runs in the namespace the infrastructure layer made there.")
     workload: str | None = Field(default=None, description="On a cluster: the Deployment and Service name (lowercase letters, digits, dashes).")
     replicas: int = Field(default=1, ge=1, le=20, description="On a cluster: how many copies run.")
+    expose: Expose | None = Field(default=None, description="On a cluster: reach the workload from outside through the cluster's front door.")
 
     @field_validator("group")
     @classmethod
@@ -95,8 +118,8 @@ class Target(StrictModel):
             raise DeliveryError(ErrorCode.INVALID_RELEASE, "target names either a group of machines or a cluster, not both and not neither")
         if self.cluster and self.workload is None:
             raise DeliveryError(ErrorCode.INVALID_RELEASE, "a cluster target names its workload")
-        if self.group is not None and (self.workload is not None or self.replicas != 1):  # a stored release carries the default back
-            raise DeliveryError(ErrorCode.INVALID_RELEASE, "workload and replicas belong to a cluster target; a group runs one container per machine")
+        if self.group is not None and (self.workload is not None or self.replicas != 1 or self.expose is not None):  # a stored release carries the defaults back
+            raise DeliveryError(ErrorCode.INVALID_RELEASE, "workload, replicas and expose belong to a cluster target; a group runs one container per machine")
         return self
 
     def key(self) -> str:
@@ -198,6 +221,7 @@ class PlanResponse(BaseModel):
     namespace: str | None = Field(default=None, description="On a cluster: the request's namespace.")
     workload: str | None = None
     replicas: int | None = None
+    url: str | None = Field(default=None, description="On a cluster with expose: where the workload is reached from outside.")
     replaces: str | None = Field(default=None, description="The release running on this target now, which this one would replace.")
     warnings: list[str] = Field(default_factory=list)
 

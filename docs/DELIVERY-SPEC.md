@@ -308,7 +308,10 @@ Steps, each its own pull request:
 5. **`cloudinfra`: the front door.** Built 2026-10-29. Without hostnames it serves plain HTTP on the address; hostnames
    must be in the operator's `public_domains`. The Gateway is deleted first, and the cluster waits for GKE's forwarding
    rules to go, so no load balancer outlives it.
-6. **`appdelivery`: exposing a workload.**
+6. **`appdelivery`: exposing a workload.** Built 2026-10-29. The route moves only once a release is healthy, so a
+   failed release leaves it on the previous one; a release without `expose` takes the workload off the door, and a
+   rollback puts the previous release's route back. GKE's Gateway load balancer checks `/` and does not read the
+   readiness probe, so a health path other than `/` also gets a HealthCheckPolicy (which `edit` may now write).
 7. **A real run on Google Cloud:** the delivery service from its image, an image from a private repository, two
    clusters, and the workload reached over HTTPS from the internet; then everything deleted.
 
