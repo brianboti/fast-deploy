@@ -29,7 +29,7 @@ repositories, builds, tests, images and releases, and never has to be present fo
 - The 45 MCP tools: [docs/MCP-CATALOG.md](docs/MCP-CATALOG.md)
 - Where the service stands and what comes next: [docs/RESEARCH-2026-10-28-positioning.md](docs/RESEARCH-2026-10-28-positioning.md)
 - Whether a separate delivery service above it is the right shape: [docs/RESEARCH-2026-10-29-delivery-layer.md](docs/RESEARCH-2026-10-29-delivery-layer.md)
-- The delivery service's draft specification: [docs/DELIVERY-SPEC.md](docs/DELIVERY-SPEC.md)
+- The delivery service's specification and build plan: [docs/DELIVERY-SPEC.md](docs/DELIVERY-SPEC.md)
 - The provider interface and the Google Cloud adapter: [docs/PROVIDER-INTERFACE.md](docs/PROVIDER-INTERFACE.md)
 - The analysis behind the split: [docs/REFACTOR-2026-10-28.md](docs/REFACTOR-2026-10-28.md)
 
@@ -38,6 +38,27 @@ python -m cloudinfra.cli token                      # a caller token and its has
 cp cloudinfra.example.yaml cloudinfra.local.yaml    # project, regions, limits, principals; no credential in the file
 CLOUDINFRA_CONFIG=cloudinfra.local.yaml uvicorn cloudinfra.mcp.server:create_app --factory --host 127.0.0.1 --port 8100
 python -m pytest tests/cloudinfra -q                # the boundary tests; no cloud is touched
+```
+
+### Application delivery (`appdelivery`)
+
+A separate service above the infrastructure layer runs an image that already exists (by digest) on machines a
+`cloudinfra` request created: one machine at a time, with a health check, the previous version restored on failure,
+approval and attestation per environment, and rollback. It takes no source, Dockerfile or command, reads `cloudinfra`
+only over HTTP, and reaches machines through IAP as each environment's own service account, which the team names in its
+request's access list. It does not use `labdeploy`.
+
+- Specification, facts checked before building, and build plan: [docs/DELIVERY-SPEC.md](docs/DELIVERY-SPEC.md)
+- The real-machine checks behind it: [docs/DELIVERY-SPIKE.md](docs/DELIVERY-SPIKE.md)
+- The 9 tools: [docs/DELIVERY-CATALOG.md](docs/DELIVERY-CATALOG.md)
+
+```bash
+app-delivery token                                   # a team's token and its hash
+cp appdelivery.example.yaml appdelivery.local.yaml   # cloudinfra's address, environments, teams; no credential in the file
+app-delivery plan release.yaml --config appdelivery.local.yaml --as shop-team   # checks a release; nothing runs
+APPDELIVERY_CONFIG=appdelivery.local.yaml uvicorn appdelivery.server:create_app --factory --host 127.0.0.1 --port 8200
+docker build -f Dockerfile.appdelivery -t appdelivery .   # its own image: Python, gcloud and Cosign, pinned and checked
+python -m pytest tests/appdelivery -q                # no cloud is touched
 ```
 
 ## Fast Deploy: the application delivery workflow

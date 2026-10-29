@@ -1,0 +1,55 @@
+# The application delivery service (docs/DELIVERY-SPEC.md): its own image, apart from the one in Dockerfile. It needs
+# Python, the gcloud CLI (SSH through IAP is reached only through gcloud) with an SSH client, and Cosign. Every input is
+# pinned and checked; refresh each deliberately after review:
+#   - python:3.12-slim by digest, the same as Dockerfile:   docker buildx imagetools inspect python:3.12-slim
+#   - the gcloud CLI from Google's versioned archive (old versions stay in gs://cloud-sdk-release; Google's apt
+#     repository keeps only recent ones, so an apt pin stops building once its version is pruned). Google publishes a
+#     SHA-256 only for the current, unversioned archive (https://docs.cloud.google.com/sdk/docs/downloads-versioned-archives),
+#     whose gzip header names a different file. The sums below were derived on 2026-10-29: the unversioned 591.0.0
+#     archive matched Google's published sum, its tar was identical to the versioned archive's, and that tar's VERSION
+#     file read 591.0.0; the versioned archive's own SHA-256 is pinned. Repeat that check when moving the version.
+#   - Cosign from its GitHub release, by the SHA-256 that both its checksums file and GitHub's asset digest publish:
+#       gh release view vX.Y.Z -R sigstore/cosign --json assets --jq '.assets[] | select(.name|test("^cosign-linux-")) | .name + " " + .digest'
+# Build:  docker build -f Dockerfile.appdelivery -t appdelivery .     (--platform linux/amd64 for Google Cloud)
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+# set by the builder from --platform; no default, so an image is never built with another architecture's binaries
+ARG TARGETARCH
+ARG GCLOUD_VERSION=591.0.0
+ARG GCLOUD_SHA256_AMD64=78c570f5fcfe58a9311bd98c06b75530595e3cae6277aad75a676a39e6ee7b63
+ARG GCLOUD_SHA256_ARM64=f5e5df0433f77c0e7f5df9fd4bce2e46c7b7967e79cf66e31b1164d3d4c86546
+ARG COSIGN_VERSION=v3.1.3
+ARG COSIGN_SHA256_AMD64=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+ARG COSIGN_SHA256_ARM64=c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a
+ENV PATH=/opt/google-cloud-sdk/bin:$PATH CLOUDSDK_CORE_DISABLE_PROMPTS=1 CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK=1 CLOUDSDK_CORE_DISABLE_USAGE_REPORTING=1
+RUN set -eux; \
+    case "$TARGETARCH" in \
+      amd64) gcloud_arch=x86_64; gcloud_sum="$GCLOUD_SHA256_AMD64"; cosign_sum="$COSIGN_SHA256_AMD64" ;; \
+      arm64) gcloud_arch=arm; gcloud_sum="$GCLOUD_SHA256_ARM64"; cosign_sum="$COSIGN_SHA256_ARM64" ;; \
+      *) echo "no pinned binaries for architecture '$TARGETARCH'"; exit 1 ;; \
+    esac; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl openssh-client; \
+    curl -fsSL -o /tmp/gcloud.tar.gz "https://storage.googleapis.com/cloud-sdk-release/google-cloud-cli-${GCLOUD_VERSION}-linux-${gcloud_arch}.tar.gz"; \
+    echo "${gcloud_sum}  /tmp/gcloud.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/gcloud.tar.gz -C /opt; \
+    curl -fsSL -o /usr/local/bin/cosign "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-${TARGETARCH}"; \
+    echo "${cosign_sum}  /usr/local/bin/cosign" | sha256sum -c -; \
+    chmod 0755 /usr/local/bin/cosign; \
+    apt-get purge -y --auto-remove curl; \
+    rm -rf /var/lib/apt/lists/* /tmp/gcloud.tar.gz; \
+    gcloud version; cosign version
+WORKDIR /app
+COPY requirements.lock .
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
+COPY appdelivery ./appdelivery
+# OpenSSH refuses to run for a uid without a passwd entry ("No user exists for uid"), so the user is named
+RUN useradd --system --uid 65532 --user-group --home-dir /data --no-create-home --shell /usr/sbin/nologin appdelivery && mkdir /data && chown 65532:65532 /data
+USER 65532:65532
+# gcloud keeps its configuration and the SSH key it makes for OS Login under HOME, which must be writable. On Google
+# Cloud the service runs as the attached service account (the metadata server); it needs Token Creator on each
+# environment's service account. The configuration is mounted at /config.
+ENV HOME=/data CLOUDSDK_CONFIG=/data/gcloud APPDELIVERY_CONFIG=/config/appdelivery.yaml
+EXPOSE 8200
+# Behind a reverse proxy set FORWARDED_ALLOW_IPS to the proxy's address (uvicorn reads it), or every caller looks like
+# the proxy and the per-address limits collapse into one.
+CMD ["uvicorn", "appdelivery.server:create_app", "--factory", "--host", "0.0.0.0", "--port", "8200"]
