@@ -17,7 +17,7 @@ from ...models.resources import ClusterResource, FrontDoor, ResourceStatus
 from . import translate
 from .api import COMPUTE, CONTAINER
 from .kubernetes import CLUSTER_ROLES, DOOR, DOOR_NAMESPACE, GATEWAYS, ROUTES, TENANT, KubeApi, front_door, no_public_entry, routes_role
-from .nodeaccount import NodeAccounts, account_id
+from .nodeaccount import NOT_YET, NodeAccounts, account_id
 
 # Gateway API's kinds appear a little after a cluster runs; a Gateway is tried again meanwhile.
 GATEWAY_KINDS = (30, 10)
@@ -84,7 +84,7 @@ class GcpCluster:
                                    node_disk_gb=planned.spec.get("node_disk_gb"), status=ResourceStatus.CREATING, node_service_account=account, registries=registries, public=door,
                                    node_pool="default-pool", network=network.id if network else None, labels=translate.labels(ctx))
         try:
-            operation = self.api.post(self._clusters(location), json={"cluster": cluster})
+            operation = self._create(location, cluster)
         except InfrastructureError:
             if account:  # Google never took the cluster, so nothing else will delete its account
                 self.accounts.forget(account, registries)
@@ -165,6 +165,17 @@ class GcpCluster:
             except InfrastructureError as exc:
                 if exc.code != ErrorCode.NOT_FOUND:
                     raise
+
+    def _create(self, location: str, cluster: dict) -> dict:
+        """GKE checks the node account itself, and for some seconds after IAM knows a new one it does not (found on a real
+        project on 2026-10-29: "failed to check status for ...; Verify if principal exists"); the create is tried again."""
+        for attempt in range(NOT_YET[0]):
+            try:
+                return self.api.post(self._clusters(location), json={"cluster": cluster})
+            except InfrastructureError as exc:
+                if "Verify if principal exists" not in exc.message or attempt == NOT_YET[0] - 1:
+                    raise
+                self.api.sleep(NOT_YET[1])
 
     def get(self, resource: ClusterResource) -> ClusterResource:
         try:

@@ -61,6 +61,7 @@ class FakeGcpApi(GcpApi):
         self.gateway_kinds_missing = 0  # how many more Gateway API writes find no such kind yet, as just after a cluster runs
         self.service_accounts: dict[str, dict] = {}  # email -> the account
         self.repositories = {"us-central1-docker.pkg.dev/test-project/apps", "us-central1-docker.pkg.dev/test-project/shared"}
+        self.account_unknown_to_gke_for = 0  # how many more cluster creates GKE refuses because it does not know the new node account yet
         self.unknown_for = 0  # how many more grants naming a new service account IAM refuses as unknown, as it does for seconds after a create
         self.kube_fail = None  # an InfrastructureError the fake Kubernetes API raises once, when set
         self.policies = {}  # IAM policies by resource: ("instance", zone, name), ("tunnel", zone, id), ("secret", name), ("bucket", name), ("topics" | "subscriptions", name)
@@ -382,6 +383,10 @@ class FakeGcpApi(GcpApi):
         cluster = body["cluster"]
         account = cluster["nodePools"][0]["config"].get("serviceAccount")
         assert account is None or account in self.service_accounts, "a node pool runs as an account that exists"
+        if account and self.account_unknown_to_gke_for > 0:
+            self.account_unknown_to_gke_for -= 1
+            raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f'Google Cloud refused the request: Failed precondition: failed to check status for "{account}"; '
+                                      "Verify if principal exists and is valid.", {"http_status": 400})
         for field in ("network", "subnetwork"):
             if "/" in (cluster.get(field) or ""):  # as GKE does: these fields take a name only
                 raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f'Google Cloud refused the request: Malformed value for {field} field: "{cluster[field]}".',

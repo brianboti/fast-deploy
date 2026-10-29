@@ -120,3 +120,13 @@ def test_a_registry_is_an_artifact_registry_repository_named_once(registries):
 def test_an_account_id_fits_what_iam_takes():
     longest = account_id("f" * 32, "a" * 12)
     assert len(longest) <= 30 and longest.startswith("node-") and longest[-1].isalnum()
+
+
+def test_a_cluster_gke_refuses_while_it_does_not_know_the_new_account_yet_is_tried_again(tmp_path):
+    """Found on a real project on 2026-10-29: IAM knew the account, GKE did not yet."""
+    orchestrator, fake = orchestrator_with(tmp_path)
+    fake.account_unknown_to_gke_for = 2
+    request = InfrastructureRequest.model_validate({"region": "us-central1", "name": "shop", "cluster": [{"name": "blue"}, {"name": "green"}]})
+    response = orchestrator.provision(request, principal(orchestrator.config), wait_seconds=45)
+    assert response.error is None, response.error
+    assert {name for _, name in fake.clusters} == {"shop-blue", "shop-green"}
