@@ -22,11 +22,12 @@ class GcpCache:
         tier = "STANDARD_HA" if spec.high_availability else "BASIC"
         body = {"displayName": planned.name, "tier": tier, "memorySizeGb": spec.memory_gb, "redisVersion": planned.spec["redis_version"], "authorizedNetwork": network.provider_id,
                 "connectMode": "DIRECT_PEERING", "authEnabled": True, "transitEncryptionMode": "SERVER_AUTHENTICATION", "labels": translate.labels(ctx)}
-        operation = self.api.post(self._instances(ctx.region), json=body, instanceId=planned.name)
-        self.api.wait_longrunning(operation, REDIS, what="Memorystore")
         resource = CacheResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region,
                                  provider_id=f"{self._instances(ctx.region)}/{planned.name}", version=planned.spec["version"], tier=tier, memory_gb=spec.memory_gb,
-                                 high_availability=spec.high_availability, network=network.id, labels=body["labels"])
+                                 high_availability=spec.high_availability, network=network.id, labels=body["labels"], status=ResourceStatus.CREATING)
+        operation = self.api.post(self._instances(ctx.region), json=body, instanceId=planned.name)
+        ctx.accepted(resource)
+        self.api.wait_longrunning(operation, REDIS, what="Memorystore")
         return self.get(resource)
 
     def get(self, resource: CacheResource) -> CacheResource:

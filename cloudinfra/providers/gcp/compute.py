@@ -59,13 +59,14 @@ class GcpCompute:
             scheduling.update({"maxRunDuration": {"seconds": str(int(shape["max_run_hours"]) * 3600)}, "instanceTerminationAction": "STOP"})
         if scheduling:
             body["scheduling"] = scheduling
-        operation = self.api.post(self._instances(zone), json=body)
-        self.api.wait_compute(operation)
         resource = ComputeResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region, zone=zone,
                                    group=shape.get("group", "vm"), machine_type=shape["machine_type"], cpu=shape.get("cpu", spec.cpu), memory_gb=shape.get("memory_gb", spec.memory_gb),
                                    os_image=shape["image"].rsplit("/", 1)[-1], boot_disk_gb=shape["boot_disk_gb"], accelerator=accelerator, labels=body["labels"],
                                    profile=shape.get("profile"), secure_boot=shape.get("secure_boot", True), max_run_hours=shape.get("max_run_hours"),
-                                   autostop_idle_minutes=shape.get("autostop_idle_minutes"), provider_id=f"{self._instances(zone)}/{planned.name}")
+                                   autostop_idle_minutes=shape.get("autostop_idle_minutes"), provider_id=f"{self._instances(zone)}/{planned.name}", status=ResourceStatus.CREATING)
+        operation = self.api.post(self._instances(zone), json=body)
+        ctx.accepted(resource)
+        self.api.wait_compute(operation)
         return self.get(resource)
 
     def stop(self, resource: ComputeResource, ctx) -> ComputeResource:

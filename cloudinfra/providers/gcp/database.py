@@ -33,15 +33,17 @@ class GcpDatabase:
                 "ipConfiguration": ip_configuration, "deletionProtectionEnabled": True, "userLabels": translate.labels(ctx),
             },
         }
-        self.api.wait_sql(self.api.post(self._instances(), json=body))
-        self.api.wait_sql(self.api.post(f"{self._instances()}/{planned.name}/databases", json={"name": spec.database_name}))
-        password = ctx.database_password or secrets.token_urlsafe(24)
-        self.api.wait_sql(self.api.post(f"{self._instances()}/{planned.name}/users", json={"name": spec.username, "password": password}))
         resource = DatabaseResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region,
                                     engine=spec.engine, version=planned.spec["version"], tier=planned.spec["tier"], storage_gb=spec.storage_gb,
                                     high_availability=spec.high_availability, public_access=spec.public_access, port=translate.DB_PORTS[spec.engine],
                                     database=spec.database_name, username=spec.username, labels=body["settings"]["userLabels"],
-                                    provider_id=f"{self._instances()}/{planned.name}")
+                                    provider_id=f"{self._instances()}/{planned.name}", status=ResourceStatus.CREATING)
+        operation = self.api.post(self._instances(), json=body)
+        ctx.accepted(resource)  # the instance is known from here: a failure making its database or user still deletes it
+        self.api.wait_sql(operation)
+        self.api.wait_sql(self.api.post(f"{self._instances()}/{planned.name}/databases", json={"name": spec.database_name}))
+        password = ctx.database_password or secrets.token_urlsafe(24)
+        self.api.wait_sql(self.api.post(f"{self._instances()}/{planned.name}/users", json={"name": spec.username, "password": password}))
         return self.get(resource), password
 
     def get(self, resource: DatabaseResource) -> DatabaseResource:

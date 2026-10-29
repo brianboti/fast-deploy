@@ -20,10 +20,12 @@ class GcpStorage:
             zone = planned.spec["zone"]
             body = {"name": planned.name, "description": translate.description(ctx), "sizeGb": str(spec.size_gb),
                     "type": f"zones/{zone}/diskTypes/{planned.spec['disk_type']}", "labels": translate.labels(ctx)}
-            self.api.wait_compute(self.api.post(self._disks(zone), json=body))
             resource = StorageResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region, zone=zone,
                                        type="persistent", size_gb=spec.size_gb, performance=spec.performance, labels=body["labels"],
-                                       provider_id=f"{self._disks(zone)}/{planned.name}")
+                                       provider_id=f"{self._disks(zone)}/{planned.name}", status=ResourceStatus.CREATING)
+            operation = self.api.post(self._disks(zone), json=body)
+            ctx.accepted(resource)
+            self.api.wait_compute(operation)
             return self.get(resource)
         body = {"name": planned.name, "location": ctx.region.upper(), "storageClass": "STANDARD", "labels": translate.labels(ctx),
                 "iamConfiguration": {"uniformBucketLevelAccess": {"enabled": True}, "publicAccessPrevention": "enforced"}}
