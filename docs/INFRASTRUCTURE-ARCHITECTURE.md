@@ -177,7 +177,10 @@ policy for one thing only: a cluster's node account (below).
   named after the request, when it is created, and its grants are Kubernetes RoleBindings in that namespace only: IAM's
   Kubernetes roles cannot be limited to one cluster. A `user:` or `serviceAccount:` member is bound as a `User` named by
   its email, a `group:` member as a `Group` (which needs Google Groups for RBAC); `edit` changes workloads, services,
-  config maps and secrets, never RBAC or the namespace. The service makes these calls to the cluster's own API with its
+  config maps and secrets, never RBAC or the namespace. `edit` would also let a namespace make a public Google load
+  balancer (a Service of type `LoadBalancer`, an Ingress or a Gateway), so every cluster gets a ValidatingAdmissionPolicy,
+  `cloudinfra-no-public-entry`, bound to the namespaces made for requests (labelled `cloudinfra-tenant: "true"`, which
+  `edit` cannot change), that refuses all three there: a public address is this service's to make. The service makes these calls to the cluster's own API with its
   Google token, checking the server against the cluster's CA certificate. The tunnel grant names the machine's numeric
   id, so a later machine with the same name never inherits it.
 - **Project-level prerequisites** are the platform team's, once: a role with `compute.projects.get` and

@@ -1,3 +1,12 @@
+# Unreleased: a request's namespace cannot open a public address of its own
+
+Phase 3, step 4 (docs/DELIVERY-SPEC.md, section 4). `edit` lets a namespace make a Service of type `LoadBalancer`, an
+Ingress or a Gateway, each a public Google load balancer the platform team never sees. Every new cluster now gets a
+ValidatingAdmissionPolicy and its binding, `cloudinfra-no-public-entry` (built into Kubernetes since 1.30), that refuse
+all three in the namespaces made for requests, which carry the label `cloudinfra-tenant: "true"`; `edit` cannot change a
+namespace's labels. The policy is put in before the namespace exists; a cluster that will not take it fails the request
+and is deleted. Clusters made before keep no such policy.
+
 # Unreleased: each cluster's nodes run as their own account, and may pull from private registries
 
 Phase 3, step 3 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECTURE.md, "A cluster's nodes"):
