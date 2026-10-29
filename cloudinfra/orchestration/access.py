@@ -1,12 +1,15 @@
 """Who is granted access to what a request creates. The requester comes first when the operator maps its principal to an
 identity; then the request's own access list, each member checked against the operator's allowed domains. Principals' own
-identities may always be named; anyone else must be in one of the allowed domains."""
+identities may always be named; anyone else must be in one of the allowed domains, and a CI job's federated identity in
+one of the allowed workload identity pools."""
 from ..models.errors import ErrorCode
 from ..providers.base import Problem
 from ..security import validation
 
 
 def allowed(member: str, config) -> bool:
+    if validation.is_federated(member):
+        return validation.federated_pool(member) in config.access.workload_identity_pools
     identities = {principal.identity for principal in config.principals if principal.identity}
     return member in identities or validation.member_domain(member) in [domain.lower() for domain in config.access.allowed_domains]
 
@@ -17,6 +20,9 @@ def grants_nobody(config) -> bool:
 
 
 def refusal(member: str, config) -> str:
+    if validation.is_federated(member):
+        return (f"{member} is in {validation.federated_pool(member)}, which is not a workload identity pool this service grants to: "
+                f"{', '.join(config.access.workload_identity_pools) or 'none (access.workload_identity_pools)'}")
     if config.access.allowed_domains:
         return f"{member} is outside the domains this service grants to: {', '.join(config.access.allowed_domains)}"
     return f"{member} is not the identity of one of this service's principals, and the operator allows no other members (access.allowed_domains)"

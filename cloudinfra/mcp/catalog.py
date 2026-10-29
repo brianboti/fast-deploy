@@ -251,6 +251,20 @@ CATALOG: tuple[ToolSpec, ...] = (
              READ_ERRORS, "Read-only; never returns a value.", "Secret Manager: secretmanager.projects.secrets.get."),
     ToolSpec("delete_secret", "Secret", "Delete a secret", "Delete the secret and every version.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS, "Needs can_destroy.",
              "Secret Manager: secretmanager.projects.secrets.delete."),
+    # ---- registry
+    ToolSpec("create_registry", "Registry", "Create an image registry", "Create a container image repository (Docker format) in the region. Name a team's CI job in "
+             "access at admin and it pushes with its own identity, a service account or a keyless federated identity; members at use pull. Releases name its images "
+             "by digest.",
+             (REGION, Input("registry_name", "The repository's short name, part of its provider name.", True), PROVIDER,
+              Input("immutable_tags", "Refuse to move a tag once pushed (default false)."),
+              Input("size_gb", "The images it is expected to hold, in GB, for the cost estimate only (default 10)."), NAME, LABELS, WAIT),
+             RESPONSE, ("NOT_FOUND", *COMMON_ERRORS), f"Needs can_provision. Pushing and pulling are the members' own, with their own identity. {OWNERSHIP}",
+             "Artifact Registry: artifactregistry.projects.locations.repositories.create (format DOCKER)."),
+    ToolSpec("get_registry", "Registry", "Get an image registry", "A repository's address (where images are pushed and pulled), its settings and state.", (RESOURCE_ID,),
+             RESOURCE, READ_ERRORS, "Read-only.", "Artifact Registry: artifactregistry.projects.locations.repositories.get."),
+    ToolSpec("delete_registry", "Registry", "Delete an image registry", "Delete the repository and every image it holds.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
+             "Needs can_destroy. Irreversible: the images go with it, and a release that names one can no longer pull it.",
+             "Artifact Registry: artifactregistry.projects.locations.repositories.delete."),
     # ---- cluster
     ToolSpec("create_cluster", "Cluster", "Create a Kubernetes cluster", "Create a managed Kubernetes cluster with one node pool of identical nodes: VPC-native, shielded nodes, "
              "workload identity on, versions from the provider's regular release channel. Credentials come from the provider's IAM, never from this service.",
@@ -328,7 +342,7 @@ CATALOG: tuple[ToolSpec, ...] = (
              (), "Read-only; no provider call.", "None."),
     ToolSpec("validate_infrastructure_request", "Infrastructure", "Validate a request", "Check a full InfrastructureRequest against the contract, the operator's regions and limits, "
              "the provider's shapes and the cost ceiling. Creates nothing.",
-             (Input("request", "The InfrastructureRequest: provider, region, at least one of network, storage, compute, database, cache, queue, secret, cluster, load_balancer, "
+             (Input("request", "The InfrastructureRequest: provider, region, at least one of network, storage, compute, database, cache, queue, secret, registry, cluster, load_balancer, "
                     "and optionally lifetime (hours, on_expiry) and access (members to grant).", True),),
              "ValidationResponse: valid, the normalized request, and problems (each with a code, a message and the field).", ("UNSUPPORTED_PROVIDER",),
              "Read-only. Every problem is reported, not only the first.", "None; the provider adapter is asked only for its shape rules."),
@@ -341,7 +355,7 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Read-only. The cost is an estimate from list prices, never a bill; stopped_monthly_usd is what it costs while stopped.",
              "Compute Engine: compute.regions.get for the quota, when asked."),
     ToolSpec("provision_infrastructure", "Infrastructure", "Provision a request", "Validate, plan, record and provision a full request: network, storage, compute, database, cache, "
-             "queue, secret, cluster, load balancer, in that order. "
+             "queue, secret, registry, cluster, load balancer, in that order. "
              "Answers at once with PROVISIONING (or waits up to 45 seconds); follow it with get_infrastructure_status. A failure deletes what was created and reports it.",
              (Input("request", "The InfrastructureRequest.", True), WAIT), RESPONSE + " With credentials naming the secrets that hold a database password or a cache AUTH string.",
              ("INVALID_COMPUTE_CONFIGURATION", "INVALID_STORAGE_CONFIGURATION", "INVALID_NETWORK_CONFIGURATION", "INVALID_DATABASE_CONFIGURATION", "INVALID_ACCESS", "NOT_FOUND",
@@ -357,7 +371,7 @@ CATALOG: tuple[ToolSpec, ...] = (
               Input("limit", "At most this many (default 50, up to 200)."),
               Input("expiring_within_hours", "Only running or stopped requests that expire within this many hours (1 to 8760), the expired ones included.")),
              "ListResponse: requests and count.", ("INVALID_REQUEST",), "Read-only; from the service's own state, no provider call.", "None."),
-    ToolSpec("destroy_infrastructure", "Infrastructure", "Destroy a request", "Delete everything a request created, in reverse order: load balancer, cluster, secrets, queues, "
+    ToolSpec("destroy_infrastructure", "Infrastructure", "Destroy a request", "Delete everything a request created, in reverse order: load balancer, cluster, registries, secrets, queues, "
              "cache, database, machines, storage, network. "
              "Answers at once with DESTROYING (or waits up to 45 seconds). What could not be deleted is named; call again once the cause is fixed.",
              (REQUEST_ID, WAIT), RESPONSE, DELETE_ERRORS, "Needs can_destroy. Deletion protection on a database is turned off by this call only.",
@@ -375,9 +389,11 @@ CATALOG: tuple[ToolSpec, ...] = (
              hint="changes_cloud", until="READY, STOPPED or FAILED"),
     ToolSpec("manage_infrastructure_access", "Infrastructure", "Grant or revoke access",
              "Grant a person, group or service account access to what a request created, or revoke it: login on its machines through the provider's IAM and an "
-             "identity-aware tunnel, reading its secrets (the database password and cache AUTH string among them), using its buckets and queues.",
+             "identity-aware tunnel, reading its secrets (the database password and cache AUTH string among them), using its buckets and queues, pulling from and "
+             "pushing to its registries.",
              (REQUEST_ID, Input("action", "grant or revoke.", True),
-              Input("member", "user:, group: or serviceAccount: and an email address in a domain the operator allows, or a principal's own identity.", True),
+              Input("member", "user:, group: or serviceAccount: and an email address in a domain the operator allows, or a principal's own identity; or a CI job's "
+                    "principal:// or principalSet:// identity in a workload identity pool the operator allows, granted on registries only.", True),
               Input("level", "use (default: log in, read and write data) or admin (administrator login, manage secret versions and objects).")),
              RESPONSE + " The access block shows each member's status (RECORDED when nothing in the request has an access policy) and the resources granted on; each "
              "resource's connect block says how to reach it.",
@@ -387,7 +403,8 @@ CATALOG: tuple[ToolSpec, ...] = (
              "block as a prerequisite for the platform team. Members are limited to the operator's allowed domains, principals' identities and max_members. A grant "
              "needs a READY or STOPPED request; a revoke also reaches what a failed request or a failed destroy left behind.",
              "Compute Engine: instances getIamPolicy and setIamPolicy (roles/compute.osLogin or osAdminLogin); IAP: the machine's iap_tunnel policy "
-             "(roles/iap.tunnelResourceAccessor); Secret Manager, Cloud Storage and Pub/Sub: the resource's getIamPolicy and setIamPolicy.",
+             "(roles/iap.tunnelResourceAccessor); Secret Manager, Cloud Storage, Pub/Sub and Artifact Registry (roles/artifactregistry.reader or writer): the "
+             "resource's getIamPolicy and setIamPolicy.",
              hint="changes_cloud"),
     # ---- operations
     ToolSpec("get_resource_health", "Operations", "Get a resource's health", "Whether one resource is up, from the provider's state: a running machine, a runnable database, a ready disk or network.",
@@ -411,7 +428,7 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Read-only; no secret is included.", "None."),
 )
 BY_NAME = {spec.name: spec for spec in CATALOG}
-GROUPS = ("Compute", "Storage", "Network", "Database", "Cache", "Queue", "Secret", "Cluster", "Service", "Job", "Load balancer", "Infrastructure", "Operations")
+GROUPS = ("Compute", "Storage", "Network", "Database", "Cache", "Queue", "Secret", "Registry", "Cluster", "Service", "Job", "Load balancer", "Infrastructure", "Operations")
 
 
 def render_markdown(catalog=CATALOG) -> str:
@@ -420,7 +437,7 @@ def render_markdown(catalog=CATALOG) -> str:
              "Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. "
              f"{len(catalog)} tools in {len(GROUPS)} groups. Every result is a JSON object with `status`; a failed one is "
              '`{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, '
-             "`cac-`, `que-`, `sec-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that "
+             "`cac-`, `que-`, `sec-`, `reg-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that "
              "create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.", ""]
     lines += ["## At a glance", "", "| Group | Tool | Purpose | Safety hint |", "|---|---|---|---|"]
     for group in GROUPS:

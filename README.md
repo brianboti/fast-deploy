@@ -26,7 +26,7 @@ decides nothing about an application; those are the Application Layer's. Fast De
 repositories, builds, tests, images and releases, and never has to be present for the infrastructure layer to work.
 
 - Architecture and ownership: [docs/INFRASTRUCTURE-ARCHITECTURE.md](docs/INFRASTRUCTURE-ARCHITECTURE.md)
-- The 45 MCP tools: [docs/MCP-CATALOG.md](docs/MCP-CATALOG.md)
+- The 48 MCP tools: [docs/MCP-CATALOG.md](docs/MCP-CATALOG.md)
 - Where the service stands and what comes next: [docs/RESEARCH-2026-10-28-positioning.md](docs/RESEARCH-2026-10-28-positioning.md)
 - Whether a separate delivery service above it is the right shape: [docs/RESEARCH-2026-10-29-delivery-layer.md](docs/RESEARCH-2026-10-29-delivery-layer.md)
 - The delivery service's specification and build plan: [docs/DELIVERY-SPEC.md](docs/DELIVERY-SPEC.md)

@@ -1,6 +1,6 @@
 # MCP service catalog
 
-Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 51 tools in 13 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, `cac-`, `que-`, `sec-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
+Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 54 tools in 14 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, `cac-`, `que-`, `sec-`, `reg-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
 
 ## At a glance
 
@@ -31,6 +31,9 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | Secret | `create_secret` | Create a secret | changes cloud |
 | Secret | `get_secret` | Get a secret | read only |
 | Secret | `delete_secret` | Delete a secret | destructive |
+| Registry | `create_registry` | Create an image registry | changes cloud |
+| Registry | `get_registry` | Get an image registry | read only |
+| Registry | `delete_registry` | Delete an image registry | destructive |
 | Cluster | `create_cluster` | Create a Kubernetes cluster | changes cloud |
 | Cluster | `get_cluster` | Get a cluster | read only |
 | Cluster | `delete_cluster` | Delete a cluster | destructive |
@@ -714,6 +717,79 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Provider mapping (Google Cloud).** Secret Manager: secretmanager.projects.secrets.delete.
 
+## Registry
+
+### `create_registry`
+
+**Purpose.** Create a container image repository (Docker format) in the region. Name a team's CI job in access at admin and it pushes with its own identity, a service account or a keyless federated identity; members at use pull. Releases name its images by digest.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
+| `registry_name` | yes | The repository's short name, part of its provider name. |
+| `provider` | no | The cloud provider adapter; gcp (default) is the one implemented. |
+| `immutable_tags` | no | Refuse to move a tag once pushed (default false). |
+| `size_gb` | no | The images it is expected to hold, in GB, for the cost estimate only (default 10). |
+| `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
+| `labels` | no | Labels for every resource, next to the service's ownership labels. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `region`, `registry_name`.
+**Optional fields.** `provider`, `immutable_tags`, `size_gb`, `name`, `labels`, `wait_seconds`.
+
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
+
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Pushing and pulling are the members' own, with their own identity. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+
+**Provider mapping (Google Cloud).** Artifact Registry: artifactregistry.projects.locations.repositories.create (format DOCKER).
+
+### `get_registry`
+
+**Purpose.** A repository's address (where images are pushed and pulled), its settings and state.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** none.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`.
+
+**Security.** Read-only; creates and changes nothing. Read-only.
+
+**Provider mapping (Google Cloud).** Artifact Registry: artifactregistry.projects.locations.repositories.get.
+
+### `delete_registry`
+
+**Purpose.** Delete the repository and every image it holds.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** `wait_seconds`.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `DESTROY_FAILED`.
+
+**Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy. Irreversible: the images go with it, and a release that names one can no longer pull it.
+
+**Provider mapping (Google Cloud).** Artifact Registry: artifactregistry.projects.locations.repositories.delete.
+
 ## Cluster
 
 ### `create_cluster`
@@ -1056,7 +1132,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 | Field | Required | Description |
 |---|---|---|
-| `request` | yes | The InfrastructureRequest: provider, region, at least one of network, storage, compute, database, cache, queue, secret, cluster, load_balancer, and optionally lifetime (hours, on_expiry) and access (members to grant). |
+| `request` | yes | The InfrastructureRequest: provider, region, at least one of network, storage, compute, database, cache, queue, secret, registry, cluster, load_balancer, and optionally lifetime (hours, on_expiry) and access (members to grant). |
 
 **Required fields.** `request`.
 **Optional fields.** none.
@@ -1093,7 +1169,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 ### `provision_infrastructure`
 
-**Purpose.** Validate, plan, record and provision a full request: network, storage, compute, database, cache, queue, secret, cluster, load balancer, in that order. Answers at once with PROVISIONING (or waits up to 45 seconds); follow it with get_infrastructure_status. A failure deletes what was created and reports it.
+**Purpose.** Validate, plan, record and provision a full request: network, storage, compute, database, cache, queue, secret, registry, cluster, load balancer, in that order. Answers at once with PROVISIONING (or waits up to 45 seconds); follow it with get_infrastructure_status. A failure deletes what was created and reports it.
 
 **Inputs.**
 
@@ -1160,7 +1236,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 ### `destroy_infrastructure`
 
-**Purpose.** Delete everything a request created, in reverse order: load balancer, cluster, secrets, queues, cache, database, machines, storage, network. Answers at once with DESTROYING (or waits up to 45 seconds). What could not be deleted is named; call again once the cause is fixed.
+**Purpose.** Delete everything a request created, in reverse order: load balancer, cluster, registries, secrets, queues, cache, database, machines, storage, network. Answers at once with DESTROYING (or waits up to 45 seconds). What could not be deleted is named; call again once the cause is fixed.
 
 **Inputs.**
 
@@ -1206,7 +1282,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 ### `manage_infrastructure_access`
 
-**Purpose.** Grant a person, group or service account access to what a request created, or revoke it: login on its machines through the provider's IAM and an identity-aware tunnel, reading its secrets (the database password and cache AUTH string among them), using its buckets and queues.
+**Purpose.** Grant a person, group or service account access to what a request created, or revoke it: login on its machines through the provider's IAM and an identity-aware tunnel, reading its secrets (the database password and cache AUTH string among them), using its buckets and queues, pulling from and pushing to its registries.
 
 **Inputs.**
 
@@ -1214,7 +1290,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 |---|---|---|
 | `request_id` | yes | The request id this service issued (32 hex characters). |
 | `action` | yes | grant or revoke. |
-| `member` | yes | user:, group: or serviceAccount: and an email address in a domain the operator allows, or a principal's own identity. |
+| `member` | yes | user:, group: or serviceAccount: and an email address in a domain the operator allows, or a principal's own identity; or a CI job's principal:// or principalSet:// identity in a workload identity pool the operator allows, granted on registries only. |
 | `level` | no | use (default: log in, read and write data) or admin (administrator login, manage secret versions and objects). |
 
 **Required fields.** `request_id`, `action`, `member`.
@@ -1226,7 +1302,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Grants go on each resource's own policy and never on the project; what a member needs at project level is named in each connect block as a prerequisite for the platform team. Members are limited to the operator's allowed domains, principals' identities and max_members. A grant needs a READY or STOPPED request; a revoke also reaches what a failed request or a failed destroy left behind.
 
-**Provider mapping (Google Cloud).** Compute Engine: instances getIamPolicy and setIamPolicy (roles/compute.osLogin or osAdminLogin); IAP: the machine's iap_tunnel policy (roles/iap.tunnelResourceAccessor); Secret Manager, Cloud Storage and Pub/Sub: the resource's getIamPolicy and setIamPolicy.
+**Provider mapping (Google Cloud).** Compute Engine: instances getIamPolicy and setIamPolicy (roles/compute.osLogin or osAdminLogin); IAP: the machine's iap_tunnel policy (roles/iap.tunnelResourceAccessor); Secret Manager, Cloud Storage, Pub/Sub and Artifact Registry (roles/artifactregistry.reader or writer): the resource's getIamPolicy and setIamPolicy.
 
 ## Operations
 

@@ -11,6 +11,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .providers.gcp.settings import GcpSettings
+from .security import validation
 from .security.validation import MEMBER, normal_member
 
 
@@ -73,6 +74,17 @@ class AccessSettings(StrictModel):
     allowed_domains: list[str] = Field(default_factory=list, description="Domains a member must belong to, such as the company's; empty allows only principals' identities.")
     grant_requester: bool = Field(default=True, description="Grant the requesting principal's identity on what it creates.")
     max_members: int = Field(default=10, ge=0, le=50, description="At most this many members per request, the requester included.")
+    workload_identity_pools: list[str] = Field(default_factory=list, description="Workload identity pools, each as its address (HOST/PATH, what follows "
+                                               "principal:// up to /subject/), whose identities a request may name, so that a CI job pushes to a registry with "
+                                               "its own identity and no key; the platform team makes each pool and its provider once. Empty allows none.")
+
+    @field_validator("workload_identity_pools")
+    @classmethod
+    def _pools(cls, value):
+        for pool in value:
+            if not validation.POOL.fullmatch(pool):
+                raise ValueError(f"access.workload_identity_pools: {pool!r} is not a pool's address, HOST/PATH")
+        return value
 
 
 CLAUDE_CALLBACKS = ("https://claude.ai/api/mcp/auth_callback", "https://claude.com/api/mcp/auth_callback")

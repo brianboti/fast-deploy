@@ -15,6 +15,7 @@ class ResourceKind(StrEnum):
     cache = "cache"
     queue = "queue"
     secret = "secret"  # noqa: S105 - the kind's name, not a credential
+    registry = "registry"
     cluster = "cluster"
     service = "service"
     job = "job"
@@ -50,7 +51,7 @@ class ConnectInfo(BaseModel):
 
 class Resource(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    id: str = Field(description="The identifier this service issued (cmp-…, sto-…, net-…, db-…, cac-…, que-…, sec-…, clu-…, lb-…).")
+    id: str = Field(description="The identifier this service issued (cmp-…, sto-…, net-…, db-…, cac-…, que-…, sec-…, reg-…, clu-…, lb-…).")
     kind: ResourceKind
     name: str
     request_id: str
@@ -162,6 +163,14 @@ class SecretResource(Resource):
     purpose: str | None = Field(default=None, description="database_password or cache_auth when the service made the secret for a request's own credential.")
 
 
+class RegistryResource(Resource):
+    kind: Literal[ResourceKind.registry] = ResourceKind.registry
+    repository: str = Field(description="The repository's full name at the provider.")
+    address: str = Field(description="Where images are pushed and pulled: LOCATION-docker.pkg.dev/PROJECT/REPOSITORY, followed by /IMAGE.")
+    immutable_tags: bool = False
+    size_gb: int = Field(default=10, description="The images it was expected to hold, in GB; used only in estimates.")
+
+
 class FrontDoor(BaseModel):
     """A cluster's front door: the public address, the Gateway in front of it, and the certificate for its hostnames."""
     address: str | None = Field(default=None, description="The public IP address; the operator's DNS points the hostnames at it.")
@@ -233,14 +242,14 @@ class LoadBalancerResource(Resource):
     components: list[dict[str, Any]] = Field(default_factory=list, description="The provider pieces in creation order (kind, name, url), for teardown in reverse.")
 
 
-AnyResource = Annotated[ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | SecretResource | ClusterResource | ServiceResource
-                       | JobResource | LoadBalancerResource, Field(discriminator="kind")]
+AnyResource = Annotated[ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | SecretResource | RegistryResource | ClusterResource
+                        | ServiceResource | JobResource | LoadBalancerResource, Field(discriminator="kind")]
 RESOURCE_TYPES = {ResourceKind.compute: ComputeResource, ResourceKind.storage: StorageResource, ResourceKind.network: NetworkResource, ResourceKind.database: DatabaseResource,
-                  ResourceKind.cache: CacheResource, ResourceKind.queue: QueueResource, ResourceKind.secret: SecretResource, ResourceKind.cluster: ClusterResource,
-                  ResourceKind.service: ServiceResource, ResourceKind.job: JobResource, ResourceKind.load_balancer: LoadBalancerResource}
+                  ResourceKind.cache: CacheResource, ResourceKind.queue: QueueResource, ResourceKind.secret: SecretResource, ResourceKind.registry: RegistryResource,
+                  ResourceKind.cluster: ClusterResource, ResourceKind.service: ServiceResource, ResourceKind.job: JobResource, ResourceKind.load_balancer: LoadBalancerResource}
 ID_PREFIX = {ResourceKind.compute: "cmp", ResourceKind.storage: "sto", ResourceKind.network: "net", ResourceKind.database: "db", ResourceKind.cache: "cac",
-             ResourceKind.queue: "que", ResourceKind.secret: "sec", ResourceKind.cluster: "clu", ResourceKind.service: "svc", ResourceKind.job: "job",
-             ResourceKind.load_balancer: "lb"}
+             ResourceKind.queue: "que", ResourceKind.secret: "sec", ResourceKind.registry: "reg", ResourceKind.cluster: "clu", ResourceKind.service: "svc",
+             ResourceKind.job: "job", ResourceKind.load_balancer: "lb"}
 
 
 def load_resource(data: dict):

@@ -11,7 +11,7 @@ records why the split was made this way.
 Application Layer            any system: Claude, a CI job, another service, the Fast Deploy workflow
   │
   │  Infrastructure contract  InfrastructureRequest → InfrastructureResponse (cloudinfra/models)
-  │                           MCP (Streamable HTTP, 45 tools) or REST, bearer token per caller
+  │                           MCP (Streamable HTTP, 48 tools) or REST, bearer token per caller
   ▼
 ┌────────────────────────────────────────────────────────────────────────────────────┐
 │ Cloud Infrastructure MCP  (cloudinfra)                                             │
@@ -31,7 +31,7 @@ Application Layer            any system: Claude, a CI job, another service, the 
                  ▼                     ▼                     ▼                      ▼
        providers/gcp/            AWSProvider           AzureProvider        JetstreamProvider
        GCPProvider               (later)               (later)              (later)
-                 │  REST: compute, sqladmin, storage, servicenetworking, redis, pubsub, secretmanager, container, iap, monitoring
+                 │  REST: compute, sqladmin, storage, servicenetworking, redis, pubsub, secretmanager, artifactregistry, container, iap, monitoring
                  ▼
             Google Cloud
 ```
@@ -43,7 +43,7 @@ Application Layer            any system: Claude, a CI job, another service, the 
 | application source code | compute provisioning (virtual machines, in groups, with or without GPUs) |
 | application testing | network provisioning (networks, subnets, firewall rules, load balancers) |
 | application builds | storage provisioning (block disks, object buckets) |
-| Docker images and other application artifacts | managed data services: databases, caches, queues, secret containers |
+| Docker images and other application artifacts | managed data services: databases, caches, queues, secret containers, image registries (the repository, not the images) |
 | application release decisions and versions | managed Kubernetes clusters (the control plane and node pool, not what runs on them) |
 | application-level scaling behaviour | the cloud resource lifecycle: validate, plan, provision, query, destroy |
 | application-level clustering and sessions | infrastructure status, health and usage |
@@ -60,7 +60,7 @@ line: `tests/cloudinfra/test_infra_catalog.py` fails if any module of `cloudinfr
 
 ## The contract
 
-A request is a provider name, a region and at least one of nine blocks. Every field is a size, a count, a name, a version
+A request is a provider name, a region and at least one of ten blocks. Every field is a size, a count, a name, a version
 or a switch; the operator's project, credentials, limits and allowed regions are configuration, never request parameters.
 `list_resource_kinds` returns the blocks with their fields; a block of any other name is refused with
 `UNSUPPORTED_RESOURCE_KIND` and the nearest kind.
@@ -81,6 +81,7 @@ database: {engine: postgresql, version: "16", size: small, storage_gb: 10, high_
 cache:    {engine: redis, memory_gb: 2, high_availability: false}
 queue:    [{name: events}, {name: jobs, subscription: false}]
 secret:   [{name: api-key, generate_value: true}, {name: token}]
+registry: {name: images}                     # a Docker repository; one, or a list
 cluster:  {node_count: 2, node_cpu: 2, node_memory_gb: 8,   # one cluster, or a list of named ones (name: blue)
            registries: [us-central1-docker.pkg.dev/apps/shop], public: {hostnames: [shop.example.com]}}
 load_balancer: {type: http, port: 8080, backend_group: web, health_check_path: /healthz}
@@ -121,7 +122,7 @@ REQUEST ──► VALIDATE ──► PLAN ──► PROVISION ──► READY �
   issues resource ids, prices them, and lists warnings. Planning is pure: no provider call, nothing recorded.
 - **Provision.** The request and its pending resources are recorded, an operation starts, and a bounded worker creates the
   resources in dependency order: network, storage, compute (then disks attach), database (after the network is prepared for
-  it), cache, queues, secrets, cluster, load balancer (over the machines just created). Quota headroom is checked first when
+  it), cache, queues, secrets, registries, cluster, load balancer (over the machines just created). Quota headroom is checked first when
   the provider reports it. The call returns at once with `PROVISIONING`, or waits
   up to 45 seconds. A failure marks the request `FAILED` with the cause and deletes what this request created, in reverse
   order; what could not be deleted is named in `error.details.cleanup.remaining`. The operator may keep failed resources for
@@ -130,7 +131,7 @@ REQUEST ──► VALIDATE ──► PLAN ──► PROVISION ──► READY �
   Monitoring; cost prices the resources as they exist now (after a resize, whatever request or profile they came from),
   each stopped one at its stopped rate. A provider that cannot be reached leaves a resource `UNKNOWN` with the error, never
   a crash.
-- **Destroy.** Reverse order: load balancer (its pieces, forwarding rule first), cluster, secrets, queues, cache, database
+- **Destroy.** Reverse order: load balancer (its pieces, forwarding rule first), cluster, registries (with their images), secrets, queues, cache, database
   (deletion protection off, then delete), machines, disks, buckets (only when empty), network (rules, peering, subnet,
   network). `DESTROYED`, or `DESTROY_FAILED` with the remaining resources, and the call can
   be repeated once the cause is fixed. A network that still carries machines or databases, of any request, is refused.
@@ -160,7 +161,12 @@ policy for one thing only: a cluster's node account (below).
 - **Members.** `access` on a request lists people, groups or service accounts (`user:`, `group:`, `serviceAccount:` and an
   email address) with a level, `use` or `admin`. The requester is added as `admin` when the operator maps its principal to
   an `identity` (`access.grant_requester`, on by default). A member must be a principal's identity or be in one of the
-  operator's `access.allowed_domains`; `access.max_members` caps the list. A database's password goes only to its secret
+  operator's `access.allowed_domains`; `access.max_members` caps the list. A team's CI job may also be named by its own
+  federated identity, without a key or a service account: `principal://POOL/subject/S`, or `principalSet://POOL/group/G`
+  or `principalSet://POOL/attribute.A/V` (on Google Cloud POOL is `iam.googleapis.com/projects/NUMBER/locations/global/
+  workloadIdentityPools/POOL`), in a pool the operator lists in `access.workload_identity_pools`; never a whole pool.
+  Such a member is granted on registries only, and is kept and compared exactly as written, since its values are
+  case-sensitive. A database's password goes only to its secret
   unless the operator sets `return_database_password`, so a database is refused when the operator's settings let the
   service grant access to no one at all.
   Email addresses compare without regard to case, as Google's do, and are kept in lowercase.
@@ -172,6 +178,7 @@ policy for one thing only: a cluster's node account (below).
   | secret (the database password and cache AUTH string among them) | `roles/secretmanager.secretAccessor` | the same and `roles/secretmanager.secretVersionAdder` |
   | storage (a bucket) | `roles/storage.objectUser` | `roles/storage.objectAdmin` |
   | queue | `roles/pubsub.publisher` on the topic, `roles/pubsub.subscriber` on the subscription | the same |
+  | registry | `roles/artifactregistry.reader` on the repository: pull | `roles/artifactregistry.writer`: push and pull |
   | cluster | a RoleBinding to the built-in ClusterRole `view` in the request's namespace | a RoleBinding to `edit` there |
   | service (Cloud Run) | `roles/run.invoker` on the service (call it) | the same, `roles/run.developer` on the service, and `roles/iam.serviceAccountUser` on its runtime account (deploy revisions) |
   | job (Cloud Run) | `roles/run.invoker` on the job (run it) | the same, `roles/run.developer` on the job, and `roles/iam.serviceAccountUser` on its runtime account |
@@ -198,9 +205,33 @@ policy for one thing only: a cluster's node account (below).
   machine. The roles recorded on a resource are kept when the provider's view of it is saved (after a refresh, a resize,
   a stop). The service only ever grants or removes the roles above.
 - **The service's own identity** needs the `getIamPolicy` and `setIamPolicy` permissions of those resource types (Compute
-  Engine instances, IAP tunnel instances, secrets, buckets, topics and subscriptions); a custom role that lists exactly
+  Engine instances, IAP tunnel instances, secrets, buckets, topics and subscriptions, Artifact Registry repositories); a custom role that lists exactly
   those is the narrowest way to give them. For clusters it needs to create namespaces and RoleBindings in the clusters
   it made, which the Kubernetes Engine role it creates them with already allows.
+
+### A team's image registry and its CI
+
+A team's images live in a registry its own request owns, so that pushing them needs nobody's hand:
+
+```yaml
+registry: {name: images}                     # → us-central1-docker.pkg.dev/PROJECT/<name>-images
+access:
+  - {member: "principalSet://iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/github/attribute.repository/acme/shop", level: admin}
+  - {member: "group:shop-devs@acme.com", level: use}
+```
+
+The job pushes as itself (`admin`: `roles/artifactregistry.writer` on that repository only); people and clusters pull
+(`use`: reader). A service account may stand in for the federated identity, as `serviceAccount:` in an allowed domain.
+The address is in `endpoints.registry_addresses` and in the resource; its connect block gives the login, push, digest
+and pull commands. Deleting the registry deletes its images. Releases name images by digest, so `appdelivery`'s
+`allowed_registries` for an environment can be exactly the team's registry.
+
+The platform team's part, once: a workload identity pool and a provider for the company's CI (GitHub Actions or GitLab,
+with an attribute condition on the company's organization), its address in `access.workload_identity_pools`, and the
+Artifact Registry API enabled; the service's own identity needs `artifactregistry.repositories.create`, `get`, `delete`,
+`getIamPolicy` and `setIamPolicy`. A CI job then signs in with the pool's provider (GitHub:
+`google-github-actions/auth` with `workload_identity_provider`) and no stored key. Not yet: a cluster pulling from a
+registry of its own request needs the operator to list it in `providers.gcp.registries`.
 
 ### A cluster's nodes
 
@@ -395,7 +426,7 @@ python -m pytest tests/cloudinfra -q                # the boundary tests, no clo
 CLOUDINFRA_INTEGRATION=1 CLOUDINFRA_PROJECT=my-project python -m pytest tests/integration/cloudinfra -q   # one real machine, then destroyed
 ```
 
-The catalog has 51 tools: create, get and delete for each of the eleven kinds (plus list, resize, attach and firewall
+The catalog has 54 tools: create, get and delete for each of the twelve kinds (plus list, resize, attach and firewall
 configuration where they apply), the lifecycle tools (stop, start, extend and keep awake among them), access, and the
 operations tools. The MCP endpoint is `/mcp`; the REST endpoints are `POST /infrastructure/validate`,
 `POST /infrastructure/plan`, `POST /infrastructure`, `GET /infrastructure` (with `status` and `expiring_within_hours`),

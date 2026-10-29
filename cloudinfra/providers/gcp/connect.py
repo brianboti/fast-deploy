@@ -78,6 +78,17 @@ def info(resource, resources: list, project: str, drivers: bool = False) -> Conn
         if subscription:
             commands["pull"] = f"gcloud pubsub subscriptions pull {subscription} --auto-ack --project {project}"
         return ConnectInfo(commands=commands, notes=[] if resource.access else [NOT_GRANTED])
+    if kind == "registry":
+        host = resource.address.split("/", 1)[0]
+        return ConnectInfo(commands={"login": f"gcloud auth configure-docker {host}", "push": f"docker push {resource.address}/IMAGE:TAG",
+                                     "digest": f"gcloud artifacts docker images describe {resource.address}/IMAGE:TAG --format 'value(image_summary.digest)'",
+                                     "pull": f"docker pull {resource.address}/IMAGE@sha256:DIGEST"},
+                           notes=["admin pushes and pulls; use pulls only",
+                                  "A CI job pushes as its own identity, named in access at admin: a service account, or a principal:// or principalSet:// "
+                                  "identity of a workload identity pool, which needs no key (GitHub Actions: google-github-actions/auth with the pool's "
+                                  "workload_identity_provider)",
+                                  "A release names an image here by digest, never by tag",
+                                  "Deleting the registry deletes every image it holds"] + ([] if resource.access else [NOT_GRANTED]))
     if kind == "cluster":
         commands = {"credentials": f"gcloud container clusters get-credentials {resource.name} --location {resource.location} --project {project}"}
         notes = list(stopped)

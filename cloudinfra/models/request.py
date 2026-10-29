@@ -2,8 +2,8 @@
 
 Every field is a size, a count, a name, a version or a switch. There is no repository, image, command, script, key or
 provider-specific structure, so a request can describe "one Ubuntu machine with 4 CPUs and 16 GB" and nothing about any
-application. Strict models: no unknown field, no type coercion. Eleven kinds: network, storage, compute (one group or
-several), database, cache, queue, secret, cluster, service, job and load_balancer.
+application. Strict models: no unknown field, no type coercion. Twelve kinds: network, storage, compute (one group or
+several), database, cache, queue, secret, registry, cluster, service, job and load_balancer.
 """
 import re
 from typing import Literal
@@ -27,9 +27,10 @@ RESERVED_SECRETS = {"db-password": "database", "cache-auth": "cache"}  # secrets
 LoadBalancerType = Literal["http", "tcp"]
 GROUP = r"^[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?$"  # a group's, queue's or secret's short name: up to 12 characters, part of resource names
 # The kinds, in the order they are created; destruction is the reverse. Every top-level block of a request is one of these.
-RESOURCE_KINDS = ("network", "storage", "compute", "database", "cache", "queue", "secret", "cluster", "service", "job", "load_balancer")
+RESOURCE_KINDS = ("network", "storage", "compute", "database", "cache", "queue", "secret", "registry", "cluster", "service", "job", "load_balancer")
 MAX_QUEUES = 8
 MAX_SECRETS = 16
+MAX_REGISTRIES = 4
 MAX_CLUSTERS = 4
 MAX_SERVICES = 8
 MAX_JOBS = 8
@@ -63,7 +64,8 @@ class LifetimeRequest(StrictModel):
 
 class AccessRequest(StrictModel):
     """Someone to grant access to what the request creates: login on machines, reading secrets, using buckets and queues."""
-    member: str = Field(description="user:, group: or serviceAccount: and an email address in a domain the operator allows.")
+    member: str = Field(description="user:, group: or serviceAccount: and an email address in a domain the operator allows; or a CI job's federated identity, "
+                                    "principal:// or principalSet:// in a workload identity pool the operator allows, which is granted on registries only.")
     level: AccessLevel = Field(default="use", description="use (log in, read and write data) or admin (administrator login, manage secret versions and objects).")
 
     @field_validator("member")
@@ -174,6 +176,14 @@ class SecretRequest(StrictModel):
     """A secret container. Values never pass through this service unless it generates one itself."""
     name: str = Field(pattern=GROUP, description="The secret's short name, part of its resource name (<name>-<secret>).")
     generate_value: bool = Field(default=False, description="Write a generated random value as the first version; the value is never returned or logged.")
+
+
+class RegistryRequest(StrictModel):
+    """A container image repository (Docker format) in the request's region. Members at use pull from it; at admin they also
+    push, which is how a team's CI job gets its images in: name the job's own identity in access, at admin."""
+    name: str = Field(pattern=GROUP, description="The repository's short name, part of its provider name (<name>-<registry>).")
+    immutable_tags: bool = Field(default=False, description="Refuse to move a tag once pushed; releases name images by digest either way.")
+    size_gb: int = Field(default=10, ge=1, le=10000, description="The images it is expected to hold, in GB; used only in the cost estimate.")
 
 
 class PublicRequest(StrictModel):
@@ -368,6 +378,7 @@ class InfrastructureRequest(StrictModel):
     cache: CacheRequest | None = None
     queue: QueueRequest | list[QueueRequest] | None = Field(default=None, description="One topic, or a list of them.")
     secret: SecretRequest | list[SecretRequest] | None = Field(default=None, description="One secret container, or a list of them.")
+    registry: RegistryRequest | list[RegistryRequest] | None = Field(default=None, description="One image repository, or a list of them.")
     cluster: ClusterRequest | list[ClusterRequest] | None = Field(default=None, description="One cluster, or a list of them.")
     service: ServiceRequest | list[ServiceRequest] | None = Field(default=None, description="One managed container service, or a list of them.")
     job: JobRequest | list[JobRequest] | None = Field(default=None, description="One managed job, or a list of them.")
@@ -400,7 +411,7 @@ class InfrastructureRequest(StrictModel):
 
     @model_validator(mode="after")
     def _consistent(self):
-        for kind in ("compute", "queue", "secret", "cluster", "service", "job"):
+        for kind in ("compute", "queue", "secret", "registry", "cluster", "service", "job"):
             if getattr(self, kind) == []:
                 raise ValueError(f"{kind}: a list cannot be empty")
         if not any(getattr(self, kind) for kind in RESOURCE_KINDS):
@@ -428,7 +439,7 @@ class InfrastructureRequest(StrictModel):
                     raise ValueError(f"{kind}: every {kind} of a list needs a name")
                 if len(set(names)) != len(names):
                     raise ValueError(f"{kind}: names must be unique")
-        for kind, items, limit in (("queue", self.queues(), MAX_QUEUES), ("secret", self.secrets(), MAX_SECRETS)):
+        for kind, items, limit in (("queue", self.queues(), MAX_QUEUES), ("secret", self.secrets(), MAX_SECRETS), ("registry", self.registries(), MAX_REGISTRIES)):
             names = [item.name for item in items]
             if len(names) > limit:
                 raise ValueError(f"{kind}: at most {limit} per request")
@@ -459,6 +470,9 @@ class InfrastructureRequest(StrictModel):
 
     def secrets(self) -> list[SecretRequest]:
         return [] if self.secret is None else (self.secret if isinstance(self.secret, list) else [self.secret])
+
+    def registries(self) -> list[RegistryRequest]:
+        return [] if self.registry is None else (self.registry if isinstance(self.registry, list) else [self.registry])
 
     def clusters(self) -> list[ClusterRequest]:
         return [] if self.cluster is None else (self.cluster if isinstance(self.cluster, list) else [self.cluster])

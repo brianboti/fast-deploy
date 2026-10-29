@@ -10,7 +10,8 @@ from .translate import disk_type, machine_shape
 HOURS_PER_MONTH = 730
 PRICING = {
     "source": "https://cloud.google.com/compute/vm-instance-pricing; https://cloud.google.com/compute/disks-image-pricing; "
-              "https://cloud.google.com/sql/pricing; https://cloud.google.com/storage/pricing; https://cloud.google.com/vpc/network-pricing",
+              "https://cloud.google.com/sql/pricing; https://cloud.google.com/storage/pricing; https://cloud.google.com/vpc/network-pricing; "
+              "https://cloud.google.com/artifact-registry/pricing",
     "verified": None,
     "currency": "USD",
     "region": "us-central1",
@@ -29,6 +30,7 @@ PRICING = {
     "disk_gb_month": {"pd-standard": 0.04, "pd-balanced": 0.10, "pd-ssd": 0.17},
     "external_ip_hour": 0.005,
     "bucket_gb_month": 0.020,
+    "registry_gb_month": 0.10,  # Artifact Registry storage; the first 0.5 GB of an account is free
     "sql": {"db-f1-micro": 7.67, "db-g1-small": 25.55, "vcpu_hour": 0.0413, "gb_hour": 0.007, "storage_ssd_gb_month": 0.17, "ha_multiplier": 2.0},
 }
 NOTE = ("Approximate list prices for us-central1 (sustained-use discounts, free tiers, egress, snapshots and operations excluded); "
@@ -114,6 +116,9 @@ def line(planned: PlannedResource) -> CostLine:
     elif planned.kind == "secret":
         monthly = PRICING["secret_version_month"] * spec.get("versions", 0)
         basis = f"{spec.get('versions', 0)} active versions; accesses are billed per 10,000 on top"
+    elif planned.kind == "registry":
+        monthly = spec.get("size_gb", 0) * PRICING["registry_gb_month"]
+        basis = f"{spec.get('size_gb', 0)} GB of images, if stored; a registry bills by what it holds, and egress out of the region on top"
     elif planned.kind == "queue":
         monthly, basis = 0.0, "message delivery is billed by volume after the account's free allowance; nothing while idle"
     else:
@@ -141,6 +146,8 @@ def as_planned(resource) -> PlannedResource:
                 "public": {"hostnames": resource.public.hostnames} if resource.public else None}
     elif kind == "secret":
         spec = {"versions": resource.versions}
+    elif kind == "registry":
+        spec = {"size_gb": resource.size_gb}
     elif kind == "service":
         spec = {"cpu": resource.cpu, "memory_mb": resource.memory_mb, "min_instances": resource.min_instances}
     elif kind == "job":

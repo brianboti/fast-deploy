@@ -65,6 +65,7 @@ class FakeGcpApi(GcpApi):
         self.schedules: dict[str, dict] = {}  # Cloud Scheduler jobs by full name
         self.repositories = {"us-central1-docker.pkg.dev/test-project/apps", "us-central1-docker.pkg.dev/test-project/shared"}
         self.account_unknown_to_gke_for = 0  # how many more cluster creates GKE refuses because it does not know the new node account yet
+        self.repository_bodies: dict[str, dict] = {}  # address -> the body a create sent, for repositories this service made
         self.unknown_for = 0  # how many more grants naming a new service account IAM refuses as unknown, as it does for seconds after a create
         self.kube_fail = None  # an InfrastructureError the fake Kubernetes API raises once, when set
         self.policies = {}  # IAM policies by resource: ("instance", zone, name), ("tunnel", zone, id), ("secret", name), ("bucket", name), ("topics" | "subscriptions", name)
@@ -108,6 +109,8 @@ class FakeGcpApi(GcpApi):
             (r"^/v1/projects/([^/:]+):(getIamPolicy|setIamPolicy)$", self._project_policy) if host.startswith("cloudresourcemanager") else (r"^$", None),
             (r"^/v1/projects/([^/]+)/locations/([^/]+)/repositories/([^/:]+):(getIamPolicy|setIamPolicy)$", self._repository_policy)
             if host.startswith("artifactregistry") else (r"^$", None),
+            (r"^/v1/projects/([^/]+)/locations/([^/]+)/repositories$", self._repositories) if host.startswith("artifactregistry") else (r"^$", None),
+            (r"^/v1/projects/([^/]+)/locations/([^/]+)/repositories/([^/:]+)$", self._repository) if host.startswith("artifactregistry") else (r"^$", None),
             (r"^/v1/projects/([^/]+)/iap_tunnel/zones/([^/]+)/instances/([^/:]+):(getIamPolicy|setIamPolicy)$", self._tunnel_policy) if host.startswith("iap") else (r"^$", None),
             (r"^/v1/projects/[^/]+/(topics|subscriptions)/([^/:]+):(getIamPolicy|setIamPolicy)$", self._pubsub_policy) if host.startswith("pubsub") else (r"^$", None),
             (r"^/v1/projects/[^/]+/(topics|subscriptions)/([^/]+)$", self._pubsub) if host.startswith("pubsub") else (r"^$", None),
@@ -321,6 +324,29 @@ class FakeGcpApi(GcpApi):
         if writing:
             self._known(body["policy"])
         return self._policy(("repository", registry), writing, body.get("policy"))
+
+    def _repositories(self, found, method, body, params):
+        assert method == "POST" and body["format"] == "DOCKER"
+        registry = f"{found.group(2)}-docker.pkg.dev/{found.group(1)}/{params['repositoryId']}"
+        if registry in self.repositories:  # repository ids are unique in a project and location
+            raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, f"the repository already exists: {registry}", {"http_status": 409})
+        self.repositories.add(registry)
+        self.repository_bodies[registry] = dict(body)
+        self.counter += 1
+        return {"name": f"projects/{found.group(1)}/locations/{found.group(2)}/operations/repo-{self.counter}", "done": False}
+
+    def _repository(self, found, method, body, params):
+        registry = f"{found.group(2)}-docker.pkg.dev/{found.group(1)}/{found.group(3)}"
+        if registry not in self.repository_bodies:
+            raise self._not_found(registry)
+        if method == "DELETE":
+            self.order.append(("registry", found.group(3)))
+            self.repositories.discard(registry)
+            self.policies.pop(("repository", registry), None)
+            del self.repository_bodies[registry]
+            self.counter += 1
+            return {"name": f"projects/{found.group(1)}/locations/{found.group(2)}/operations/repo-{self.counter}", "done": False}
+        return {"name": f"projects/{found.group(1)}/locations/{found.group(2)}/repositories/{found.group(3)}", **self.repository_bodies[registry]}
 
     def _policy(self, key, writing, body):
         if writing:

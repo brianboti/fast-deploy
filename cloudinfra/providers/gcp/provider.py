@@ -1,7 +1,10 @@
 """GCPProvider: the CloudProvider interface implemented with Google Cloud, composed from the per-kind adapters."""
+import re
+
 from ...models.errors import ErrorCode, InfrastructureError
 from ...models.request import RESOURCE_KINDS, ComputeRequest, InfrastructureRequest
 from ...models.response import CostEstimate, Health, PlannedResource, Usage
+from ...security.validation import federated_pool, is_federated
 from ..base import CloudProvider, Problem, ProvisionContext
 from . import connect, pricing, translate
 from .api import COMPUTE, GcpApi
@@ -15,10 +18,13 @@ from .loadbalancer import GcpLoadBalancer
 from .monitoring import GcpMonitoring
 from .network import GcpNetwork
 from .queue import GcpQueue
+from .registry import GcpRegistry
 from .run import GcpRun, GcpRunJob
 from .secret import GcpSecret
 from .storage import GcpStorage
 
+# A workload identity pool as Google names it after principal:// (https://cloud.google.com/iam/docs/principal-identifiers).
+POOL = re.compile(r"^iam\.googleapis\.com/projects/[0-9]{1,20}/locations/global/workloadIdentityPools/[a-z0-9-]{4,32}$")
 QUOTA_METRICS = ("CPUS", "INSTANCES", "DISKS_TOTAL_GB", "SSD_TOTAL_GB", "IN_USE_ADDRESSES")
 HTTP_LB_MAPPING = ("compute.instanceGroups.insert, compute.firewalls.insert, compute.healthChecks.insert, compute.backendServices.insert, compute.urlMaps.insert, "
                    "compute.targetHttpProxies.insert, compute.globalAddresses.insert, compute.globalForwardingRules.insert")
@@ -30,7 +36,7 @@ class GCPProvider(CloudProvider):
     name = "gcp"
     supported_kinds = RESOURCE_KINDS
     stoppable_kinds = ("compute", "database")
-    grantable_kinds = ("compute", "storage", "secret", "queue", "cluster", "service", "job")
+    grantable_kinds = ("compute", "storage", "secret", "queue", "registry", "cluster", "service", "job")
 
     def __init__(self, settings, api: GcpApi | None = None, token=None, kube=None):
         self.settings = settings
@@ -42,6 +48,7 @@ class GCPProvider(CloudProvider):
         self.cache = GcpCache(self.api, settings)
         self.queue = GcpQueue(self.api, settings)
         self.secret = GcpSecret(self.api, settings)
+        self.registries = GcpRegistry(self.api, settings)
         self.cluster = GcpCluster(self.api, settings, kube)
         self.run = GcpRun(self.api, settings)
         self.job = GcpRunJob(self.api, settings)
@@ -77,6 +84,10 @@ class GCPProvider(CloudProvider):
             version = translate.cache_version(request.cache)
             if isinstance(version, Problem):
                 problems.append(version)
+        for entry in request.access:
+            if is_federated(entry.member) and not POOL.fullmatch(federated_pool(entry.member)):
+                problems.append(Problem(ErrorCode.INVALID_ACCESS, f"{entry.member} is not in a Google workload identity pool: "
+                                        "iam.googleapis.com/projects/NUMBER/locations/global/workloadIdentityPools/POOL", "access"))
         for cluster in request.clusters():
             problems.extend(translate.cluster_problems(cluster))
             outside = [name for name in (cluster.public.hostnames if cluster.public else [])
@@ -161,6 +172,9 @@ class GCPProvider(CloudProvider):
                 planned.append(PlannedResource(kind="secret", name=f"{prefix}-{secret}-{ctx.request_id[:6]}",
                                                provider_mapping="secretmanager.secrets.create, secretmanager.secrets.addVersion",
                                                spec={"secret": secret, "versions": 1, "purpose": purpose}))
+        for registry in request.registries():
+            planned.append(PlannedResource(kind="registry", name=f"{prefix}-{registry.name}", provider_mapping="artifactregistry.repositories.create",
+                                           spec={"registry": registry.name, "size_gb": registry.size_gb, "immutable_tags": registry.immutable_tags}))
         for cluster in request.clusters():
             mapping = "container.clusters.create" + (", iam.serviceAccounts.create, projects.setIamPolicy (node role)" if self.settings.cluster_node_accounts else "")
             mapping += ", artifactregistry.repositories.setIamPolicy" if cluster.registries else ""
@@ -294,6 +308,15 @@ class GCPProvider(CloudProvider):
     def delete_secret(self, resource, ctx):
         self.secret.delete(resource, ctx)
 
+    def create_registry(self, spec, planned, ctx):
+        return self.registries.create(spec, planned, ctx)
+
+    def get_registry(self, resource):
+        return self.registries.get(resource)
+
+    def delete_registry(self, resource, ctx):
+        self.registries.delete(resource, ctx)
+
     def create_cluster(self, spec, planned, ctx, network):
         return self.cluster.create(spec, planned, ctx, network)
 
@@ -344,6 +367,8 @@ class GCPProvider(CloudProvider):
         return self.database.start(resource, ctx)
 
     def grant(self, resource, member, level, ctx) -> list[str]:
+        if is_federated(member) and resource.kind.value != "registry":
+            return []  # a CI job's federated identity pushes and pulls images; it is granted on registries only
         if resource.kind.value == "cluster":
             return self.cluster.grant(resource, member, level)  # a RoleBinding in the request's namespace, not IAM
         if resource.kind.value == "compute" and resource.instance_id is None:
@@ -351,6 +376,8 @@ class GCPProvider(CloudProvider):
         return self.iam.grant(resource, member, level)
 
     def revoke(self, resource, member, ctx) -> None:
+        if is_federated(member) and resource.kind.value != "registry":
+            return  # never granted there
         if resource.kind.value == "cluster":
             self.cluster.revoke(resource, member)
             return
