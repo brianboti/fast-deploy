@@ -22,6 +22,9 @@ app-delivery = "appdelivery.cli:main"
 [tool.setuptools.packages.find]
 include = ["labdeploy*", "cloudinfra*", "appdelivery*"]
 
+[tool.setuptools.package-data]
+appdelivery = ["host/*.sh"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["integration: needs a real cloud project (CLOUDINFRA_INTEGRATION=1); skipped otherwise"]

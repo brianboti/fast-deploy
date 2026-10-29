@@ -175,12 +175,15 @@ validated before encoding, so nothing a caller sends can become shell syntax and
 2. Write the environment to a root-only file under `/run` (memory). Docker's `--env-file` takes one `NAME=value` per
    line with no quoting, so a value with a newline is refused at plan time (store a PEM file in a secret and bind it as
    base64, or wait for the later machine service account).
-3. Rename the running container to `app-previous` and stop it; start the new one as `app` with `--restart=always`,
-   `--env-file`, the port, and nothing else.
-4. Check `http://127.0.0.1:PORT/PATH` until it answers 2xx or `timeout_seconds` passes, with bash's own `/dev/tcp`
-   (an HTTP/1.0 GET read for its status line), because the host's tools are minimal and curl is not promised.
-5. Healthy: remove the env file, delete images older than `app-previous`'s. Unhealthy: stop `app`, start
-   `app-previous` again, report the container's last 50 log lines.
+3. Rename the running container to `app-previous`, take away its restart policy and stop it (a stopped container with
+   `--restart=always` comes back when Docker's daemon restarts, so at the next boot it would take the port); start the
+   new one as `app` with `--restart=always`, `--env-file`, the port, a release label, and nothing else. A failed pull
+   or login stops here, before anything running is touched.
+4. Check `http://127.0.0.1:PORT/PATH` with `curl` until it answers 2xx or `timeout_seconds` passes. (The spike found
+   that Container-Optimized OS 133 ships curl and that its bash has no `/dev/tcp`.)
+5. Healthy: remove the env file, prune images no container uses (keeping `app`'s and `app-previous`'s). Unhealthy:
+   remove `app`, make `app-previous` the current one again with its restart policy, report the container's last 50
+   log lines.
 
 The values handed to the container stay in Docker's container record on the machine's disk, readable by root on that
 machine. That is inherent in environment variables and is stated in the response's notes.
@@ -350,16 +353,20 @@ What the design rests on, checked on the primary page or in `cloudinfra`'s code:
 | Cosign 3.1.x verifies both the old signature format and the new bundle format; v4 is planned and v3 stays supported | [Cosign releases](https://newreleases.io/project/github/sigstore/cosign/release/v3.1.2) | Pin 3.1.x in the image |
 | The container startup agent stopped working on 2026-07-31 | [Google's shutdown notice](https://docs.cloud.google.com/compute/docs/containers/prepare-for-container-agent-shutdown) | Nothing here uses `gce-container-declaration` |
 
-Not confirmed on any page, so the first step of the build is a real run that proves them (section 14, step 0):
+Not confirmed on any page, so they were proven on a real run on 2026-10-29 (section 14, step 0; the commands and the
+full results are in [DELIVERY-SPIKE.md](DELIVERY-SPIKE.md)):
 
-1. `gcloud compute ssh … --tunnel-through-iap --impersonate-service-account … --command "sudo bash -s"` forwards
-   standard input to the remote shell as a service account, without a prompt.
-2. The OS Login user of a service account with `osAdminLogin` gets sudo on Container-Optimized OS 133.
-3. `base64` is on the Container-Optimized OS host and bash there has `/dev/tcp`.
-4. A container started with `--restart=always` comes back after the machine is stopped and started by `cloudinfra`.
+1. `gcloud compute ssh … --tunnel-through-iap --impersonate-service-account … --command "bash -s"` forwards standard
+   input to the remote shell as a service account, without a prompt. **Proven**, once the IAP grant has propagated
+   (4 to 6 minutes after `cloudinfra` grants it).
+2. The OS Login user of a service account with `osAdminLogin` gets sudo on Container-Optimized OS 133. **Proven.**
+3. `base64` is on the host and bash has `/dev/tcp`. **Half:** `base64`, `curl` and `jq` are there; bash has no
+   `/dev/tcp`. The health check uses curl.
+4. A container started with `--restart=always` comes back after `cloudinfra` stops and starts the machine. **Proven**;
+   SSH answers about 30 seconds after `cloudinfra` reports READY.
 
-If one fails, the fallback is known: for 1, `gcloud compute start-iap-tunnel` to a local port and a plain `ssh` with
-an OS Login key; for 3, run the health check from a pinned, allowed helper image with `--network host`.
+Also proven on the way: a machine without a public address pulls from Artifact Registry; `docker login` with the
+service account's token works into a root-only temporary directory under `/run`; `/root` is read-only.
 
 ## 14. Phase 1 build plan
 
@@ -367,9 +374,9 @@ On a new branch from `main`, in this order; each step ends green on `python -m p
 `python -m ruff check .`.
 
 0. **Spike, on a real project.** One `container-host` machine made by `cloudinfra`, the delivery service account
-   added to its `access` as `admin`, and the four checks of section 13 run by hand. Record the results in this file.
-   Steps 1 to 5 do not depend on the answers and can go ahead meanwhile; step 6 waits until they pass or their
-   fallback is chosen.
+   added to its `access` as `admin`, and the four checks of section 13 run by hand, with the commands in
+   [DELIVERY-SPIKE.md](DELIVERY-SPIKE.md). **Done 2026-10-29** in a sandbox project; all four hold except bash
+   `/dev/tcp` (curl is used instead). Step 6 also retries IAP's `4033` after a fresh grant and `4003` after a start.
 1. **Skeleton and boundaries.** Built 2026-10-29. `appdelivery/__init__.py` (0.1.0), `config.py` (section 8, strict),
    `cli.py` (`token`, `check-config`, and `plan FILE --config --as PRINCIPAL`, which reads the request from `cloudinfra`
    and runs every check; the tool catalog moves to step 8 with the server), the `app-delivery` script in
@@ -393,9 +400,15 @@ On a new branch from `main`, in this order; each step ends green on `python -m p
    values and the env file; `attest.py` runs `cosign verify-attestation` per trusted signer with a registry login written
    to a private directory for that one call, the token never on a command line. `remote.py` runs only `gcloud` and
    `cosign`.
-6. **The machine session.** `remote.py` gains `gcloud compute ssh`, and `host/release.sh` (section 4's script) comes with
-   its hash. Tests with a fake session that records what would be sent and replays a machine's answers, and a shell
-   test of `release.sh` against a fake `docker` on the developer's machine.
+6. **The machine session.** Built 2026-10-29. `appdelivery/host/release.sh` (deploy, rollback, remove, status; bash
+   3.2 compatible; shipped as package data) and `machine.py`, which sends it with its inputs to `gcloud compute ssh`
+   (in `remote.py`) after checking it against `SCRIPT_SHA256`, reads its report lines, and retries IAP's `4033` for 10
+   minutes and `4003` for 2. Tested by running the real script on the developer's bash against a fake `docker` and
+   `curl` (`tests/appdelivery/host_fakes.py`): first deploy, demotion without a restart policy, one previous kept,
+   unhealthy and crashed images restored, failed pull and login leaving the running container alone, the token only on
+   stdin, rollback, remove, status, and values that look like shell staying values. Then run on a real Container-Optimized
+   OS machine (deploy, redeploy, rollback, a broken image restored, a reboot that brings back only the current version,
+   remove), with the results in [DELIVERY-SPIKE.md](DELIVERY-SPIKE.md) section 8.
 7. **State and the orchestrator.** `state.py` (section 7, SQLite WAL, one writer, a process lock) and `releases.py`:
    deploy one machine at a time, stop at the first failure, roll back what was done, rollback and remove, approval,
    recovery after a restart. A test reads the database and the log after a release with a secret binding and finds no
