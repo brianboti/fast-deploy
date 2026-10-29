@@ -230,8 +230,8 @@ and puts one Gateway, `cloudinfra-gateway/public`, of class `gke-l7-global-exter
 taking routes from the request's namespace only (matched by its name), and plain HTTP on 80 redirecting to HTTPS. Without
 hostnames it serves plain HTTP on the address. A hostname must be in one of the operator's `providers.gcp.public_domains`.
 The cluster reports `public.address`, the hostnames and the certificate's state; the operator points DNS at the address,
-and the certificate becomes ACTIVE after that. A namespace with `edit` may write HTTPRoutes (a ClusterRole aggregated into
-`edit`) and attach them to that Gateway; Gateways stay out of `edit`.
+and the certificate becomes ACTIVE after that. A namespace with `edit` may write HTTPRoutes and GKE's HealthCheckPolicies (a
+ClusterRole aggregated into `edit`) and attach them to that Gateway; Gateways stay out of `edit`.
 
 GKE makes the Gateway's load balancer and deletes it with the Gateway, so the service deletes the Gateway first, waits
 until no forwarding rule uses the address (ten minutes at most), then deletes the cluster, the certificate and the

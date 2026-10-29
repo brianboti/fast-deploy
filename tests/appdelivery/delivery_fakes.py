@@ -148,3 +148,11 @@ def two_clusters():
     data["resources"]["cluster"] = [blue, green]
     data["access"][0]["resources"] = [item for item in data["access"][0]["resources"] if item != CLUSTER_ID] + [blue["id"], green["id"]]
     return data
+
+
+def with_door(data, hostnames=("shop.example.com",), certificate="ACTIVE"):
+    """The request's cluster with a front door, as cloudinfra reports one (plain HTTP when there are no hostnames)."""
+    door = {"address": "34.120.0.9", "hostnames": list(hostnames), "gateway": "cloudinfra-gateway/public", "certificate": certificate if hostnames else None,
+            "address_name": "shop-cluster-door", "certificate_name": "shop-cluster-door" if hostnames else None}
+    data["resources"]["cluster"][0]["public"] = door
+    return data

@@ -7,8 +7,9 @@ Phase 3, step 5 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECT
   HTTPS and redirecting HTTP, taking routes from the request's namespace only. Without hostnames, plain HTTP on the
   address. Hostnames must be in the operator's `providers.gcp.public_domains`. Also `create_cluster`'s `public` and
   `hostnames`.
-- **Routes for `edit`.** Every new cluster gets a ClusterRole aggregated into `edit` that writes HTTPRoutes, so a
-  request's namespace attaches its workloads; Gateways stay out of `edit`.
+- **Routes for `edit`.** Every new cluster gets a ClusterRole aggregated into `edit` that writes HTTPRoutes and GKE's
+  HealthCheckPolicies, so a request's namespace attaches its workloads with the health check they need; Gateways stay
+  out of `edit`.
 - **Reported:** `ClusterResource.public` with the address, the hostnames, the Gateway and the certificate's state.
 - **Delete in order.** The Gateway first; the cluster waits until GKE's forwarding rules on the address are gone, then
   goes, then the certificate and the address. A front door that failed half way is closed the same way.

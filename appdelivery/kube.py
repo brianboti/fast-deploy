@@ -28,12 +28,15 @@ STUCK = ("ErrImagePull", "ImagePullBackOff", "InvalidImageName", "CrashLoopBackO
 
 @dataclass(frozen=True)
 class ClusterTarget:
-    """The cluster as the infrastructure layer reports it: where its API is, the CA to trust, and the request's namespace."""
+    """The cluster as the infrastructure layer reports it: where its API is, the CA to trust, the request's namespace, and
+    its front door's Gateway (namespace/name) and whether it serves HTTPS."""
     resource: str
     name: str
     endpoint: str
     ca_certificate: str
     namespace: str
+    gateway: str | None = None
+    https: bool = False
 
 
 class KubeClient:
@@ -82,7 +85,9 @@ class KubeClient:
 
 def paths(namespace: str, workload: str) -> dict[str, str]:
     return {"deployments": f"/apis/apps/v1/namespaces/{namespace}/deployments", "services": f"/api/v1/namespaces/{namespace}/services",
-            "secrets": f"/api/v1/namespaces/{namespace}/secrets", "pods": f"/api/v1/namespaces/{namespace}/pods", "workload": workload}
+            "secrets": f"/api/v1/namespaces/{namespace}/secrets", "pods": f"/api/v1/namespaces/{namespace}/pods",
+            "routes": f"/apis/gateway.networking.k8s.io/v1/namespaces/{namespace}/httproutes",
+            "health_checks": f"/apis/networking.gke.io/v1/namespaces/{namespace}/healthcheckpolicies", "workload": workload}
 
 
 def secret_name(workload: str, release_id: str) -> str:
@@ -115,6 +120,29 @@ def service_body(namespace: str, release: ReleaseRequest) -> dict:
     workload = release.target.workload
     return {"apiVersion": "v1", "kind": "Service", "metadata": {"name": workload, "namespace": namespace, "labels": {**MANAGED, NAME_LABEL: workload}},
             "spec": {"type": "ClusterIP", "selector": {NAME_LABEL: workload}, "ports": [{"name": "http", "port": release.port, "targetPort": release.port}]}}
+
+
+def route_body(namespace: str, release: ReleaseRequest, target: ClusterTarget) -> dict:
+    """An HTTPRoute from the cluster's front door to the workload's Service: the hostname (or all of the door's) and the
+    path prefix the release names."""
+    workload, expose = release.target.workload, release.target.expose
+    gateway_namespace, gateway = target.gateway.split("/", 1)
+    spec = {"parentRefs": [{"group": "gateway.networking.k8s.io", "kind": "Gateway", "namespace": gateway_namespace, "name": gateway,
+                            "sectionName": "https" if target.https else "http"}],
+            "rules": [{"matches": [{"path": {"type": "PathPrefix", "value": expose.path}}], "backendRefs": [{"name": workload, "port": release.port}]}]}
+    if expose.hostname:
+        spec["hostnames"] = [expose.hostname]
+    return {"apiVersion": "gateway.networking.k8s.io/v1", "kind": "HTTPRoute", "metadata": {"name": workload, "namespace": namespace, "labels": {**MANAGED, NAME_LABEL: workload}},
+            "spec": spec}
+
+
+def health_check_body(namespace: str, release: ReleaseRequest) -> dict:
+    """GKE's Gateway load balancer checks `/` unless told otherwise; it does not read the readiness probe as Ingress does
+    (https://docs.cloud.google.com/kubernetes-engine/docs/how-to/configure-gateway-resources)."""
+    workload = release.target.workload
+    return {"apiVersion": "networking.gke.io/v1", "kind": "HealthCheckPolicy", "metadata": {"name": workload, "namespace": namespace, "labels": {**MANAGED, NAME_LABEL: workload}},
+            "spec": {"default": {"config": {"type": "HTTP", "httpHealthCheck": {"port": release.port, "requestPath": release.health.path}}},
+                     "targetRef": {"group": "", "kind": "Service", "name": workload}}}
 
 
 class ClusterDeployer:
@@ -189,6 +217,7 @@ class ClusterDeployer:
         self._apply(kube, where["services"], service_body(target.namespace, release))
         healthy, reason = self._wait(kube, where, release_id, release.health.timeout_seconds + 120)
         if healthy:
+            self._expose(kube, where, target, release)  # traffic from outside moves only to a healthy release
             keep = {release_id} | ({previous[0]} if previous else set())
             self._prune(kube, where, keep)
             return HostReport("healthy", {"image": release.image, "release": release_id, "previous": previous[0] if previous else ""})
@@ -201,6 +230,7 @@ class ClusterDeployer:
         else:
             kube.delete(f"{where['deployments']}/{where['workload']}")
             kube.delete(f"{where['services']}/{where['workload']}")
+            self._unexpose(kube, where)
         kube.delete(f"{where['secrets']}/{secret_name(release.target.workload, release_id)}")
         fields = {"restored": restored, "reason": reason}
         if log:
@@ -216,15 +246,34 @@ class ClusterDeployer:
         healthy, reason = self._wait(kube, where, previous_id, previous.health.timeout_seconds + 120)
         if not healthy:
             return HostReport("rollback_unhealthy", {"reason": reason})
+        self._expose(kube, where, target, previous)
         self._prune(kube, where, {previous_id})
         return HostReport("rolled_back", {"image": previous.image, "release": previous_id})
 
     def remove(self, target: ClusterTarget, workload: str) -> HostReport:
         kube, where = self.kube(target), paths(target.namespace, workload)
+        self._unexpose(kube, where)
         kube.delete(f"{where['deployments']}/{workload}")
         kube.delete(f"{where['services']}/{workload}")
         self._prune(kube, where, set())
         return HostReport("removed")
+
+    # ---- the front door
+    def _expose(self, kube, where: dict, target: ClusterTarget, release: ReleaseRequest) -> None:
+        """The route and health check this release asks for, or none: a release without expose takes the workload off the door."""
+        if release.target.expose is None or target.gateway is None:
+            self._unexpose(kube, where)
+            return
+        if release.health.path == "/":
+            kube.delete(f"{where['health_checks']}/{where['workload']}")
+        else:
+            self._apply(kube, where["health_checks"], health_check_body(target.namespace, release))
+        self._apply(kube, where["routes"], route_body(target.namespace, release, target))
+
+    @staticmethod
+    def _unexpose(kube, where: dict) -> None:
+        kube.delete(f"{where['routes']}/{where['workload']}")
+        kube.delete(f"{where['health_checks']}/{where['workload']}")
 
     def status(self, target: ClusterTarget, workload: str) -> HostReport:
         kube, where = self.kube(target), paths(target.namespace, workload)
