@@ -3,10 +3,12 @@
 import base64
 
 import httpx
-from delivery_fakes import DEV_SA, PROD_SA, Runner, infra_response, make_config, principal, release_dict
+from delivery_fakes import DEV_SA, PROD_SA, Runner, cluster_response, infra_response, make_config, principal, release_dict
+from kube_fakes import FakeKube
 
 from appdelivery.errors import DeliveryError, ErrorCode
 from appdelivery.infra import InfraRequest
+from appdelivery.kube import ClusterDeployer
 from appdelivery.machine import HostReport
 from appdelivery.models import ReleaseRequest
 from appdelivery.releases import Delivery, InlineExecutor
@@ -77,8 +79,8 @@ class FakeSession:
 
 
 class FakeInfra:
-    def __init__(self):
-        self.answers = {"dev": dev_answer(), "prod": infra_response()}
+    def __init__(self, cluster=False):
+        self.answers = {"dev": dev_answer(cluster), "prod": cluster_response() if cluster else infra_response()}
         self.reads = 0
 
     def __call__(self, environment):
@@ -91,8 +93,8 @@ class FakeInfra:
         return Client()
 
 
-def dev_answer():
-    answer = infra_response()
+def dev_answer(cluster=False):
+    answer = cluster_response() if cluster else infra_response()
     answer["access"][0]["member"] = f"serviceAccount:{DEV_SA}"
     return answer
 
@@ -106,15 +108,21 @@ def secret_manager():
 class World:
     """A Delivery, its state, its fake fleet and cloudinfra, and the principals of the fake configuration."""
 
-    def __init__(self, database=":memory:", cosign=None):
+    def __init__(self, database=":memory:", cosign=None, cluster=False):
         self.config = make_config(database=database)
         self.state = StateManager(database)
-        self.fleet, self.infra = FakeFleet(), FakeInfra()
+        self.fleet, self.infra, self.kube = FakeFleet(), FakeInfra(cluster), FakeKube()
         self.cosign = cosign or Runner(Completed(0, "[]", ""))
         self.tokens = []
+        self.cluster_tokens = []
         self.delivery = Delivery(self.config, self.state, infra=self.infra, machines=self.fleet.session, tokens=self.token, http=secret_manager(), runner=self.cosign,
-                                 executor=InlineExecutor())
+                                 executor=InlineExecutor(), clusters=self.deployer)
         self.team, self.oncall = principal(self.config, "shop-team"), principal(self.config, "shop-oncall")
+
+    def deployer(self, environment):
+        service_account = self.config.environments[environment].service_account
+        self.cluster_tokens.append(service_account)
+        return ClusterDeployer(lambda: self.token(service_account), kube=lambda target: self.kube, sleep=lambda seconds: None)
 
     def token(self, service_account):
         self.tokens.append(service_account)

@@ -39,42 +39,58 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
     grant = infra.grant_of(member(environment.service_account))
     if grant is None:
         problems.append(_problem(ErrorCode.NOT_GRANTED, f"The request does not name {environment.service_account} in its access list: add it with level admin "
-                                 "(manage_infrastructure_access) to let this service run containers on its machines", member=member(environment.service_account)))
+                                 "(manage_infrastructure_access) to let this service run containers on its machines or cluster", member=member(environment.service_account)))
     elif grant.level != "admin" or grant.status != "GRANTED":
         problems.append(_problem(ErrorCode.NOT_GRANTED, f"{environment.service_account} is on the request as {grant.level}, {grant.status}; running containers needs "
                                  "admin, GRANTED", level=grant.level, grant_status=grant.status))
 
-    machines = infra.group(release.target.group)
-    if not machines:
-        problems.append(_problem(ErrorCode.NOT_FOUND, f"The request has no machines in group {release.target.group!r}; groups: {', '.join(infra.groups()) or 'none'}",
-                                 field="target.group"))
-    for machine in machines:
-        if machine.status != "READY":
-            problems.append(_problem(ErrorCode.INVALID_STATE, f"{machine.name} is {machine.status}; start the request first", resource=machine.id))
-        if not machine.os_image.startswith(CONTAINER_OS_PREFIX):
-            problems.append(_problem(ErrorCode.UNSUPPORTED_TARGET, f"{machine.name} runs {machine.os_image or 'an unknown image'}, which has no Docker; ask cloudinfra for "
-                                     f"machines with profile {config.gcp.container_profile} (Container-Optimized OS)", resource=machine.id))
-        if grant is not None and grant.resources and machine.id not in grant.resources:
-            problems.append(_problem(ErrorCode.NOT_GRANTED, f"{environment.service_account} was not granted on {machine.name}", resource=machine.id))
-        network = infra.network(machine.network)
-        if machine.network is None:
-            if not config.gcp.default_network_iap:
-                problems.append(_problem(ErrorCode.UNREACHABLE_TARGET, f"{machine.name} is in the operator's default network, which this service is not told admits "
-                                         f"{IAP_RANGE} on port 22; give the request a network block with iap_ssh", resource=machine.id))
-        elif network is None:
-            warnings.append(f"{machine.name} is on network {machine.network} of another request: whether it admits SSH through IAP could not be checked")
-        elif not network.admits(22, IAP_RANGE):
-            problems.append(_problem(ErrorCode.UNREACHABLE_TARGET, f"{network.name} does not admit {IAP_RANGE} on port 22; recreate it with iap_ssh or add the rule "
-                                     "with configure_firewall", resource=machine.id))
-        elif not network.opens_beyond_subnet(release.port):
-            warnings.append(f"Port {release.port} is open only inside {network.name}: add a firewall rule or a load balancer to reach it from elsewhere")
-        if not release.registry().endswith(ARTIFACT_REGISTRY_SUFFIX) and machine.public_ip is None:
-            problems.append(_problem(ErrorCode.UNREACHABLE_TARGET, f"{machine.name} has no public address and the infrastructure layer offers no NAT, so it can pull only "
-                                     f"from Artifact Registry (*{ARTIFACT_REGISTRY_SUFFIX})", resource=machine.id, registry=release.registry()))
-    if any(machine.autostop_idle_minutes for machine in machines):
-        warnings.append(f"Group {release.target.group} stops itself when idle (autostop): a quiet service is idle to it; ask for keep_awake or a group without autostop")
-    if any(machine.max_run_hours for machine in machines):
-        warnings.append(f"Group {release.target.group} stops after max_run_hours from each start")
+    if release.target.cluster:
+        cluster = infra.cluster()
+        if cluster is None:
+            problems.append(_problem(ErrorCode.NOT_FOUND, "The request has no cluster; ask cloudinfra for one with a cluster block", field="target.cluster"))
+        else:
+            if cluster.status != "READY":
+                problems.append(_problem(ErrorCode.INVALID_STATE, f"Cluster {cluster.name} is {cluster.status}", resource=cluster.id))
+            if not cluster.namespace:
+                problems.append(_problem(ErrorCode.UNSUPPORTED_TARGET, f"Cluster {cluster.name} has no namespace for the request: it was made before the infrastructure "
+                                         "layer gave clusters one; grant the access again to make it", resource=cluster.id))
+            if not cluster.endpoint or not cluster.ca_certificate:
+                problems.append(_problem(ErrorCode.UNREACHABLE_TARGET, f"The infrastructure layer reports no address or CA certificate for cluster {cluster.name}",
+                                         resource=cluster.id))
+            if grant is not None and grant.resources and cluster.id not in grant.resources:
+                problems.append(_problem(ErrorCode.NOT_GRANTED, f"{environment.service_account} was not granted on cluster {cluster.name}", resource=cluster.id))
+    else:
+        machines = infra.group(release.target.group)
+        if not machines:
+            problems.append(_problem(ErrorCode.NOT_FOUND, f"The request has no machines in group {release.target.group!r}; groups: {', '.join(infra.groups()) or 'none'}",
+                                     field="target.group"))
+        for machine in machines:
+            if machine.status != "READY":
+                problems.append(_problem(ErrorCode.INVALID_STATE, f"{machine.name} is {machine.status}; start the request first", resource=machine.id))
+            if not machine.os_image.startswith(CONTAINER_OS_PREFIX):
+                problems.append(_problem(ErrorCode.UNSUPPORTED_TARGET, f"{machine.name} runs {machine.os_image or 'an unknown image'}, which has no Docker; ask cloudinfra for "
+                                         f"machines with profile {config.gcp.container_profile} (Container-Optimized OS)", resource=machine.id))
+            if grant is not None and grant.resources and machine.id not in grant.resources:
+                problems.append(_problem(ErrorCode.NOT_GRANTED, f"{environment.service_account} was not granted on {machine.name}", resource=machine.id))
+            network = infra.network(machine.network)
+            if machine.network is None:
+                if not config.gcp.default_network_iap:
+                    problems.append(_problem(ErrorCode.UNREACHABLE_TARGET, f"{machine.name} is in the operator's default network, which this service is not told admits "
+                                             f"{IAP_RANGE} on port 22; give the request a network block with iap_ssh", resource=machine.id))
+            elif network is None:
+                warnings.append(f"{machine.name} is on network {machine.network} of another request: whether it admits SSH through IAP could not be checked")
+            elif not network.admits(22, IAP_RANGE):
+                problems.append(_problem(ErrorCode.UNREACHABLE_TARGET, f"{network.name} does not admit {IAP_RANGE} on port 22; recreate it with iap_ssh or add the rule "
+                                         "with configure_firewall", resource=machine.id))
+            elif not network.opens_beyond_subnet(release.port):
+                warnings.append(f"Port {release.port} is open only inside {network.name}: add a firewall rule or a load balancer to reach it from elsewhere")
+            if not release.registry().endswith(ARTIFACT_REGISTRY_SUFFIX) and machine.public_ip is None:
+                problems.append(_problem(ErrorCode.UNREACHABLE_TARGET, f"{machine.name} has no public address and the infrastructure layer offers no NAT, so it can pull only "
+                                         f"from Artifact Registry (*{ARTIFACT_REGISTRY_SUFFIX})", resource=machine.id, registry=release.registry()))
+        if any(machine.autostop_idle_minutes for machine in machines):
+            warnings.append(f"Group {release.target.group} stops itself when idle (autostop): a quiet service is idle to it; ask for keep_awake or a group without autostop")
+        if any(machine.max_run_hours for machine in machines):
+            warnings.append(f"Group {release.target.group} stops after max_run_hours from each start")
 
     if not any(release.repository() == prefix or release.repository().startswith(prefix.rstrip("/") + "/") for prefix in environment.allowed_registries):
         problems.append(_problem(ErrorCode.REGISTRY_NOT_ALLOWED, f"{release.repository()} is not under the registries allowed in {release.environment}: "
@@ -102,8 +118,14 @@ def plan(release: ReleaseRequest, principal, config, infra: InfraRequest) -> Pla
         raise DeliveryError(first.code, first.message if len(problems) == 1 else f"{first.message} (and {len(problems) - 1} more problems)",
                             {"problems": [item.model_dump(mode="json") for item in problems]})
     environment = config.environments[release.environment]
-    machines = [PlannedMachine(resource=machine.id, name=machine.name, zone=machine.zone or "", instance_id=machine.instance_id, internal_ip=machine.internal_ip)
-                for machine in infra.group(release.target.group)]
+    extra = {}
+    if release.target.cluster:
+        cluster = infra.cluster()
+        machines = [PlannedMachine(resource=cluster.id, name=cluster.name, zone=cluster.location)]
+        extra = {"target": "cluster", "namespace": cluster.namespace, "workload": release.target.workload, "replicas": release.target.replicas}
+    else:
+        machines = [PlannedMachine(resource=machine.id, name=machine.name, zone=machine.zone or "", instance_id=machine.instance_id, internal_ip=machine.internal_ip)
+                    for machine in infra.group(release.target.group)]
     return PlanResponse(environment=release.environment, request_id=release.request_id, image=release.image, service_account=environment.service_account,
                         machines=machines, env={name: binding.source() for name, binding in release.env.items()},
-                        attestation_required=environment.require_attestation, approval_required=environment.require_approval, warnings=warnings)
+                        attestation_required=environment.require_attestation, approval_required=environment.require_approval, warnings=warnings, **extra)

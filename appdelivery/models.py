@@ -12,6 +12,7 @@ from .errors import DeliveryError, ErrorCode
 IMAGE = re.compile(r"^(?P<host>[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[0-9]{1,5})?)/(?P<path>[a-z0-9]+(?:[._/-][a-z0-9]+)*)@sha256:(?P<digest>[a-f0-9]{64})$")
 REQUEST_ID = re.compile(r"^[a-f0-9]{32}$")
 GROUP = re.compile(r"^[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?$")
+WORKLOAD = re.compile(r"^[a-z](?:[a-z0-9-]{0,38}[a-z0-9])?$")  # a Kubernetes name, short enough for the release Secret's name
 ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]{0,63}$")
 HEALTH_PATH = re.compile(r"^/[A-Za-z0-9._~/-]{0,200}(?:\?[A-Za-z0-9._~=&%-]{0,200})?$")
 SECRET_NAME = re.compile(r"^[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?$|^db-password$|^cache-auth$")
@@ -60,14 +61,39 @@ class Binding(StrictModel):
 
 
 class Target(StrictModel):
-    group: str = Field(description="A compute group of the request; every machine in it is a target.")
+    """Where a release runs: every machine of one compute group, or one workload on the request's cluster."""
+    group: str | None = Field(default=None, description="A compute group of the request; every machine in it is a target.")
+    cluster: bool = Field(default=False, description="The request's Kubernetes cluster, in the namespace the infrastructure layer made for the request.")
+    workload: str | None = Field(default=None, description="On a cluster: the Deployment and Service name (lowercase letters, digits, dashes).")
+    replicas: int = Field(default=1, ge=1, le=20, description="On a cluster: how many copies run.")
 
     @field_validator("group")
     @classmethod
     def _group(cls, value):
-        if not GROUP.match(value):
+        if value is not None and not GROUP.match(value):
             raise DeliveryError(ErrorCode.INVALID_RELEASE, f"{value!r} is not a group name: lowercase, up to 12 characters")
         return value
+
+    @field_validator("workload")
+    @classmethod
+    def _workload(cls, value):
+        if value is not None and not WORKLOAD.match(value):
+            raise DeliveryError(ErrorCode.INVALID_RELEASE, f"{value!r} is not a workload name: lowercase letters, digits and dashes, up to 40 characters")
+        return value
+
+    @model_validator(mode="after")
+    def _one_kind(self):
+        if (self.group is None) == (not self.cluster):
+            raise DeliveryError(ErrorCode.INVALID_RELEASE, "target names either a group of machines or cluster: true, not both and not neither")
+        if self.cluster and self.workload is None:
+            raise DeliveryError(ErrorCode.INVALID_RELEASE, "a cluster target names its workload")
+        if self.group is not None and (self.workload is not None or self.replicas != 1):  # a stored release carries the default back
+            raise DeliveryError(ErrorCode.INVALID_RELEASE, "workload and replicas belong to a cluster target; a group runs one container per machine")
+        return self
+
+    def key(self) -> str:
+        """What one release at a time is kept for: a group of machines, or a workload on the cluster."""
+        return f"cluster:{self.workload}" if self.cluster else self.group
 
 
 class Health(StrictModel):
@@ -156,7 +182,11 @@ class PlanResponse(BaseModel):
     env: dict[str, str] = Field(description="Each name and where its value comes from; never a secret's value.")
     attestation_required: bool
     approval_required: bool
-    replaces: str | None = Field(default=None, description="The release running on this group now, which this one would replace.")
+    target: Literal["machines", "cluster"] = "machines"
+    namespace: str | None = Field(default=None, description="On a cluster: the request's namespace.")
+    workload: str | None = None
+    replicas: int | None = None
+    replaces: str | None = Field(default=None, description="The release running on this target now, which this one would replace.")
     warnings: list[str] = Field(default_factory=list)
 
 

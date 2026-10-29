@@ -316,3 +316,51 @@ Found on the way:
 Everything was destroyed or deleted afterwards: the target machines, network and secret through `cloudinfra`; then the
 platform machine, its firewall rule, the image repository, Cloud Build's bucket, the three service accounts, the custom
 role and every binding. Artifact Registry and Cloud Build APIs stay enabled with the others.
+
+## 11. Phase 2 step 3, the first run on a cluster
+
+Run on 2026-10-29 between 19:41 and 20:35 UTC by Claude for the operator, in the same sandbox project. `cloudinfra` and
+the delivery service ran from the repository on the operator's laptop, as in section 9, with the same principals and an
+environment that requires approval. `cloudinfra` made a request with a one-node GKE cluster and a generated secret, and
+named the environment's service account `admin` in `access`; that account held `container.clusterViewer` on the
+project and nothing else. The releases were Google's `hello-app` 1.0 and 2.0 by digest, two replicas, binding one literal
+and the secret.
+
+| Step | Result |
+|---|---|
+| `cloudinfra` makes the cluster | `READY` after about 7 minutes, with the namespace `shop` and one RoleBinding: the service account's email as a `User`, bound to the ClusterRole `edit`, in that namespace only |
+| `plan_release` (MCP) | `PLANNED`: target `cluster`, namespace `shop`, workload `web`, 2 replicas |
+| deploy 1.0, approved by the on-call principal | `RUNNING`: Deployment 2/2 ready, a ClusterIP Service, the release's own Secret `web-env-<release>` |
+| deploy 2.0 | `RUNNING`, `previous` 1.0, `can_roll_back`; the Service kept its address; two release Secrets kept |
+| deploy 2.0 with `PORT=9999` | `FAILED` with `ROLLOUT_FAILED`: Kubernetes gave up (`ReplicaSet … has timed out progressing`), the log line `Server listening on port 9999` reported; the old replicas served throughout (maxUnavailable 0); 2.0 put back and still `RUNNING` with `can_roll_back` |
+| roll back 2.0 | `ROLLED_BACK`; 1.0 `RUNNING` on 2 new replicas; 2.0's Secret deleted |
+| remove 1.0 | `REMOVED`: no Deployment, Service, Secret or pod left; the namespace and its RoleBinding stay, as they belong to `cloudinfra` |
+| the secret | each release Secret held the Secret Manager value; the value appeared in neither service's database or log |
+
+Found on the way, and fixed:
+
+- **GKE takes the network and subnetwork by name only** (`cloudinfra`). The adapter sent the network's self link, and
+  GKE refused it as a malformed value. Fixed in the adapter, and the fake now refuses a path.
+- **gcloud can hand back a token with only minutes left** (`cloudinfra` and the delivery service). Both kept a token
+  from `gcloud auth print-access-token` for 30 minutes; one expired while the cluster was being made, failing the request.
+  Both now keep it 5 minutes, and on a 401 drop it and try once more.
+- **The environment's token needs the `userinfo.email` scope** (delivery service). With `cloud-platform` alone GKE sees
+  a service account as its number (`User "1043…"`), so a RoleBinding that names its email never matches and every call is
+  refused with 403. A token from gcloud carries the scope, which is why a call by hand worked. `cloudinfra` is not
+  affected: it reaches the cluster through its IAM rights, not RBAC.
+- **A timed-out rollout's condition outlives the restore** (delivery service). Kubernetes keeps `ProgressDeadlineExceeded`
+  on the Deployment until it has seen the next change, so the restore read it as its own failure and 2.0 lost its
+  rollback, while the cluster ran 2.0 on 2/2 replicas. The condition now counts only for the generation being waited for,
+  as `kubectl rollout status` does.
+
+Found and still open:
+
+- **A cluster whose creation fails after Google accepted it is left behind** (`cloudinfra`). When the expired token
+  failed the request while it waited for GKE, the cluster had no provider id in `cloudinfra`'s state yet, so destroying
+  the request deleted the secret and skipped the cluster, which kept running. It was deleted by hand. The same can happen
+  to any resource whose create returns a long-running operation; the restart-recovery message already says so.
+
+Everything was destroyed or deleted afterwards: the request through `cloudinfra` (`DESTROYED`: the cluster and the
+secret), the cluster left by the failed attempt by hand, then the environment's service account and its
+`container.clusterViewer` binding. No cluster, machine, disk, secret or GKE firewall rule is left. The Kubernetes Engine
+API stays enabled with the others.

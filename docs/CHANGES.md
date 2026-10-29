@@ -12,6 +12,9 @@ limited to one cluster, so a cluster's access lives in the cluster:
   Google token and the cluster's CA certificate (`ClusterResource.ca_certificate`, public).
 - The connect block names the namespace; members still need the project-level `container.clusterViewer` to fetch
   credentials, as before.
+- **Fixed on a real cluster** (docs/DELIVERY-SPIKE.md section 11): GKE takes the network and subnetwork by name, not
+  self link; a token from `gcloud auth print-access-token` is kept 5 minutes, not 30, and a call Google answers with 401
+  is tried once more with a fresh one.
 
 # Unreleased: calls to Google are counted against the operator's project and tried again when rate limited
 

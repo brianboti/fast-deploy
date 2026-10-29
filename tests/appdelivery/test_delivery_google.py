@@ -56,7 +56,7 @@ def test_an_environment_token_is_issued_to_the_host_and_cached():
     tokens = ServiceAccountTokens(google(handle), lambda: "host", clock=lambda: 1000.0)
     assert tokens(PROD_SA) == "env-token" and tokens(PROD_SA) == "env-token" and len(seen) == 1
     assert seen[0].url.path == f"/v1/projects/-/serviceAccounts/{PROD_SA}:generateAccessToken" and seen[0].headers["Authorization"] == "Bearer host"
-    assert json.loads(seen[0].content) == {"scope": ["https://www.googleapis.com/auth/cloud-platform"], "lifetime": "900s"}
+    assert json.loads(seen[0].content) == {"scope": ["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email"], "lifetime": "900s"}
 
 
 def test_a_host_that_may_not_act_as_the_environment_is_told_which_role_it_needs():
@@ -142,3 +142,17 @@ def test_a_registry_outside_artifact_registry_gets_no_login():
 def test_only_gcloud_and_cosign_may_run():
     with pytest.raises(ValueError, match="runs only"):
         remote.run(["sh", "-c", "id"])
+
+
+def test_an_expired_host_token_is_replaced_once():
+    """gcloud may hand back a token with only minutes left (found on 2026-10-29)."""
+    issued = iter(["stale", "fresh"])
+    host = HostToken(google(no_metadata), runner=lambda argv, stdin=None, env=None, timeout=60: Completed(0, next(issued) + "\n", ""))
+    seen = []
+
+    def handle(request):
+        seen.append(request.headers["Authorization"])
+        if request.headers["Authorization"] == "Bearer stale":
+            return httpx.Response(401, json={})
+        return httpx.Response(200, json={"accessToken": "env-token"})
+    assert ServiceAccountTokens(google(handle), host)(PROD_SA) == "env-token" and seen == ["Bearer stale", "Bearer fresh"]

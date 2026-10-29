@@ -16,7 +16,8 @@ from . import attest, bindings, planner, remote
 from .errors import DeliveryError, ErrorCode
 from .events import bound, event
 from .google import HostToken, ServiceAccountTokens
-from .infra import InfraClient
+from .infra import InfraClient, InfraRequest
+from .kube import ClusterDeployer, ClusterTarget
 from .machine import Machine, MachineSession
 from .models import ReleaseRequest, ReleaseResponse, TargetView
 from .state import MOVING, StateManager, new_release_id
@@ -48,12 +49,13 @@ def scrub(text: str | None, values: list[str]) -> str | None:
 
 class Delivery:
     def __init__(self, config, state: StateManager, infra=None, machines=None, tokens=None, http=None, runner=remote.run, executor=None, sleep=time.sleep,
-                 clock=time.monotonic):
+                 clock=time.monotonic, clusters=None):
         self.config, self.state = config, state
         self.infra = infra or (lambda environment: InfraClient.for_environment(config, environment))
         self.machines = machines or (lambda environment: MachineSession(config.gcp.project_id, config.environments[environment].service_account))
         self.http = http or httpx.Client(timeout=30, follow_redirects=False)
         self.tokens = tokens or ServiceAccountTokens(self.http, HostToken(self.http))
+        self.clusters = clusters or (lambda environment: ClusterDeployer(lambda: self.tokens(config.environments[environment].service_account)))
         self.runner = runner
         self.executor = executor or concurrent.futures.ThreadPoolExecutor(max_workers=config.workers, thread_name_prefix="appdelivery")
         self.sleep, self.clock = sleep, clock
@@ -125,13 +127,13 @@ class Delivery:
         planner.authorize(release, principal, self.config)
         infra = self.infra(release.environment).get_request(release.request_id)
         planned = planner.plan(release, principal, self.config, infra)
-        running = self.state.running_release(release.request_id, release.target.group)
+        running = self.state.running_release(release.request_id, release.target.key())
         planned.replaces = running["release_id"] if running else None
         return planned
 
     def deploy(self, release: ReleaseRequest, principal, wait_seconds: int = 0) -> ReleaseResponse:
         planned = self.plan(release, principal)
-        group = release.target.group
+        group = release.target.key()
         with self.lock(release.request_id, group):
             busy = self.state.busy_release(release.request_id, group)
             if busy is not None:
@@ -169,14 +171,19 @@ class Delivery:
 
     def _prepare(self, record: dict, release: ReleaseRequest):
         """Everything checked again as it is now (time may have passed since the plan, or the approval), and the machines
-        still the ones recorded. Returns (infra request, machine session)."""
+        or the cluster still the ones recorded. Returns (infra request, machine session or cluster deployer)."""
         principal = self._principal(record["requested_by"])
         infra = self.infra(release.environment).get_request(release.request_id)
         planned = planner.plan(release, principal, self.config, infra)
         if {item.resource for item in planned.machines} != {item["resource_id"] for item in record["targets"]}:
-            raise DeliveryError(ErrorCode.INVALID_STATE, f"The machines of group {release.target.group} changed since the release was recorded; deploy again",
+            raise DeliveryError(ErrorCode.INVALID_STATE, f"The targets of {release.target.key()} changed since the release was recorded; deploy again",
                                 {"recorded": [item["resource_id"] for item in record["targets"]], "now": [item.resource for item in planned.machines]})
-        return infra, self.machines(release.environment)
+        return infra, (self.clusters if release.target.cluster else self.machines)(release.environment)
+
+    @staticmethod
+    def _cluster_target(infra: InfraRequest) -> ClusterTarget:
+        cluster = infra.cluster()
+        return ClusterTarget(cluster.id, cluster.name, cluster.endpoint, cluster.ca_certificate, cluster.namespace)
 
     def _registry_token(self, release: ReleaseRequest, environment) -> str | None:
         return self.tokens(environment.service_account) if release.registry().endswith(planner.ARTIFACT_REGISTRY_SUFFIX) else None
@@ -201,9 +208,55 @@ class Delivery:
                 event("rollout_failed", code=exc.code.value, stage="prepare")
                 return
             try:
-                self._roll(record, release, environment, session, values)
+                if release.target.cluster:
+                    self._roll_cluster(record, release, infra, session, values)
+                else:
+                    self._roll(record, release, environment, session, values)
             finally:
                 values.clear()
+
+    def _previous(self, record: dict) -> tuple[str, ReleaseRequest] | None:
+        if not record["previous"]:
+            return None
+        previous = self.state.get_release(record["previous"])
+        return previous["release_id"], ReleaseRequest.model_validate(previous["request"])
+
+    def _roll_cluster(self, record: dict, release: ReleaseRequest, infra: InfraRequest, deployer: ClusterDeployer, values: dict[str, str]) -> None:
+        """One workload on the cluster: Kubernetes rolls the replicas, and a failure puts the previous release back. The
+        previous release keeps its own Secret, so a failure here leaves the running release's rollback as it was."""
+        release_id, [target] = record["release_id"], record["targets"]
+        secret_values = [values[name] for name, binding in release.env.items() if binding.secret is not None]
+        workload = release.target.workload
+        self.state.set_target(release_id, target["resource_id"], "DEPLOYING", started=True)
+        event("cluster_deploying", cluster=target["name"], workload=workload, replicas=release.target.replicas)
+        try:
+            report = deployer.deploy(self._cluster_target(infra), release_id, release, dict(values), self._previous(record))
+        except DeliveryError as exc:
+            self.state.set_target(release_id, target["resource_id"], "FAILED", exc.detail().model_dump(mode="json"), finished=True)
+            error = DeliveryError(ErrorCode.ROLLOUT_FAILED, f"The rollout of {workload} stopped: {exc.message}", {"cluster": target["name"], "cause": exc.detail().model_dump(mode="json")})
+            self.state.transition(release_id, ("ROLLING_OUT",), "FAILED", error.detail().model_dump(mode="json"))
+            event("rollout_failed", code=exc.code.value, cluster=target["name"])
+            return
+        if report.result == "healthy":
+            self.state.set_target(release_id, target["resource_id"], "HEALTHY", finished=True)
+            with self.lock(record["request_id"], record["group"]):
+                self.state.transition(release_id, ("ROLLING_OUT",), "RUNNING", can_roll_back=record["previous"] is not None)
+                if record["previous"]:
+                    self.state.transition(record["previous"], ("RUNNING",), "SUPERSEDED", can_roll_back=False)
+            event("rollout_completed", cluster=target["name"], workload=workload)
+            return
+        restored = report.fields.get("restored")
+        after = {"yes": "the previous release runs again", "none": "nothing ran there before, so nothing runs now",
+                 "failed": "putting the previous release back did not become healthy either"}.get(restored, "")
+        cause = DeliveryError(ErrorCode.UNHEALTHY, f"{workload} did not become healthy on {target['name']}: {report.fields.get('reason', '')}; {after}",
+                              {"cluster": target["name"], "workload": workload, "restored": restored})
+        self.state.set_target(release_id, target["resource_id"], "UNHEALTHY", cause.detail().model_dump(mode="json"), scrub(report.log(), secret_values), finished=True)
+        if restored == "failed" and record["previous"]:
+            with self.lock(record["request_id"], record["group"]):
+                self.state.transition(record["previous"], ("RUNNING",), "RUNNING", can_roll_back=False)
+        error = DeliveryError(ErrorCode.ROLLOUT_FAILED, f"The rollout of {workload} stopped: {cause.message}", {"cluster": target["name"], "cause": cause.detail().model_dump(mode="json")})
+        self.state.transition(release_id, ("ROLLING_OUT",), "FAILED", error.detail().model_dump(mode="json"))
+        event("rollout_failed", cluster=target["name"], restored=restored)
 
     def _roll(self, record: dict, release: ReleaseRequest, environment, session: MachineSession, values: dict[str, str]) -> None:
         release_id = record["release_id"]
@@ -329,12 +382,28 @@ class Delivery:
         with bound(release_id, record["requested_by"]):
             event("rollback_started", previous=record["previous"])
             try:
-                _, session = self._prepare(record, release)
+                infra, session = self._prepare(record, release)
             except DeliveryError as exc:
                 self.state.transition(release_id, ("ROLLING_BACK",), "RUNNING", exc.detail().model_dump(mode="json"))
                 event("rollback_failed", code=exc.code.value, stage="prepare")
                 return
-            for target in record["targets"]:
+            if release.target.cluster:
+                [target] = record["targets"]
+                previous_id, previous = self._previous(record)
+                try:
+                    report = session.rollback(self._cluster_target(infra), release_id, previous_id, previous)
+                    problem = None if report.result == "rolled_back" else DeliveryError(ErrorCode.ROLLBACK_FAILED, f"{target['name']} answered {report.result}",
+                                                                                         {"cluster": target["name"], **report.fields})
+                except DeliveryError as exc:
+                    problem = exc
+                if problem is not None:
+                    self.state.set_target(release_id, target["resource_id"], "UNDO_FAILED", problem.detail().model_dump(mode="json"))
+                    error = DeliveryError(ErrorCode.ROLLBACK_FAILED, f"The rollback on {target['name']} failed: {problem.message}", {"cluster": target["name"]})
+                    self.state.transition(release_id, ("ROLLING_BACK",), "ROLLBACK_FAILED", error.detail().model_dump(mode="json"))
+                    event("rollback_failed", cluster=target["name"], code=problem.code.value)
+                    return
+                self.state.set_target(release_id, target["resource_id"], "ROLLED_BACK")
+            for target in ([] if release.target.cluster else record["targets"]):
                 machine = Machine(target["name"], target["zone"])
                 try:
                     report = session.rollback(machine, release)
@@ -361,13 +430,21 @@ class Delivery:
         with bound(release_id, record["requested_by"]):
             event("remove_started")
             try:
-                _, session = self._prepare(record, release)
+                infra, session = self._prepare(record, release)
             except DeliveryError as exc:
                 self.state.transition(release_id, ("REMOVING",), "RUNNING", exc.detail().model_dump(mode="json"))
                 event("remove_failed", code=exc.code.value, stage="prepare")
                 return
             failed = []
-            for target in record["targets"]:
+            if release.target.cluster:
+                [target] = record["targets"]
+                try:
+                    session.remove(self._cluster_target(infra), release.target.workload)
+                    self.state.set_target(release_id, target["resource_id"], "REMOVED")
+                except DeliveryError as exc:
+                    self.state.set_target(release_id, target["resource_id"], "UNDO_FAILED", exc.detail().model_dump(mode="json"))
+                    failed.append(target["name"])
+            for target in ([] if release.target.cluster else record["targets"]):
                 machine = Machine(target["name"], target["zone"])
                 try:
                     report = session.remove(machine)
@@ -399,12 +476,17 @@ class Delivery:
             if record["infra_owner"] != principal.infra_owner:
                 continue
             entry = {"group": record["group"], "release_id": record["release_id"], "image": record["image"], "environment": record["environment"], "machines": []}
-            session = self.machines(record["environment"]) if live else None
+            release = ReleaseRequest.model_validate(record["request"])
+            session = (self.clusters if release.target.cluster else self.machines)(record["environment"]) if live else None
             for target in record["targets"]:
                 machine = {"resource": target["resource_id"], "name": target["name"], "status": target["status"]}
                 if session is not None:
                     try:
-                        report = session.status(Machine(target["name"], target["zone"]))
+                        if release.target.cluster:
+                            infra = self.infra(record["environment"]).get_request(request_id)
+                            report = session.status(self._cluster_target(infra), release.target.workload)
+                        else:
+                            report = session.status(Machine(target["name"], target["zone"]))
                         machine.update(running=report.fields.get("running") == "yes", image=report.fields.get("image") or None,
                                        matches=report.fields.get("image") == record["image"])
                     except DeliveryError as exc:
