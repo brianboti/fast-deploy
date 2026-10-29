@@ -15,7 +15,8 @@ METADATA = "http://metadata.google.internal/computeMetadata/v1/instance/service-
 
 class GoogleToken:
     """An access token for Google APIs as this host itself: the attached service account through the metadata server on a
-    Google Cloud machine, else the operator's own gcloud sign-in on a laptop. Kept until a minute before it ends."""
+    Google Cloud machine, else the operator's own gcloud sign-in on a laptop. Kept until a minute before it ends, or five
+    minutes for gcloud's, whose end is not reported; a caller Google refuses with 401 invalidates it and asks again."""
 
     def __init__(self, client=None, runner=None, clock=time.time, impersonate=None):
         self.client = client or httpx.Client(timeout=30, follow_redirects=False)
@@ -43,5 +44,10 @@ class GoogleToken:
         except (subprocess.CalledProcessError, OSError, subprocess.SubprocessError):
             raise ValueError("Could not get a Google token on this host: on a laptop, sign in with gcloud auth login; on the machine, "
                              "check that it runs with its service account") from None
-        self.cached, self.until = token, self.clock() + 1800
+        # gcloud may hand back a token it already holds, with only minutes left; a 401 calls invalidate() and asks again
+        self.cached, self.until = token, self.clock() + 300
         return token
+
+    def invalidate(self) -> None:
+        """Forget the token: Google refused it (it expired sooner than this class assumed)."""
+        self.cached, self.until = None, 0.0

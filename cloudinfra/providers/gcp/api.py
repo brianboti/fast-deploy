@@ -82,8 +82,11 @@ class GcpApi:
     # ---- plain requests
     def request(self, method: str, url: str, json=None, params=None) -> dict:
         """One call. A call Google rate limited (429: refused before it ran) is tried again, and so is a read Google answered
-        with a 5xx; a write that met a 5xx is not, since it may have been done. Each retry is a provider_retry event."""
-        for attempt in range(RETRIES):
+        with a 5xx; a write that met a 5xx is not, since it may have been done. A 401 (the token expired: Google refused it
+        before anything ran) is tried once more with a fresh token. Each retry is a provider_retry event."""
+        refreshed = False
+        attempt = 0
+        while True:
             try:
                 token = self.token()
             except ValueError as exc:
@@ -96,12 +99,18 @@ class GcpApi:
             except httpx.RequestError as exc:
                 raise InfrastructureError(ErrorCode.PROVIDER_UNAVAILABLE, f"Google Cloud could not be reached ({type(exc).__name__})", {"url": url}) from None
             event("provider_call", provider="gcp", method=method, url=url, status=response.status_code)
+            if response.status_code == 401 and not refreshed and hasattr(self.token, "invalidate"):
+                refreshed = True
+                self.token.invalidate()
+                event("provider_retry", provider="gcp", method=method, url=url, status=401, reason="token refreshed")
+                continue
             retryable = response.status_code == 429 or (method == "GET" and response.status_code in (500, 502, 503, 504))
             if not retryable or attempt == RETRIES - 1:
                 break
             pause = retry_pause(response, attempt)
             event("provider_retry", provider="gcp", method=method, url=url, status=response.status_code, attempt=attempt + 1, pause_seconds=pause)
             self.sleep(pause)
+            attempt += 1
         if response.status_code >= 400:
             raise translate_http_error(response)
         if not response.content:
