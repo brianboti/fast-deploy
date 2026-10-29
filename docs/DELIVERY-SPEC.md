@@ -197,10 +197,40 @@ release: its targets show `GONE`.
 
 ### Phase 2: clusters
 
-A Kubernetes Deployment in one namespace per team on a cluster of the request, through the cluster credentials Google's
-IAM gives the service account; rollout, health and rollback are Kubernetes' own (`maxUnavailable`, readiness probe,
-`rollout undo`). It waits on one gap in `cloudinfra`: clusters take no per-resource grant today, only the project-level
-`container.clusterViewer` prerequisite, which cannot write. Section 9 lists the choices.
+**Decided on 2026-10-29: access to one namespace through Kubernetes RBAC.** Checked on Google's pages first
+([RBAC](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/role-based-access-control),
+[IAM](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/iam)): a RoleBinding may name a Google service
+account's email as a `User`, and GKE authorizes a request when either RBAC or IAM allows it; `container.clusterViewer`
+gives `container.clusters.get` (enough to fetch credentials) and no access to any Kubernetes object; IAM's
+`container.developer` cannot be limited to one cluster, it reaches every cluster of the project; Google Groups for RBAC
+needs a Workspace domain and a `gke-security-groups` group. So the grant lives in the cluster, not in IAM:
+
+- **`cloudinfra`** creates one namespace per cluster, named after the request, as soon as the cluster runs, and treats a
+  cluster as a resource that takes grants. A member at `use` gets a RoleBinding to the built-in ClusterRole `view` in
+  that namespace, at `admin` one to `edit` (which covers Deployments, Services and Secrets, and no RBAC or namespace
+  change). A `user:` or `serviceAccount:` member is bound as a `User` named by its email, a `group:` member as a `Group`
+  (which needs Google Groups for RBAC on the operator's side). It talks to the cluster's own API with its Google token
+  and the cluster's CA certificate, only inside the Google adapter. A member still needs the project-level
+  `container.clusterViewer` the platform team grants once, as the connect block already says.
+- **`appdelivery`** targets `{cluster: true, workload: NAME, replicas: N}`. In the namespace it keeps one Deployment and
+  one ClusterIP Service per workload, and one Secret per release holding the environment (so a release's values never
+  change under it). The Deployment rolls with `maxUnavailable: 0`, a readiness probe on the health path and a progress
+  deadline of the health timeout; the release is healthy when every replica of the new generation is available.
+  A failed rollout re-applies the previous release's Deployment, which still points at its own Secret, so on a cluster a
+  failure does not take away the rollback (unlike a machine). Rollback re-applies the previous release; remove deletes
+  the Deployment, the Service and the release Secrets. Secrets of releases older than the previous one are deleted.
+- **Not in phase 2:** exposing a workload outside the cluster (an Ingress or a load balancer), private registries for
+  the nodes, several clusters per request.
+
+Steps, each its own pull request:
+
+1. **`cloudinfra`: the namespace and RBAC grants.** `ClusterResource.namespace`, the namespace made after creation,
+   clusters in `grantable_kinds`, grant and revoke as RoleBindings, the connect block naming the namespace. Tests
+   against a fake Kubernetes API.
+2. **`appdelivery`: the cluster target.** The contract, the plan's checks (cluster READY, the environment's account
+   granted `admin` on it), a Kubernetes session (GKE endpoint and CA through the container API as the environment's
+   account, then the cluster's API), the rollout, rollback, remove and live status. Tests against a fake Kubernetes API.
+3. **A real run** on a GKE cluster in the sandbox project, then everything deleted.
 
 ### Not planned: Cloud Run
 
@@ -326,12 +356,9 @@ and the `container-host` profile. Teams add the environment's service account to
 principal's `identity`. Today `appdelivery` must read every request (`scope: all`) and filter; with it, `cloudinfra`
 itself enforces that `appdelivery` sees only what teams handed it.
 
-**For phase 2, one of:**
-- a `deploy` access level on clusters that `cloudinfra` turns into a Kubernetes RoleBinding in a namespace (it then
-  talks to the Kubernetes API, a new dependency for it);
-- the platform team grants the delivery service account `roles/container.developer` on the project once, and
-  `appdelivery` limits itself to clusters whose request names it (simple, but the limit is in `appdelivery`, not IAM);
-- `cloudinfra` creates clusters with Google groups for RBAC and adds members to them (cleanest, more setup).
+**For phase 2** (decided 2026-10-29, section 4): a namespace per cluster and grants as RoleBindings in it. The two
+alternatives set aside: IAM's `container.developer` for the delivery service account (reaches every cluster of the
+project), and Google Groups for RBAC (needs a Workspace domain; it remains usable for `group:` members).
 
 **Later, optional:** a machine service account chosen by the request, so an application on the machine can read its
 own secrets and pull its own images; then `appdelivery` would pass secret names instead of values.
@@ -368,7 +395,7 @@ As `tests/cloudinfra/test_infra_catalog.py` does for `cloudinfra`:
 
 1. The name (`appdelivery` is a placeholder).
 2. Whether attestation is required in every environment or only in production.
-3. Phase 2's cluster choice (section 9).
+3. Phase 2's cluster choice (section 9): decided 2026-10-29, a namespace per cluster with RBAC grants.
 4. Whether a release on a group may run on several machines at once (faster) or always one at a time (safer; the draft).
 5. Whether Cloud Run comes back later, as a `cloudinfra` kind plus a target here (section 4), or stays out.
 
