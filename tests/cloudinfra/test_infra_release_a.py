@@ -699,8 +699,9 @@ def test_work_refused_at_shutdown_leaves_the_request_as_it_was(tmp_path):
     refused(ErrorCode.INTERNAL_ERROR, orchestrator.destroy, response.request_id, who)
     assert orchestrator.status(response.request_id, who).status == RequestStatus.READY
     refused(ErrorCode.INTERNAL_ERROR, orchestrator.provision, InfrastructureRequest.model_validate(VM_REQUEST), who)
-    newest = orchestrator.list_requests(who).requests[0]
-    assert newest.request_id != response.request_id and newest.status == RequestStatus.FAILED and newest.error.details["cause"] == "SHUTTING_DOWN"
+    # Requests made within the same second are listed in id order, not by age, so the new one is found by its id.
+    [newest] = [entry for entry in orchestrator.list_requests(who).requests if entry.request_id != response.request_id]
+    assert newest.status == RequestStatus.FAILED and newest.error.details["cause"] == "SHUTTING_DOWN"
 
 
 def test_idle_stop_looks_again_at_a_machine_after_a_failed_refresh(tmp_path):
