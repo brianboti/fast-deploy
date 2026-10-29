@@ -81,7 +81,8 @@ database: {engine: postgresql, version: "16", size: small, storage_gb: 10, high_
 cache:    {engine: redis, memory_gb: 2, high_availability: false}
 queue:    [{name: events}, {name: jobs, subscription: false}]
 secret:   [{name: api-key, generate_value: true}, {name: token}]
-cluster:  {node_count: 2, node_cpu: 2, node_memory_gb: 8}   # one cluster, or a list of named ones (name: blue)
+cluster:  {node_count: 2, node_cpu: 2, node_memory_gb: 8,   # one cluster, or a list of named ones (name: blue)
+           registries: [us-central1-docker.pkg.dev/apps/shop], public: {hostnames: [shop.example.com]}}
 load_balancer: {type: http, port: 8080, backend_group: web, health_check_path: /healthz}
 lifetime: {hours: 168, on_expiry: stop}       # optional; none unless asked or set by the operator
 access:   [{member: "group:data-team@example.com", level: use}]
@@ -219,6 +220,23 @@ The service's own identity then needs, once, from the platform team:
 | run a node pool as them | `roles/iam.serviceAccountUser` | the project: it can then act as any service account there, so run the service in a project of its own, with no other accounts worth taking |
 | give a node account its project role | `roles/resourcemanager.projectIamAdmin` | an IAM condition, so it can grant that one role and no other: `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])` ([limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)) |
 | let a node account read a repository | `roles/artifactregistry.admin` | each repository listed in `providers.gcp.registries`, granted on the repository |
+
+### A cluster's front door
+
+`cluster.public: {hostnames: [shop.example.com]}` asks for a public address for the request's workloads, made and owned
+by this service (a team's namespace may not make one; see the admission policy above). The cluster is made with Gateway
+API on; the service reserves a global address (`<cluster>-door`), makes a Google-managed certificate for the hostnames,
+and puts one Gateway, `cloudinfra-gateway/public`, of class `gke-l7-global-external-managed` on that address: HTTPS on 443
+taking routes from the request's namespace only (matched by its name), and plain HTTP on 80 redirecting to HTTPS. Without
+hostnames it serves plain HTTP on the address. A hostname must be in one of the operator's `providers.gcp.public_domains`.
+The cluster reports `public.address`, the hostnames and the certificate's state; the operator points DNS at the address,
+and the certificate becomes ACTIVE after that. A namespace with `edit` may write HTTPRoutes (a ClusterRole aggregated into
+`edit`) and attach them to that Gateway; Gateways stay out of `edit`.
+
+GKE makes the Gateway's load balancer and deletes it with the Gateway, so the service deletes the Gateway first, waits
+until no forwarding rule uses the address (ten minutes at most), then deletes the cluster, the certificate and the
+address. It also needs, beyond the roles above, Compute Engine's `globalAddresses` and `sslCertificates` insert, get and
+delete, and `forwardingRules` list. A forwarding rule per listener is priced in the estimate.
 
 ## Time: stop, start, idle stop and expiry
 

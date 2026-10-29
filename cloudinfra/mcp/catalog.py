@@ -258,12 +258,15 @@ CATALOG: tuple[ToolSpec, ...] = (
               Input("kubernetes_version", "A version the provider offers; its default channel when omitted."),
               Input("private_nodes", "Nodes without public addresses (default false)."), NETWORK_ID,
               Input("registries", "Artifact Registry repositories (LOCATION-docker.pkg.dev/PROJECT/REPO) the nodes may pull images from; only ones the operator lists."),
+              Input("public", "A front door: a reserved public address and a Gateway taking routes from the request's namespace (default false)."),
+              Input("hostnames", "The front door's DNS names, in domains the operator allows: HTTPS with a Google-managed certificate; none, plain HTTP."),
               ZONE, NAME, LABELS, WAIT),
              RESPONSE, ("INVALID_CLUSTER_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
              "Needs can_provision. The nodes run as a service account made for the cluster, with the minimum node role on the project and reader on the named "
              f"registries only, deleted with the cluster; they get the logging, monitoring and read-only storage scopes. {OWNERSHIP}",
              "Kubernetes Engine: container.projects.locations.clusters.create (zonal, one node pool); IAM: serviceAccounts.create and delete, and the project's "
-             "setIamPolicy for roles/container.defaultNodeServiceAccount only; Artifact Registry: repositories setIamPolicy."),
+             "setIamPolicy for roles/container.defaultNodeServiceAccount only; Artifact Registry: repositories setIamPolicy; for a front door Compute Engine "
+             "globalAddresses and sslCertificates insert and delete, and the cluster's Gateway API."),
     ToolSpec("get_cluster", "Cluster", "Get a cluster", "Endpoint, version, node count and state of one cluster.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only; never returns credentials.",
              "Kubernetes Engine: container.projects.locations.clusters.get."),
     ToolSpec("delete_cluster", "Cluster", "Delete a cluster", "Delete the cluster and its nodes; workloads and their disks go with it.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,

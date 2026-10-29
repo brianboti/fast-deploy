@@ -305,7 +305,9 @@ Steps, each its own pull request:
    (docs/INFRASTRUCTURE-ARCHITECTURE.md, "A cluster's nodes").
 4. **`cloudinfra`: no public load balancer from a team namespace.** Built 2026-10-29. An Ingress is refused too: on
    GKE it also makes a public load balancer.
-5. **`cloudinfra`: the front door.**
+5. **`cloudinfra`: the front door.** Built 2026-10-29. Without hostnames it serves plain HTTP on the address; hostnames
+   must be in the operator's `public_domains`. The Gateway is deleted first, and the cluster waits for GKE's forwarding
+   rules to go, so no load balancer outlives it.
 6. **`appdelivery`: exposing a workload.**
 7. **A real run on Google Cloud:** the delivery service from its image, an image from a private repository, two
    clusters, and the workload reached over HTTPS from the internet; then everything deleted.

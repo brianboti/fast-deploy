@@ -101,6 +101,12 @@ def warnings(request: InfrastructureRequest, planned: list[PlannedResource], con
         found.append("the cache's AUTH string is copied into the request's cache-auth secret, which its access members can read")
     if request.clusters():
         found.append("a cluster bills a management fee by the hour on top of its nodes (one zonal cluster per billing account is free); credentials come from the provider's IAM")
+        for cluster in request.clusters():
+            if cluster.public is not None and cluster.public.hostnames:
+                found.append(f"cluster {cluster.cluster_name}'s front door is public on HTTPS for {', '.join(cluster.public.hostnames)}: point their DNS at the address "
+                             "it reports; the certificate becomes ACTIVE only after that, which can take up to an hour")
+            elif cluster.public is not None:
+                found.append(f"cluster {cluster.cluster_name}'s front door serves plain HTTP on a public address, with no certificate")
         if any(cluster.private_nodes for cluster in request.clusters()):
             found.append("private nodes have no public address: the Application Layer needs the provider's NAT for them to reach the internet")
     if request.load_balancer:
