@@ -172,6 +172,8 @@ class ClusterResource(Resource):
     node_disk_gb: int | None = Field(default=None, description="Each node's disk, in GB; priced in estimates.")
     node_pool: str | None = None
     network: str | None = None
+    node_service_account: str | None = Field(default=None, description="The account the nodes run as, made for this cluster; none on a cluster made before.")
+    registries: list[str] = Field(default_factory=list, description="Artifact Registry repositories the nodes may pull images from.")
 
 
 class LoadBalancerResource(Resource):

@@ -46,6 +46,11 @@ class GcpSettings(BaseModel):
     profiles: dict[str, GcpProfile] = Field(default_factory=dict)
     # The profile GPU groups get when they name none, such as an image with signed drivers.
     default_accelerator_profile: str | None = None
+    # A cluster's nodes run as an account made for it (docs/DELIVERY-SPEC.md, phase 3); off, they run as the project's
+    # Compute Engine default account, as before, and a request may name no registries.
+    cluster_node_accounts: bool = True
+    # The Artifact Registry repositories (LOCATION-docker.pkg.dev/PROJECT/REPO) a request may let its clusters pull from.
+    registries: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _profiles(self):

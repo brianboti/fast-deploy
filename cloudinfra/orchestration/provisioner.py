@@ -1076,9 +1076,9 @@ class Orchestrator:
         return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, secret=secret), principal, wait_seconds)
 
     def create_cluster(self, principal, *, region, provider="gcp", node_count=1, node_cpu=2, node_memory_gb=8, node_disk_gb=50, kubernetes_version=None, private_nodes=False,
-                       network_id=None, zone=None, name=None, labels=None, wait_seconds=0):
+                       network_id=None, registries=None, zone=None, name=None, labels=None, wait_seconds=0):
         cluster = ClusterRequest(node_count=node_count, node_cpu=node_cpu, node_memory_gb=node_memory_gb, node_disk_gb=node_disk_gb, kubernetes_version=kubernetes_version,
-                                 private_nodes=private_nodes, network_id=network_id)
+                                 private_nodes=private_nodes, network_id=network_id, registries=registries or [])
         return self.provision(InfrastructureRequest(provider=provider, region=region, zone=zone, name=name, labels=labels or {}, cluster=cluster), principal, wait_seconds)
 
     def create_load_balancer(self, principal, *, region, backends, provider="gcp", type="http", port=80, health_check_path="/", name=None, labels=None, wait_seconds=0):

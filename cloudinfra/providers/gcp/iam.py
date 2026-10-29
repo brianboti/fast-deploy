@@ -55,6 +55,21 @@ def without_member(policy: dict, member: str, roles=GRANTED_ROLES) -> bool:
     return changed
 
 
+def update_policy(endpoint, mutate) -> None:
+    """Read a policy, change it, and write it back with the etag it read; a conflicting write is tried again."""
+    read, write = endpoint
+    for attempt in range(ATTEMPTS):
+        policy = read() or {}
+        if not mutate(policy):
+            return
+        try:
+            write(policy)
+            return
+        except InfrastructureError as exc:
+            if exc.code != ErrorCode.PROVIDER_CONFLICT or attempt == ATTEMPTS - 1:
+                raise
+
+
 class GcpIam:
     def __init__(self, api):
         self.api = api
@@ -99,17 +114,7 @@ class GcpIam:
         return []
 
     def _update(self, endpoint, mutate) -> None:
-        read, write = endpoint
-        for attempt in range(ATTEMPTS):
-            policy = read() or {}
-            if not mutate(policy):
-                return
-            try:
-                write(policy)
-                return
-            except InfrastructureError as exc:
-                if exc.code != ErrorCode.PROVIDER_CONFLICT or attempt == ATTEMPTS - 1:
-                    raise
+        update_policy(endpoint, mutate)
 
     def grant(self, resource, member: str, level: str) -> list[str]:
         granted = []
