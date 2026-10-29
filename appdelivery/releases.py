@@ -209,7 +209,7 @@ class Delivery:
         release_id = record["release_id"]
         text = bindings.env_file(values)
         secret_values = [values[name] for name, binding in release.env.items() if binding.secret is not None]
-        done, failure = [], None
+        done, failure, touched = [], None, False
         for target in record["targets"]:
             machine = Machine(target["name"], target["zone"])
             self.state.set_target(release_id, target["resource_id"], "DEPLOYING", started=True)
@@ -219,6 +219,7 @@ class Delivery:
             except DeliveryError as exc:
                 self.state.set_target(release_id, target["resource_id"], "FAILED", exc.detail().model_dump(mode="json"), finished=True)
                 failure = (machine.name, exc.detail().model_dump(mode="json"))
+                touched = exc.code == ErrorCode.MACHINE_ERROR  # the script ran and stopped somewhere; an unreachable machine was not changed
                 event("machine_failed", machine=machine.name, code=exc.code.value)
                 break
             if report.result == "healthy":
@@ -238,6 +239,8 @@ class Delivery:
                                       if report.result == "pull_failed" else f"{machine.name} answered {report.result}", {"machine": machine.name, **report.fields})
                 self.state.set_target(release_id, target["resource_id"], "FAILED", error.detail().model_dump(mode="json"), finished=True)
             failure = (machine.name, error.detail().model_dump(mode="json"))
+            # an unhealthy machine was demoted and restored, and the script may have stopped anywhere: its previous container is spent
+            touched = report.result != "pull_failed"
             event("machine_unhealthy" if report.result == "unhealthy" else "machine_failed", machine=machine.name, result=report.result)
             break
         if failure is None:
@@ -251,6 +254,11 @@ class Delivery:
         for target in self.state.get_release(release_id)["targets"]:
             if target["status"] == "PENDING":  # never reached: the rollout stopped before it
                 self.state.set_target(release_id, target["resource_id"], "SKIPPED")
+        if record["previous"] and (touched or done):
+            # Putting a machine back starts its previous container, so the machine keeps nothing older: the release running
+            # again can no longer be rolled back on it (found on a real machine on 2026-10-29, docs/DELIVERY-SPIKE.md)
+            with self.lock(record["request_id"], record["group"]):
+                self.state.transition(record["previous"], ("RUNNING",), "RUNNING", can_roll_back=False)
         error = DeliveryError(ErrorCode.ROLLOUT_FAILED, f"The rollout stopped at {failure[0]}: {failure[1]['message']}",
                               {"machine": failure[0], "cause": failure[1], "undone": undone})
         self.state.transition(release_id, ("ROLLING_OUT",), "FAILED", error.detail().model_dump(mode="json"))

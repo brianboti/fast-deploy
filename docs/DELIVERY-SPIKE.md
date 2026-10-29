@@ -246,3 +246,35 @@ One `cloudinfra` finding, not a delivery one: the first grant failed with HTTP 4
 per minute" for the consumer project gcloud's own sign-in bills to, since the operator's laptop credentials name no quota
 project). `manage_infrastructure_access` granted again a minute later. Running `cloudinfra` on a laptop needs a quota
 project (`gcloud auth application-default set-quota-project` or `billing/quota_project`), and its grant could retry 429s.
+
+## 9. Step 10, the end-to-end run
+
+Run on 2026-10-29 between 17:57 and 18:08 UTC by Claude for the operator, in the same sandbox project. `cloudinfra` and
+the delivery service ran from the repository on the operator's laptop, the delivery service with its own read-only
+`cloudinfra` principal, an environment that requires approval, a team principal and an on-call principal, and every call
+over its own HTTP interface (REST, and MCP for `plan_release` and `rollback_release`). `cloudinfra` made a request with
+two `container-host` machines and a generated secret, and granted the delivery service account on all three. The
+releases bound one literal and that secret. Google's public `hello-app` 1.0 and 2.0, by digest.
+
+The delivery service ran from the repository, not from its image: handing the operator's own Google token to a
+container was refused by the session's safety rules, and rightly. The image was built and served in step 9; on Google
+Cloud it signs in through the metadata server, which this run could not stand in for.
+
+| Step | Result |
+|---|---|
+| `plan_release` over MCP | `PLANNED`, both machines, the bindings' sources, approval required, the port warning |
+| deploy 1.0 | `AWAITING_APPROVAL`; approval by the requester refused (403); approved by the on-call principal; `RUNNING` on both machines |
+| deploy 2.0 | `RUNNING`, `previous` 1.0, which became `SUPERSEDED`; `running?live=true`: both machines run 2.0 |
+| deploy 2.0 with `PORT=9999` | `FAILED` with `ROLLOUT_FAILED`: the first machine `UNHEALTHY` and restored to 2.0 (its log: `Server listening on port 9999`), the second `SKIPPED`; 2.0 still `RUNNING` |
+| **Defect found** | the restore had started the first machine's previous container, so it kept nothing older, while 2.0 still said `can_roll_back`. Asking the machines confirmed it: the first had no previous container, the second still had 1.0. A rollback would have stopped half way. |
+| fix, then the broken deploy again | `FAILED` as before, and now 2.0's `can_roll_back` became false; `rollback_release` on 2.0 was refused up front with `INVALID_STATE` |
+| deploy 1.0 again, then roll it back | `RUNNING` with `previous` 2.0; the rollback brought 2.0 back on both machines, which `running?live=true` confirmed |
+| remove 2.0 | `REMOVED`; nothing runs on the group |
+| the secret | the generated value was read only by the service account, on its way to the machines; it appeared in neither the delivery service's database or log nor `cloudinfra`'s |
+| audit | every call recorded, the five refused self-approvals and the refused rollback among them |
+
+Also fixed: the warning that a port is open only inside the network was repeated once per machine.
+
+Everything was destroyed or deleted afterwards: the request through `cloudinfra` (`DESTROYED`; no instance, network,
+firewall rule or secret left), then the service account, the custom role and its binding. Compute, IAP, OS Login, IAM
+Credentials and Secret Manager APIs stay enabled.
