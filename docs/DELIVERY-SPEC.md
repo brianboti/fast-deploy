@@ -450,6 +450,12 @@ On a new branch from `main`, in this order; each step ends green on `python -m p
    [DELIVERY-CATALOG.md](DELIVERY-CATALOG.md). Tested over HTTP with the fake fleet: authentication and throttling, a
    refused Host header, the MCP handshake and tool schemas against the catalog, a release from plan to remove through
    MCP, structured errors, approval by another principal, the REST routes, and audit events.
-9. **Image and docs.** `Dockerfile.appdelivery` (Python, pinned gcloud CLI and Cosign 3.1.x), and a README line.
+9. **Image and docs.** Built 2026-10-29. `Dockerfile.appdelivery`: the repository's Python by digest, the gcloud CLI
+   591.0.0 from Google's versioned archive, and Cosign v3.1.3, each checked by SHA-256 for amd64 and arm64; a named
+   user (OpenSSH refuses a uid without a passwd entry) with a writable home for gcloud's SSH key; nothing of the other
+   packages copied in. Built and run for both architectures: gcloud, Cosign and ssh work as that user, and the server
+   answers health, status, REST and MCP with a real configuration. Google's apt repository keeps only recent gcloud
+   versions and publishes a SHA-256 only for the current unversioned archive; how the pinned sums were derived is
+   written in the Dockerfile. The spike ran gcloud 539.0.0; step 10 runs this image's 591.0.0. A README section.
 10. **Real run.** The acceptance of section 11, phase 1, on the company's project, with
     `tests/integration/appdelivery/` marked `integration` and skipped unless `APPDELIVERY_INTEGRATION=1`.
