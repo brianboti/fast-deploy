@@ -9,7 +9,7 @@ import hashlib
 from ...models.errors import ErrorCode, InfrastructureError
 from ...models.resources import ClusterResource, ResourceStatus
 from . import translate
-from .api import COMPUTE, CONTAINER
+from .api import CONTAINER
 from .kubernetes import CLUSTER_ROLES, KubeApi
 
 STATUS = {"PROVISIONING": ResourceStatus.CREATING, "RUNNING": ResourceStatus.READY, "RECONCILING": ResourceStatus.UPDATING, "STOPPING": ResourceStatus.DELETING,
@@ -32,11 +32,12 @@ class GcpCluster:
 
     def create(self, spec, planned, ctx, network) -> ClusterResource:
         location = planned.spec["location"]
+        # GKE takes the network and subnetwork by name only: it refuses a self link as a malformed value (found on a real
+        # project on 2026-10-29; https://docs.cloud.google.com/kubernetes-engine/docs/reference/rest/v1/projects.locations.clusters)
         if network is not None:
-            net, subnet = network.provider_id, network.subnet
+            net, subnet = network.provider_id.rsplit("/", 1)[-1], network.subnet.rsplit("/", 1)[-1] if network.subnet else None
         else:
-            net = f"{COMPUTE}/projects/{self.api.project}/global/networks/{self.settings.default_network}"
-            subnet = f"{COMPUTE}/projects/{self.api.project}/regions/{ctx.region}/subnetworks/{self.settings.default_subnet}" if self.settings.default_subnet else None
+            net, subnet = self.settings.default_network, self.settings.default_subnet
         cluster = {
             "name": planned.name, "description": translate.description(ctx), "network": net, "resourceLabels": translate.labels(ctx),
             "nodePools": [{"name": "default-pool", "initialNodeCount": spec.node_count,
