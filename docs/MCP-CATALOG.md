@@ -1,6 +1,6 @@
 # MCP service catalog
 
-Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 43 tools in 11 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-` or `db-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
+Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 45 tools in 11 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, `cac-`, `que-`, `sec-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
 
 ## At a glance
 
@@ -44,6 +44,8 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | Infrastructure | `get_infrastructure_status` | Get a request's status | read only |
 | Infrastructure | `list_infrastructure` | List requests | read only |
 | Infrastructure | `destroy_infrastructure` | Destroy a request | destructive |
+| Infrastructure | `control_infrastructure` | Stop, start or extend a request | changes cloud |
+| Infrastructure | `manage_infrastructure_access` | Grant or revoke access | changes cloud |
 | Operations | `get_resource_health` | Get a resource's health | read only |
 | Operations | `get_resource_usage` | Get a resource's usage | read only |
 | Operations | `get_resource_cost` | Get an estimated cost | read only |
@@ -66,6 +68,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `INVALID_CLUSTER_CONFIGURATION` | A node shape the provider has no type for. |
 | `INVALID_LOAD_BALANCER_CONFIGURATION` | No machines behind it, or machines in different zones or regions. |
 | `UNSUPPORTED_RESOURCE_KIND` | A request block of a kind the contract or the chosen adapter does not provide; details name the nearest kind. |
+| `INVALID_ACCESS` | A member outside the operator's allowed domains, a malformed member, a duplicate, or more members than allowed. |
 | `LIMIT_EXCEEDED` | Above one of the operator's limits on counts, sizes or live requests. |
 | `COST_LIMIT_EXCEEDED` | The estimate from list prices is above the ceiling for this service or this caller. |
 | `QUOTA_EXCEEDED` | The provider's quota in the region has no room for the request. |
@@ -86,7 +89,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 ### `create_compute`
 
-**Purpose.** Create one or more identical virtual machines: CPUs, memory, operating system family, boot disk, optional public address. No image, script, key or command is taken; access is through the provider's IAM-based login.
+**Purpose.** Create one or more identical virtual machines: CPUs, memory, an operating system family or an operator profile, boot disk, optional GPUs and public address, and optionally when they stop by themselves. No image, script, key or command is taken; access is through the provider's IAM-based login.
 
 **Inputs.**
 
@@ -97,27 +100,31 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `memory_gb` | yes | Memory per machine, in GB. |
 | `provider` | no | The cloud provider adapter; gcp (default) is the one implemented. |
 | `count` | no | How many identical machines (default 1). |
-| `os` | no | ubuntu (default), debian or rocky. |
-| `boot_disk_gb` | no | Boot disk in GB (default 20). |
+| `os` | no | ubuntu (the default without a profile), debian or rocky. |
+| `profile` | no | A software profile the operator defines, such as a GPU image with signed drivers; list_resource_kinds names them. Instead of os. |
+| `boot_disk_gb` | no | Boot disk in GB (default 20; 50 with GPUs, which need at least 40). |
 | `public_ip` | no | Give each machine a public address (default false). |
 | `network_id` | no | A network this service created earlier (net-…), to join instead of the operator's default network. |
-| `accelerator` | no | GPUs per machine: t4, l4, a100 or h100; the machine family follows the type, and the driver is the Application Layer's to install. |
+| `accelerator` | no | GPUs per machine: t4, l4, a100 or h100; the machine family follows the type. Drivers come with a GPU profile; on a plain image the Application Layer installs them. |
 | `accelerator_count` | no | GPUs per machine (default 1); each type offers fixed counts. |
+| `autostop_idle_minutes` | no | Stop a machine after this many idle minutes (15 to 1440); the operator may set a default for machines with GPUs. |
+| `max_run_hours` | no | Stop each machine after it has run this many hours since its last start (1 to 2880). |
+| `lifetime_hours` | no | Hours until the request expires and stops (1 to 8760); the operator's default when omitted, if there is one. |
 | `zone` | no | A zone of the region; the provider picks the first when omitted. |
 | `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
 | `labels` | no | Labels for every resource, next to the service's ownership labels. |
 | `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
 
 **Required fields.** `region`, `cpu`, `memory_gb`.
-**Optional fields.** `provider`, `count`, `os`, `boot_disk_gb`, `public_ip`, `network_id`, `accelerator`, `accelerator_count`, `zone`, `name`, `labels`, `wait_seconds`.
+**Optional fields.** `provider`, `count`, `os`, `profile`, `boot_disk_gb`, `public_ip`, `network_id`, `accelerator`, `accelerator_count`, `autostop_idle_minutes`, `max_run_hours`, `lifetime_hours`, `zone`, `name`, `labels`, `wait_seconds`.
 
-**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED.
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
 
 **Possible errors.** `INVALID_COMPUTE_CONFIGURATION`, `INVALID_NETWORK_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. Machines get OS Login (IAM) and no service account; vTPM and integrity monitoring on, and Secure Boot on unless a GPU is attached (the provider's driver installation needs it off). Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Machines get OS Login (IAM) and no service account; vTPM and integrity monitoring on, and Secure Boot on unless GPUs run a plain image, whose driver installation needs it off. The requester is granted login when the operator maps it to an identity. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
 
-**Provider mapping (Google Cloud).** Compute Engine: compute.instances.insert with an E2 machine type (N1, G2, A2 or A3 with a GPU) and a public image family; compute.instances.get after.
+**Provider mapping (Google Cloud).** Compute Engine: compute.instances.insert with an E2 machine type (N1, G2, A2 or A3 with a GPU), a public image family or the profile's image, and scheduling.maxRunDuration with instanceTerminationAction STOP for max_run_hours; compute.instances.get after.
 
 ### `get_compute`
 
@@ -181,7 +188,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Possible errors.** `INVALID_COMPUTE_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `LIMIT_EXCEEDED`, `PERMISSION_DENIED`, `PROVIDER_ERROR`, `PROVIDER_UNAVAILABLE`, `OPERATION_TIMEOUT`.
 
-**Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. The machine is unavailable while it restarts.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. The machine is unavailable while it restarts.
 
 **Provider mapping (Google Cloud).** Compute Engine: compute.instances.stop, setMachineType, start.
 
@@ -230,11 +237,11 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 **Required fields.** `region`, `size_gb`.
 **Optional fields.** `provider`, `type`, `performance`, `zone`, `name`, `labels`, `wait_seconds`.
 
-**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED.
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
 
 **Possible errors.** `INVALID_STORAGE_CONFIGURATION`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. Buckets get uniform access and enforced public-access prevention. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Buckets get uniform access and enforced public-access prevention. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
 
 **Provider mapping (Google Cloud).** Compute Engine: compute.disks.insert; Cloud Storage: storage.buckets.insert.
 
@@ -256,7 +263,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Possible errors.** `INVALID_STORAGE_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `PROVIDER_ERROR`, `PROVIDER_UNAVAILABLE`, `OPERATION_TIMEOUT`.
 
-**Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. The disk is attached without auto-delete, so deleting the machine keeps it.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. The disk is attached without auto-delete, so deleting the machine keeps it.
 
 **Provider mapping (Google Cloud).** Compute Engine: compute.instances.attachDisk.
 
@@ -327,11 +334,11 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 **Required fields.** `region`.
 **Optional fields.** `provider`, `public_access`, `cidr`, `allowed_ports`, `allowed_sources`, `iap_ssh`, `name`, `labels`, `wait_seconds`.
 
-**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED.
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
 
 **Possible errors.** `INVALID_NETWORK_CONFIGURATION`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. No rule ever opens port 22 to the internet; private ranges only for the subnet.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. No rule ever opens port 22 to the internet; private ranges only for the subnet.
 
 **Provider mapping (Google Cloud).** Compute Engine: compute.networks.insert (custom subnets), compute.subnetworks.insert, compute.firewalls.insert.
 
@@ -375,7 +382,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Possible errors.** `INVALID_NETWORK_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `PROVIDER_ERROR`, `PROVIDER_UNAVAILABLE`, `OPERATION_TIMEOUT`.
 
-**Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. Ingress only; ports and ranges are validated.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Ingress only; ports and ranges are validated.
 
 **Provider mapping (Google Cloud).** Compute Engine: compute.firewalls.insert.
 
@@ -405,7 +412,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 ### `create_database`
 
-**Purpose.** Create one managed PostgreSQL or MySQL instance with one database and one user. The user's password is generated and returned once in this call's response; the service never stores it.
+**Purpose.** Create one managed PostgreSQL or MySQL instance with one database and one user. The user's password is generated and written to a secret the request owns (db-password), which the request's access members read; a response carries it only if the operator allows that.
 
 **Inputs.**
 
@@ -429,13 +436,13 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 **Required fields.** `region`.
 **Optional fields.** `provider`, `engine`, `version`, `size`, `storage_gb`, `high_availability`, `public_access`, `database_name`, `username`, `network_id`, `name`, `labels`, `wait_seconds`.
 
-**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED. Plus credentials.database_password, once.
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED. Plus credentials naming the password's secret.
 
 **Possible errors.** `INVALID_DATABASE_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. Encrypted connections only, automated backups on, deletion protection on until destroy. The password is never logged or stored.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Encrypted connections only, automated backups on, deletion protection on until destroy. The password is never logged or kept by this service.
 
-**Provider mapping (Google Cloud).** Cloud SQL Admin: sqladmin.instances.insert, databases.insert, users.insert; Service Networking for a private address.
+**Provider mapping (Google Cloud).** Cloud SQL Admin: sqladmin.instances.insert, databases.insert, users.insert; Service Networking for a private address; Secret Manager for the password.
 
 ### `get_database`
 
@@ -484,7 +491,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 ### `create_cache`
 
-**Purpose.** Create a managed in-memory cache (Redis) on a network this service created: private, authenticated, encrypted in transit. The Application Layer reads the AUTH string from the provider with its own identity.
+**Purpose.** Create a managed in-memory cache (Redis) on a network this service created: private, authenticated, encrypted in transit. Its AUTH string is copied into a secret the request owns (cache-auth), which the request's access members read.
 
 **Inputs.**
 
@@ -503,13 +510,13 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 **Required fields.** `region`, `network_id`.
 **Optional fields.** `provider`, `memory_gb`, `high_availability`, `version`, `name`, `labels`, `wait_seconds`.
 
-**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED.
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
 
 **Possible errors.** `INVALID_CACHE_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. No credential passes through this service. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. The AUTH string goes from the provider into the request's secret and nowhere else; it is never returned or logged. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
 
-**Provider mapping (Google Cloud).** Memorystore for Redis: redis.projects.locations.instances.create (direct peering, AUTH on, TLS).
+**Provider mapping (Google Cloud).** Memorystore for Redis: redis.projects.locations.instances.create (direct peering, AUTH on, TLS) and instances.getAuthString; Secret Manager for the copy.
 
 ### `get_cache`
 
@@ -577,11 +584,11 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 **Required fields.** `region`, `queue_name`.
 **Optional fields.** `provider`, `retention_hours`, `subscription`, `ack_deadline_seconds`, `name`, `labels`, `wait_seconds`.
 
-**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED.
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
 
 **Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. Publishing and pulling are the Application Layer's, with its own identity. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Publishing and pulling are the Application Layer's, with its own identity. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
 
 **Provider mapping (Google Cloud).** Pub/Sub: pubsub.projects.topics.create, pubsub.projects.subscriptions.create.
 
@@ -649,11 +656,11 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 **Required fields.** `region`, `secret_name`.
 **Optional fields.** `provider`, `generate_value`, `name`, `labels`, `wait_seconds`.
 
-**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED.
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
 
 **Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. No value passes through a request or a response. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. No value passes through a request or a response. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
 
 **Provider mapping (Google Cloud).** Secret Manager: secretmanager.projects.secrets.create, secretmanager.projects.secrets.addVersion.
 
@@ -727,11 +734,11 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 **Required fields.** `region`.
 **Optional fields.** `provider`, `node_count`, `node_cpu`, `node_memory_gb`, `node_disk_gb`, `kubernetes_version`, `private_nodes`, `network_id`, `zone`, `name`, `labels`, `wait_seconds`.
 
-**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED.
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
 
 **Possible errors.** `INVALID_CLUSTER_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. Nodes get the logging, monitoring and read-only storage scopes only. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Nodes get the logging, monitoring and read-only storage scopes only. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
 
 **Provider mapping (Google Cloud).** Kubernetes Engine: container.projects.locations.clusters.create (zonal, one node pool).
 
@@ -801,11 +808,11 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 **Required fields.** `region`, `backends`.
 **Optional fields.** `provider`, `type`, `port`, `health_check_path`, `name`, `labels`, `wait_seconds`.
 
-**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED.
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
 
 **Possible errors.** `INVALID_LOAD_BALANCER_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. HTTP only; TLS termination is a later feature. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. HTTP only; TLS termination is a later feature. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
 
 **Provider mapping (Google Cloud).** Compute Engine: instance group, firewall rule, health check, backend service, URL map and target proxy (http), address and forwarding rule.
 
@@ -863,7 +870,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 **Required fields.** none.
 **Optional fields.** none.
 
-**Output.** ResourceKindsResponse: kinds (kind, description, several_per_request, fields, providers), providers, note.
+**Output.** ResourceKindsResponse: kinds (kind, description, several_per_request, fields, providers), providers, profiles (each provider's software profiles), note.
 
 **Possible errors.** none beyond authentication.
 
@@ -879,7 +886,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 | Field | Required | Description |
 |---|---|---|
-| `request` | yes | The InfrastructureRequest: provider, region, and at least one of network, storage, compute, database, cache, queue, secret, cluster, load_balancer. |
+| `request` | yes | The InfrastructureRequest: provider, region, at least one of network, storage, compute, database, cache, queue, secret, cluster, load_balancer, and optionally lifetime (hours, on_expiry) and access (members to grant). |
 
 **Required fields.** `request`.
 **Optional fields.** none.
@@ -908,9 +915,9 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Output.** PlanResponse: request_id, planned resources with their provider mapping and shape, the cost estimate with its basis, warnings, quota.
 
-**Possible errors.** `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_COMPUTE_CONFIGURATION`, `INVALID_STORAGE_CONFIGURATION`, `INVALID_NETWORK_CONFIGURATION`, `INVALID_DATABASE_CONFIGURATION`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`.
+**Possible errors.** `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_COMPUTE_CONFIGURATION`, `INVALID_STORAGE_CONFIGURATION`, `INVALID_NETWORK_CONFIGURATION`, `INVALID_DATABASE_CONFIGURATION`, `INVALID_ACCESS`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`.
 
-**Security.** Read-only; creates and changes nothing. Read-only. The cost is an estimate from list prices, never a bill.
+**Security.** Read-only; creates and changes nothing. Read-only. The cost is an estimate from list prices, never a bill; stopped_monthly_usd is what it costs while stopped.
 
 **Provider mapping (Google Cloud).** Compute Engine: compute.regions.get for the quota, when asked.
 
@@ -928,11 +935,11 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 **Required fields.** `request`.
 **Optional fields.** `wait_seconds`.
 
-**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED. With credentials.database_password, once, when a database was requested.
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED. With credentials naming the secrets that hold a database password or a cache AUTH string.
 
-**Possible errors.** `INVALID_COMPUTE_CONFIGURATION`, `INVALID_STORAGE_CONFIGURATION`, `INVALID_NETWORK_CONFIGURATION`, `INVALID_DATABASE_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
+**Possible errors.** `INVALID_COMPUTE_CONFIGURATION`, `INVALID_STORAGE_CONFIGURATION`, `INVALID_NETWORK_CONFIGURATION`, `INVALID_DATABASE_CONFIGURATION`, `INVALID_ACCESS`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates cloud resources that cost money; needs can_provision. Needs can_provision. Refused above the limits or the cost ceiling; at most max_active_requests_per_principal live requests. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Refused above the limits or the cost ceiling; at most max_active_requests_per_principal live requests. Access members are granted on the resources once they exist, never on the project; a grant that fails is reported on the member, not as a failed request. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
 
 **Provider mapping (Google Cloud).** Every operation of the primitives above, in dependency order.
 
@@ -950,7 +957,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 **Required fields.** `request_id`.
 **Optional fields.** `wait_seconds`.
 
-**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED.
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
 
 **Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`.
 
@@ -960,17 +967,18 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 ### `list_infrastructure`
 
-**Purpose.** The requests this caller may see, newest first, optionally by status.
+**Purpose.** The requests this caller may see, newest first, optionally by status or by how soon they expire.
 
 **Inputs.**
 
 | Field | Required | Description |
 |---|---|---|
-| `status` | no | Only requests in this status (PROVISIONING, READY, FAILED, DESTROYING, DESTROYED, DESTROY_FAILED). |
+| `status` | no | Only requests in this status (PROVISIONING, READY, STOPPING, STOPPED, STARTING, FAILED, DESTROYING, DESTROYED, DESTROY_FAILED). |
 | `limit` | no | At most this many (default 50, up to 200). |
+| `expiring_within_hours` | no | Only running or stopped requests that expire within this many hours (1 to 8760), the expired ones included. |
 
 **Required fields.** none.
-**Optional fields.** `status`, `limit`.
+**Optional fields.** `status`, `limit`, `expiring_within_hours`.
 
 **Output.** ListResponse: requests and count.
 
@@ -994,13 +1002,61 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 **Required fields.** `request_id`.
 **Optional fields.** `wait_seconds`.
 
-**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED.
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
 
 **Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `DESTROY_FAILED`.
 
 **Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy. Deletion protection on a database is turned off by this call only.
 
 **Provider mapping (Google Cloud).** The delete operation of every resource kind.
+
+### `control_infrastructure`
+
+**Purpose.** Stop a READY request's machines and databases, start them again, move its expiry later by hours (up to the operator's maximum lifetime), or keep its machines awake: idle stop waits for hours. While stopped, disks, addresses and what cannot stop keep billing; the lifecycle block names them.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `request_id` | yes | The request id this service issued (32 hex characters). |
+| `action` | yes | stop, start, extend or keep_awake. |
+| `hours` | no | For extend: hours added to the expiry. For keep_awake: how long idle stop waits (up to the operator's max_keep_awake_hours). |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `request_id`, `action`.
+**Optional fields.** `hours`, `wait_seconds`.
+
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
+
+**Possible errors.** `INVALID_REQUEST`, `INVALID_STATE`, `LIMIT_EXCEEDED`, `NOT_FOUND`, `PERMISSION_DENIED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`.
+
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. An expired request is started only after an extend; a request that is stopping or starting is extended once it has finished. Nothing stops by itself unless the request or the operator asked for it.
+
+**Provider mapping (Google Cloud).** Compute Engine: compute.instances.stop and start; Cloud SQL Admin: sqladmin.instances.patch with activationPolicy NEVER or ALWAYS.
+
+### `manage_infrastructure_access`
+
+**Purpose.** Grant a person, group or service account access to what a request created, or revoke it: login on its machines through the provider's IAM and an identity-aware tunnel, reading its secrets (the database password and cache AUTH string among them), using its buckets and queues.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `request_id` | yes | The request id this service issued (32 hex characters). |
+| `action` | yes | grant or revoke. |
+| `member` | yes | user:, group: or serviceAccount: and an email address in a domain the operator allows. |
+| `level` | no | use (default: log in, read and write data) or admin (administrator login, manage secret versions and objects). |
+
+**Required fields.** `request_id`, `action`, `member`.
+**Optional fields.** `level`.
+
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED. The access block shows each member's status and the resources granted on; each resource's connect block says how to reach it.
+
+**Possible errors.** `INVALID_REQUEST`, `INVALID_ACCESS`, `INVALID_STATE`, `NOT_FOUND`, `PERMISSION_DENIED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`.
+
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Grants go on each resource's own policy and never on the project; what a member needs at project level is named in each connect block as a prerequisite for the platform team. Members are limited to the operator's allowed domains and max_members.
+
+**Provider mapping (Google Cloud).** Compute Engine: instances getIamPolicy and setIamPolicy (roles/compute.osLogin or osAdminLogin); IAP: the machine's iap_tunnel policy (roles/iap.tunnelResourceAccessor); Secret Manager, Cloud Storage and Pub/Sub: the resource's getIamPolicy and setIamPolicy.
 
 ## Operations
 
@@ -1061,7 +1117,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 **Required fields.** none.
 **Optional fields.** `request_id`, `resource_id`.
 
-**Output.** request_id, resource_id, status, estimate (monthly_usd, lines with basis, source, verified, note), actual (null: no billing export).
+**Output.** request_id, resource_id, status, estimate (monthly_usd, stopped_monthly_usd, lines with basis, source, verified, note), current_monthly_usd (the stopped rate while stopped), actual (null: no billing export).
 
 **Possible errors.** `INVALID_REQUEST`, `NOT_FOUND`, `PERMISSION_DENIED`.
 
@@ -1071,7 +1127,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 ### `get_operation`
 
-**Purpose.** One operation's status, timing and error: a provision, destroy, cleanup, delete, resize, attach or firewall change.
+**Purpose.** One operation's status, timing and error: a provision, destroy, cleanup, delete, resize, attach, firewall change, stop, start, extend, keep_awake or access change.
 
 **Inputs.**
 
@@ -1092,14 +1148,14 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 ### `get_service_status`
 
-**Purpose.** The service's version, configured providers with their projects and allowed regions, planned providers, limits and switches.
+**Purpose.** The service's version, configured providers with their projects and allowed regions, planned providers, limits (lifetime and idle stop among them), access rules, software profiles and switches.
 
 **Inputs.** None.
 
 **Required fields.** none.
 **Optional fields.** none.
 
-**Output.** version, providers, planned_providers, limits, cleanup_on_failure, workers, labels.
+**Output.** version, providers, planned_providers, limits, cleanup_on_failure, workers, labels, access, sweep_interval_seconds, return_database_password, profiles.
 
 **Possible errors.** none beyond authentication.
 

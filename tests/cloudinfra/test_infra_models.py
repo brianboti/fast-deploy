@@ -9,7 +9,8 @@ from cloudinfra.security import validation
 
 def test_minimal_request_is_one_machine_and_nothing_else():
     request = InfrastructureRequest.model_validate({"region": "us-central1", "compute": {"cpu": 4, "memory_gb": 16}})
-    assert request.provider == "gcp" and request.kinds() == ["compute"] and request.compute.count == 1 and request.compute.os == "ubuntu"
+    assert request.provider == "gcp" and request.kinds() == ["compute"] and request.compute.count == 1 and request.compute.os is None
+    assert request.compute.os_family == "ubuntu" and request.compute.profile is None and request.lifetime is None and request.access == []
     assert request.storage is None and request.database is None and request.network is None
 
 

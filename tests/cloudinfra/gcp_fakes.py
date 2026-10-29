@@ -3,6 +3,7 @@
 No test here touches a cloud. The fake replaces GcpApi.request, so the adapter's URL building, bodies and operation waits
 run as in production, and `calls` records every one for assertions.
 """
+import copy
 import hashlib
 import re
 
@@ -19,7 +20,8 @@ TOKEN = "test-token"
 
 
 def config_dict(**overrides):
-    base = {"database": ":memory:", "allowed_hosts": ["127.0.0.1:*", "localhost:*", "testserver"], "providers": {"gcp": {"project_id": PROJECT, "allowed_regions": ["us-central1", "europe-west1"]}},
+    base = {"database": ":memory:", "allowed_hosts": ["127.0.0.1:*", "localhost:*", "testserver"], "sweep_interval_seconds": 0,
+            "providers": {"gcp": {"project_id": PROJECT, "allowed_regions": ["us-central1", "europe-west1"]}},
             "principals": [{"name": "app-layer", "token_sha256": hashlib.sha256(TOKEN.encode()).hexdigest(), "can_provision": True, "can_destroy": True},
                            {"name": "reader", "token_sha256": hashlib.sha256(b"reader-token").hexdigest()},
                            {"name": "operator", "token_sha256": hashlib.sha256(b"operator-token").hexdigest(), "can_provision": True, "can_destroy": True, "scope": "all"}]}
@@ -47,6 +49,8 @@ class FakeGcpApi(GcpApi):
             setattr(self, collection, {})
         self.bucket_objects = set()
         self.peerings = set()
+        self.policies = {}  # IAM policies by resource: ("instance", zone, name), ("tunnel", zone, id), ("secret", name), ("bucket", name), ("topics" | "subscriptions", name)
+        self.started_at = "2026-10-28T10:00:00Z"  # what lastStartTimestamp says after a create or a start
         self.quotas = {"CPUS": {"limit": 24, "usage": 0}, "INSTANCES": {"limit": 10, "usage": 0}, "DISKS_TOTAL_GB": {"limit": 4096, "usage": 0}, "IN_USE_ADDRESSES": {"limit": 8, "usage": 0}}
         self.monitoring_value = 0.42
         self.counter = 0
@@ -67,14 +71,17 @@ class FakeGcpApi(GcpApi):
         host, path = url.split("://", 1)[1].split("/", 1)
         path = "/" + path.split("?", 1)[0]
         handlers = (
+            (r"^/v1/projects/([^/]+)/iap_tunnel/zones/([^/]+)/instances/([^/:]+):(getIamPolicy|setIamPolicy)$", self._tunnel_policy) if host.startswith("iap") else (r"^$", None),
+            (r"^/v1/projects/[^/]+/(topics|subscriptions)/([^/:]+):(getIamPolicy|setIamPolicy)$", self._pubsub_policy) if host.startswith("pubsub") else (r"^$", None),
             (r"^/v1/projects/[^/]+/(topics|subscriptions)/([^/]+)$", self._pubsub) if host.startswith("pubsub") else (r"^$", None),
             (r"^/v1/projects/[^/]+/secrets$", self._secrets) if host.startswith("secretmanager") else (r"^$", None),
-            (r"^/v1/projects/[^/]+/secrets/([^/:]+)(:addVersion)?$", self._secret) if host.startswith("secretmanager") else (r"^$", None),
+            (r"^/v1/projects/[^/]+/secrets/([^/:]+)(:addVersion|:getIamPolicy|:setIamPolicy)?$", self._secret) if host.startswith("secretmanager") else (r"^$", None),
             (r"^/v1/projects/[^/]+/locations/([^/]+)/clusters$", self._clusters) if host.startswith("container") else (r"^$", None),
             (r"^/v1/projects/[^/]+/locations/([^/]+)/clusters/([^/]+)$", self._cluster) if host.startswith("container") else (r"^$", None),
             (r"^/v1/projects/[^/]+/locations/([^/]+)/operations/([^/]+)$", lambda m, *a: {"name": m.group(2), "status": "DONE", "done": True}),
             (r"^/v1/projects/[^/]+/locations/([^/]+)/instances$", self._redis_instances) if host.startswith("redis") else (r"^$", None),
             (r"^/v1/projects/[^/]+/locations/([^/]+)/instances/([^/]+)$", self._redis_instance) if host.startswith("redis") else (r"^$", None),
+            (r"^/v1/projects/[^/]+/locations/([^/]+)/instances/([^/]+)/authString$", self._redis_auth) if host.startswith("redis") else (r"^$", None),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instanceGroups$", self._instance_groups),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instanceGroups/([^/]+)$", self._instance_group),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instanceGroups/([^/]+)/(addInstances|setNamedPorts|removeInstances)$", self._instance_group_action),
@@ -83,6 +90,7 @@ class FakeGcpApi(GcpApi):
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances$", self._instances),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances/([^/]+)$", self._instance),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances/([^/]+)/(stop|start|setMachineType|attachDisk)$", self._instance_action),
+            (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances/([^/]+)/(getIamPolicy|setIamPolicy)$", self._instance_policy),
             (r"^/compute/v1/projects/[^/]+/aggregated/instances$", self._aggregated),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/disks$", self._disks),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/disks/([^/]+)$", self._disk),
@@ -98,6 +106,7 @@ class FakeGcpApi(GcpApi):
             (r"^/v1/projects/[^/]+/operations/([^/]+)$", lambda m, *a: {"name": m.group(1), "status": "DONE"}),
             (r"^/storage/v1/b$", self._buckets),
             (r"^/storage/v1/b/([^/]+)$", self._bucket),
+            (r"^/storage/v1/b/([^/]+)/iam$", self._bucket_policy),
             (r"^/v1/services/servicenetworking\.googleapis\.com/connections$", self._peering),
             (r"^/v1/services/servicenetworking\.googleapis\.com/connections/[^:]+:deleteConnection$", self._unpeer),
             (r"^/v1/operations/[^/]+$", lambda m, *a: {"name": "operations/x", "done": True}),
@@ -126,6 +135,7 @@ class FakeGcpApi(GcpApi):
         if "accessConfigs" in interface:
             interface["accessConfigs"] = [{**interface["accessConfigs"][0], "natIP": f"34.0.0.{number}"}]
         self.instances[key] = {**body, "status": "RUNNING", "zone": f"zones/{zone}", "networkInterfaces": [interface], "creationTimestamp": "2026-10-28T10:00:00Z",
+                               "id": str(7000000000000000000 + number), "lastStartTimestamp": self.started_at,
                                "selfLink": f"https://compute.googleapis.com/compute/v1/projects/{self.project}/zones/{zone}/instances/{body['name']}"}
         self.quotas["CPUS"]["usage"] += 1
         return self._op()
@@ -148,12 +158,49 @@ class FakeGcpApi(GcpApi):
             instance["status"] = "TERMINATED"
         elif action == "start":
             instance["status"] = "RUNNING"
+            instance["lastStartTimestamp"] = self.started_at
         elif action == "setMachineType":
             assert instance["status"] == "TERMINATED", "a machine type is set on a stopped instance"
             instance["machineType"] = body["machineType"]
         else:
             instance.setdefault("disks", []).append({"source": body["source"], "deviceName": body["deviceName"], "autoDelete": body["autoDelete"]})
         return self._op()
+
+    def _policy(self, key, writing, body):
+        if writing:
+            policy = copy.deepcopy(body)
+            policy["etag"] = str(int(self.policies.get(key, {}).get("etag", "0")) + 1)
+            self.policies[key] = policy
+        return copy.deepcopy(self.policies.get(key, {"version": 1, "etag": "0"}))
+
+    def members(self, key, role):
+        """Who holds a role in one stored policy."""
+        return next((binding["members"] for binding in self.policies.get(key, {}).get("bindings", []) if binding["role"] == role), [])
+
+    def _instance_policy(self, found, method, body, params):
+        key = (found.group(1), found.group(2))
+        if key not in self.instances:
+            raise self._not_found(key[1])
+        writing = found.group(3) == "setIamPolicy"
+        return self._policy(("instance", *key), writing, body.get("policy") if writing else None)
+
+    def _tunnel_policy(self, found, method, body, params):
+        assert method == "POST" and found.group(1) == "123456789", "the IAP tunnel policy is addressed by the project's number"
+        assert found.group(3).isdigit(), "the IAP tunnel policy names the machine's numeric id"
+        writing = found.group(4) == "setIamPolicy"
+        return self._policy(("tunnel", found.group(2), found.group(3)), writing, body.get("policy") if writing else None)
+
+    def _pubsub_policy(self, found, method, body, params):
+        store, name = (self.topics if found.group(1) == "topics" else self.subscriptions), found.group(2)
+        if name not in store:
+            raise self._not_found(name)
+        writing = found.group(3) == "setIamPolicy"
+        return self._policy((found.group(1), name), writing, body.get("policy") if writing else None)
+
+    def _bucket_policy(self, found, method, body, params):
+        if found.group(1) not in self.buckets:
+            raise self._not_found(found.group(1))
+        return self._policy(("bucket", found.group(1)), method == "PUT", body)
 
     def _aggregated(self, found, method, body, params):
         wanted = dict(re.findall(r'labels\.([a-z0-9_-]+)="([^"]*)"', params.get("filter", "")))
@@ -242,6 +289,9 @@ class FakeGcpApi(GcpApi):
         name = found.group(1)
         if name not in self.secrets:
             raise self._not_found(name)
+        if found.group(2) in (":getIamPolicy", ":setIamPolicy"):
+            writing = found.group(2) == ":setIamPolicy"
+            return self._policy(("secret", name), writing, body.get("policy") if writing else None)
         if found.group(2):
             assert set(body) == {"payload"} and set(body["payload"]) == {"data"}
             self.secret_versions.setdefault(name, []).append(body["payload"]["data"])
@@ -269,7 +319,7 @@ class FakeGcpApi(GcpApi):
     def _redis_instances(self, found, method, body, params):
         name = params["instanceId"]
         self.redis[(found.group(1), name)] = {**body, "name": f"projects/{self.project}/locations/{found.group(1)}/instances/{name}", "state": "READY", "host": "10.30.0.3", "port": 6379,
-                                              "createTime": "2026-10-28T10:00:00Z"}
+                                              "createTime": "2026-10-28T10:00:00Z", "serverCaCerts": [{"cert": "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----"}]}
         return {"name": f"projects/{self.project}/locations/{found.group(1)}/operations/redis-op", "done": True}
 
     def _redis_instance(self, found, method, body, params):
@@ -280,6 +330,12 @@ class FakeGcpApi(GcpApi):
             del self.redis[key]
             return {"name": f"projects/{self.project}/locations/{key[0]}/operations/redis-del", "done": True}
         return self.redis[key]
+
+    def _redis_auth(self, found, method, body, params):
+        assert method == "GET"
+        if (found.group(1), found.group(2)) not in self.redis:
+            raise self._not_found(found.group(2))
+        return {"authString": "fake-redis-auth-string"}
 
     def _global_item(self, found, method, body, params):
         store, name = getattr(self, found.group(1)), found.group(2)

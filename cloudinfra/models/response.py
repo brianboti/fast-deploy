@@ -1,6 +1,6 @@
 """What the service answers: plans, provisioning results, status, health, usage and cost, in one shape for every provider."""
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -14,6 +14,9 @@ class RequestStatus(StrEnum):
     PLANNED = "PLANNED"
     PROVISIONING = "PROVISIONING"
     READY = "READY"
+    STOPPING = "STOPPING"
+    STOPPED = "STOPPED"
+    STARTING = "STARTING"
     FAILED = "FAILED"
     DESTROYING = "DESTROYING"
     DESTROYED = "DESTROYED"
@@ -73,9 +76,12 @@ class Resources(Model):
 
 
 class Credentials(Model):
-    """Delivered once, in the response of the call that created the database. Never stored, never logged."""
-    database_password: str | None = None
-    delivered: str = "once: this value is not kept by the service and cannot be read again"
+    """Where a request's generated credentials are: secrets the request owns, readable by its access members. The password
+    itself appears only if the operator turns that on, once, in the response of the call that created the database."""
+    database_password_secret: str | None = Field(default=None, description="The secret resource (sec-…) holding the database password.")
+    cache_auth_secret: str | None = Field(default=None, description="The secret resource (sec-…) holding the cache's AUTH string.")
+    database_password: str | None = Field(default=None, description="Only when the operator sets return_database_password; never stored or logged by this service.")
+    delivered: str = "through the secrets named here, which the request's access members can read; see each secret's connect block"
 
 
 class CostLine(Model):
@@ -83,10 +89,12 @@ class CostLine(Model):
     kind: str
     monthly_usd: float
     basis: str
+    stopped_usd: float | None = Field(default=None, description="What it costs a month while stopped; null where the kind cannot stop.")
 
 
 class CostEstimate(Model):
     monthly_usd: float
+    stopped_monthly_usd: float | None = Field(default=None, description="What the request costs a month while its machines and databases are stopped.")
     currency: str = "USD"
     lines: list[CostLine] = Field(default_factory=list)
     source: str
@@ -124,6 +132,30 @@ class ValidationResponse(Model):
     problems: list[ErrorDetail] = Field(default_factory=list)
 
 
+class AccessGrant(Model):
+    """One member of a request's access list and what became of its grants."""
+    member: str
+    level: Literal["use", "admin"]
+    status: Literal["PENDING", "GRANTED", "PARTIAL", "FAILED", "REVOKED"]
+    resources: list[str] = Field(default_factory=list, description="The resources granted on.")
+    error: ErrorDetail | None = None
+    updated_at: str | None = None
+
+
+class Lifecycle(Model):
+    """Time on a request: when it expires, why it is stopped, and what keeps billing while it is."""
+    expires_at: str | None = None
+    on_expiry: Literal["stop", "destroy"] | None = None
+    expires_in_hours: float | None = None
+    max_expires_at: str | None = Field(default=None, description="The latest an extension can reach, from the operator's maximum lifetime.")
+    stopped_at: str | None = None
+    stop_reason: str | None = Field(default=None, description="requested, expired or idle.")
+    retain_until: str | None = Field(default=None, description="For a request stopped at expiry: when it is destroyed.")
+    awake_until: str | None = Field(default=None, description="Idle stop is suspended until then.")
+    warnings_sent: list[str] = Field(default_factory=list)
+    still_billing: list[str] = Field(default_factory=list, description="While stopped: what keeps costing money.")
+
+
 class InfrastructureResponse(Model):
     request_id: str
     name: str
@@ -136,6 +168,9 @@ class InfrastructureResponse(Model):
     resources: Resources = Field(default_factory=Resources)
     endpoints: Endpoints = Field(default_factory=Endpoints)
     credentials: Credentials | None = None
+    lifecycle: Lifecycle | None = None
+    access: list[AccessGrant] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
     operations: list[OperationRecord] = Field(default_factory=list)
     estimated_monthly_cost_usd: float | None = None
     error: ErrorDetail | None = None
@@ -189,7 +224,14 @@ class ResourceKindInfo(Model):
     providers: list[str] = Field(description="The configured providers whose adapters implement this kind.")
 
 
+class ProfileInfo(Model):
+    name: str
+    description: str = ""
+    accelerator: Literal["required", "optional", "none"] = "optional"
+
+
 class ResourceKindsResponse(Model):
     kinds: list[ResourceKindInfo]
     providers: list[str]
+    profiles: dict[str, list[ProfileInfo]] = Field(default_factory=dict, description="The software profiles each configured provider offers for compute.")
     note: str

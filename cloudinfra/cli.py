@@ -14,7 +14,7 @@ from .config import Config, load_config
 from .mcp.catalog import render_markdown
 from .models.errors import InfrastructureError, problems_from
 from .models.request import InfrastructureRequest
-from .orchestration import planner, validator
+from .orchestration import access, planner, validator
 from .providers import ProviderRegistry
 
 OFFLINE = {"providers": {"gcp": {"project_id": "example-project", "allowed_regions": ["us-central1"]}},
@@ -73,20 +73,20 @@ def main(argv=None) -> int:
     except InfrastructureError as exc:
         print(json.dumps({"valid": False, "problems": [exc.detail().model_dump(mode="json")]}, indent=1))
         return 1
-    problems = validator.validate(request, config, provider)
     principal = config.principals[0]
+    problems = validator.validate(request, config, provider) + access.problems(request, config, principal)
     if problems:
         print(json.dumps({"valid": False, "problems": [{"code": item.code.value, "message": item.message, "field": item.field} for item in problems]}, indent=1))
         return 1
     ctx = planner.context(request, "0" * 32, principal.name, config, provider)
-    planned = planner.plan(request, ctx, provider)
+    planned = planner.plan(request, ctx, provider, config)
     estimate = provider.estimate_cost(planned)
     cost = planner.cost_problem(estimate, config, principal)
     if args.command == "validate":
         print(json.dumps({"valid": cost is None, "problems": [] if cost is None else [{"code": cost.code.value, "message": cost.message}]}, indent=1))
         return 0 if cost is None else 1
     print(json.dumps({"planned": [item.model_dump(mode="json") for item in planned], "estimate": estimate.model_dump(mode="json"),
-                      "warnings": planner.warnings(request, planned), "cost_problem": None if cost is None else cost.message}, indent=1))
+                      "warnings": planner.warnings(request, planned, config, provider), "cost_problem": None if cost is None else cost.message}, indent=1))
     return 0
 
 

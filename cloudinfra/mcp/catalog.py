@@ -22,6 +22,7 @@ MEANINGS = {
     ErrorCode.INVALID_CACHE_CONFIGURATION: "A cache version the provider does not run, or a cache without a network.",
     ErrorCode.INVALID_CLUSTER_CONFIGURATION: "A node shape the provider has no type for.",
     ErrorCode.INVALID_LOAD_BALANCER_CONFIGURATION: "No machines behind it, or machines in different zones or regions.",
+    ErrorCode.INVALID_ACCESS: "A member outside the operator's allowed domains, a malformed member, a duplicate, or more members than allowed.",
     ErrorCode.UNSUPPORTED_RESOURCE_KIND: "A request block of a kind the contract or the chosen adapter does not provide; details name the nearest kind.",
     ErrorCode.LIMIT_EXCEEDED: "Above one of the operator's limits on counts, sizes or live requests.",
     ErrorCode.COST_LIMIT_EXCEEDED: "The estimate from list prices is above the ceiling for this service or this caller.",
@@ -45,7 +46,7 @@ HINTS = {
     "changes_cloud": ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
     "destructive": ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False),
 }
-HINT_WORDS = {"read_only": "Read-only; creates and changes nothing.", "changes_cloud": "Creates cloud resources that cost money; needs can_provision.",
+HINT_WORDS = {"read_only": "Read-only; creates and changes nothing.", "changes_cloud": "Creates or changes cloud resources, which can cost money; needs can_provision.",
               "destructive": "Deletes cloud resources; needs can_destroy."}
 
 
@@ -68,6 +69,7 @@ class ToolSpec:
     security: str
     mapping: str
     hint: str = ""
+    until: str = "READY or FAILED"  # the states a caller polls for after a call that waits
 
     def __post_init__(self):
         if not self.hint:
@@ -88,7 +90,7 @@ class ToolSpec:
                          "or get_operation until the resource is DELETED or the request DESTROYED.")
         elif waits:
             parts.append("It answers at once with the operation running, or waits up to wait_seconds; follow it with get_infrastructure_status "
-                         "or get_operation until the status is READY or FAILED.")
+                         f"or get_operation until the status is {self.until}.")
         return " ".join(part.rstrip() if part.endswith(".") else part.rstrip() + "." for part in parts)
 
     @property
@@ -122,24 +124,32 @@ COMMON_ERRORS = ("PERMISSION_DENIED", "UNSUPPORTED_PROVIDER", "INVALID_REGION", 
 READ_ERRORS = ("NOT_FOUND", "PERMISSION_DENIED", "PROVIDER_AUTH_FAILED", "PROVIDER_PERMISSION_DENIED", "PROVIDER_UNAVAILABLE", "PROVIDER_ERROR")
 DELETE_ERRORS = ("NOT_FOUND", "PERMISSION_DENIED", "INVALID_STATE", "PROVIDER_AUTH_FAILED", "PROVIDER_PERMISSION_DENIED", "PROVIDER_CONFLICT", "PROVIDER_UNAVAILABLE",
                  "PROVIDER_ERROR", "OPERATION_TIMEOUT", "DESTROY_FAILED")
-RESPONSE = "InfrastructureResponse: request_id, status, the resources with ids, names, addresses and states, endpoints, operations, the cost estimate, and error when FAILED."
+RESPONSE = ("InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, "
+            "lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.")
 RESOURCE = "ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one."
 OWNERSHIP = "Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own."
 
 CATALOG: tuple[ToolSpec, ...] = (
     # ---- compute
     ToolSpec("create_compute", "Compute", "Create virtual machines",
-             "Create one or more identical virtual machines: CPUs, memory, operating system family, boot disk, optional public address. No image, script, key or "
-             "command is taken; access is through the provider's IAM-based login.",
+             "Create one or more identical virtual machines: CPUs, memory, an operating system family or an operator profile, boot disk, optional GPUs and public "
+             "address, and optionally when they stop by themselves. No image, script, key or command is taken; access is through the provider's IAM-based login.",
              (REGION, Input("cpu", "Virtual CPUs per machine.", True), Input("memory_gb", "Memory per machine, in GB.", True), PROVIDER,
-              Input("count", "How many identical machines (default 1)."), Input("os", "ubuntu (default), debian or rocky."), Input("boot_disk_gb", "Boot disk in GB (default 20)."),
+              Input("count", "How many identical machines (default 1)."), Input("os", "ubuntu (the default without a profile), debian or rocky."),
+              Input("profile", "A software profile the operator defines, such as a GPU image with signed drivers; list_resource_kinds names them. Instead of os."),
+              Input("boot_disk_gb", "Boot disk in GB (default 20; 50 with GPUs, which need at least 40)."),
               Input("public_ip", "Give each machine a public address (default false)."), NETWORK_ID,
-              Input("accelerator", "GPUs per machine: t4, l4, a100 or h100; the machine family follows the type, and the driver is the Application Layer's to install."),
-              Input("accelerator_count", "GPUs per machine (default 1); each type offers fixed counts."), ZONE, NAME, LABELS, WAIT),
+              Input("accelerator", "GPUs per machine: t4, l4, a100 or h100; the machine family follows the type. Drivers come with a GPU profile; on a plain image the Application "
+                    "Layer installs them."),
+              Input("accelerator_count", "GPUs per machine (default 1); each type offers fixed counts."),
+              Input("autostop_idle_minutes", "Stop a machine after this many idle minutes (15 to 1440); the operator may set a default for machines with GPUs."),
+              Input("max_run_hours", "Stop each machine after it has run this many hours since its last start (1 to 2880)."),
+              Input("lifetime_hours", "Hours until the request expires and stops (1 to 8760); the operator's default when omitted, if there is one."), ZONE, NAME, LABELS, WAIT),
              RESPONSE, ("INVALID_COMPUTE_CONFIGURATION", "INVALID_NETWORK_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
-             f"Needs can_provision. Machines get OS Login (IAM) and no service account; vTPM and integrity monitoring on, and Secure Boot on unless a GPU is attached "
-             f"(the provider's driver installation needs it off). {OWNERSHIP}",
-             "Compute Engine: compute.instances.insert with an E2 machine type (N1, G2, A2 or A3 with a GPU) and a public image family; compute.instances.get after."),
+             f"Needs can_provision. Machines get OS Login (IAM) and no service account; vTPM and integrity monitoring on, and Secure Boot on unless GPUs run a plain image, "
+             f"whose driver installation needs it off. The requester is granted login when the operator maps it to an identity. {OWNERSHIP}",
+             "Compute Engine: compute.instances.insert with an E2 machine type (N1, G2, A2 or A3 with a GPU), a public image family or the profile's image, and "
+             "scheduling.maxRunDuration with instanceTerminationAction STOP for max_run_hours; compute.instances.get after."),
     ToolSpec("get_compute", "Compute", "Get a machine", "One machine's live state: status, addresses, machine type, attached disks.",
              (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only; the caller sees its own requests' resources (scope: all sees every one).", "Compute Engine: compute.instances.get."),
     ToolSpec("list_compute", "Compute", "List machines", "Every machine this service created, as the provider sees them now, optionally for one request.",
@@ -187,25 +197,26 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Compute Engine: compute.firewalls.delete, compute.subnetworks.delete, compute.networks.delete; Service Networking: deleteConnection; compute.addresses.delete."),
     # ---- database
     ToolSpec("create_database", "Database", "Create a managed database", "Create one managed PostgreSQL or MySQL instance with one database and one user. The user's password is generated "
-             "and returned once in this call's response; the service never stores it.",
+             "and written to a secret the request owns (db-password), which the request's access members read; a response carries it only if the operator allows that.",
              (REGION, PROVIDER, Input("engine", "postgresql (default) or mysql."), Input("version", "Major version (16, 8.0); the provider's default when omitted."),
               Input("size", "small (default), medium or large."), Input("storage_gb", "Storage in GB (default 10)."), Input("high_availability", "A standby in a second zone (default false)."),
               Input("public_access", "A public address instead of a private one (default false; private needs network_id)."), Input("database_name", "The database to create (default app)."),
               Input("username", "The user to create (default app)."), Input("network_id", "For a private database: a network this service created (net-…)."), NAME, LABELS, WAIT),
-             RESPONSE + " Plus credentials.database_password, once.", ("INVALID_DATABASE_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
-             "Needs can_provision. Encrypted connections only, automated backups on, deletion protection on until destroy. The password is never logged or stored.",
-             "Cloud SQL Admin: sqladmin.instances.insert, databases.insert, users.insert; Service Networking for a private address."),
+             RESPONSE + " Plus credentials naming the password's secret.", ("INVALID_DATABASE_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
+             "Needs can_provision. Encrypted connections only, automated backups on, deletion protection on until destroy. The password is never logged or kept by this service.",
+             "Cloud SQL Admin: sqladmin.instances.insert, databases.insert, users.insert; Service Networking for a private address; Secret Manager for the password."),
     ToolSpec("get_database", "Database", "Get a database", "Host, port, state, version, tier and storage of one database instance.", (RESOURCE_ID,), RESOURCE, READ_ERRORS,
              "Read-only; never returns a password.", "Cloud SQL Admin: sqladmin.instances.get."),
     ToolSpec("delete_database", "Database", "Delete a database", "Turn deletion protection off and delete the instance with its data and backups.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
              "Needs can_destroy. Irreversible: the data goes with the instance.", "Cloud SQL Admin: sqladmin.instances.patch (deletion protection off), sqladmin.instances.delete."),
     # ---- cache
     ToolSpec("create_cache", "Cache", "Create a cache", "Create a managed in-memory cache (Redis) on a network this service created: private, authenticated, encrypted in transit. "
-             "The Application Layer reads the AUTH string from the provider with its own identity.",
+             "Its AUTH string is copied into a secret the request owns (cache-auth), which the request's access members read.",
              (REGION, PRIVATE_NETWORK_ID, PROVIDER, Input("memory_gb", "Memory in GB (default 1)."), Input("high_availability", "A replica in a second zone (default false)."),
               Input("version", "Engine version (7.2); the provider's default when omitted."), NAME, LABELS, WAIT),
-             RESPONSE, ("INVALID_CACHE_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS), f"Needs can_provision. No credential passes through this service. {OWNERSHIP}",
-             "Memorystore for Redis: redis.projects.locations.instances.create (direct peering, AUTH on, TLS)."),
+             RESPONSE, ("INVALID_CACHE_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
+             f"Needs can_provision. The AUTH string goes from the provider into the request's secret and nowhere else; it is never returned or logged. {OWNERSHIP}",
+             "Memorystore for Redis: redis.projects.locations.instances.create (direct peering, AUTH on, TLS) and instances.getAuthString; Secret Manager for the copy."),
     ToolSpec("get_cache", "Cache", "Get a cache", "Host, port, state, version and memory of one cache.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only; never returns the AUTH string.",
              "Memorystore for Redis: redis.projects.locations.instances.get."),
     ToolSpec("delete_cache", "Cache", "Delete a cache", "Delete one cache with its data.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS, "Needs can_destroy. The data goes with it.",
@@ -261,10 +272,12 @@ CATALOG: tuple[ToolSpec, ...] = (
     # ---- orchestration
     ToolSpec("list_resource_kinds", "Infrastructure", "List resource kinds", "What can be asked for: every kind of the contract with its fields, whether several fit in one request, "
              "and which configured adapters provide it. Ask this before a request for something unusual; an unknown block is refused with UNSUPPORTED_RESOURCE_KIND.",
-             (), "ResourceKindsResponse: kinds (kind, description, several_per_request, fields, providers), providers, note.", (), "Read-only; no provider call.", "None."),
+             (), "ResourceKindsResponse: kinds (kind, description, several_per_request, fields, providers), providers, profiles (each provider's software profiles), note.",
+             (), "Read-only; no provider call.", "None."),
     ToolSpec("validate_infrastructure_request", "Infrastructure", "Validate a request", "Check a full InfrastructureRequest against the contract, the operator's regions and limits, "
              "the provider's shapes and the cost ceiling. Creates nothing.",
-             (Input("request", "The InfrastructureRequest: provider, region, and at least one of network, storage, compute, database, cache, queue, secret, cluster, load_balancer.", True),),
+             (Input("request", "The InfrastructureRequest: provider, region, at least one of network, storage, compute, database, cache, queue, secret, cluster, load_balancer, "
+                    "and optionally lifetime (hours, on_expiry) and access (members to grant).", True),),
              "ValidationResponse: valid, the normalized request, and problems (each with a code, a message and the field).", ("UNSUPPORTED_PROVIDER",),
              "Read-only. Every problem is reported, not only the first.", "None; the provider adapter is asked only for its shape rules."),
     ToolSpec("plan_infrastructure", "Infrastructure", "Plan a request", "The resources a request would create: names, provider operations, shapes, estimated monthly cost, warnings; "
@@ -272,25 +285,55 @@ CATALOG: tuple[ToolSpec, ...] = (
              (Input("request", "The InfrastructureRequest.", True), Input("check_quota", "Also read the region's quota from the provider (default false).")),
              "PlanResponse: request_id, planned resources with their provider mapping and shape, the cost estimate with its basis, warnings, quota.",
              ("UNSUPPORTED_PROVIDER", "INVALID_REGION", "INVALID_COMPUTE_CONFIGURATION", "INVALID_STORAGE_CONFIGURATION", "INVALID_NETWORK_CONFIGURATION",
-              "INVALID_DATABASE_CONFIGURATION", "LIMIT_EXCEEDED", "COST_LIMIT_EXCEEDED"),
-             "Read-only. The cost is an estimate from list prices, never a bill.", "Compute Engine: compute.regions.get for the quota, when asked."),
+              "INVALID_DATABASE_CONFIGURATION", "INVALID_ACCESS", "LIMIT_EXCEEDED", "COST_LIMIT_EXCEEDED"),
+             "Read-only. The cost is an estimate from list prices, never a bill; stopped_monthly_usd is what it costs while stopped.",
+             "Compute Engine: compute.regions.get for the quota, when asked."),
     ToolSpec("provision_infrastructure", "Infrastructure", "Provision a request", "Validate, plan, record and provision a full request: network, storage, compute, database, cache, "
              "queue, secret, cluster, load balancer, in that order. "
              "Answers at once with PROVISIONING (or waits up to 45 seconds); follow it with get_infrastructure_status. A failure deletes what was created and reports it.",
-             (Input("request", "The InfrastructureRequest.", True), WAIT), RESPONSE + " With credentials.database_password, once, when a database was requested.",
-             ("INVALID_COMPUTE_CONFIGURATION", "INVALID_STORAGE_CONFIGURATION", "INVALID_NETWORK_CONFIGURATION", "INVALID_DATABASE_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
-             f"Needs can_provision. Refused above the limits or the cost ceiling; at most max_active_requests_per_principal live requests. {OWNERSHIP}",
+             (Input("request", "The InfrastructureRequest.", True), WAIT), RESPONSE + " With credentials naming the secrets that hold a database password or a cache AUTH string.",
+             ("INVALID_COMPUTE_CONFIGURATION", "INVALID_STORAGE_CONFIGURATION", "INVALID_NETWORK_CONFIGURATION", "INVALID_DATABASE_CONFIGURATION", "INVALID_ACCESS", "NOT_FOUND",
+              "INVALID_STATE", *COMMON_ERRORS),
+             "Needs can_provision. Refused above the limits or the cost ceiling; at most max_active_requests_per_principal live requests. Access members are granted on "
+             f"the resources once they exist, never on the project; a grant that fails is reported on the member, not as a failed request. {OWNERSHIP}",
              "Every operation of the primitives above, in dependency order."),
     ToolSpec("get_infrastructure_status", "Infrastructure", "Get a request's status", "A request's status, resources, endpoints and operations, each resource refreshed from the provider "
              "once provisioning is over.", (REQUEST_ID, WAIT), RESPONSE, READ_ERRORS, "Read-only.", "The get operation of every resource kind."),
-    ToolSpec("list_infrastructure", "Infrastructure", "List requests", "The requests this caller may see, newest first, optionally by status.",
-             (Input("status", "Only requests in this status (PROVISIONING, READY, FAILED, DESTROYING, DESTROYED, DESTROY_FAILED)."), Input("limit", "At most this many (default 50, up to 200).")),
+    ToolSpec("list_infrastructure", "Infrastructure", "List requests", "The requests this caller may see, newest first, optionally by status or by how soon they expire.",
+             (Input("status", "Only requests in this status (PROVISIONING, READY, STOPPING, STOPPED, STARTING, FAILED, DESTROYING, DESTROYED, DESTROY_FAILED)."),
+              Input("limit", "At most this many (default 50, up to 200)."),
+              Input("expiring_within_hours", "Only running or stopped requests that expire within this many hours (1 to 8760), the expired ones included.")),
              "ListResponse: requests and count.", ("INVALID_REQUEST",), "Read-only; from the service's own state, no provider call.", "None."),
     ToolSpec("destroy_infrastructure", "Infrastructure", "Destroy a request", "Delete everything a request created, in reverse order: load balancer, cluster, secrets, queues, "
              "cache, database, machines, storage, network. "
              "Answers at once with DESTROYING (or waits up to 45 seconds). What could not be deleted is named; call again once the cause is fixed.",
              (REQUEST_ID, WAIT), RESPONSE, DELETE_ERRORS, "Needs can_destroy. Deletion protection on a database is turned off by this call only.",
              "The delete operation of every resource kind."),
+    ToolSpec("control_infrastructure", "Infrastructure", "Stop, start or extend a request",
+             "Stop a READY request's machines and databases, start them again, move its expiry later by hours (up to the operator's maximum lifetime), or keep its machines "
+             "awake: idle stop waits for hours. While stopped, disks, addresses and what cannot stop keep billing; the lifecycle block names them.",
+             (REQUEST_ID, Input("action", "stop, start, extend or keep_awake.", True),
+              Input("hours", "For extend: hours added to the expiry. For keep_awake: how long idle stop waits (up to the operator's max_keep_awake_hours)."), WAIT),
+             RESPONSE, ("INVALID_REQUEST", "INVALID_STATE", "LIMIT_EXCEEDED", "NOT_FOUND", "PERMISSION_DENIED", "PROVIDER_AUTH_FAILED", "PROVIDER_PERMISSION_DENIED",
+                        "PROVIDER_UNAVAILABLE", "PROVIDER_ERROR", "OPERATION_TIMEOUT"),
+             "Needs can_provision. An expired request is started only after an extend; a request that is stopping or starting is extended once it has "
+             "finished. Nothing stops by itself unless the request or the operator asked for it.",
+             "Compute Engine: compute.instances.stop and start; Cloud SQL Admin: sqladmin.instances.patch with activationPolicy NEVER or ALWAYS.",
+             hint="changes_cloud", until="READY, STOPPED or FAILED"),
+    ToolSpec("manage_infrastructure_access", "Infrastructure", "Grant or revoke access",
+             "Grant a person, group or service account access to what a request created, or revoke it: login on its machines through the provider's IAM and an "
+             "identity-aware tunnel, reading its secrets (the database password and cache AUTH string among them), using its buckets and queues.",
+             (REQUEST_ID, Input("action", "grant or revoke.", True),
+              Input("member", "user:, group: or serviceAccount: and an email address in a domain the operator allows.", True),
+              Input("level", "use (default: log in, read and write data) or admin (administrator login, manage secret versions and objects).")),
+             RESPONSE + " The access block shows each member's status and the resources granted on; each resource's connect block says how to reach it.",
+             ("INVALID_REQUEST", "INVALID_ACCESS", "INVALID_STATE", "NOT_FOUND", "PERMISSION_DENIED", "PROVIDER_AUTH_FAILED", "PROVIDER_PERMISSION_DENIED", "PROVIDER_CONFLICT",
+              "PROVIDER_UNAVAILABLE", "PROVIDER_ERROR"),
+             "Needs can_provision. Grants go on each resource's own policy and never on the project; what a member needs at project level is named in each connect "
+             "block as a prerequisite for the platform team. Members are limited to the operator's allowed domains and max_members.",
+             "Compute Engine: instances getIamPolicy and setIamPolicy (roles/compute.osLogin or osAdminLogin); IAP: the machine's iap_tunnel policy "
+             "(roles/iap.tunnelResourceAccessor); Secret Manager, Cloud Storage and Pub/Sub: the resource's getIamPolicy and setIamPolicy.",
+             hint="changes_cloud"),
     # ---- operations
     ToolSpec("get_resource_health", "Operations", "Get a resource's health", "Whether one resource is up, from the provider's state: a running machine, a runnable database, a ready disk or network.",
              (RESOURCE_ID,), "Health: status, healthy (true, false, or null while it is still coming up) and detail.", READ_ERRORS, "Read-only.",
@@ -300,13 +343,17 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Read-only.", "Cloud Monitoring: monitoring.timeSeries.list."),
     ToolSpec("get_resource_cost", "Operations", "Get an estimated cost", "The estimated monthly cost of a request, or of one of its resources, from list prices, with the basis of each line.",
              (Input("request_id", "The request to price."), Input("resource_id", "One resource to price instead.")),
-             "request_id, resource_id, status, estimate (monthly_usd, lines with basis, source, verified, note), actual (null: no billing export).",
+             "request_id, resource_id, status, estimate (monthly_usd, stopped_monthly_usd, lines with basis, source, verified, note), current_monthly_usd (the stopped "
+             "rate while stopped), actual (null: no billing export).",
              ("INVALID_REQUEST", "NOT_FOUND", "PERMISSION_DENIED"), "Read-only. An estimate, never a bill.", "None; computed from the stored request and the adapter's price table."),
-    ToolSpec("get_operation", "Operations", "Get an operation", "One operation's status, timing and error: a provision, destroy, cleanup, delete, resize, attach or firewall change.",
+    ToolSpec("get_operation", "Operations", "Get an operation", "One operation's status, timing and error: a provision, destroy, cleanup, delete, resize, attach, firewall change, "
+             "stop, start, extend, keep_awake or access change.",
              (Input("operation_id", "The operation id from an earlier result.", True),), "OperationRecord.", ("NOT_FOUND", "PERMISSION_DENIED"), "Read-only.", "None."),
     ToolSpec("get_service_status", "Operations", "Get the service status",
-             "The service's version, configured providers with their projects and allowed regions, planned providers, limits and switches.",
-             (), "version, providers, planned_providers, limits, cleanup_on_failure, workers, labels.", (), "Read-only; no secret is included.", "None."),
+             "The service's version, configured providers with their projects and allowed regions, planned providers, limits (lifetime and idle stop among them), "
+             "access rules, software profiles and switches.",
+             (), "version, providers, planned_providers, limits, cleanup_on_failure, workers, labels, access, sweep_interval_seconds, return_database_password, profiles.", (),
+             "Read-only; no secret is included.", "None."),
 )
 BY_NAME = {spec.name: spec for spec in CATALOG}
 GROUPS = ("Compute", "Storage", "Network", "Database", "Cache", "Queue", "Secret", "Cluster", "Load balancer", "Infrastructure", "Operations")
@@ -317,9 +364,9 @@ def render_markdown(catalog=CATALOG) -> str:
     lines = ["# MCP service catalog", "",
              "Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. "
              f"{len(catalog)} tools in {len(GROUPS)} groups. Every result is a JSON object with `status`; a failed one is "
-             '`{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-` '
-             "or `db-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for "
-             "tools that delete, `scope: all` to see every caller's requests.", ""]
+             '`{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, '
+             "`cac-`, `que-`, `sec-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that "
+             "create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.", ""]
     lines += ["## At a glance", "", "| Group | Tool | Purpose | Safety hint |", "|---|---|---|---|"]
     for group in GROUPS:
         for spec in (item for item in catalog if item.group == group):

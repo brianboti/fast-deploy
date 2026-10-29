@@ -19,6 +19,9 @@ RESERVED_LABEL_PREFIXES = ("cloudinfra", "managed-by")
 MAX_LABELS = 16
 MAX_PORTS = 32
 MAX_SOURCES = 16
+# Who may be granted access to what a request creates: a person, a group or a service account, by email address. Never
+# allUsers, allAuthenticatedUsers or a whole domain.
+MEMBER = re.compile(r"^(user|group|serviceAccount):[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$")
 IDENTIFIER = re.compile(r"^[a-z]{2,8}-[a-f0-9]{12}$")  # a resource id this service issued (cmp-…, sto-…, net-…, db-…)
 REQUEST_ID = re.compile(r"^[a-f0-9]{32}$")
 PRIVATE_RANGES = [ipaddress.ip_network(cidr) for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
@@ -96,6 +99,24 @@ def check_labels(labels: dict[str, str]) -> dict[str, str]:
             raise InfrastructureError(ErrorCode.INVALID_REQUEST, f"Label value for {key!r}: lowercase letters, digits, dashes and underscores, up to 63 characters",
                                       {"field": "labels", "key": key})
     return dict(labels)
+
+
+def check_member(value: str, field: str = "access.member") -> str:
+    """A member as it is compared and stored: its kind as written, its email address in lowercase, as Google accounts and
+    groups do not tell case apart."""
+    if not isinstance(value, str) or not MEMBER.fullmatch(value):
+        raise InfrastructureError(ErrorCode.INVALID_ACCESS, f"{value!r} is not a member: write user:, group: or serviceAccount: and an email address",
+                                  {"field": field, "value": value})
+    return normal_member(value)
+
+
+def normal_member(value: str) -> str:
+    kind, email = value.split(":", 1)
+    return f"{kind}:{email.lower()}"
+
+
+def member_domain(member: str) -> str:
+    return member.rsplit("@", 1)[-1].lower()
 
 
 def check_identifier(value: str, what: str = "resource_id") -> str:

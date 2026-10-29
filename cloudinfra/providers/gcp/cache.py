@@ -36,8 +36,14 @@ class GcpCache:
             if exc.code == ErrorCode.NOT_FOUND:
                 return resource.model_copy(update={"status": ResourceStatus.DELETED, "host": None})
             raise
+        certificates = instance.get("serverCaCerts") or [{}]
         return resource.model_copy(update={"status": STATE.get(instance.get("state", ""), ResourceStatus.UNKNOWN), "host": instance.get("host"), "port": int(instance.get("port") or 6379),
+                                           "server_ca_cert": certificates[0].get("cert") or resource.server_ca_cert,
                                            "memory_gb": int(instance.get("memorySizeGb") or resource.memory_gb), "created_at": resource.created_at or instance.get("createTime")})
+
+    def read_auth(self, resource: CacheResource) -> str:
+        """The instance's AUTH string (redis.instances.getAuthString), to be copied into a secret the request owns."""
+        return self.api.get(f"{resource.provider_id}/authString").get("authString", "")
 
     def delete(self, resource: CacheResource, ctx) -> None:
         try:

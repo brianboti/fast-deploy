@@ -11,8 +11,11 @@ allowed_hosts:
 # auth_failures_per_minute: 20                    # failed sign-ins per client address
 # workers: 4                                      # provisioning and destruction run in this many background workers
 # cleanup_on_failure: true                        # delete what a failed request created; false keeps it for inspection and says so
+# sweep_interval_seconds: 300                     # how often expiry and idle stop are checked; 0 turns the sweeper off
+# return_database_password: false                 # true also returns a generated database password once; it always goes to a secret
 labels:                                           # the operator's labels on every resource the service creates
-  environment: lab
+  environment: development
+  cost-center: platform
 limits:                                           # cost protection, checked before any provider call
   max_instances_per_request: 10
   max_cpu_per_instance: 32
@@ -25,6 +28,18 @@ limits:                                           # cost protection, checked bef
   max_monthly_cost_usd: 500                       # refuse a request whose estimate from list prices is higher
   max_active_requests_per_principal: 20
   operation_timeout_seconds: 900
+  # Time. Nothing expires or stops by itself unless a request asks or one of these is set: leave them unset in production.
+  # default_lifetime_hours: 168                   # requests that set no lifetime expire after this long
+  # max_lifetime_hours: 720                       # the longest a request may live, extensions included; with no default, also the lifetime
+  # expiry_retention_days: 7                      # a request stopped at expiry keeps its disks and databases this long
+  # default_autostop_idle_minutes: 60             # stop idle machines that ask for no autostop...
+  # default_autostop_scope: accelerators          # ...with GPUs only (accelerators) or every machine (all)
+  # idle_cpu_cores: 0.5                           # idle: the busiest CPU sample in the window used fewer cores than this
+  # max_keep_awake_hours: 72
+access:                                           # who may be granted access to what the service creates; never project IAM
+  allowed_domains: [example.com]                  # members must be in these domains; empty allows only principals' identities
+  # grant_requester: true                         # grant the requesting principal's identity as admin on what it creates
+  # max_members: 10                               # members per request, the requester included
 providers:
   gcp:
     project_id: your-infrastructure-project
@@ -33,11 +48,22 @@ providers:
     # default_subnet: null                        # needed when default_network is a custom-mode network
     # impersonate_service_account: cloudinfra@your-infrastructure-project.iam.gserviceaccount.com
     # zones: {europe-west10: [a, b, c]}           # regions the adapter's own table does not know
+    # profiles:                                   # software images the platform team approves; a request names one as compute.profile
+    #   gpu-signed:                               # built with Google's cuda_installer.pyz build_image: signed drivers, Secure Boot stays on
+    #     image: projects/your-images-project/global/images/family/gpu-signed-cu129
+    #     description: Ubuntu 24.04 with signed NVIDIA drivers and CUDA 12.9
+    #     min_boot_disk_gb: 100
+    #     accelerator: required                   # required, optional or none
+    #   hardened:
+    #     image: projects/your-images-project/global/images/family/hardened-ubuntu-2404
+    #     accelerator: none
+    # default_accelerator_profile: gpu-signed     # what GPU machines get when they name no profile and no os
 principals:                                       # the Application Layer systems that may call the service
   - name: app-layer
     token_sha256: "REPLACE_WITH_THE_HASH_FROM_cloud-infra_token"
     can_provision: true
     can_destroy: true
+    # identity: serviceAccount:app-layer@your-app-project.iam.gserviceaccount.com   # granted on what this caller creates
     # scope: own                                  # own: its own requests; all: every caller's (an operator identity)
     # max_monthly_cost_usd: 100                   # a tighter ceiling than limits.max_monthly_cost_usd for this caller
   - name: observer

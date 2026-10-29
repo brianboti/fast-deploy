@@ -1,4 +1,5 @@
 """The first batch of typed kinds: compute groups, accelerators, cache, queue, secret, cluster, load balancer; the kinds listing; unknown kinds."""
+import base64
 import json
 
 import pydantic
@@ -93,8 +94,10 @@ def test_plan_for_everything_names_shapes_and_order():
     assert [(item.kind, item.name) for item in planned] == [
         ("network", "platform-net"), ("storage", "platform-gpu-disk-1"), ("compute", "platform-web-1"), ("compute", "platform-web-2"), ("compute", "platform-gpu-1"),
         ("database", "platform-db-abcdef"), ("cache", "platform-cache"), ("queue", "platform-events"), ("queue", "platform-jobs"), ("secret", "platform-api-key"),
-        ("secret", "platform-token"), ("cluster", "platform-cluster"), ("load_balancer", "platform-lb")]
+        ("secret", "platform-token"), ("secret", "platform-db-password"), ("secret", "platform-cache-auth"), ("cluster", "platform-cluster"), ("load_balancer", "platform-lb")]
     by_name = {item.name: item for item in planned}
+    assert by_name["platform-db-password"].spec == {**by_name["platform-db-password"].spec, "secret": "db-password", "versions": 1, "purpose": "database_password"}
+    assert by_name["platform-cache-auth"].spec["purpose"] == "cache_auth"
     assert by_name["platform-gpu-1"].spec["machine_type"] == "g2-standard-8" and by_name["platform-gpu-1"].spec["accelerator"] == {"type": "nvidia-l4", "count": 1}
     assert by_name["platform-gpu-disk-1"].spec["attach_to"] == "platform-gpu-1" and by_name["platform-web-1"].spec["network"] == "platform-net"
     assert by_name["platform-cache"].spec == {**by_name["platform-cache"].spec, "tier": "BASIC", "redis_version": "REDIS_7_2", "network": "platform-net"}
@@ -186,13 +189,24 @@ def test_everything_provisions_in_order_and_destroys_in_reverse(tmp_path):
     response = orchestrator.provision(InfrastructureRequest.model_validate(EVERYTHING_REQUEST), who, wait_seconds=45)
     assert response.status == RequestStatus.READY, response.error
     counts = {kind: len(getattr(response.resources, kind)) for kind in ("network", "storage", "compute", "database", "cache", "queue", "secret", "cluster", "load_balancer")}
-    assert counts == {"network": 1, "storage": 1, "compute": 3, "database": 1, "cache": 1, "queue": 2, "secret": 2, "cluster": 1, "load_balancer": 1}
+    assert counts == {"network": 1, "storage": 1, "compute": 3, "database": 1, "cache": 1, "queue": 2, "secret": 4, "cluster": 1, "load_balancer": 1}
     endpoints = response.endpoints
     assert endpoints.load_balancer_address == response.resources.load_balancer[0].address and endpoints.load_balancer_address.startswith("34.120.0.")
     assert endpoints.cache_host == "10.30.0.3" and endpoints.cache_port == 6379 and endpoints.cluster_endpoint == "35.201.0.7"
     assert endpoints.queue_topics == ["projects/test-project/topics/platform-events", "projects/test-project/topics/platform-jobs"]
-    assert endpoints.secret_names == ["projects/test-project/secrets/platform-api-key", "projects/test-project/secrets/platform-token"] and endpoints.database_host == "10.20.0.3"
-    assert response.credentials.database_password and len(response.endpoints.internal_ips) == 3
+    assert endpoints.secret_names == ["projects/test-project/secrets/platform-api-key", "projects/test-project/secrets/platform-token",
+                                      "projects/test-project/secrets/platform-db-password", "projects/test-project/secrets/platform-cache-auth"]
+    assert endpoints.database_host == "10.20.0.3" and len(response.endpoints.internal_ips) == 3
+    secrets_by_purpose = {secret.purpose: secret for secret in response.resources.secret}
+    credentials = response.credentials
+    assert credentials.database_password is None and credentials.database_password_secret == secrets_by_purpose["database_password"].id
+    assert credentials.cache_auth_secret == secrets_by_purpose["cache_auth"].id
+    assert [secret.name for secret in response.resources.secret if secret.purpose is None] == ["platform-api-key", "platform-token"]
+    assert response.resources.database[0].password_secret == credentials.database_password_secret and response.resources.cache[0].auth_secret == credentials.cache_auth_secret
+    password = fake.sql_users["platform-db-" + response.request_id[:6]][0]["password"]
+    assert [base64.b64decode(value).decode() for value in fake.secret_versions["platform-db-password"]] == [password]
+    assert [base64.b64decode(value).decode() for value in fake.secret_versions["platform-cache-auth"]] == ["fake-redis-auth-string"]
+    assert password not in json.dumps(response.model_dump(mode="json")) and "fake-redis-auth-string" not in json.dumps(response.model_dump(mode="json"))
     groups = {machine.name: machine.group for machine in response.resources.compute}
     assert groups == {"platform-web-1": "web", "platform-web-2": "web", "platform-gpu-1": "gpu"}
     assert response.resources.storage[0].attached_to == next(m.id for m in response.resources.compute if m.group == "gpu")
@@ -226,7 +240,7 @@ def test_failure_in_the_middle_cleans_up_every_new_kind(tmp_path):
     response = orchestrator.provision(InfrastructureRequest.model_validate(EVERYTHING_REQUEST), principal(orchestrator.config), wait_seconds=45)
     assert response.status == RequestStatus.FAILED and "at cluster platform-cluster" in response.error.message
     cleanup = response.error.details["cleanup"]
-    assert len(cleanup["deleted"]) == 11 and cleanup["remaining"] == []
+    assert len(cleanup["deleted"]) == 13 and cleanup["remaining"] == []
     assert not fake.instances and not fake.redis and not fake.topics and not fake.secrets and not fake.networks and not fake.sql
 
 
@@ -267,7 +281,8 @@ def test_plan_warnings_cover_every_new_kind(tmp_path):
     text = " ".join(plan.warnings)
     for expected in ("gpu: 1 l4 per machine as g2-standard-8", "AUTH string", "management fee", "public on port 8080", "shared-core", "whole internet"):
         assert expected in text, (expected, plan.warnings)
-    assert fake.calls == [] and len(plan.planned) == 13 and "extended support" not in text
+    assert fake.calls == [] and len(plan.planned) == 15 and "extended support" not in text
+    assert "db-password secret" in text and "cache-auth secret" in text and "the image has no GPU driver" in text
     old = orchestrator.plan(InfrastructureRequest.model_validate({"region": "us-central1", "database": {"version": "13", "public_access": True}}), principal(orchestrator.config))
     assert any("postgresql 13 is kept by the provider only under paid extended support; 18 is its current default" in warning for warning in old.warnings), old.warnings
 

@@ -22,7 +22,12 @@ class GcpSecret:
             self.api.post(f"{SECRETS}/{resource_name}:addVersion", json={"payload": {"data": payload}})
             versions = 1
         return SecretResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region, provider_id=resource_name,
-                              resource_name=resource_name, versions=versions, status=ResourceStatus.READY, labels=translate.labels(ctx))
+                              resource_name=resource_name, versions=versions, status=ResourceStatus.READY, labels=translate.labels(ctx), purpose=planned.spec.get("purpose"))
+
+    def put_value(self, resource: SecretResource, value: str, ctx) -> SecretResource:
+        payload = base64.b64encode(value.encode()).decode()
+        self.api.post(f"{SECRETS}/{resource.resource_name}:addVersion", json={"payload": {"data": payload}})
+        return resource.model_copy(update={"versions": resource.versions + 1})
 
     def get(self, resource: SecretResource) -> SecretResource:
         try:

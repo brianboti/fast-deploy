@@ -118,7 +118,7 @@ def test_database_private_encrypted_protected_and_password_handed_over_once():
     assert settings["backupConfiguration"]["enabled"] and settings["userLabels"]["managed-by"] == "cloudinfra" and "rootPassword" not in body
     assert password == "generated-by-the-orchestrator" and fake.sql_users["pg-db-aaaaaa"] == [{"name": "app", "password": password}]
     assert database.host == "10.20.0.3" and database.port == 5432 and database.status == ResourceStatus.READY and database.connection_name.endswith(":pg-db-aaaaaa")
-    assert "password" not in database.model_dump_json()
+    assert password not in database.model_dump_json() and database.password_secret is None  # the orchestrator links the secret it makes
     provider.delete_database(database, ctx)
     patched = next(call[2] for call in fake.calls if call[0] == "PATCH")
     assert patched == {"settings": {"deletionProtectionEnabled": False}} and provider.get_database(database).status == ResourceStatus.DELETED

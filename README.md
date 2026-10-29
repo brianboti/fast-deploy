@@ -18,12 +18,16 @@ GCPProvider → Google Cloud          (AWS, Azure, Jetstream: adapters to come; 
 The infrastructure layer provisions machines (in groups, with or without GPUs), disks, buckets, networks, load balancers,
 managed databases, caches, queues, secret containers and Kubernetes clusters from a request such as
 `{"provider": "gcp", "region": "us-central1", "compute": {"cpu": 4, "memory_gb": 16, "os": "ubuntu"}}`, and returns
-resource ids, addresses, endpoints and status. It takes no repository, image, script or command, holds no GitHub
-credential, and decides nothing about an application; those are the Application Layer's. Fast Deploy keeps owning
+resource ids, addresses, endpoints and status. It grants people access to what it created (never to the project), says
+how to connect to each resource, keeps database passwords and cache AUTH strings in secrets the request owns, offers the
+operator's approved images (a GPU image with signed drivers among them), and stops, starts and expires what it created
+when a request or the operator asks. It takes no repository, image, script or command, holds no GitHub credential, and
+decides nothing about an application; those are the Application Layer's. Fast Deploy keeps owning
 repositories, builds, tests, images and releases, and never has to be present for the infrastructure layer to work.
 
 - Architecture and ownership: [docs/INFRASTRUCTURE-ARCHITECTURE.md](docs/INFRASTRUCTURE-ARCHITECTURE.md)
-- The 43 MCP tools: [docs/MCP-CATALOG.md](docs/MCP-CATALOG.md)
+- The 45 MCP tools: [docs/MCP-CATALOG.md](docs/MCP-CATALOG.md)
+- Where the service stands and what comes next: [docs/RESEARCH-2026-10-28-positioning.md](docs/RESEARCH-2026-10-28-positioning.md)
 - The provider interface and the Google Cloud adapter: [docs/PROVIDER-INTERFACE.md](docs/PROVIDER-INTERFACE.md)
 - The analysis behind the split: [docs/REFACTOR-2026-10-28.md](docs/REFACTOR-2026-10-28.md)
 

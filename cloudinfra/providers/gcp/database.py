@@ -55,9 +55,21 @@ class GcpDatabase:
         wanted = "PRIMARY" if resource.public_access else "PRIVATE"
         host = next((item.get("ipAddress") for item in addresses if item.get("type") == wanted), None) or next((item.get("ipAddress") for item in addresses), None)
         settings = instance.get("settings") or {}
-        return resource.model_copy(update={"status": STATE.get(instance.get("state", ""), ResourceStatus.UNKNOWN), "host": host, "connection_name": instance.get("connectionName"),
+        status = STATE.get(instance.get("state", ""), ResourceStatus.UNKNOWN)
+        if settings.get("activationPolicy") == "NEVER" and status in (ResourceStatus.READY, ResourceStatus.STOPPED):
+            status = ResourceStatus.STOPPED  # Cloud SQL documents the policy, not a state, for a stopped instance
+        return resource.model_copy(update={"status": status, "host": host, "connection_name": instance.get("connectionName"),
                                            "tier": settings.get("tier", resource.tier), "storage_gb": int(settings.get("dataDiskSizeGb", resource.storage_gb)),
                                            "created_at": resource.created_at or instance.get("createTime")})
+
+    def stop(self, resource: DatabaseResource, ctx) -> DatabaseResource:
+        """Stop the instance: its compute charges stop, storage and address charges continue."""
+        self.api.wait_sql(self.api.patch(f"{self._instances()}/{resource.name}", json={"settings": {"activationPolicy": "NEVER"}}))
+        return self.get(resource)
+
+    def start(self, resource: DatabaseResource, ctx) -> DatabaseResource:
+        self.api.wait_sql(self.api.patch(f"{self._instances()}/{resource.name}", json={"settings": {"activationPolicy": "ALWAYS"}}))
+        return self.get(resource)
 
     def delete(self, resource: DatabaseResource, ctx) -> None:
         url = f"{self._instances()}/{resource.name}"

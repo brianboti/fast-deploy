@@ -31,6 +31,21 @@ class ResourceStatus(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class Grant(BaseModel):
+    """One role this service granted to one member on one resource."""
+    model_config = ConfigDict(extra="forbid")
+    member: str
+    role: str
+
+
+class ConnectInfo(BaseModel):
+    """How to reach a resource, written by the provider adapter from what exists; computed on every answer, never stored."""
+    model_config = ConfigDict(extra="forbid")
+    commands: dict[str, str] = Field(default_factory=dict, description="Commands to run, by purpose (ssh, port_forward, password, credentials).")
+    prerequisites: list[str] = Field(default_factory=list, description="What must already be true, such as a project-level role the platform team grants once.")
+    notes: list[str] = Field(default_factory=list)
+
+
 class Resource(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(description="The identifier this service issued (cmp-…, sto-…, net-…, db-…, cac-…, que-…, sec-…, clu-…, lb-…).")
@@ -46,6 +61,8 @@ class Resource(BaseModel):
     created_at: str | None = None
     updated_at: str | None = None
     error: ErrorDetail | None = None
+    access: list[Grant] = Field(default_factory=list, description="Roles this service granted on the resource.")
+    connect: ConnectInfo | None = Field(default=None, description="How to reach the resource.")
 
 
 class ComputeResource(Resource):
@@ -61,6 +78,13 @@ class ComputeResource(Resource):
     public_ip: str | None = None
     attached_disks: list[str] = Field(default_factory=list, description="Storage resource ids attached to this machine.")
     network: str | None = Field(default=None, description="The network resource (net-…) the machine is in; null in the operator's default network.")
+    profile: str | None = Field(default=None, description="The software profile the machine was made from.")
+    secure_boot: bool | None = None
+    autostop_idle_minutes: int | None = Field(default=None, description="Idle minutes after which the service stops the machine; null never.")
+    max_run_hours: int | None = None
+    started_at: str | None = Field(default=None, description="When the machine last started; idle stop waits at least the idle window after it.")
+    stop_reason: str | None = Field(default=None, description="Why the service stopped it: requested, expired or idle.")
+    instance_id: str | None = Field(default=None, description="The provider's numeric id, which grants that outlive a name are bound to.")
 
 
 class StorageResource(Resource):
@@ -104,6 +128,7 @@ class DatabaseResource(Resource):
     username: str
     connection_name: str | None = None
     network: str | None = Field(default=None, description="The network resource (net-…) a private database is on.")
+    password_secret: str | None = Field(default=None, description="The secret resource (sec-…) that holds the generated password.")
 
 
 class CacheResource(Resource):
@@ -116,7 +141,9 @@ class CacheResource(Resource):
     host: str | None = None
     port: int = 6379
     network: str | None = Field(default=None, description="The network resource (net-…) the cache is on.")
-    auth: str = Field(default="provider-issued", description="How the AUTH string is obtained: the Application Layer reads it from the provider with its own identity.")
+    auth: str = Field(default="secret", description="Where the AUTH string is: copied by the service into the secret named by auth_secret.")
+    auth_secret: str | None = Field(default=None, description="The secret resource (sec-…) that holds the AUTH string.")
+    server_ca_cert: str | None = Field(default=None, description="The server certificate a TLS client verifies against; public, not a secret.")
 
 
 class QueueResource(Resource):
@@ -130,6 +157,7 @@ class SecretResource(Resource):
     kind: Literal[ResourceKind.secret] = ResourceKind.secret
     resource_name: str = Field(description="The secret's full name at the provider; versions are read and written with the caller's own identity.")
     versions: int = Field(default=0, description="Versions this service wrote: 1 when a value was generated.")
+    purpose: str | None = Field(default=None, description="database_password or cache_auth when the service made the secret for a request's own credential.")
 
 
 class ClusterResource(Resource):

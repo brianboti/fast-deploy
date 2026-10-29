@@ -12,7 +12,7 @@ def test_design_test_one_ubuntu_vm_with_four_cpus_and_sixteen_gb_and_nothing_abo
     """A caller says "give me one Ubuntu VM with 4 CPUs and 16 GB RAM": no repository, no source, no Dockerfile, no workflow, no tests, no build."""
     orchestrator, fake = make_orchestrator(tmp_path)
     request = InfrastructureRequest.model_validate({"provider": "gcp", "region": "us-central1", "compute": {"cpu": 4, "memory_gb": 16, "os": "ubuntu"}})
-    assert set(request.model_dump(exclude_none=True)) == {"provider", "region", "labels", "compute"}
+    assert set(request.model_dump(exclude_none=True)) == {"provider", "region", "labels", "compute", "access"} and request.access == []
     response = orchestrator.provision(request, principal(orchestrator.config), wait_seconds=45)
     assert response.status == RequestStatus.READY and response.provider == "gcp" and response.region == "us-central1"
     [machine] = response.resources.compute
@@ -38,11 +38,14 @@ def test_full_request_provisions_in_dependency_order_and_returns_endpoints(tmp_p
     assert [disk.attached_to for disk in response.resources.storage] == [machine.id for machine in response.resources.compute]
     assert [machine.attached_disks for machine in response.resources.compute] == [[disk.id] for disk in response.resources.storage]
     assert len(response.endpoints.public_ips) == 2 and response.endpoints.database_host == "10.20.0.3" and response.endpoints.database_port == 5432
-    assert response.credentials.database_password and len(response.credentials.database_password) > 20
+    [secret] = response.resources.secret
+    assert response.credentials.database_password is None and response.credentials.database_password_secret == secret.id == response.resources.database[0].password_secret
+    assert secret.name == "analytics-db-password" and secret.purpose == "database_password" and secret.versions == 1
+    password = fake.sql_users["analytics-db-" + response.request_id[:6]][0]["password"]
     assert response.resources.network[0].private_services_range == "analytics-net-services"
     status = orchestrator.status(response.request_id, who)
-    assert status.status == RequestStatus.READY and status.credentials is None, "the password is delivered once"
-    assert json.dumps(orchestrator.state.get_request(response.request_id), default=str).count(response.credentials.database_password) == 0
+    assert status.status == RequestStatus.READY and status.credentials is None, "credentials are named once, in the creating response"
+    assert json.dumps(orchestrator.state.get_request(response.request_id), default=str).count(password) == 0
 
 
 def test_provisioning_failure_cleans_up_what_was_created_and_reports_it(tmp_path):
@@ -55,7 +58,9 @@ def test_provisioning_failure_cleans_up_what_was_created_and_reports_it(tmp_path
     assert cleanup["policy"] == "delete" and len(cleanup["deleted"]) == 5 and cleanup["remaining"] == []
     assert not fake.instances and not fake.disks and not fake.networks and not fake.subnets and not fake.firewalls and not fake.peerings
     statuses = {resource.kind.value: resource.status for resource in response.resources.all()}
-    assert statuses == {"network": ResourceStatus.DELETED, "storage": ResourceStatus.DELETED, "compute": ResourceStatus.DELETED, "database": ResourceStatus.FAILED}
+    assert statuses == {"network": ResourceStatus.DELETED, "storage": ResourceStatus.DELETED, "compute": ResourceStatus.DELETED, "database": ResourceStatus.FAILED,
+                        "secret": ResourceStatus.PENDING}, "the password's secret was never reached"
+    assert not fake.secrets and not fake.sql_users
     assert [operation.kind for operation in response.operations] == ["provision", "cleanup"] and [operation.status for operation in response.operations] == ["FAILED", "SUCCEEDED"]
 
 
@@ -85,10 +90,11 @@ def test_destroy_in_reverse_order_then_destroyed(tmp_path):
     fake.calls.clear()
     destroyed = orchestrator.destroy(response.request_id, who, wait_seconds=45)
     deletes = [call[1] for call in fake.calls if call[0] == "DELETE"]
-    order = ["sqladmin" if "sqladmin" in url else "instances" if "/instances/" in url else "disks" if "/disks/" in url else "network" for url in deletes]
-    assert order.index("sqladmin") < order.index("instances") < order.index("disks") < order.index("network")
+    order = ["secret" if "secretmanager" in url else "sqladmin" if "sqladmin" in url else "instances" if "/instances/" in url else "disks" if "/disks/" in url else "network"
+             for url in deletes]
+    assert order.index("secret") < order.index("sqladmin") < order.index("instances") < order.index("disks") < order.index("network")
     assert destroyed.status == RequestStatus.DESTROYED and all(resource.status == ResourceStatus.DELETED for resource in destroyed.resources.all())
-    assert not fake.instances and not fake.disks and not fake.sql and not fake.networks and not fake.peerings
+    assert not fake.instances and not fake.disks and not fake.sql and not fake.networks and not fake.peerings and not fake.secrets
     with pytest.raises(InfrastructureError) as caught:
         orchestrator.destroy(response.request_id, who)
     assert caught.value.code == ErrorCode.INVALID_STATE
@@ -171,7 +177,7 @@ def test_plan_and_validate_create_nothing(tmp_path):
     orchestrator, fake = make_orchestrator(tmp_path)
     who = principal(orchestrator.config)
     plan = orchestrator.plan(InfrastructureRequest.model_validate(FULL_REQUEST), who)
-    assert [item.kind for item in plan.planned] == ["network", "storage", "storage", "compute", "compute", "database"] and plan.warnings
+    assert [item.kind for item in plan.planned] == ["network", "storage", "storage", "compute", "compute", "database", "secret"] and plan.warnings
     checked = orchestrator.validate(InfrastructureRequest.model_validate(FULL_REQUEST), who)
     assert checked.valid and checked.problems == [] and checked.request.compute.count == 2
     bad = orchestrator.validate(InfrastructureRequest.model_validate({"region": "europe-west1", "compute": {"cpu": 3, "memory_gb": 1}, "database": {}}), who)
@@ -188,7 +194,7 @@ def test_primitives_compose_and_share_one_lifecycle(tmp_path):
     machine = machines.resources.compute[0]
     assert machine.status == ResourceStatus.READY and fake.instances[(machine.zone, machine.name)]["networkInterfaces"][0]["network"].endswith("/shared-net")
     database = orchestrator.create_database(who, region="us-central1", network_id=network_id, wait_seconds=45)
-    assert database.status == RequestStatus.READY and database.credentials.database_password and database.endpoints.database_host == "10.20.0.3"
+    assert database.status == RequestStatus.READY and database.credentials.database_password_secret and database.endpoints.database_host == "10.20.0.3"
     assert orchestrator.get_resource(network_id, who).resource.private_services_range == "shared-net-services"
     disk = orchestrator.create_storage(who, region="us-central1", size_gb=50, wait_seconds=45)
     attached = orchestrator.attach_storage(disk.resources.storage[0].id, machine.id, who)

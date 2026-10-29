@@ -1,15 +1,16 @@
 """GCPProvider: the CloudProvider interface implemented with Google Cloud, composed from the per-kind adapters."""
-from ...models.errors import ErrorCode
+from ...models.errors import ErrorCode, InfrastructureError
 from ...models.request import RESOURCE_KINDS, InfrastructureRequest
 from ...models.response import CostEstimate, Health, PlannedResource, Usage
 from ..base import CloudProvider, Problem, ProvisionContext
-from . import pricing, translate
+from . import connect, pricing, translate
 from .api import COMPUTE, GcpApi
 from .auth import GoogleToken
 from .cache import GcpCache
 from .cluster import GcpCluster
 from .compute import GcpCompute
 from .database import GcpDatabase
+from .iam import GcpIam
 from .loadbalancer import GcpLoadBalancer
 from .monitoring import GcpMonitoring
 from .network import GcpNetwork
@@ -27,6 +28,8 @@ TCP_LB_MAPPING = ("compute.instanceGroups.insert, compute.firewalls.insert, comp
 class GCPProvider(CloudProvider):
     name = "gcp"
     supported_kinds = RESOURCE_KINDS
+    stoppable_kinds = ("compute", "database")
+    grantable_kinds = ("compute", "storage", "secret", "queue")
 
     def __init__(self, settings, api: GcpApi | None = None, token=None):
         self.settings = settings
@@ -41,6 +44,7 @@ class GCPProvider(CloudProvider):
         self.cluster = GcpCluster(self.api, settings)
         self.load_balancer = GcpLoadBalancer(self.api, settings, self.network)
         self.monitoring = GcpMonitoring(self.api)
+        self.iam = GcpIam(self.api)
 
     # ---- knowledge
     def regions(self) -> list[str]:
@@ -58,8 +62,10 @@ class GCPProvider(CloudProvider):
         elif request.zone and request.zone not in zones:
             problems.append(Problem(ErrorCode.INVALID_REGION, f"Zone {request.zone} is not in {request.region}; zones: {', '.join(zones)}", "zone"))
         for group in request.compute_groups():
+            software = translate.software(group, self.settings)
+            found = translate.compute_problems(group) + ([software] if isinstance(software, Problem) else [])
             problems.extend(Problem(item.code, f"{group.group_name}: {item.message}" if len(request.compute_groups()) > 1 else item.message, item.field)
-                            for item in translate.compute_problems(group))
+                            for item in found)
         if request.database:
             version = translate.database_version(request.database)
             if isinstance(version, Problem):
@@ -95,11 +101,15 @@ class GCPProvider(CloudProvider):
         for group in groups:
             machine, cpu, memory = translate.compute_shape(group)
             accelerator = {"type": translate.ACCELERATORS[group.accelerator.type], "count": group.accelerator.count} if group.accelerator else None
+            software = translate.software(group, self.settings)
+            if isinstance(software, Problem):  # a stored request whose profile the operator has since removed
+                raise InfrastructureError(software.code, software.message, {"field": software.field})
             for index in range(1, group.count + 1):
                 planned.append(PlannedResource(kind="compute", name=f"{prefix}-{group.group_name}-{index}", index=index, provider_mapping="compute.instances.insert",
-                                               spec={"group": group.group_name, "zone": zone, "machine_type": machine, "cpu": cpu, "memory_gb": memory, "image": translate.image(group.os),
-                                                     "boot_disk_gb": group.boot_disk_gb, "public_ip": group.public_ip, "accelerator": accelerator,
-                                                     "network": own_network or group.network_id or self.settings.default_network}))
+                                               spec={"group": group.group_name, "zone": zone, "machine_type": machine, "cpu": cpu, "memory_gb": memory,
+                                                     "image": software["image"], "profile": software["profile"], "secure_boot": software["secure_boot"],
+                                                     "boot_disk_gb": software["boot_disk_gb"], "public_ip": group.public_ip, "accelerator": accelerator,
+                                                     "max_run_hours": group.max_run_hours, "network": own_network or group.network_id or self.settings.default_network}))
         if request.database:
             label, api_version = translate.database_version(request.database)
             mapping = ("compute.addresses.insert, servicenetworking.connections.create, " if private_database else "") + "sqladmin.instances.insert, sqladmin.databases.insert, sqladmin.users.insert"
@@ -121,6 +131,12 @@ class GCPProvider(CloudProvider):
         for secret in request.secrets():
             mapping = "secretmanager.secrets.create" + (", secretmanager.secrets.addVersion" if secret.generate_value else "")
             planned.append(PlannedResource(kind="secret", name=f"{prefix}-{secret.name}", provider_mapping=mapping, spec={"secret": secret.name, "versions": 1 if secret.generate_value else 0}))
+        # The request's own credentials go into secrets it owns, never through a response: the generated database password,
+        # and the cache's AUTH string copied from the provider.
+        for owner, secret, purpose in (("database", "db-password", "database_password"), ("cache", "cache-auth", "cache_auth")):
+            if getattr(request, owner) is not None:
+                planned.append(PlannedResource(kind="secret", name=f"{prefix}-{secret}", provider_mapping="secretmanager.secrets.create, secretmanager.secrets.addVersion",
+                                               spec={"secret": secret, "versions": 1, "purpose": purpose}))
         if request.cluster:
             planned.append(PlannedResource(kind="cluster", name=f"{prefix}-cluster", provider_mapping="container.clusters.create",
                                            spec={"location": zone, "machine_type": translate.machine_type(request.cluster.node_cpu, request.cluster.node_memory_gb),
@@ -241,6 +257,44 @@ class GCPProvider(CloudProvider):
 
     def delete_load_balancer(self, resource, ctx):
         self.load_balancer.delete(resource, ctx)
+
+    # ---- optional capabilities
+    def stop_compute(self, resource, ctx):
+        return self.compute.stop(resource, ctx)
+
+    def start_compute(self, resource, ctx):
+        return self.compute.start(resource, ctx)
+
+    def stop_database(self, resource, ctx):
+        return self.database.stop(resource, ctx)
+
+    def start_database(self, resource, ctx):
+        return self.database.start(resource, ctx)
+
+    def grant(self, resource, member, level, ctx) -> list[str]:
+        if resource.kind.value == "compute" and resource.instance_id is None:
+            resource = self.compute.get(resource)  # the IAP tunnel grant is bound to the numeric id
+        return self.iam.grant(resource, member, level)
+
+    def revoke(self, resource, member, ctx) -> None:
+        if resource.kind.value == "compute" and resource.instance_id is None:
+            resource = self.compute.get(resource)
+        self.iam.revoke(resource, member)
+
+    def put_secret_value(self, resource, value, ctx):
+        return self.secret.put_value(resource, value, ctx)
+
+    def read_cache_auth(self, resource) -> str:
+        return self.cache.read_auth(resource)
+
+    def connect_info(self, resource, resources):
+        return connect.info(resource, resources, self.api.project)
+
+    def busy_cores(self, resource, minutes: int) -> float | None:
+        return self.monitoring.busy_cores(resource, minutes)
+
+    def profile_infos(self) -> list[dict]:
+        return [{"name": name, "description": profile.description, "accelerator": profile.accelerator} for name, profile in sorted(self.settings.profiles.items())]
 
     def resource_health(self, resource) -> Health:
         return self.monitoring.health(self.refresh(resource))
