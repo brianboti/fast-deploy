@@ -315,6 +315,10 @@ class FakeGcpApi(GcpApi):
 
     def _clusters(self, found, method, body, params):
         cluster = body["cluster"]
+        for field in ("network", "subnetwork"):
+            if "/" in (cluster.get(field) or ""):  # as GKE does: these fields take a name only
+                raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f'Google Cloud refused the request: Malformed value for {field} field: "{cluster[field]}".',
+                                          {"http_status": 400})
         self.clusters[(found.group(1), cluster["name"])] = {**cluster, "status": "RUNNING", "endpoint": "35.201.0.7", "currentMasterVersion": "1.31.1-gke.1", "createTime": "2026-10-28T10:00:00Z",
                                                             "masterAuth": {"clusterCaCertificate": "RkFLRSBDQQ=="},
                                                             "currentNodeCount": cluster["nodePools"][0]["initialNodeCount"]}
