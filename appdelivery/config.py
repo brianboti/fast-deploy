@@ -80,6 +80,8 @@ class Principal(StrictModel):
 
 class Config(StrictModel):
     database: str = "appdelivery.db"
+    log_file: str | None = None
+    workers: int = Field(default=4, ge=1, le=32, description="Rollouts, rollbacks and removals run in this many background workers.")
     cloudinfra: InfraSettings
     gcp: GcpSettings
     environments: dict[str, Environment] = Field(min_length=1)

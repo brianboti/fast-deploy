@@ -214,20 +214,38 @@ Decision 5 in section 12.
 ## 5. A release's life
 
 ```
-PLANNED ──deploy──► AWAITING_APPROVAL ──approve──► ROLLING_OUT ──► RUNNING ──rollback──► ROLLED_BACK
-   │ (environments without approval skip it)            │                │
-   │                                                    └─► FAILED (machines done were restored)
-   └─ refused (no change anywhere)                                       └─remove──► REMOVED
+deploy ──► AWAITING_APPROVAL ──approve──► ROLLING_OUT ──► RUNNING ──(a newer release runs)──► SUPERSEDED
+  │ (environments without approval skip it)   │             │  │                                 │
+  │                                           │             │  └─remove──► REMOVING ──► REMOVED  │
+  │                                           │             └─rollback──► ROLLING_BACK ──► ROLLED_BACK, and the
+  └─ refused (nothing recorded)               └─► FAILED          │       previous one RUNNING again ◄────┘
+                                                  (the group is   └─► ROLLBACK_FAILED       (REMOVE_FAILED likewise)
+                                                   back on one version)
 ```
 
 - `plan_release` checks everything in sections 2 and 3, resolves the bindings to names (never values), lists the
-  machines and the release it would replace. Pure: nothing on a machine, nothing recorded.
-- `deploy_release` records the release; in an environment with `require_approval` it waits for `approve_release` by a
-  principal with `can_approve` other than the one that asked.
-- `rollback_release` starts `previous` again on the same machines. `remove_release` stops and deletes the container
-  and leaves the machine as `cloudinfra` made it.
-- After a restart of the service, a release left `ROLLING_OUT` becomes `FAILED` with "interrupted"; the next deploy or
-  rollback puts each machine in a known state, since the script is idempotent by container name.
+  machines and names the release it would replace (`replaces`). Pure: nothing on a machine, nothing recorded.
+- `deploy_release` records the release and, without approval, starts the rollout in a background worker; in an
+  environment with `require_approval` it waits for `approve_release` by a principal with `can_approve`, of the same
+  team, other than the one that asked. One release per request and group moves or waits at a time.
+- **The rollout** checks everything again as it is when it starts (time may have passed since the plan or the
+  approval: a withdrawn grant, a stopped request), refuses if the group's machines are not the ones recorded, verifies
+  the image's attestation where the environment asks, reads the secrets, and deploys one machine at a time. The first
+  machine that is unhealthy, fails its pull or cannot be reached stops it: the host script has already put that machine
+  back on its previous container, the machines done before it are rolled back (or emptied, for a group's first
+  release), the rest are `SKIPPED`, and the release is `FAILED` with `ROLLOUT_FAILED`. A group is never left half on
+  one version. On success the release it replaced becomes `SUPERSEDED`.
+- `rollback_release` is offered only for the release running on its group when its machines still keep the previous
+  container (`can_roll_back`): not for a group's first release, and not for a release a rollback restored, whose
+  machines keep nothing earlier. It starts `previous` again on each machine; the rolled-back release becomes
+  `ROLLED_BACK` and the previous one `RUNNING` again.
+- `remove_release` deletes both containers from each machine and leaves the machine as `cloudinfra` made it.
+- A container's log, kept when a machine fails, has every secret value the release read replaced by `[redacted]`: an
+  application may print its own environment.
+- After a restart of the service, a release left `ROLLING_OUT` becomes `FAILED`, `ROLLING_BACK` becomes
+  `ROLLBACK_FAILED` and `REMOVING` becomes `REMOVE_FAILED`, each with the cause `INTERRUPTED`; a machine left
+  `DEPLOYING` is `FAILED` and one never reached is `SKIPPED`. The host script is idempotent by container name, so the
+  next deploy puts each machine right. A release waiting for approval keeps waiting.
 
 ## 6. Interface
 
@@ -249,8 +267,11 @@ and a small REST API, bearer token per principal stored as a SHA-256 hash, rate 
 
 ## 7. State
 
-One SQLite file, its own, never `cloudinfra`'s: `releases` (request, environment, image digest, bindings by name,
-status, previous, approver), `targets` (release, resource id, status, times, last error), `events` (audit). No secret
+One SQLite file, its own, never `cloudinfra`'s, in WAL mode, written by one process (a lock file next to it):
+`releases` (request, group, environment, team, who asked and who approved, status, image digest, previous,
+`can_roll_back`, the request as sent with bindings by name, the plan's binding sources and warnings, the last error),
+`targets` (release, position, resource id, name, zone, status, times, last error, the container's scrubbed log), and
+`events` (audit). JSON log lines on the `appdelivery` logger carry the release id and identity. No secret
 value is ever stored, logged or returned; a test reads the database and the log after a release with a secret binding
 and finds no trace of the value, as `cloudinfra`'s does for the database password.
 
@@ -409,10 +430,12 @@ On a new branch from `main`, in this order; each step ends green on `python -m p
    stdin, rollback, remove, status, and values that look like shell staying values. Then run on a real Container-Optimized
    OS machine (deploy, redeploy, rollback, a broken image restored, a reboot that brings back only the current version,
    remove), with the results in [DELIVERY-SPIKE.md](DELIVERY-SPIKE.md) section 8.
-7. **State and the orchestrator.** `state.py` (section 7, SQLite WAL, one writer, a process lock) and `releases.py`:
-   deploy one machine at a time, stop at the first failure, roll back what was done, rollback and remove, approval,
-   recovery after a restart. A test reads the database and the log after a release with a secret binding and finds no
-   trace of the value.
+7. **State and the orchestrator.** Built 2026-10-29. `state.py` (section 7, with the process lock), `events.py` (JSON
+   log lines, secret-looking fields redacted) and `releases.py` (`Delivery`: plan, deploy, approve, rollout one machine
+   at a time with undo, rollback, remove, get, list, running with an optional live check of each machine, recovery).
+   Tested on a fake fleet that answers as the host script did on the real machine (`tests/appdelivery/fleet_fakes.py`),
+   including a test that reads the database file, the log and every answer after a release with a secret binding and a
+   failed machine, and finds neither the secret's value nor the environment's token.
 8. **Server.** `server.py`: FastAPI with the MCP endpoint and the REST routes of section 6, bearer tokens as hashes,
    rate limits, an audit event per call, the catalog checked against the registered tools at start.
 9. **Image and docs.** `Dockerfile.appdelivery` (Python, pinned gcloud CLI and Cosign 3.1.x),
