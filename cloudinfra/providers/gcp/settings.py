@@ -36,6 +36,10 @@ class GcpSettings(BaseModel):
     # On a laptop: the service account to impersonate for every provider call, so the operator's own identity is never used
     # directly. On a Google Cloud machine the attached service account is used and this is ignored.
     impersonate_service_account: str | None = Field(default=None, pattern=SERVICE_ACCOUNT.pattern)
+    # On a laptop with a person's sign-in: the project Google counts and bills the API calls against (X-Goog-User-Project).
+    # Without one, Google counts them against gcloud's own shared project, whose per-minute limits are soon reached (a
+    # grant failed that way on 2026-10-29). Needs serviceusage.services.use on that project; a service account needs none.
+    quota_project: str | None = Field(default=None, pattern=PROJECT.pattern)
     # Zones for regions the adapter does not know; the adapter's own table covers the common ones.
     zones: dict[str, list[str]] = Field(default_factory=dict)
     # Software profiles a request may name; images are the platform team's, never a caller's.

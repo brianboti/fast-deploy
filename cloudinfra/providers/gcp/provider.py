@@ -33,7 +33,7 @@ class GCPProvider(CloudProvider):
 
     def __init__(self, settings, api: GcpApi | None = None, token=None):
         self.settings = settings
-        self.api = api or GcpApi(settings.project_id, token or GoogleToken(impersonate=settings.impersonate_service_account))
+        self.api = api or GcpApi(settings.project_id, token or GoogleToken(impersonate=settings.impersonate_service_account), quota_project=settings.quota_project)
         self.compute = GcpCompute(self.api, settings)
         self.storage = GcpStorage(self.api, settings, self.compute)
         self.network = GcpNetwork(self.api, settings)

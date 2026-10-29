@@ -1,3 +1,17 @@
+# Unreleased: calls to Google are counted against the operator's project and tried again when rate limited
+
+Found while running the delivery service against `cloudinfra` on a laptop (docs/DELIVERY-SPIKE.md section 8): an access
+grant failed with HTTP 429 from Resource Manager, because Google counted the calls of a person's gcloud sign-in against
+gcloud's own shared project.
+
+- **`providers.gcp.quota_project`.** Optional. When set, every call carries `X-Goog-User-Project`, so Google counts and
+  bills it against that project. For a laptop with a person's sign-in; the person needs `serviceusage.services.use` on
+  it. A service account on Google Cloud needs neither.
+- **Retries.** A call Google rate limited (429, refused before it ran) is tried again up to four times, after Google's
+  `Retry-After` or after 1, 2 and 4 seconds, at most 30; a read answered 5xx likewise, a write not (it may have been
+  done). Each retry is a `provider_retry` event.
+- No version change: the version is tied across three files, one of them `labdeploy`'s, which is not to be touched.
+
 # 1.37.1: what the review of release A found
 
 A review of 1.37.0 read the change from ten angles; a separate verifier checked every candidate against the code and the
