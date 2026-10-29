@@ -405,6 +405,12 @@ class Delivery:
             groups.append(entry)
         return {"request_id": request_id, "groups": groups}
 
+    def service_status(self, version: str) -> dict:
+        environments = {name: {"service_account": item.service_account, "allowed_registries": item.allowed_registries, "require_attestation": item.require_attestation,
+                               "require_approval": item.require_approval} for name, item in self.config.environments.items()}
+        return {"status": "OK", "version": version, "cloudinfra": self.config.cloudinfra.url, "environments": environments,
+                "moving": len(self.state.releases_in(MOVING))}
+
     # ---- restarts
     def recover(self) -> list[dict]:
         """No worker survives a restart: a release left moving is marked as interrupted, so it can be deployed, rolled back

@@ -240,6 +240,8 @@ deploy ──► AWAITING_APPROVAL ──approve──► ROLLING_OUT ──► 
   machines keep nothing earlier. It starts `previous` again on each machine; the rolled-back release becomes
   `ROLLED_BACK` and the previous one `RUNNING` again.
 - `remove_release` deletes both containers from each machine and leaves the machine as `cloudinfra` made it.
+- A release belongs to a request and a group, whatever its environment: those are the machines. A production release
+  on the machines a dev release runs on replaces it. Give each environment its own `cloudinfra` request.
 - A container's log, kept when a machine fails, has every secret value the release read replaced by `[redacted]`: an
   application may print its own environment.
 - After a restart of the service, a release left `ROLLING_OUT` becomes `FAILED`, `ROLLING_BACK` becomes
@@ -264,6 +266,11 @@ and a small REST API, bearer token per principal stored as a SHA-256 hash, rate 
 | `rollback_release` | `POST /releases/{id}/rollback` | `can_deploy` |
 | `remove_release` | `DELETE /releases/{id}` | `can_deploy` |
 | `get_service_status` | `GET /status` | read |
+
+Also `GET /healthz` (no authentication) and `GET /catalog`. The tools, their inputs, outputs, errors and safety hints
+are in [DELIVERY-CATALOG.md](DELIVERY-CATALOG.md), generated from `appdelivery/catalog.py`; a test holds the
+registered tools and the document to the records. The MCP endpoint answers only the Host headers in `allowed_hosts`
+(DNS rebinding protection) and refuses any argument a tool does not take, naming the one most likely meant.
 
 ## 7. State
 
@@ -436,9 +443,13 @@ On a new branch from `main`, in this order; each step ends green on `python -m p
    Tested on a fake fleet that answers as the host script did on the real machine (`tests/appdelivery/fleet_fakes.py`),
    including a test that reads the database file, the log and every answer after a release with a secret binding and a
    failed machine, and finds neither the secret's value nor the environment's token.
-8. **Server.** `server.py`: FastAPI with the MCP endpoint and the REST routes of section 6, bearer tokens as hashes,
-   rate limits, an audit event per call, the catalog checked against the registered tools at start.
-9. **Image and docs.** `Dockerfile.appdelivery` (Python, pinned gcloud CLI and Cosign 3.1.x),
-   a generated `docs/DELIVERY-CATALOG.md`, and a README line.
+8. **Server.** Built 2026-10-29. `server.py` (FastAPI, the MCP endpoint with `StrictMCP`, the REST routes of section 6,
+   a lifespan that takes the process lock, recovers interrupted releases and drains the workers on shutdown),
+   `auth.py` (bearer tokens as hashes, rate limits per identity and per failing address, an audit event per call),
+   `catalog.py` and `tools.py` (the nine tools from their records), `app-delivery catalog`, and the generated
+   [DELIVERY-CATALOG.md](DELIVERY-CATALOG.md). Tested over HTTP with the fake fleet: authentication and throttling, a
+   refused Host header, the MCP handshake and tool schemas against the catalog, a release from plan to remove through
+   MCP, structured errors, approval by another principal, the REST routes, and audit events.
+9. **Image and docs.** `Dockerfile.appdelivery` (Python, pinned gcloud CLI and Cosign 3.1.x), and a README line.
 10. **Real run.** The acceptance of section 11, phase 1, on the company's project, with
     `tests/integration/appdelivery/` marked `integration` and skipped unless `APPDELIVERY_INTEGRATION=1`.

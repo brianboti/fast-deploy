@@ -2,6 +2,11 @@
 # No token or key lives here: each environment names the variable that holds its cloudinfra token, and Google credentials
 # come from the host (the metadata server on Google Cloud, else gcloud), which needs Token Creator on each service account.
 database: appdelivery.db
+# log_file: /var/lib/appdelivery/service.log    # one JSON line per event, release id and identity on each, secrets redacted
+# workers: 4                                     # rollouts, rollbacks and removals run in this many background workers
+# allowed_hosts: ["127.0.0.1:*", "localhost:*"]  # Host headers the MCP endpoint answers; add the service's own name behind a proxy
+# rate_limit_per_minute: 120                     # requests per caller identity
+# auth_failures_per_minute: 20                   # failed sign-ins per client address
 cloudinfra:
   url: https://infra.internal.example.com      # the infrastructure layer, read over its REST API
   # timeout_seconds: 30
