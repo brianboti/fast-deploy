@@ -139,15 +139,17 @@ CATALOG: tuple[ToolSpec, ...] = (
               Input("profile", "A software profile the operator defines, such as a GPU image with signed drivers; list_resource_kinds names them. Instead of os."),
               Input("boot_disk_gb", "Boot disk in GB (default 20; 50 with GPUs, which need at least 40)."),
               Input("public_ip", "Give each machine a public address (default false)."), NETWORK_ID,
-              Input("accelerator", "GPUs per machine: t4, l4, a100 or h100; the machine family follows the type. Drivers come with a GPU profile; on a plain image the Application "
-                    "Layer installs them."),
+              Input("accelerator", "GPUs per machine: t4, l4, a100 or h100; the machine family follows the type. Drivers come with a GPU profile (accelerator: required); "
+                    "on any other image the Application Layer installs them."),
               Input("accelerator_count", "GPUs per machine (default 1); each type offers fixed counts."),
               Input("autostop_idle_minutes", "Stop a machine after this many idle minutes (15 to 1440); the operator may set a default for machines with GPUs."),
               Input("max_run_hours", "Stop each machine after it has run this many hours since its last start (1 to 2880)."),
-              Input("lifetime_hours", "Hours until the request expires and stops (1 to 8760); the operator's default when omitted, if there is one."), ZONE, NAME, LABELS, WAIT),
+              Input("lifetime_hours", "Hours until the request expires and stops (1 to 8760); the operator's default when omitted, if there is one. A lifetime ends "
+                    "in a destroy, so it needs can_destroy."), ZONE, NAME, LABELS, WAIT),
              RESPONSE, ("INVALID_COMPUTE_CONFIGURATION", "INVALID_NETWORK_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
-             f"Needs can_provision. Machines get OS Login (IAM) and no service account; vTPM and integrity monitoring on, and Secure Boot on unless GPUs run a plain image, "
-             f"whose driver installation needs it off. The requester is granted login when the operator maps it to an identity. {OWNERSHIP}",
+             f"Needs can_provision, and can_destroy with lifetime_hours. Machines get OS Login (IAM) and no service account; vTPM and integrity monitoring on, and Secure "
+             f"Boot on unless GPUs run an image without their drivers, whose driver installation needs it off. The requester is granted login when the operator maps "
+             f"it to an identity. {OWNERSHIP}",
              "Compute Engine: compute.instances.insert with an E2 machine type (N1, G2, A2 or A3 with a GPU), a public image family or the profile's image, and "
              "scheduling.maxRunDuration with instanceTerminationAction STOP for max_run_hours; compute.instances.get after."),
     ToolSpec("get_compute", "Compute", "Get a machine", "One machine's live state: status, addresses, machine type, attached disks.",
@@ -157,10 +159,14 @@ CATALOG: tuple[ToolSpec, ...] = (
              READ_ERRORS, "Read-only; selects by the ownership labels, so a caller with scope own sees its own machines only.",
              "Compute Engine: compute.instances.aggregatedList with a label filter."),
     ToolSpec("resize_compute", "Compute", "Resize a machine",
-             "Change a machine's CPUs and memory: it is stopped, resized and started; its addresses stay unless the provider reassigns an ephemeral one.",
+             "Change a machine's CPUs and memory: a running machine is stopped, resized and started again; a stopped one is resized and stays stopped. A machine "
+             "with GPUs keeps them and their machine family, where a family of fixed shapes gives the smallest that covers what is asked. Its addresses stay "
+             "unless the provider reassigns an ephemeral one.",
              (RESOURCE_ID, Input("cpu", "The new number of virtual CPUs.", True), Input("memory_gb", "The new memory, in GB.", True), WAIT),
              RESOURCE, ("INVALID_COMPUTE_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", "LIMIT_EXCEEDED", "PERMISSION_DENIED", "PROVIDER_ERROR", "PROVIDER_UNAVAILABLE", "OPERATION_TIMEOUT"),
-             "Needs can_provision. The machine is unavailable while it restarts.", "Compute Engine: compute.instances.stop, setMachineType, start."),
+             "Needs can_provision. A running machine is unavailable while it restarts; refused while its request is stopping, starting or otherwise changing, and "
+             "refused before the machine is touched when its family cannot take the shape.",
+             "Compute Engine: compute.instances.stop, setMachineType, start."),
     ToolSpec("delete_compute", "Compute", "Delete a machine", "Delete one machine. Its boot disk goes with it; disks attached with attach_storage stay.",
              (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS, "Needs can_destroy.", "Compute Engine: compute.instances.delete."),
     # ---- storage
@@ -207,8 +213,10 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Cloud SQL Admin: sqladmin.instances.insert, databases.insert, users.insert; Service Networking for a private address; Secret Manager for the password."),
     ToolSpec("get_database", "Database", "Get a database", "Host, port, state, version, tier and storage of one database instance.", (RESOURCE_ID,), RESOURCE, READ_ERRORS,
              "Read-only; never returns a password.", "Cloud SQL Admin: sqladmin.instances.get."),
-    ToolSpec("delete_database", "Database", "Delete a database", "Turn deletion protection off and delete the instance with its data and backups.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
-             "Needs can_destroy. Irreversible: the data goes with the instance.", "Cloud SQL Admin: sqladmin.instances.patch (deletion protection off), sqladmin.instances.delete."),
+    ToolSpec("delete_database", "Database", "Delete a database", "Turn deletion protection off and delete the instance with its data and backups, and the secret "
+             "that holds its password.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
+             "Needs can_destroy. Irreversible: the data goes with the instance.", "Cloud SQL Admin: sqladmin.instances.patch (deletion protection off), sqladmin.instances.delete; "
+             "Secret Manager for the password's secret."),
     # ---- cache
     ToolSpec("create_cache", "Cache", "Create a cache", "Create a managed in-memory cache (Redis) on a network this service created: private, authenticated, encrypted in transit. "
              "Its AUTH string is copied into a secret the request owns (cache-auth), which the request's access members read.",
@@ -219,8 +227,8 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Memorystore for Redis: redis.projects.locations.instances.create (direct peering, AUTH on, TLS) and instances.getAuthString; Secret Manager for the copy."),
     ToolSpec("get_cache", "Cache", "Get a cache", "Host, port, state, version and memory of one cache.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only; never returns the AUTH string.",
              "Memorystore for Redis: redis.projects.locations.instances.get."),
-    ToolSpec("delete_cache", "Cache", "Delete a cache", "Delete one cache with its data.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS, "Needs can_destroy. The data goes with it.",
-             "Memorystore for Redis: redis.projects.locations.instances.delete."),
+    ToolSpec("delete_cache", "Cache", "Delete a cache", "Delete one cache with its data, and the secret that holds its AUTH string.", (RESOURCE_ID, WAIT), RESOURCE,
+             DELETE_ERRORS, "Needs can_destroy. The data goes with it.", "Memorystore for Redis: redis.projects.locations.instances.delete; Secret Manager for the AUTH string's secret."),
     # ---- queue
     ToolSpec("create_queue", "Queue", "Create a queue", "Create a message topic and, by default, one pull subscription of the same name.",
              (REGION, Input("queue_name", "The queue's short name, part of the topic's name.", True), PROVIDER,
@@ -294,8 +302,9 @@ CATALOG: tuple[ToolSpec, ...] = (
              (Input("request", "The InfrastructureRequest.", True), WAIT), RESPONSE + " With credentials naming the secrets that hold a database password or a cache AUTH string.",
              ("INVALID_COMPUTE_CONFIGURATION", "INVALID_STORAGE_CONFIGURATION", "INVALID_NETWORK_CONFIGURATION", "INVALID_DATABASE_CONFIGURATION", "INVALID_ACCESS", "NOT_FOUND",
               "INVALID_STATE", *COMMON_ERRORS),
-             "Needs can_provision. Refused above the limits or the cost ceiling; at most max_active_requests_per_principal live requests. Access members are granted on "
-             f"the resources once they exist, never on the project; a grant that fails is reported on the member, not as a failed request. {OWNERSHIP}",
+             "Needs can_provision, and can_destroy for a request with a lifetime, which ends in a destroy. Refused above the limits or the cost ceiling; at most "
+             "max_active_requests_per_principal live requests. Access members are granted on the resources once they exist, never on the project; a grant that fails "
+             f"is reported on the member, not as a failed request. {OWNERSHIP}",
              "Every operation of the primitives above, in dependency order."),
     ToolSpec("get_infrastructure_status", "Infrastructure", "Get a request's status", "A request's status, resources, endpoints and operations, each resource refreshed from the provider "
              "once provisioning is over.", (REQUEST_ID, WAIT), RESPONSE, READ_ERRORS, "Read-only.", "The get operation of every resource kind."),
@@ -324,13 +333,15 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Grant a person, group or service account access to what a request created, or revoke it: login on its machines through the provider's IAM and an "
              "identity-aware tunnel, reading its secrets (the database password and cache AUTH string among them), using its buckets and queues.",
              (REQUEST_ID, Input("action", "grant or revoke.", True),
-              Input("member", "user:, group: or serviceAccount: and an email address in a domain the operator allows.", True),
+              Input("member", "user:, group: or serviceAccount: and an email address in a domain the operator allows, or a principal's own identity.", True),
               Input("level", "use (default: log in, read and write data) or admin (administrator login, manage secret versions and objects).")),
-             RESPONSE + " The access block shows each member's status and the resources granted on; each resource's connect block says how to reach it.",
+             RESPONSE + " The access block shows each member's status (RECORDED when nothing in the request has an access policy) and the resources granted on; each "
+             "resource's connect block says how to reach it.",
              ("INVALID_REQUEST", "INVALID_ACCESS", "INVALID_STATE", "NOT_FOUND", "PERMISSION_DENIED", "PROVIDER_AUTH_FAILED", "PROVIDER_PERMISSION_DENIED", "PROVIDER_CONFLICT",
               "PROVIDER_UNAVAILABLE", "PROVIDER_ERROR"),
              "Needs can_provision. Grants go on each resource's own policy and never on the project; what a member needs at project level is named in each connect "
-             "block as a prerequisite for the platform team. Members are limited to the operator's allowed domains and max_members.",
+             "block as a prerequisite for the platform team. Members are limited to the operator's allowed domains, principals' identities and max_members. A grant "
+             "needs a READY or STOPPED request; a revoke also reaches what a failed request or a failed destroy left behind.",
              "Compute Engine: instances getIamPolicy and setIamPolicy (roles/compute.osLogin or osAdminLogin); IAP: the machine's iap_tunnel policy "
              "(roles/iap.tunnelResourceAccessor); Secret Manager, Cloud Storage and Pub/Sub: the resource's getIamPolicy and setIamPolicy.",
              hint="changes_cloud"),

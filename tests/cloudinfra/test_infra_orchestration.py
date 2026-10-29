@@ -40,7 +40,7 @@ def test_full_request_provisions_in_dependency_order_and_returns_endpoints(tmp_p
     assert len(response.endpoints.public_ips) == 2 and response.endpoints.database_host == "10.20.0.3" and response.endpoints.database_port == 5432
     [secret] = response.resources.secret
     assert response.credentials.database_password is None and response.credentials.database_password_secret == secret.id == response.resources.database[0].password_secret
-    assert secret.name == "analytics-db-password" and secret.purpose == "database_password" and secret.versions == 1
+    assert secret.name == f"analytics-db-password-{response.request_id[:6]}" and secret.purpose == "database_password" and secret.versions == 1
     password = fake.sql_users["analytics-db-" + response.request_id[:6]][0]["password"]
     assert response.resources.network[0].private_services_range == "analytics-net-services"
     status = orchestrator.status(response.request_id, who)

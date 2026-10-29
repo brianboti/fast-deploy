@@ -5,7 +5,7 @@ stays null until someone checks them against those pages and writes the date. Su
 tiers, egress, snapshots, backups beyond the first copy and operations are outside the estimate.
 """
 from ...models.response import CostEstimate, CostLine, PlannedResource
-from .translate import machine_shape
+from .translate import disk_type, machine_shape
 
 HOURS_PER_MONTH = 730
 PRICING = {
@@ -105,6 +105,28 @@ def line(planned: PlannedResource) -> CostLine:
     else:
         monthly, basis = 0.0, "a network, its subnet and firewall rules cost nothing while idle"
     return CostLine(resource=planned.name, kind=planned.kind, monthly_usd=round(monthly, 2), basis=basis, stopped_usd=stopped(planned, round(monthly, 2)))
+
+
+def as_planned(resource) -> PlannedResource:
+    """A resource as it exists now, in the shape an estimate prices: its machine type after a resize, the disk it has, the
+    GPUs it carries, whatever request or profile it came from."""
+    kind = resource.kind.value
+    spec = {}
+    if kind == "compute":
+        gpu, _, count = (resource.accelerator or "").rpartition(" x")
+        spec = {"machine_type": resource.machine_type, "boot_disk_gb": resource.boot_disk_gb, "public_ip": bool(resource.public_ip),
+                "accelerator": {"type": gpu, "count": int(count)} if gpu else None}
+    elif kind == "storage":
+        spec = {"type": resource.type, "size_gb": resource.size_gb, "disk_type": disk_type(resource.performance or "balanced")}
+    elif kind == "database":
+        spec = {"tier": resource.tier, "high_availability": resource.high_availability, "storage_gb": resource.storage_gb}
+    elif kind == "cache":
+        spec = {"tier": resource.tier, "memory_gb": resource.memory_gb}
+    elif kind == "cluster":
+        spec = {"machine_type": resource.machine_type, "node_count": resource.node_count, "node_disk_gb": resource.node_disk_gb or 0}
+    elif kind == "secret":
+        spec = {"versions": resource.versions}
+    return PlannedResource(kind=kind, name=resource.name, provider_mapping="existing", spec=spec)
 
 
 def estimate(planned: list[PlannedResource]) -> CostEstimate:

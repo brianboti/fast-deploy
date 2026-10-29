@@ -11,7 +11,7 @@ allowed_hosts:
 # auth_failures_per_minute: 20                    # failed sign-ins per client address
 # workers: 4                                      # provisioning and destruction run in this many background workers
 # cleanup_on_failure: true                        # delete what a failed request created; false keeps it for inspection and says so
-# sweep_interval_seconds: 300                     # how often expiry and idle stop are checked; 0 turns the sweeper off
+# sweep_interval_seconds: 300                     # how often expiry and idle stop are checked; 0 turns the sweeper off, and with it lifetimes and idle stop
 # return_database_password: false                 # true also returns a generated database password once; it always goes to a secret
 labels:                                           # the operator's labels on every resource the service creates
   environment: development
@@ -37,7 +37,7 @@ limits:                                           # cost protection, checked bef
   # idle_cpu_cores: 0.5                           # idle: the busiest CPU sample in the window used fewer cores than this
   # max_keep_awake_hours: 72
 access:                                           # who may be granted access to what the service creates; never project IAM
-  allowed_domains: [example.com]                  # members must be in these domains; empty allows only principals' identities
+  allowed_domains: [example.com]                  # members must be in these domains or be a principal's identity
   # grant_requester: true                         # grant the requesting principal's identity as admin on what it creates
   # max_members: 10                               # members per request, the requester included
 providers:
@@ -62,7 +62,7 @@ principals:                                       # the Application Layer system
   - name: app-layer
     token_sha256: "REPLACE_WITH_THE_HASH_FROM_cloud-infra_token"
     can_provision: true
-    can_destroy: true
+    can_destroy: true                             # also needed to set a lifetime, which ends in a destroy
     # identity: serviceAccount:app-layer@your-app-project.iam.gserviceaccount.com   # granted on what this caller creates
     # scope: own                                  # own: its own requests; all: every caller's (an operator identity)
     # max_monthly_cost_usd: 100                   # a tighter ceiling than limits.max_monthly_cost_usd for this caller

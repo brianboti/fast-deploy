@@ -90,7 +90,8 @@ class Config(StrictModel):
     labels: dict[str, str] = Field(default_factory=dict, description="The operator's labels on every resource (cost center, environment).")
     limits: Limits = Field(default_factory=Limits)
     access: AccessSettings = Field(default_factory=AccessSettings)
-    sweep_interval_seconds: int = Field(default=300, ge=0, le=86400, description="How often the sweeper checks expiry and idleness; 0 turns it off.")
+    sweep_interval_seconds: int = Field(default=300, ge=0, le=86400, description="How often the sweeper checks expiry and idleness; 0 turns it off, and with "
+                                                                                 "it every lifetime and idle stop, which requests then may not ask for.")
     return_database_password: bool = Field(default=False, description="Also return a generated database password once in the creating response; "
                                                                        "it is always written to a secret the request owns.")
     providers: Providers
@@ -103,6 +104,9 @@ class Config(StrictModel):
             raise ValueError("principal names must be unique")
         if not any((self.providers.gcp,)):
             raise ValueError("providers: configure at least one provider (gcp)")
+        timed = [name for name in ("default_lifetime_hours", "max_lifetime_hours", "default_autostop_idle_minutes") if getattr(self.limits, name)]
+        if timed and self.sweep_interval_seconds == 0:
+            raise ValueError(f"limits.{timed[0]} needs the sweeper, which sweep_interval_seconds: 0 turns off")
         return self
 
     def configured_providers(self) -> list[str]:

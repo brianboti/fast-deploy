@@ -25,7 +25,7 @@ cleanup on failure and the destroy in reverse, so an adapter gets all of that wi
 | `get_storage(resource)` / `delete_storage(resource, ctx)` | status, destroy | As above; a bucket with objects is refused with `PROVIDER_CONFLICT`, never emptied. |
 | `create_compute(spec, planned, ctx, network)` | provisioning | A machine in the given network (or the operator's default), with the ownership labels; no key, script or service account from the request. |
 | `get_compute(resource)` / `list_compute(labels)` | status, `list_compute` | The machine now; every machine carrying the labels. |
-| `resize_compute(resource, cpu, memory_gb, ctx)` | `resize_compute` | Change the shape; refuse one the provider has not got with `INVALID_COMPUTE_CONFIGURATION`. |
+| `resize_compute(resource, cpu, memory_gb, ctx)` | `resize_compute` | Change the shape, keeping a machine's GPUs and the family they need; refuse one the provider has not got with `INVALID_COMPUTE_CONFIGURATION`. `resize_problem(resource, cpu, memory_gb)` says so before any provider call, so a refused resize never touches the machine (the base class answers None). |
 | `delete_compute(resource, ctx)` | destroy, cleanup | Delete the machine. |
 | `create_database(spec, planned, ctx, network)` | provisioning | The instance, one database, one user with `ctx.database_password`; return `(DatabaseResource, password)`. Encrypted-only, backups on, deletion protection on. |
 | `get_database(resource)` / `delete_database(resource, ctx)` | status, destroy | As above; delete turns deletion protection off first. |
@@ -47,12 +47,14 @@ service keeps working: a request with access members still provisions, and the m
 | Method | Called by | Must |
 |---|---|---|
 | `stoppable_kinds`, `stop_<kind>(resource, ctx)`, `start_<kind>(resource, ctx)` | `control_infrastructure`, the sweeper | List the kinds that stop and start; stop or start one resource and return it as the provider sees it afterwards (`STOPPED`, `READY`). The base class's `stop`/`start` dispatch by kind. |
-| `grantable_kinds`, `grant(resource, member, level, ctx)` | provisioning, `manage_infrastructure_access` | Grant a member on one resource this service created, through the resource's own policy, and return the roles granted (none for a resource with no policy of its own, such as a disk). Never a project-wide grant. |
+| `grantable_kinds`, `takes_grants(kind, storage_type)`, `grant(resource, member, level, ctx)` | provisioning, `manage_infrastructure_access` | Say which resources have a policy of their own (a bucket does, a disk does not; the base class answers by kind); grant a member on one resource this service created, through that policy, and return the roles granted. Never a project-wide grant. A member of a request with nothing that takes grants is `RECORDED`. |
 | `revoke(resource, member, ctx)` | `manage_infrastructure_access`, destroy | Remove the member from the roles this adapter grants on that resource, and from nothing else; a resource already gone is not an error. |
 | `put_secret_value(resource, value, ctx)` | provisioning | Write a value the service generated (the database password) or copied (the cache AUTH string) as a new secret version; never return or log it. |
 | `read_cache_auth(resource)` | provisioning | The cache's AUTH string, to be copied into the request's `cache-auth` secret. |
-| `connect_info(resource, resources)` | every answer | A `ConnectInfo` (commands, prerequisites, notes) for a READY or STOPPED resource, from what exists; commands name secrets, never values. Pure. |
-| `busy_cores(resource, minutes)` | the sweeper | The busiest CPU sample of a machine in the window, in cores, or `None` when nothing was recorded. |
+| `connect_info(resource, resources)` | every answer | A `ConnectInfo` (commands, prerequisites, notes) for a READY or STOPPED resource, from what exists: `resources` holds the request's own and those of other requests it names (a network joined, the machine a disk is attached to). Commands name secrets, never values. Pure. |
+| `busy_cores(resource, minutes)` | the sweeper | The busiest CPU sample of that one machine in the window (by its own id, never a namesake's), in cores, or `None` when nothing was recorded. |
+| `boot_disk_gb(group)` | validation | The boot disk a group's machines get, which the adapter's software may raise; the per-request disk limit counts it. The base class returns what was asked. |
+| `estimate_resources(resources)` | `get_resource_cost` | The monthly cost of resources as they exist now (after a resize, whatever request or profile they came from), from list prices. |
 | `profile_infos()` | `list_resource_kinds`, `get_service_status` | The operator's software profiles: name, description, accelerator rule (`required`, `optional`, `none`). |
 
 Every method raises `InfrastructureError` with a code and keeps the provider's own message in `details`; nothing else
@@ -63,9 +65,10 @@ lets one out.
 owner, the labels every resource gets, and the generated database password (never logged; `repr` hides it; dropped when
 the provisioning worker ends).
 
-`plan` also plans the secrets a request's own credentials go into: `<name>-db-password` with a database and
-`<name>-cache-auth` with a cache, each with `spec.purpose` (`database_password`, `cache_auth`). The orchestrator links them
-(`password_secret`, `auth_secret`) and writes their values after the database or cache exists.
+`plan` also plans the secrets a request's own credentials go into: `<name>-db-password-<6 hex>` with a database and
+`<name>-cache-auth-<6 hex>` with a cache (the request id's start, since secret ids are unique in a project and request names
+are not), each with `spec.purpose` (`database_password`, `cache_auth`). The orchestrator links them (`password_secret`,
+`auth_secret`), writes their values after the database or cache exists, and deletes the secret with its database or cache.
 
 ## GCPProvider
 
@@ -78,7 +81,7 @@ Google API; a test fails if any other module of the core does.
 | `api.py` | `GcpApi`: one REST client with the bearer token, HTTP error → `InfrastructureError` translation (401 auth, 403 permission or quota, 404, 409/412 conflict, 429 and 5xx unavailable), and the operation waits for Compute Engine (`operations.wait`), Cloud SQL (poll) and Service Networking (poll). The single seam the unit tests replace with a fake. |
 | `translate.py` | Generic → Google shapes: `machine_type(cpu, memory_gb)` (E2 predefined when the ratio matches, E2 custom within 0.5 to 8 GB per vCPU, shared-core for one CPU), image families, disk types, database versions and tiers, the IAP range, zone table, labels and descriptions. |
 | `pricing.py` | Approximate list prices for us-central1 and the estimate; `verified` is null until someone checks them. |
-| `compute.py` | Instances: insert with OS Login, no service account, shielded VM (Secure Boot on, except on a plain image with GPUs, whose driver installation needs it off), GPUs as guest accelerators with terminate-on-maintenance, `maxRunDuration` with `instanceTerminationAction: STOP` for `max_run_hours`; get (numeric id, last start), aggregated list by labels, stop, start, setMachineType, delete, attachDisk. |
+| `compute.py` | Instances: insert with OS Login, no service account, shielded VM (Secure Boot on, except on an image without GPU drivers on a machine with GPUs, whose driver installation needs it off), GPUs as guest accelerators with terminate-on-maintenance, `maxRunDuration` with `instanceTerminationAction: STOP` for `max_run_hours`; get (numeric id, last start), aggregated list by labels, stop, start (or resume, for a suspended instance), setMachineType in the machine's GPU family, delete, attachDisk. |
 | `cache.py` | Memorystore for Redis: direct peering on the network, AUTH on, TLS, basic or standard-HA tier; the server certificate, and the AUTH string read once (`instances.getAuthString`) to be copied into the request's secret. |
 | `queue.py` | Pub/Sub: topic and pull subscription. |
 | `secret.py` | Secret Manager: container with automatic replication, optional generated first version, and `addVersion` for a value the service writes. |
@@ -89,7 +92,7 @@ Google API; a test fails if any other module of the core does.
 | `storage.py` | Persistent disks and buckets (uniform access, public access prevention). |
 | `network.py` | Custom-mode VPC, one subnet with Private Google Access, firewall rules (internal, IAP SSH, public ports), Private Services Access (reserved range and peering) for private databases, teardown in the right order. |
 | `database.py` | Cloud SQL: instance (Enterprise edition, SSD, backups, encrypted-only, deletion protection, private or public address), database, user; stop and start through `settings.activationPolicy` (`NEVER`, `ALWAYS`); delete after turning protection off. |
-| `monitoring.py` | Health from state; CPU, memory and disk utilisation from Cloud Monitoring; a machine's busiest CPU sample in cores, for idle stop. |
+| `monitoring.py` | Health from state; CPU, memory and disk utilisation from Cloud Monitoring, a machine's series selected by its numeric id (by name and zone before the id is known); its busiest CPU sample in cores, for idle stop. |
 | `settings.py` | The operator's settings, software profiles among them: an image (a family or a pinned image), Secure Boot, a minimum boot disk and an accelerator rule each, and the profile GPU groups get by default. |
 | `provider.py` | `GCPProvider(CloudProvider)`: composes the above, plans names, shapes and credential secrets, reads quota. |
 
@@ -107,12 +110,12 @@ Google API; a test fails if any other module of the core does.
 | `load_balancer: http` | unmanaged instance group with a named port, firewall from 130.211.0.0/22 and 35.191.0.0/16, HTTP health check, `EXTERNAL_MANAGED` backend service, URL map, target HTTP proxy, global address, global forwarding rule |
 | `load_balancer: tcp` | the same instance group and firewall, regional TCP health check, `EXTERNAL` regional backend service, regional address and forwarding rule |
 | `compute.os` | `ubuntu-os-cloud/ubuntu-2404-lts-amd64`, `debian-cloud/debian-12`, `rocky-linux-cloud/rocky-linux-9` image families |
-| `compute.profile` | the profile's image; Secure Boot as the profile says; the boot disk raised to the profile's minimum. A signed-driver GPU image is built outside the service, with Google's `cuda_installer.pyz build_image`, and pinned in a family the profile names |
+| `compute.profile` | the profile's image; Secure Boot as the profile says, except a GPU machine on a profile that is not a GPU profile (`accelerator: required`), which carries no driver and boots with it off; the boot disk raised to the profile's minimum. A signed-driver GPU image is built outside the service, with Google's `cuda_installer.pyz build_image`, and pinned in a family the profile names |
 | `compute.accelerator` boot disk | 50 GB unless asked; at least 40 GB, Google's minimum for drivers and a toolkit |
 | `compute.max_run_hours` | `scheduling.maxRunDuration` with `instanceTerminationAction: STOP` |
-| stop and start | `instances.stop` and `instances.start`; Cloud SQL `instances.patch` with `settings.activationPolicy` `NEVER` or `ALWAYS` |
+| stop and start | `instances.stop` and `instances.start` (`instances.resume` for a suspended instance); Cloud SQL `instances.patch` with `settings.activationPolicy` `NEVER` or `ALWAYS` |
 | `access` | `getIamPolicy` and `setIamPolicy` on the instance (`roles/compute.osLogin` or `osAdminLogin`), on `projects/<number>/iap_tunnel/zones/<zone>/instances/<id>` (`roles/iap.tunnelResourceAccessor`), on the secret, the bucket (`storage.buckets.getIamPolicy`/`setIamPolicy`), the topic and the subscription |
-| credentials | Secret Manager secrets `<name>-db-password` and `<name>-cache-auth`, written with `addVersion` |
+| credentials | Secret Manager secrets `<name>-db-password-<6 hex>` and `<name>-cache-auth-<6 hex>`, written with `addVersion` |
 | `compute.public_ip` | one `ONE_TO_ONE_NAT` access config |
 | `storage.type: persistent`, `performance` | `pd-standard`, `pd-balanced`, `pd-ssd` disk in the machine's zone; `attachDisk` with `autoDelete: false` |
 | `storage.type: object` | a bucket `<project>-<name>-<6 hex>` in the region, STANDARD class |

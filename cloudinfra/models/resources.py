@@ -167,6 +167,7 @@ class ClusterResource(Resource):
     endpoint: str | None = Field(default=None, description="The control plane's address; credentials come from the provider's IAM, never from this service.")
     node_count: int
     machine_type: str
+    node_disk_gb: int | None = Field(default=None, description="Each node's disk, in GB; priced in estimates.")
     node_pool: str | None = None
     network: str | None = None
 

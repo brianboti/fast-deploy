@@ -22,11 +22,17 @@ def validate(request: InfrastructureRequest, config, provider: CloudProvider) ->
         problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_instances_per_request} machines per request; {machines} asked", "compute.count"))
     if request.lifetime and limits.max_lifetime_hours and request.lifetime.hours > limits.max_lifetime_hours:
         problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_lifetime_hours} hours of lifetime; {request.lifetime.hours} asked", "lifetime.hours"))
+    if request.lifetime and config.sweep_interval_seconds == 0:
+        problems.append(Problem(ErrorCode.INVALID_REQUEST, "This service applies no lifetimes: the operator turned its sweeper off (sweep_interval_seconds: 0)",
+                                "lifetime"))
     for group in groups:
         where = f"compute[{group.group_name}]" if len(groups) > 1 else "compute"
         if (group.autostop or group.max_run_hours) and "compute" not in provider.stoppable_kinds:
             problems.append(Problem(ErrorCode.INVALID_COMPUTE_CONFIGURATION, f"The {provider.name} adapter cannot stop machines: autostop and max_run_hours are not available",
                                     f"{where}.autostop" if group.autostop else f"{where}.max_run_hours"))
+        elif group.autostop and config.sweep_interval_seconds == 0:
+            problems.append(Problem(ErrorCode.INVALID_REQUEST, "This service stops no idle machines: the operator turned its sweeper off (sweep_interval_seconds: 0)",
+                                    f"{where}.autostop"))
         if group.cpu > limits.max_cpu_per_instance:
             problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_cpu_per_instance} CPUs per machine; {group.cpu} asked", f"{where}.cpu"))
         if group.memory_gb > limits.max_memory_gb_per_instance:
@@ -38,7 +44,7 @@ def validate(request: InfrastructureRequest, config, provider: CloudProvider) ->
             problems.append(Problem(ErrorCode.INVALID_NETWORK_CONFIGURATION, "compute.public_ip needs network.public_access: true on the request's network", f"{where}.public_ip"))
         if group.network_id and request.network is not None:
             problems.append(Problem(ErrorCode.INVALID_NETWORK_CONFIGURATION, "compute.network_id and a network block in the same request: choose one", f"{where}.network_id"))
-    boot = sum(group.boot_disk_gb * group.count for group in groups)
+    boot = sum(provider.boot_disk_gb(group) * group.count for group in groups)  # as planned: a profile may raise it
     if request.storage:
         targets = [group for group in groups if request.storage.group in (None, group.group_name)]
         disks = sum(group.count for group in targets) if request.storage.type == "persistent" and groups else 1

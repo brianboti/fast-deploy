@@ -136,7 +136,8 @@ class AccessGrant(Model):
     """One member of a request's access list and what became of its grants."""
     member: str
     level: Literal["use", "admin"]
-    status: Literal["PENDING", "GRANTED", "PARTIAL", "FAILED", "REVOKED"]
+    status: Literal["PENDING", "GRANTED", "PARTIAL", "FAILED", "REVOKED", "RECORDED"] = Field(
+        description="RECORDED: nothing in the request has an access policy to grant on, such as a request of disks only.")
     resources: list[str] = Field(default_factory=list, description="The resources granted on.")
     error: ErrorDetail | None = None
     updated_at: str | None = None

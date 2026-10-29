@@ -6,7 +6,7 @@ from ..models.request import InfrastructureRequest
 from ..models.resources import ID_PREFIX, ResourceKind
 from ..models.response import CostEstimate, PlannedResource
 from ..providers.base import CloudProvider, Problem, ProvisionContext
-from . import lifecycle
+from . import access, lifecycle
 
 
 def context(request: InfrastructureRequest, request_id: str, owner: str | None, config, provider: CloudProvider) -> ProvisionContext:
@@ -54,7 +54,7 @@ def cost_problem(estimate: CostEstimate, config, principal) -> Problem | None:
     return None
 
 
-def warnings(request: InfrastructureRequest, planned: list[PlannedResource], config=None, provider: CloudProvider | None = None) -> list[str]:
+def warnings(request: InfrastructureRequest, planned: list[PlannedResource], config=None, provider: CloudProvider | None = None, principal=None) -> list[str]:
     found = []
     groups = request.compute_groups()
     if request.storage and request.storage.type == "persistent" and not groups:
@@ -67,15 +67,17 @@ def warnings(request: InfrastructureRequest, planned: list[PlannedResource], con
         chosen = next((item.spec for item in planned if item.kind == "compute" and item.spec.get("group") == group.group_name), {})
         if group.accelerator:
             shape = f" as {chosen['machine_type']} ({chosen['cpu']} CPUs, {chosen['memory_gb']} GB)" if chosen else ""
-            if chosen.get("profile"):
+            if chosen.get("drivers"):
                 software = f"drivers come with profile {chosen['profile']}"
             else:
-                software = ("the image has no GPU driver: the Application Layer installs it, and Secure Boot is off so that driver can load "
+                image = f"profile {chosen['profile']} has" if chosen.get("profile") else "the image has"
+                software = (f"{image} no GPU driver: the Application Layer installs it, and Secure Boot is off so that driver can load "
                             "(an operator profile with signed drivers keeps it on)")
             found.append(f"{group.group_name}: {group.accelerator.count} {group.accelerator.type} per machine{shape}; {software}; "
                          "the machine restarts rather than migrates on host maintenance")
         if chosen.get("boot_disk_gb") and chosen["boot_disk_gb"] > group.boot_disk_gb:
-            found.append(f"{group.group_name}: the boot disk is {chosen['boot_disk_gb']} GB, the minimum of profile {chosen.get('profile')}, not the {group.boot_disk_gb} GB asked")
+            asked = f", not the {group.boot_disk_gb} GB asked" if "boot_disk_gb" in group.model_fields_set else ""
+            found.append(f"{group.group_name}: the boot disk is {chosen['boot_disk_gb']} GB, the minimum of profile {chosen.get('profile')}{asked}")
         if chosen.get("autostop_idle_minutes") and group.autostop is None:
             found.append(f"{group.group_name}: the operator's default stops these machines after {chosen['autostop_idle_minutes']} idle minutes; "
                          "control_infrastructure keep_awake suspends it")
@@ -90,7 +92,11 @@ def warnings(request: InfrastructureRequest, planned: list[PlannedResource], con
     if request.database and request.database.public_access:
         found.append("the database has a public address; connections are encrypted-only, and the Application Layer must manage its authorized networks")
     if request.database:
-        found.append("the database password is generated and written to the request's db-password secret, which its access members can read; no response carries it")
+        returned = config is not None and config.return_database_password
+        found.append("the database password is generated and written to the request's db-password secret, which its access members can read; "
+                     + ("the creating response also carries it, once" if returned else "no response carries it"))
+        if config is not None and not returned and not access.members(request, principal, config):
+            found.append("nobody is granted the db-password secret yet: grant a member with manage_infrastructure_access, or only project-level IAM reads it")
     if request.cache:
         found.append("the cache's AUTH string is copied into the request's cache-auth secret, which its access members can read")
     if request.cluster:
@@ -101,8 +107,8 @@ def warnings(request: InfrastructureRequest, planned: list[PlannedResource], con
         found.append(f"the load balancer is public on port {request.load_balancer.port}; it serves plain {request.load_balancer.type}, and TLS termination is a later feature")
     found.extend(time_warnings(request, config))
     if request.access and provider is not None:
-        takes = [kind for kind in request.kinds() if kind in provider.grantable_kinds]
-        if not takes and not ((request.database or request.cache) and "secret" in provider.grantable_kinds):
+        takes = [kind for kind in request.kinds() if provider.takes_grants(kind, request.storage.type if kind == "storage" else None)]
+        if not takes and not ((request.database or request.cache) and provider.takes_grants("secret")):
             found.append(f"access: nothing in this request takes grants (the {provider.name} adapter grants on {', '.join(provider.grantable_kinds) or 'nothing'}); "
                          "the members are recorded only")
     return found
@@ -117,7 +123,7 @@ def time_warnings(request: InfrastructureRequest, config) -> list[str]:
         return []
     on_expiry = request.lifetime.on_expiry if request.lifetime else "stop"
     retention = config.limits.expiry_retention_days
-    if on_expiry == "destroy" or retention == 0:
+    if lifecycle.destroys_at_expiry(on_expiry, retention):
         then = "everything is destroyed"
     else:
         then = f"machines and databases stop, and everything is destroyed {retention} days later"

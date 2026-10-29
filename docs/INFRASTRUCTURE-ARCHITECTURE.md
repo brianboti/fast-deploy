@@ -126,12 +126,18 @@ REQUEST ──► VALIDATE ──► PLAN ──► PROVISION ──► READY �
   order; what could not be deleted is named in `error.details.cleanup.remaining`. The operator may keep failed resources for
   inspection (`cleanup_on_failure: false`); the response says so.
 - **Query.** Status refreshes each resource from the provider; health reads the provider's state; usage reads Cloud
-  Monitoring; cost re-prices the stored request. A provider that cannot be reached leaves a resource `UNKNOWN` with the
-  error, never a crash.
+  Monitoring; cost prices the resources as they exist now (after a resize, whatever request or profile they came from),
+  each stopped one at its stopped rate. A provider that cannot be reached leaves a resource `UNKNOWN` with the error, never
+  a crash.
 - **Destroy.** Reverse order: load balancer (its pieces, forwarding rule first), cluster, secrets, queues, cache, database
   (deletion protection off, then delete), machines, disks, buckets (only when empty), network (rules, peering, subnet,
   network). `DESTROYED`, or `DESTROY_FAILED` with the remaining resources, and the call can
   be repeated once the cause is fixed. A network that still carries machines or databases, of any request, is refused.
+  A single delete (`delete_database`, `delete_compute`, …) takes a database's or a cache's credential secret with it, takes
+  the resource off the members' access list, and makes the request `DESTROYED`, its access `REVOKED`, when it was the last.
+- **Changes wait for each other.** Stop, start, destroy, a resize and a single delete are refused (`INVALID_STATE`, reason
+  `changing`) while another of them, or an idle stop, is still running on the request; work that finishes late never
+  overwrites a status set meanwhile, since every final status is written only from the one the work began from.
 
 ```
 READY ──stop──► STOPPING ──► STOPPED ──start──► STARTING ──► READY
@@ -152,8 +158,10 @@ policy.
 
 - **Members.** `access` on a request lists people, groups or service accounts (`user:`, `group:`, `serviceAccount:` and an
   email address) with a level, `use` or `admin`. The requester is added as `admin` when the operator maps its principal to
-  an `identity` (`access.grant_requester`, on by default). A member must be in one of the operator's
-  `access.allowed_domains` (with none, only principals' identities may be named); `access.max_members` caps the list.
+  an `identity` (`access.grant_requester`, on by default). A member must be a principal's identity or be in one of the
+  operator's `access.allowed_domains`; `access.max_members` caps the list. A database's password goes only to its secret
+  unless the operator sets `return_database_password`, so a database is refused when the operator's settings let the
+  service grant access to no one at all.
   Email addresses compare without regard to case, as Google's do, and are kept in lowercase.
 - **Grants**, applied once the resources exist:
 
@@ -170,10 +178,14 @@ policy.
 - **Project-level prerequisites** are the platform team's, once: a role with `compute.projects.get` and
   `compute.instances.get` so that gcloud finds a machine, `cloudsql.client` for the Cloud SQL Auth Proxy,
   `container.clusterViewer` for cluster credentials. Each connect block names the ones it needs.
-- **Failures and changes.** A grant that fails is recorded on the member (`FAILED` or `PARTIAL`, with the error); the
-  request stays READY and `manage_infrastructure_access` grants again. A revoke removes the member from every resource of
-  the request, including a policy a failed grant reached; a lower level removes the old roles first; destroy takes members
-  out of the tunnel policy, which outlives the machine. The service only ever grants or removes the roles above.
+- **Failures and changes.** A grant that fails is recorded on the member (`FAILED` or `PARTIAL`, with the error), as is
+  one that met a resource still being created; the request stays READY and `manage_infrastructure_access` grants again. A
+  member of a request where nothing has a policy of its own (disks only) is `RECORDED`, not granted. A revoke removes the
+  member from every resource of the request, including a policy a failed grant reached, and also on a request that failed
+  or whose destroy failed; a revoke that fails is a failed operation. A level change removes the old roles first and
+  grants the new ones wherever the member had access. Destroy takes members out of the tunnel policy, which outlives the
+  machine. The roles recorded on a resource are kept when the provider's view of it is saved (after a refresh, a resize,
+  a stop). The service only ever grants or removes the roles above.
 - **The service's own identity** needs the `getIamPolicy` and `setIamPolicy` permissions of those resource types (Compute
   Engine instances, IAP tunnel instances, secrets, buckets, topics and subscriptions); a custom role that lists exactly
   those is the narrowest way to give them.
@@ -184,30 +196,46 @@ Nothing stops or expires by itself unless a request or the operator asks for it,
 surprise.
 
 - **Stop and start** (`control_infrastructure`). Machines and databases stop (a Cloud SQL instance through its activation
-  policy); machines stop before their database and start after it. While stopped, boot disks, database storage and
-  addresses, buckets, caches, clusters and load balancers keep billing: the `lifecycle` block lists them, and
-  `get_resource_cost` gives `current_monthly_usd` at the stopped rate.
+  policy; a suspended machine is resumed); machines stop before their database and start after it. A request is STOPPED
+  only when nothing in it that can stop is still running, whatever was asked: a start that fails on an idle-stopped
+  machine leaves a request whose other machines run READY. While stopped, boot disks, database storage and addresses,
+  buckets, caches, clusters and load balancers keep billing: the `lifecycle` block lists them, and `get_resource_cost`
+  gives `current_monthly_usd` at the stopped rate.
 - **Maximum run time** (`compute.max_run_hours`). Google's own `maxRunDuration` with `instanceTerminationAction: STOP`:
   each start begins the count again, and it holds even when this service is down.
 - **Expiry** (`lifetime`, or the operator's `limits.default_lifetime_hours`, else `limits.max_lifetime_hours`). Hours from
-  creation, at most `limits.max_lifetime_hours` with extensions. Warnings 48 and 2 hours before (an `expiry_warning` audit event, and the
-  `warnings` of every answer). At expiry, `on_expiry: stop` (the default) stops machines and databases and keeps
-  everything for `limits.expiry_retention_days` (7) before destroying it; `destroy`, or a retention of 0, deletes at once.
-  Nothing is marked stopped while a machine is in the middle of a change or its state cannot be read: the next check
-  tries again. `extend` adds hours, also after expiry while the data is kept, once a stop or start in progress has
-  finished; a request that expired starts again only after an extend.
+  creation, at most `limits.max_lifetime_hours` with extensions. Every lifetime ends in a destroy, so a request that sets
+  one needs `can_destroy`; an expiry the operator sets applies to every caller. Warnings 48 and 2 hours before (an
+  `expiry_warning` audit event, and the `warnings` of every answer). At expiry, `on_expiry: stop` (the default) stops
+  machines and databases and keeps everything for `limits.expiry_retention_days` (7) before destroying it; a request
+  with nothing that can stop is kept the same way, and nothing says it stopped. `destroy`, or a retention of 0, deletes at
+  once; while that destroy is refused (a network another request still uses), what can stop is stopped. A request that
+  failed, or whose destroy failed, is destroyed at its expiry. Nothing is marked stopped while a machine is in the middle
+  of a change or its state cannot be read. An attempt that fails is tried again after a wait that doubles each time
+  (5 minutes, at most a day), so a lasting failure adds a failed operation a day, not one a sweep. `extend` adds hours,
+  also after expiry while the data is kept, once a stop or start in progress has finished; a request that expired starts
+  again only after an extend.
 - **Idle stop** (`compute.autostop`, or the operator's `limits.default_autostop_idle_minutes` for machines with GPUs or
   for all). A machine stops when its busiest CPU sample in the window used fewer than `limits.idle_cpu_cores` cores (0.5),
-  at least one window after it last started; no samples is not idleness. `keep_awake` suspends it for up to
-  `limits.max_keep_awake_hours`. GPU utilisation is not measured, so a job that keeps the GPUs busy with little CPU needs
-  `keep_awake`.
-- **The sweeper** runs these checks every `sweep_interval_seconds` (300; 0 turns it off) as its own principal,
-  `cloudinfra-sweeper`, which no token maps to; each action it takes is an operation and an audit event like any other.
-  It decides on each request as it is at that moment, under the request's lock, which every change to a request's
-  status, lifecycle or access list also takes. One service process per state file, as SQLite already requires.
-- **Restarts.** No worker survives one. At start the service puts a request left STOPPING or STARTING back to READY or
-  STOPPED, as the provider sees it. A request left PROVISIONING becomes FAILED and one left DESTROYING becomes
-  DESTROY_FAILED, so either can be destroyed again. Operations still RUNNING are marked interrupted.
+  at least one window after it last started; no samples is not idleness. The samples are the machine's own, selected by its
+  numeric id, never those of a machine of the same name in another zone. Each machine is judged and stopped on its own:
+  one that cannot be measured or stopped never keeps the others running, and its next attempt waits as expiry's does.
+  `keep_awake` suspends it for up to `limits.max_keep_awake_hours`. GPU utilisation is not measured, so a job that keeps
+  the GPUs busy with little CPU needs `keep_awake`.
+- **The sweeper** runs these checks every `sweep_interval_seconds` (300) as its own principal, `cloudinfra-sweeper`, which no
+  token maps to; each action it takes is an operation and an audit event like any other. It decides on each request as it
+  is at that moment, under the request's lock, which every change to a request's status, lifecycle, access list or
+  recorded grants also takes; the stops and destroys it decides on run in the workers, so the lock is never held while the
+  provider works, and a sweep reports what it started. 0 turns the sweeper off, and with it every lifetime and idle stop:
+  requests may then not ask for them, and the operator's time defaults are refused at start.
+- **One process per state file.** The server holds an exclusive lock on `<database>.lock` from start to the end of its
+  shutdown; a second process on the same file refuses to start, rather than take over, as interrupted, work the first is
+  still doing. At shutdown, work under way finishes before the lock goes; work not yet started is dropped, and its request
+  is recovered at the next start.
+- **Restarts.** At start the service puts a request left STOPPING or STARTING back to READY or STOPPED, as the provider
+  sees it. A request left PROVISIONING becomes FAILED, and what it had created is deleted in the workers, as after any
+  failure (unless `cleanup_on_failure` is off); one left DESTROYING becomes DESTROY_FAILED, so it can be destroyed again.
+  Operations still RUNNING are marked interrupted.
 
 ## State
 
@@ -222,11 +250,11 @@ database was created and finds no trace of the password.
 | Boundary | How |
 |---|---|
 | Caller identity | Bearer token per principal, stored as a SHA-256 hash, compared in constant time; identity comes from the credential, never a parameter |
-| Authorization | `can_provision` for tools that create or change, `can_destroy` for deletes; `scope: own` sees only its own requests (another caller's request is NOT_FOUND, not merely forbidden); `scope: all` for an operator identity |
+| Authorization | `can_provision` for tools that create or change, `can_destroy` for deletes and for a lifetime, which ends in one; `scope: own` sees only its own requests (another caller's request is NOT_FOUND, not merely forbidden); `scope: all` for an operator identity |
 | Budgets | Per-identity request budget, per-address failed-login budget (429 with Retry-After) |
 | Provider credential | Taken by the adapter from the host (metadata server, or gcloud with optional impersonation); never configured in a file, never accepted from a caller, never visible to the Application Layer |
 | Access to what is created | Grants only on the resources a request created, through each resource's own policy, never on the project; members limited to the operator's domains and count; only a fixed list of roles is ever granted or removed |
-| Least privilege on what is created | Machines get OS Login (IAM) and no service account, vTPM and integrity monitoring, and Secure Boot except on a plain image whose GPU drivers need it off; SSH only from the identity-aware proxy range; subnets only in private ranges; buckets with uniform access and public-access prevention; databases encrypted-only with deletion protection and backups, turned off only by an explicit destroy; caches private with AUTH and TLS; cluster nodes with logging, monitoring and read-only storage scopes only, shielded, workload identity on; load balancers open only the backend port to the provider's health checkers |
+| Least privilege on what is created | Machines get OS Login (IAM) and no service account, vTPM and integrity monitoring, and Secure Boot except on a GPU machine whose image has no GPU drivers, whose installation needs it off; SSH only from the identity-aware proxy range; subnets only in private ranges; buckets with uniform access and public-access prevention; databases encrypted-only with deletion protection and backups, turned off only by an explicit destroy; caches private with AUTH and TLS; cluster nodes with logging, monitoring and read-only storage scopes only, shielded, workload identity on; load balancers open only the backend port to the provider's health checkers |
 | No command execution | The contract carries no script, command, key or provider structure; names, ranges, ports and labels are validated (`security/validation.py`); strict models refuse unknown fields; the server refuses unknown arguments by name before a tool runs |
 | Structured errors | Provider exceptions never escape; every error has a code; provider messages are kept in `details`, truncated |
 | Cost controls | Limits on counts and sizes, a monthly cost ceiling per service and per caller, a cap on live requests per caller, quota checks, labels `managed-by`, `cloudinfra-request`, `cloudinfra-name`, `cloudinfra-owner` on every resource plus the operator's own, cleanup on failure, destroy on request, and estimates on every plan |

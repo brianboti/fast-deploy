@@ -1,6 +1,6 @@
 """GCPProvider: the CloudProvider interface implemented with Google Cloud, composed from the per-kind adapters."""
 from ...models.errors import ErrorCode, InfrastructureError
-from ...models.request import RESOURCE_KINDS, InfrastructureRequest
+from ...models.request import RESOURCE_KINDS, ComputeRequest, InfrastructureRequest
 from ...models.response import CostEstimate, Health, PlannedResource, Usage
 from ..base import CloudProvider, Problem, ProvisionContext
 from . import connect, pricing, translate
@@ -108,6 +108,7 @@ class GCPProvider(CloudProvider):
                 planned.append(PlannedResource(kind="compute", name=f"{prefix}-{group.group_name}-{index}", index=index, provider_mapping="compute.instances.insert",
                                                spec={"group": group.group_name, "zone": zone, "machine_type": machine, "cpu": cpu, "memory_gb": memory,
                                                      "image": software["image"], "profile": software["profile"], "secure_boot": software["secure_boot"],
+                                                     "drivers": software["drivers"],
                                                      "boot_disk_gb": software["boot_disk_gb"], "public_ip": group.public_ip, "accelerator": accelerator,
                                                      "max_run_hours": group.max_run_hours, "network": own_network or group.network_id or self.settings.default_network}))
         if request.database:
@@ -132,10 +133,12 @@ class GCPProvider(CloudProvider):
             mapping = "secretmanager.secrets.create" + (", secretmanager.secrets.addVersion" if secret.generate_value else "")
             planned.append(PlannedResource(kind="secret", name=f"{prefix}-{secret.name}", provider_mapping=mapping, spec={"secret": secret.name, "versions": 1 if secret.generate_value else 0}))
         # The request's own credentials go into secrets it owns, never through a response: the generated database password,
-        # and the cache's AUTH string copied from the provider.
+        # and the cache's AUTH string copied from the provider. Secret ids are unique in the project, and request names are
+        # not, so the request id is part of the name, as it is of the database's.
         for owner, secret, purpose in (("database", "db-password", "database_password"), ("cache", "cache-auth", "cache_auth")):
             if getattr(request, owner) is not None:
-                planned.append(PlannedResource(kind="secret", name=f"{prefix}-{secret}", provider_mapping="secretmanager.secrets.create, secretmanager.secrets.addVersion",
+                planned.append(PlannedResource(kind="secret", name=f"{prefix}-{secret}-{ctx.request_id[:6]}",
+                                               provider_mapping="secretmanager.secrets.create, secretmanager.secrets.addVersion",
                                                spec={"secret": secret, "versions": 1, "purpose": purpose}))
         if request.cluster:
             planned.append(PlannedResource(kind="cluster", name=f"{prefix}-cluster", provider_mapping="container.clusters.create",
@@ -153,6 +156,16 @@ class GCPProvider(CloudProvider):
 
     def estimate_cost(self, planned: list[PlannedResource]) -> CostEstimate:
         return pricing.estimate(planned)
+
+    def estimate_resources(self, resources: list) -> CostEstimate:
+        return pricing.estimate([pricing.as_planned(item) for item in resources])
+
+    def takes_grants(self, kind: str, storage_type: str | None = None) -> bool:
+        return kind in self.grantable_kinds and (kind != "storage" or storage_type == "object")  # a disk has no policy of its own
+
+    def boot_disk_gb(self, group: ComputeRequest) -> int:
+        software = translate.software(group, self.settings)
+        return group.boot_disk_gb if isinstance(software, Problem) else software["boot_disk_gb"]
 
     def quota(self, region: str) -> dict[str, dict]:
         try:
@@ -197,6 +210,10 @@ class GCPProvider(CloudProvider):
 
     def resize_compute(self, resource, cpu, memory_gb, ctx):
         return self.compute.resize(resource, cpu, memory_gb, ctx)
+
+    def resize_problem(self, resource, cpu, memory_gb):
+        shape = self.compute.shape(resource, cpu, memory_gb)
+        return shape if isinstance(shape, Problem) else None
 
     def delete_compute(self, resource, ctx):
         self.compute.delete(resource, ctx)
@@ -288,7 +305,8 @@ class GCPProvider(CloudProvider):
         return self.cache.read_auth(resource)
 
     def connect_info(self, resource, resources):
-        return connect.info(resource, resources, self.api.project)
+        profile = self.settings.profiles.get(resource.profile) if resource.kind.value == "compute" and resource.profile else None
+        return connect.info(resource, resources, self.api.project, drivers=profile is not None and profile.accelerator == "required")
 
     def busy_cores(self, resource, minutes: int) -> float | None:
         return self.monitoring.busy_cores(resource, minutes)

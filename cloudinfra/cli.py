@@ -16,8 +16,9 @@ from .models.errors import InfrastructureError, problems_from
 from .models.request import InfrastructureRequest
 from .orchestration import access, planner, validator
 from .providers import ProviderRegistry
+from .security import validation
 
-OFFLINE = {"providers": {"gcp": {"project_id": "example-project", "allowed_regions": ["us-central1"]}},
+OFFLINE = {"providers": {"gcp": {"project_id": "example-project", "allowed_regions": ["us-central1"]}}, "access": {"allowed_domains": ["example.com"]},
            "principals": [{"name": "offline", "token_sha256": "0" * 64, "can_provision": True}]}
 
 
@@ -31,11 +32,17 @@ def read_request(path: str) -> InfrastructureRequest | list:
         return problems_from(exc)
 
 
-def config_or_offline(path: str | None) -> Config:
+def config_or_offline(path: str | None, request: InfrastructureRequest | None = None) -> Config:
     if path and Path(path).exists():
         return load_config(path)
     print("No configuration file: validating against an example project with the default limits", file=sys.stderr)
-    return Config.model_validate(OFFLINE)
+    config = Config.model_validate(OFFLINE)
+    if request is not None and request.access:
+        # offline, nobody knows the operator's allowed domains: the members' own are taken, and that is said
+        domains = sorted({validation.member_domain(entry.member) for entry in request.access})
+        config = config.model_copy(update={"access": config.access.model_copy(update={"allowed_domains": domains})})
+        print("Access members are not checked offline: the operator's access.allowed_domains decides who may be granted", file=sys.stderr)
+    return config
 
 
 def main(argv=None) -> int:
@@ -62,11 +69,11 @@ def main(argv=None) -> int:
         else:
             print(text, end="")
         return 0
-    config = config_or_offline(args.config)
     request = read_request(args.file)
     if isinstance(request, list):
         print(json.dumps({"valid": False, "problems": [item.model_dump(mode="json") for item in request]}, indent=1))
         return 1
+    config = config_or_offline(args.config, request)
     registry = ProviderRegistry(config)
     try:
         provider = registry.get(request.provider)
@@ -86,7 +93,7 @@ def main(argv=None) -> int:
         print(json.dumps({"valid": cost is None, "problems": [] if cost is None else [{"code": cost.code.value, "message": cost.message}]}, indent=1))
         return 0 if cost is None else 1
     print(json.dumps({"planned": [item.model_dump(mode="json") for item in planned], "estimate": estimate.model_dump(mode="json"),
-                      "warnings": planner.warnings(request, planned, config, provider), "cost_problem": None if cost is None else cost.message}, indent=1))
+                      "warnings": planner.warnings(request, planned, config, provider, principal), "cost_problem": None if cost is None else cost.message}, indent=1))
     return 0
 
 

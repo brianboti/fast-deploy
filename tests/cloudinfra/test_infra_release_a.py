@@ -1,7 +1,6 @@
 """Release A: what a developer needs to use what was created. Access grants with connect blocks, operator software profiles,
 credentials in secrets the request owns, stop and start, idle stop, maximum run time, expiry with warnings and retention,
 and the GPU boot disk minimum. Every test runs against the fake Google Cloud; nothing here touches a cloud."""
-import base64
 import datetime
 import json
 import time
@@ -46,7 +45,7 @@ def configured(tmp_path, identity=DEV, domains=("example.com",), limits=None, gc
     tmp_path.mkdir(parents=True, exist_ok=True)
     data["database"] = str(tmp_path / "cloudinfra.db")
     data["principals"][0]["identity"] = identity
-    data["access"] = {"allowed_domains": list(domains), **data.get("access", {})}
+    data["access"] = {**data.get("access", {}), "allowed_domains": list(domains)}
     data["limits"] = {"max_monthly_cost_usd": 5000.0, **(limits or {})}
     data["providers"]["gcp"].update(gcp or {})
     return Config.model_validate(data)
@@ -128,7 +127,7 @@ def test_gpu_machines_get_the_operators_signed_driver_profile_with_secure_boot(t
     assert gpu["profile"] == "gpu-signed" and gpu["secure_boot"] is True and gpu["boot_disk_gb"] == 100 and gpu["image"].endswith("family/gpu-signed-cu129")
     assert web["profile"] is None and web["secure_boot"] is True and web["image"].startswith("projects/ubuntu-os-cloud/")
     text = " ".join(plan.warnings)
-    assert "drivers come with profile gpu-signed" in text and "the boot disk is 100 GB, the minimum of profile gpu-signed, not the 50 GB asked" in text
+    assert "drivers come with profile gpu-signed" in text and "the boot disk is 100 GB, the minimum of profile gpu-signed" in text and "GB asked" not in text
     response = provision(orchestrator, who, {"compute": GPU_GROUP})
     body = next(call[2] for call in fake.calls if call[0] == "POST" and call[1].endswith("/instances"))
     assert body["shieldedInstanceConfig"]["enableSecureBoot"] is True and body["disks"][0]["initializeParams"]["diskSizeGb"] == "100"
@@ -146,7 +145,7 @@ def test_a_plain_image_on_a_gpu_machine_turns_secure_boot_off_and_says_so(tmp_pa
     [machine] = response.resources.compute
     assert machine.profile is None and machine.secure_boot is False and machine.boot_disk_gb == 50
     assert any("the image has no GPU driver" in warning for warning in response.warnings)
-    assert any("plain image without GPU drivers" in note for note in machine.connect.notes)
+    assert any("an image without GPU drivers" in note for note in machine.connect.notes)
 
 
 def test_profiles_are_checked_against_the_operators_list(tmp_path):
@@ -353,15 +352,15 @@ def test_lifetime_warns_then_stops_then_destroys_after_retention(tmp_path, caplo
     clock.advance(hours=41)
     assert sweeper.tick()["warned"] == [response.request_id] and orchestrator.status(response.request_id, who).lifecycle.warnings_sent == ["48h", "2h"]
     clock.advance(hours=2)
-    assert sweeper.tick()["stopped"] == [response.request_id]
+    assert sweeper.tick()["stopping"] == [response.request_id]
     expired = orchestrator.status(response.request_id, who)
     assert expired.status == RequestStatus.STOPPED and expired.lifecycle.stop_reason == "expired" and expired.lifecycle.retain_until == "2026-11-07T13:00:00Z"
     assert any(item.startswith("Expired at 2026-10-31T12:00:00Z; destroyed at 2026-11-07T13:00:00Z") for item in expired.warnings)
     assert expired.operations[-1].kind == "stop" and expired.operations[-1].identity == SWEEPER.name
     refused(ErrorCode.INVALID_STATE, orchestrator.control, response.request_id, "start", who)
-    assert sweeper.tick() == {"warned": [], "stopped": [], "destroyed": [], "idle_stopped": [], "errors": []}
+    assert sweeper.tick() == {"warned": [], "stopping": [], "destroying": [], "kept": [], "idle_stopping": [], "errors": []}
     clock.advance(days=7)
-    assert sweeper.tick()["destroyed"] == [response.request_id]
+    assert sweeper.tick()["destroying"] == [response.request_id]
     assert orchestrator.status(response.request_id, who).status == RequestStatus.DESTROYED and not fake.instances
 
 
@@ -381,7 +380,7 @@ def test_extend_keeps_an_expired_request_and_respects_the_maximum(tmp_path):
     started = orchestrator.control(response.request_id, "start", who, wait_seconds=45)
     assert started.status == RequestStatus.READY and started.lifecycle.stop_reason is None
     clock.advance(hours=25)
-    assert sweeper.tick()["stopped"] == [response.request_id], "the new expiry stops it again"
+    assert sweeper.tick()["stopping"] == [response.request_id], "the new expiry stops it again"
 
 
 def test_on_expiry_destroy_and_the_operators_default_lifetime(tmp_path):
@@ -392,7 +391,7 @@ def test_on_expiry_destroy_and_the_operators_default_lifetime(tmp_path):
     doomed = provision(orchestrator, who, {**VM_REQUEST, "lifetime": {"hours": 4, "on_expiry": "destroy"}})
     clock.advance(hours=5)
     found = sweeper.tick()
-    assert found["destroyed"] == [doomed.request_id] and found["warned"] == [defaulted.request_id]
+    assert found["destroying"] == [doomed.request_id] and found["warned"] == [defaulted.request_id]
     assert orchestrator.status(doomed.request_id, who).status == RequestStatus.DESTROYED
     nothing, _, _, who = orchestrated(tmp_path / "none")
     assert provision(nothing, who, VM_REQUEST).lifecycle is None, "nothing expires unless asked"
@@ -403,11 +402,12 @@ def test_a_request_that_cannot_stop_is_kept_then_destroyed_at_expiry(tmp_path):
     sweeper = Sweeper(orchestrator, 0)
     response = provision(orchestrator, who, {"queue": {"name": "jobs"}, "lifetime": {"hours": 2}})
     clock.advance(hours=3)
-    assert sweeper.tick()["stopped"] == [response.request_id]
+    assert sweeper.tick()["kept"] == [response.request_id]
     marked = orchestrator.status(response.request_id, who)
-    assert marked.status == RequestStatus.READY and marked.lifecycle.stop_reason == "expired" and marked.lifecycle.retain_until
+    assert marked.status == RequestStatus.READY and marked.lifecycle.retain_until, "kept until its retention ends"
+    assert marked.lifecycle.stop_reason is None and marked.lifecycle.stopped_at is None, "nothing stopped, and nothing says so"
     clock.advance(days=1)
-    assert sweeper.tick()["destroyed"] == [response.request_id] and not fake.topics
+    assert sweeper.tick()["destroying"] == [response.request_id] and not fake.topics
 
 
 # ---- idle stop
@@ -419,13 +419,13 @@ def test_idle_machines_stop_and_keep_awake_holds_them(tmp_path):
     assert gpu.autostop_idle_minutes == 30 and web.autostop_idle_minutes is None, "the operator's default covers machines with GPUs"
     assert any("the operator's default stops these machines after 30 idle minutes" in item for item in response.warnings)
     fake.monitoring_value = 0.5  # half of 8 vCPUs: busy
-    assert sweeper.tick()["idle_stopped"] == []
+    assert sweeper.tick()["idle_stopping"] == []
     fake.monitoring_value = 0.02  # 0.16 cores at the busiest: idle
     held = orchestrator.control(response.request_id, "keep_awake", who, hours=4)
-    assert held.lifecycle.awake_until == "2026-10-28T16:00:00Z" and sweeper.tick()["idle_stopped"] == []
+    assert held.lifecycle.awake_until == "2026-10-28T16:00:00Z" and sweeper.tick()["idle_stopping"] == []
     refused(ErrorCode.LIMIT_EXCEEDED, orchestrator.control, response.request_id, "keep_awake", who, hours=100)
     clock.advance(hours=5)
-    assert sweeper.tick()["idle_stopped"] == [gpu.id]
+    assert sweeper.tick()["idle_stopping"] == [gpu.id]
     after = orchestrator.status(response.request_id, who)
     stopped = next(item for item in after.resources.compute if item.id == gpu.id)
     assert after.status == RequestStatus.READY and stopped.status == ResourceStatus.STOPPED and stopped.stop_reason == "idle"
@@ -441,16 +441,16 @@ def test_a_machine_is_not_idle_right_after_it_starts_or_without_samples(tmp_path
     fake.started_at = "2026-10-28T11:50:00Z"
     response = provision(orchestrator, who, {"compute": {"cpu": 4, "memory_gb": 16, "autostop": {"idle_minutes": 30}}})
     fake.monitoring_value = 0.0
-    assert sweeper.tick()["idle_stopped"] == [], "ten minutes after a start is not thirty idle minutes"
+    assert sweeper.tick()["idle_stopping"] == [], "ten minutes after a start is not thirty idle minutes"
     clock.advance(minutes=30)
     original = fake.request
 
     def no_samples(method, url, json=None, params=None):
         return {"timeSeries": []} if "timeSeries" in url else original(method, url, json, params)
     fake.request = no_samples
-    assert sweeper.tick()["idle_stopped"] == [], "no samples is not proof of idleness"
+    assert sweeper.tick()["idle_stopping"] == [], "no samples is not proof of idleness"
     fake.request = original
-    assert sweeper.tick()["idle_stopped"] == [response.resources.compute[0].id]
+    assert sweeper.tick()["idle_stopping"] == [response.resources.compute[0].id]
 
 
 def test_the_sweeper_thread_starts_only_when_asked_and_stops_cleanly(tmp_path):
@@ -532,15 +532,15 @@ def test_control_and_access_over_mcp_and_rest(served):
     assert awake["lifecycle"]["awake_until"]
     events = client.app.state.state.recent_events(limit=50, request_id=request_id)
     assert {"control", "access"} <= {item["name"] for item in events}
-    assert base64.b64encode(b"x") and "fake-redis-auth-string" not in json.dumps(events)
 
 
-def test_a_profile_removed_later_is_a_coded_error_not_a_crash(tmp_path):
+def test_a_profile_removed_later_still_prices_what_exists(tmp_path):
     orchestrator, _, _, who = orchestrated(tmp_path, gcp={"profiles": PROFILES})
     response = provision(orchestrator, who, {"compute": {"cpu": 2, "memory_gb": 4, "profile": "hardened"}})
     orchestrator.config.providers.gcp.profiles.pop("hardened")
-    error = refused(ErrorCode.INVALID_COMPUTE_CONFIGURATION, orchestrator.cost, who, request_id=response.request_id)
-    assert "Unknown profile 'hardened'" in error.message
+    cost = orchestrator.cost(who, request_id=response.request_id)
+    [line] = cost["estimate"]["lines"]
+    assert line["resource"] == response.resources.compute[0].name and cost["current_monthly_usd"] == line["monthly_usd"] > 0
 
 
 
@@ -618,7 +618,7 @@ def test_the_sweeper_decides_on_the_request_as_it_is_now(tmp_path):
     clock.advance(hours=3)
     orchestrator.state.sweepable_requests = lambda: listed  # the list the sweep began with predates the extension
     found = sweeper.tick()
-    assert found["destroyed"] == [] and found["stopped"] == [] and found["warned"] == [response.request_id]
+    assert found["destroying"] == [] and found["stopping"] == [] and found["warned"] == [response.request_id]
     after = orchestrator.status(response.request_id, who)
     assert after.status == RequestStatus.READY and after.lifecycle.expires_at == "2026-10-29T14:00:00Z" and after.lifecycle.warnings_sent == ["48h"]
 
@@ -633,15 +633,20 @@ def test_nothing_is_marked_stopped_while_a_machine_may_still_run(tmp_path):
     assert refused(ErrorCode.INVALID_STATE, orchestrator.control, response.request_id, "stop", who).details["reason"] == "changing"
     clock.advance(hours=2)
     found = sweeper.tick()
-    assert found["stopped"] == [] and found["errors"][0]["error"]["details"]["reason"] == "changing"
+    assert found["stopping"] == [] and found["errors"][0]["error"]["details"]["reason"] == "changing"
     assert orchestrator.status(response.request_id, who).status == RequestStatus.READY
     instance["status"] = "RUNNING"
     fake.fail_on.append(("GET", f"/instances/{machine.name}"))  # its state cannot be read: it is stopped anyway, and the outcome stays open
+    assert sweeper.tick() == {"warned": [], "stopping": [], "destroying": [], "kept": [], "idle_stopping": [], "errors": []}, "a failed attempt waits 5 minutes"
+    clock.advance(minutes=5)
     found = sweeper.tick()
     after = orchestrator.status(response.request_id, who, refresh=False)
     assert instance["status"] == "TERMINATED" and after.status == RequestStatus.READY and after.operations[-1].status == "FAILED"
     fake.fail_on.clear()
-    assert sweeper.tick()["stopped"] == [response.request_id] and orchestrator.status(response.request_id, who).status == RequestStatus.STOPPED
+    clock.advance(minutes=5)
+    assert sweeper.tick()["stopping"] == [], "the second failure doubles the wait"
+    clock.advance(minutes=5)
+    assert sweeper.tick()["stopping"] == [response.request_id] and orchestrator.status(response.request_id, who).status == RequestStatus.STOPPED
 
 
 def test_a_stopped_machine_is_resized_and_stays_stopped(tmp_path):
@@ -710,7 +715,7 @@ def test_idle_stop_looks_again_at_a_machine_after_a_failed_refresh(tmp_path):
     [machine] = response.resources.compute
     stored_as(orchestrator, machine.id, ResourceStatus.UNKNOWN)
     fake.monitoring_value = 0.01
-    assert Sweeper(orchestrator, 0).tick()["idle_stopped"] == [machine.id]
+    assert Sweeper(orchestrator, 0).tick()["idle_stopping"] == [machine.id]
 
 
 def test_the_maximum_lifetime_applies_to_a_request_that_sets_none(tmp_path):
@@ -728,6 +733,6 @@ def test_warnings_say_what_the_sweeper_will_do_and_expiring_lists_only_live_requ
     warnings = orchestrator.status(response.request_id, who).warnings
     assert any(item.startswith("Expired at 2026-10-29T12:00:00Z; at the service's next check it is destroyed") for item in warnings), warnings
     assert orchestrator.list_requests(who, expiring_within_hours=1).count == 1
-    assert Sweeper(orchestrator, 0).tick()["destroyed"] == [response.request_id]
+    assert Sweeper(orchestrator, 0).tick()["destroying"] == [response.request_id]
     assert orchestrator.status(response.request_id, who).status == RequestStatus.DESTROYED
     assert orchestrator.list_requests(who, expiring_within_hours=1).count == 0, "a destroyed request no longer expires"

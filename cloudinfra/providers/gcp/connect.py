@@ -5,7 +5,8 @@ from ...models.resources import ConnectInfo, ResourceStatus
 
 GCLOUD_PREREQUISITE = ("A project-level role with compute.projects.get and compute.instances.get, which the platform team grants once, "
                        "so that gcloud can find the machine")
-IAP_PREREQUISITE = "A firewall rule admitting 35.235.240.0/20 on port 22; the request's network makes one when iap_ssh is on"
+IAP_PREREQUISITE = ("A firewall rule admitting 35.235.240.0/20 on port 22, and on every port forwarded with port_forward: the request's network makes the "
+                    "one for port 22 when iap_ssh is on, and configure_firewall adds others")
 NOT_GRANTED = "Nobody has been granted access yet: grant it with manage_infrastructure_access"
 
 
@@ -18,7 +19,9 @@ def _network_name(resource, by_id) -> str:
     return network.name if network is not None else "the operator's default network"
 
 
-def info(resource, resources: list, project: str) -> ConnectInfo | None:
+def info(resource, resources: list, project: str, drivers: bool = False) -> ConnectInfo | None:
+    """resources: the request's own, and those of other requests that it names (a network joined, a machine a disk is
+    attached to). drivers: whether a machine's image carries its GPU drivers."""
     kind = resource.kind.value
     by_id = {item.id: item for item in resources}
     stopped = ["It is stopped: start it with control_infrastructure first"] if resource.status == ResourceStatus.STOPPED else []
@@ -26,8 +29,8 @@ def info(resource, resources: list, project: str) -> ConnectInfo | None:
         notes = list(stopped)
         if resource.public_ip:
             notes.append(f"Also reachable at {resource.public_ip} on the ports its network opens")
-        if resource.accelerator and not resource.profile:
-            notes.append("It boots a plain image without GPU drivers; Secure Boot is off so that they can be installed")
+        if resource.accelerator and not drivers:
+            notes.append("It boots an image without GPU drivers; Secure Boot is off so that they can be installed")
         if resource.attached_disks:
             notes.append("Attached disks appear as /dev/disk/by-id/google-DISK_NAME; format and mount them before use")
         prerequisites = [GCLOUD_PREREQUISITE, IAP_PREREQUISITE] + ([] if resource.access else [NOT_GRANTED])
@@ -45,7 +48,8 @@ def info(resource, resources: list, project: str) -> ConnectInfo | None:
         commands = {"connect": client}
         if secret is not None:
             commands["password"] = _secret_command(secret, project)
-        where = ("Connect from a machine on the network " + _network_name(resource, by_id) + ", for example over ssh to a machine of this request"
+        machine = any(item.kind.value == "compute" and item.request_id == resource.request_id and item.status != ResourceStatus.DELETED for item in resources)
+        where = ("Connect from a machine on the network " + _network_name(resource, by_id) + (", for example over ssh to a machine of this request" if machine else "")
                  if not resource.public_access else "Connections from outside go through the Cloud SQL Auth Proxy")
         return ConnectInfo(commands=commands, prerequisites=[where, "Read access to the password secret, which members of the request's access list have"],
                            notes=stopped + ["From a laptop: the Cloud SQL Auth Proxy, with a project-level cloudsql.client role that the platform team grants"])
