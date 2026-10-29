@@ -11,6 +11,7 @@ import pydantic
 import yaml
 
 from . import __version__, planner
+from .catalog import render_markdown
 from .config import load_config
 from .errors import DeliveryError, problems_from
 from .infra import InfraClient
@@ -31,6 +32,8 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="app-delivery", description=f"Application delivery {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("token", help="print a new caller token and the hash to put in the configuration")
+    catalog = commands.add_parser("catalog", help="print the tool catalog as Markdown")
+    catalog.add_argument("--write", metavar="PATH", help="write it to this file instead (docs/DELIVERY-CATALOG.md)")
     check = commands.add_parser("check-config", help="validate a configuration file")
     check.add_argument("config")
     plan = commands.add_parser("plan", help="plan a release file (YAML or JSON) against the infrastructure layer; nothing runs")
@@ -42,6 +45,14 @@ def main(argv=None) -> int:
         token = secrets.token_urlsafe(32)
         print(f"token: {token}")
         print(f"token_sha256: {hashlib.sha256(token.encode()).hexdigest()}")
+        return 0
+    if args.command == "catalog":
+        text = render_markdown()
+        if args.write:
+            Path(args.write).write_text(text)
+            print(f"wrote {args.write}", file=sys.stderr)
+        else:
+            print(text, end="")
         return 0
     try:
         config = load_config(args.config)

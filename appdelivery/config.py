@@ -81,6 +81,9 @@ class Principal(StrictModel):
 class Config(StrictModel):
     database: str = "appdelivery.db"
     log_file: str | None = None
+    allowed_hosts: list[str] = Field(default_factory=lambda: ["127.0.0.1:*", "localhost:*"], description="Host headers the MCP endpoint answers (DNS rebinding protection).")
+    rate_limit_per_minute: int = Field(default=120, ge=1)
+    auth_failures_per_minute: int = Field(default=20, ge=1)
     workers: int = Field(default=4, ge=1, le=32, description="Rollouts, rollbacks and removals run in this many background workers.")
     cloudinfra: InfraSettings
     gcp: GcpSettings
