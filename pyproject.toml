@@ -17,9 +17,10 @@ dev = ["pytest==9.1.1", "python-hcl2==7.3.1", "ruff==0.17.0", "zizmor==1.30.1"]
 [project.scripts]
 lab-deploy = "labdeploy.cli:main"
 cloud-infra = "cloudinfra.cli:main"
+app-delivery = "appdelivery.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["labdeploy*", "cloudinfra*"]
+include = ["labdeploy*", "cloudinfra*", "appdelivery*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

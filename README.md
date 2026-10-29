@@ -28,6 +28,8 @@ repositories, builds, tests, images and releases, and never has to be present fo
 - Architecture and ownership: [docs/INFRASTRUCTURE-ARCHITECTURE.md](docs/INFRASTRUCTURE-ARCHITECTURE.md)
 - The 45 MCP tools: [docs/MCP-CATALOG.md](docs/MCP-CATALOG.md)
 - Where the service stands and what comes next: [docs/RESEARCH-2026-10-28-positioning.md](docs/RESEARCH-2026-10-28-positioning.md)
+- Whether a separate delivery service above it is the right shape: [docs/RESEARCH-2026-10-29-delivery-layer.md](docs/RESEARCH-2026-10-29-delivery-layer.md)
+- The delivery service's draft specification: [docs/DELIVERY-SPEC.md](docs/DELIVERY-SPEC.md)
 - The provider interface and the Google Cloud adapter: [docs/PROVIDER-INTERFACE.md](docs/PROVIDER-INTERFACE.md)
 - The analysis behind the split: [docs/REFACTOR-2026-10-28.md](docs/REFACTOR-2026-10-28.md)
 

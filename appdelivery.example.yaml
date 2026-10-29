@@ -1,0 +1,40 @@
+# The application delivery service's configuration. Copy to appdelivery.local.yaml (ignored by git). See docs/DELIVERY-SPEC.md.
+# No token or key lives here: each environment names the variable that holds its cloudinfra token, and Google credentials
+# come from the host (the metadata server on Google Cloud, else gcloud), which needs Token Creator on each service account.
+database: appdelivery.db
+cloudinfra:
+  url: https://infra.internal.example.com      # the infrastructure layer, read over its REST API
+  # timeout_seconds: 30
+gcp:
+  project_id: your-infrastructure-project       # the project cloudinfra provisions in
+  default_network_iap: false                    # true only if the operator's default network admits 35.235.240.0/20 on port 22
+  # container_profile: container-host           # cloudinfra's Container-Optimized OS profile, named in refusals
+environments:
+  dev:
+    # A cloudinfra principal for this environment: can_provision false, can_destroy false, scope all,
+    # identity serviceAccount:<service_account below>. Its token goes in this variable.
+    token_env: APPDELIVERY_DEV_INFRA_TOKEN
+    service_account: appdelivery-dev@your-infrastructure-project.iam.gserviceaccount.com
+    allowed_registries: [us-central1-docker.pkg.dev/your-apps-project]
+  prod:
+    token_env: APPDELIVERY_PROD_INFRA_TOKEN
+    service_account: appdelivery-prod@your-infrastructure-project.iam.gserviceaccount.com
+    allowed_registries: [us-central1-docker.pkg.dev/your-apps-project/release]
+    require_attestation: true
+    # attestation_type: slsaprovenance1
+    trusted_signers:
+      - gcpkms://projects/your-security-project/locations/global/keyRings/release/cryptoKeys/attestor
+      # - /etc/appdelivery/keys/prod.pub
+      # - {identity: release@your-ci-project.iam.gserviceaccount.com, issuer: https://accounts.google.com}
+    require_approval: true
+principals:                                      # application teams; tokens from: app-delivery token
+  - name: shop-team
+    token_sha256: "REPLACE_WITH_THE_HASH_FROM_app-delivery_token"
+    infra_owner: shop-team                       # the cloudinfra principal whose requests this team may deploy onto
+    environments: [dev, prod]
+    can_deploy: true
+  - name: shop-oncall
+    token_sha256: "REPLACE_WITH_ANOTHER_HASH"
+    infra_owner: shop-team
+    environments: [prod]
+    can_approve: true                            # approves another principal's prod release
