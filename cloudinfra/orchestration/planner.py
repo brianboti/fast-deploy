@@ -99,9 +99,9 @@ def warnings(request: InfrastructureRequest, planned: list[PlannedResource], con
             found.append("nobody is granted the db-password secret yet: grant a member with manage_infrastructure_access, or only project-level IAM reads it")
     if request.cache:
         found.append("the cache's AUTH string is copied into the request's cache-auth secret, which its access members can read")
-    if request.cluster:
+    if request.clusters():
         found.append("a cluster bills a management fee by the hour on top of its nodes (one zonal cluster per billing account is free); credentials come from the provider's IAM")
-        if request.cluster.private_nodes:
+        if any(cluster.private_nodes for cluster in request.clusters()):
             found.append("private nodes have no public address: the Application Layer needs the provider's NAT for them to reach the internet")
     if request.load_balancer:
         found.append(f"the load balancer is public on port {request.load_balancer.port}; it serves plain {request.load_balancer.type}, and TLS termination is a later feature")

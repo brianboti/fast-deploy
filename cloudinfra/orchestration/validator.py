@@ -60,12 +60,14 @@ def validate(request: InfrastructureRequest, config, provider: CloudProvider) ->
             problems.append(Problem(ErrorCode.INVALID_CACHE_CONFIGURATION, "A cache is private: it needs a network block in the same request, or network_id naming one this service created", "cache"))
         if request.cache.network_id and request.network is not None:
             problems.append(Problem(ErrorCode.INVALID_CACHE_CONFIGURATION, "cache.network_id and a network block in the same request: choose one", "cache.network_id"))
-    if request.cluster:
-        if request.cluster.node_count > limits.max_cluster_nodes:
-            problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_cluster_nodes} cluster nodes; {request.cluster.node_count} asked", "cluster.node_count"))
-        if request.cluster.node_cpu > limits.max_cpu_per_instance or request.cluster.node_memory_gb > limits.max_memory_gb_per_instance:
+    clusters = request.clusters()
+    nodes = sum(cluster.node_count for cluster in clusters)
+    if nodes > limits.max_cluster_nodes:  # across the request's clusters, as a cost limit
+        problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_cluster_nodes} cluster nodes in a request; {nodes} asked", "cluster.node_count"))
+    for cluster in clusters:
+        if cluster.node_cpu > limits.max_cpu_per_instance or cluster.node_memory_gb > limits.max_memory_gb_per_instance:
             problems.append(Problem(ErrorCode.LIMIT_EXCEEDED, f"At most {limits.max_cpu_per_instance} CPUs and {limits.max_memory_gb_per_instance} GB per node", "cluster"))
-        if request.cluster.network_id and request.network is not None:
+        if cluster.network_id and request.network is not None:
             problems.append(Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, "cluster.network_id and a network block in the same request: choose one", "cluster.network_id"))
     if request.database:
         if request.database.storage_gb > limits.max_database_storage_gb:
