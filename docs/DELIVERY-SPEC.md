@@ -300,7 +300,9 @@ Steps, each its own pull request:
 2. **`appdelivery`: a cluster target names its cluster.** Built 2026-10-29. `InfraRequest.cluster(name)` finds a cluster
    by the name its block gave it (`<request>-<name>` in cloudinfra); `cluster: true` with several clusters is refused
    with their names, and with one it is named before the release is kept, so asking by `true` or by name is one target.
-3. **`cloudinfra`: each cluster's own node account and the registries it may pull from.**
+3. **`cloudinfra`: each cluster's own node account and the registries it may pull from.** Built 2026-10-29; the
+   operator chose one account per cluster over one shared account, accepting the extra rights the service needs
+   (docs/INFRASTRUCTURE-ARCHITECTURE.md, "A cluster's nodes").
 4. **`cloudinfra`: no public load balancer from a team namespace.**
 5. **`cloudinfra`: the front door.**
 6. **`appdelivery`: exposing a workload.**

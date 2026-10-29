@@ -153,8 +153,8 @@ composite; primitives compose through `network_id` (machines and databases join 
 ## Access to what is created
 
 Whoever asked for a machine needs to log in to it; whoever runs an application needs its database password. The service
-grants access on the resources a request created, through each resource's own IAM policy, and never changes the project's
-policy.
+grants access on the resources a request created, through each resource's own IAM policy, and changes the project's
+policy for one thing only: a cluster's node account (below).
 
 - **Members.** `access` on a request lists people, groups or service accounts (`user:`, `group:`, `serviceAccount:` and an
   email address) with a level, `use` or `admin`. The requester is added as `admin` when the operator maps its principal to
@@ -195,6 +195,27 @@ policy.
   Engine instances, IAP tunnel instances, secrets, buckets, topics and subscriptions); a custom role that lists exactly
   those is the narrowest way to give them. For clusters it needs to create namespaces and RoleBindings in the clusters
   it made, which the Kubernetes Engine role it creates them with already allows.
+
+### A cluster's nodes
+
+A cluster's nodes run as a service account made for that cluster (`node-<request id>-<cluster name>`), never the Compute
+Engine default account, which in a new project has no rights at all and in an old one often has too many. Google
+recommends exactly this ([GKE service accounts](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/service-accounts)).
+The account holds `roles/container.defaultNodeServiceAccount` on the project, the minimum the nodes need to write logs
+and metrics, and `roles/artifactregistry.reader` on each Artifact Registry repository the request names in
+`cluster.registries`, on nothing else; nodes pull images as this account. A request may name only repositories the
+operator lists in `providers.gcp.registries`. The account, its project role and its repository roles are removed after
+the cluster is deleted, or at once when Google refuses the cluster. `providers.gcp.cluster_node_accounts: false` keeps
+the old behaviour (the default account, no registries).
+
+The service's own identity then needs, once, from the platform team:
+
+| What | Role | Limit it to |
+|---|---|---|
+| make and delete the node accounts | `roles/iam.serviceAccountCreator`, `roles/iam.serviceAccountDeleter` | the project |
+| run a node pool as them | `roles/iam.serviceAccountUser` | the project: it can then act as any service account there, so run the service in a project of its own, with no other accounts worth taking |
+| give a node account its project role | `roles/resourcemanager.projectIamAdmin` | an IAM condition, so it can grant that one role and no other: `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])` ([limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)) |
+| let a node account read a repository | `roles/artifactregistry.admin` | each repository listed in `providers.gcp.registries`, granted on the repository |
 
 ## Time: stop, start, idle stop and expiry
 

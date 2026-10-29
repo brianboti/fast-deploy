@@ -1,3 +1,19 @@
+# Unreleased: each cluster's nodes run as their own account, and may pull from private registries
+
+Phase 3, step 3 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECTURE.md, "A cluster's nodes"):
+
+- **A node account per cluster.** `node-<request id>-<cluster name>`, with `roles/container.defaultNodeServiceAccount`
+  on the project and nothing else there; set as the node pool's service account; removed with the cluster, or at once
+  when Google refuses the cluster or a grant fails. A grant that IAM refuses because the new account is not known yet
+  is tried again for up to a minute.
+- **`cluster.registries`.** Artifact Registry repositories (`LOCATION-docker.pkg.dev/PROJECT/REPO`, at most 10) the
+  nodes may pull from: the node account gets `roles/artifactregistry.reader` on each. Only repositories the operator
+  lists in `providers.gcp.registries`. Also a `create_cluster` parameter.
+- **Operator setup.** The service's identity needs new roles, one of them limited by an IAM condition to granting the
+  node role only; the table in the architecture document lists them. `providers.gcp.cluster_node_accounts: false`
+  keeps the Compute Engine default account and refuses registries.
+- `ClusterResource` reports `node_service_account` and `registries`.
+
 # Unreleased: a request may carry several clusters
 
 Phase 3, step 1 of the delivery service (docs/DELIVERY-SPEC.md, section 4). `cluster` takes one cluster or a list, as

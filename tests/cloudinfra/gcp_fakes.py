@@ -54,6 +54,9 @@ class FakeGcpApi(GcpApi):
         self.peerings = set()
         self.namespaces: dict[str, set[str]] = {}  # cluster endpoint -> namespaces
         self.role_bindings: dict[tuple[str, str, str], dict] = {}  # (endpoint, namespace, name) -> {"role", "member"}
+        self.service_accounts: dict[str, dict] = {}  # email -> the account
+        self.repositories = {"us-central1-docker.pkg.dev/test-project/apps", "us-central1-docker.pkg.dev/test-project/shared"}
+        self.unknown_for = 0  # how many more grants naming a new service account IAM refuses as unknown, as it does for seconds after a create
         self.kube_fail = None  # an InfrastructureError the fake Kubernetes API raises once, when set
         self.policies = {}  # IAM policies by resource: ("instance", zone, name), ("tunnel", zone, id), ("secret", name), ("bucket", name), ("topics" | "subscriptions", name)
         self.started_at = "2026-10-28T10:00:00Z"  # what lastStartTimestamp says after a create or a start
@@ -79,6 +82,11 @@ class FakeGcpApi(GcpApi):
         host, path = url.split("://", 1)[1].split("/", 1)
         path = "/" + path.split("?", 1)[0]
         handlers = (
+            (r"^/v1/projects/[^/]+/serviceAccounts$", self._service_accounts) if host.startswith("iam") else (r"^$", None),
+            (r"^/v1/projects/[^/]+/serviceAccounts/([^/]+)$", self._service_account) if host.startswith("iam") else (r"^$", None),
+            (r"^/v1/projects/([^/:]+):(getIamPolicy|setIamPolicy)$", self._project_policy) if host.startswith("cloudresourcemanager") else (r"^$", None),
+            (r"^/v1/projects/([^/]+)/locations/([^/]+)/repositories/([^/:]+):(getIamPolicy|setIamPolicy)$", self._repository_policy)
+            if host.startswith("artifactregistry") else (r"^$", None),
             (r"^/v1/projects/([^/]+)/iap_tunnel/zones/([^/]+)/instances/([^/:]+):(getIamPolicy|setIamPolicy)$", self._tunnel_policy) if host.startswith("iap") else (r"^$", None),
             (r"^/v1/projects/[^/]+/(topics|subscriptions)/([^/:]+):(getIamPolicy|setIamPolicy)$", self._pubsub_policy) if host.startswith("pubsub") else (r"^$", None),
             (r"^/v1/projects/[^/]+/(topics|subscriptions)/([^/]+)$", self._pubsub) if host.startswith("pubsub") else (r"^$", None),
@@ -175,6 +183,46 @@ class FakeGcpApi(GcpApi):
         else:
             instance.setdefault("disks", []).append({"source": body["source"], "deviceName": body["deviceName"], "autoDelete": body["autoDelete"]})
         return self._op()
+
+    # ---- service accounts, and the project's and repositories' policies
+    def _service_accounts(self, found, method, body, params):
+        email = f"{body['accountId']}@{self.project}.iam.gserviceaccount.com"
+        assert 6 <= len(body["accountId"]) <= 30, "IAM takes an account id of 6 to 30 characters"
+        if email in self.service_accounts:
+            raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, "Google Cloud refused the request: already exists", {"http_status": 409})
+        self.service_accounts[email] = {"email": email, **body["serviceAccount"]}
+        return self.service_accounts[email]
+
+    def _service_account(self, found, method, body, params):
+        if found.group(1) not in self.service_accounts:
+            raise self._not_found(found.group(1))
+        if method == "DELETE":
+            return self.service_accounts.pop(found.group(1)) and {}
+        return self.service_accounts[found.group(1)]
+
+    def _known(self, policy):
+        for binding in policy.get("bindings", []):
+            for member in binding.get("members", []):
+                if member.startswith("serviceAccount:") and member.endswith(".iam.gserviceaccount.com") and member[15:].startswith("node-"):
+                    if member[15:] not in self.service_accounts or self.unknown_for > 0:
+                        self.unknown_for = max(0, self.unknown_for - 1)
+                        raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"Google Cloud refused the request: Service account {member[15:]} does not exist.",
+                                                  {"http_status": 400})
+
+    def _project_policy(self, found, method, body, params):
+        writing = found.group(2) == "setIamPolicy"
+        if writing:
+            self._known(body["policy"])
+        return self._policy(("project",), writing, body.get("policy"))
+
+    def _repository_policy(self, found, method, body, params):
+        registry = f"{found.group(2)}-docker.pkg.dev/{found.group(1)}/{found.group(3)}"
+        if registry not in self.repositories:
+            raise self._not_found(registry)
+        writing = found.group(4) == "setIamPolicy"
+        if writing:
+            self._known(body["policy"])
+        return self._policy(("repository", registry), writing, body.get("policy"))
 
     def _policy(self, key, writing, body):
         if writing:
@@ -315,6 +363,8 @@ class FakeGcpApi(GcpApi):
 
     def _clusters(self, found, method, body, params):
         cluster = body["cluster"]
+        account = cluster["nodePools"][0]["config"].get("serviceAccount")
+        assert account is None or account in self.service_accounts, "a node pool runs as an account that exists"
         for field in ("network", "subnetwork"):
             if "/" in (cluster.get(field) or ""):  # as GKE does: these fields take a name only
                 raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f'Google Cloud refused the request: Malformed value for {field} field: "{cluster[field]}".',
