@@ -142,3 +142,17 @@ def test_a_registry_outside_artifact_registry_gets_no_login():
 def test_only_gcloud_and_cosign_may_run():
     with pytest.raises(ValueError, match="runs only"):
         remote.run(["sh", "-c", "id"])
+
+
+def test_an_expired_host_token_is_replaced_once():
+    """gcloud may hand back a token with only minutes left (found on 2026-10-29)."""
+    issued = iter(["stale", "fresh"])
+    host = HostToken(google(no_metadata), runner=lambda argv, stdin=None, env=None, timeout=60: Completed(0, next(issued) + "\n", ""))
+    seen = []
+
+    def handle(request):
+        seen.append(request.headers["Authorization"])
+        if request.headers["Authorization"] == "Bearer stale":
+            return httpx.Response(401, json={})
+        return httpx.Response(200, json={"accessToken": "env-token"})
+    assert ServiceAccountTokens(google(handle), host)(PROD_SA) == "env-token" and seen == ["Bearer stale", "Bearer fresh"]

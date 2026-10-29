@@ -40,8 +40,13 @@ class HostToken:
         if done.returncode != 0 or not token:
             raise DeliveryError(ErrorCode.GOOGLE_AUTH_FAILED, "This host has no Google identity: on Google Cloud, run with a service account; elsewhere, "
                                 "sign in with gcloud auth login")
-        self.cached, self.until = token, self.clock() + 1800
+        # gcloud may hand back a token it already holds, with only minutes left (found on 2026-10-29): kept five minutes,
+        # and dropped at once when Google refuses it
+        self.cached, self.until = token, self.clock() + 300
         return token
+
+    def invalidate(self) -> None:
+        self.cached, self.until = None, 0.0
 
 
 class ServiceAccountTokens:
@@ -55,11 +60,15 @@ class ServiceAccountTokens:
         cached = self.cache.get(service_account)
         if cached and self.clock() < cached[1]:
             return cached[0]
-        try:
-            response = self.client.post(f"{IAM_CREDENTIALS}/projects/-/serviceAccounts/{service_account}:generateAccessToken",
-                                        headers={"Authorization": f"Bearer {self.host_token()}"}, json={"scope": [SCOPE], "lifetime": f"{LIFETIME_SECONDS}s"})
-        except httpx.HTTPError as exc:
-            raise DeliveryError(ErrorCode.GOOGLE_AUTH_FAILED, f"Google's IAM Credentials API did not answer: {type(exc).__name__}") from None
+        for refreshed in (False, True):
+            try:
+                response = self.client.post(f"{IAM_CREDENTIALS}/projects/-/serviceAccounts/{service_account}:generateAccessToken",
+                                            headers={"Authorization": f"Bearer {self.host_token()}"}, json={"scope": [SCOPE], "lifetime": f"{LIFETIME_SECONDS}s"})
+            except httpx.HTTPError as exc:
+                raise DeliveryError(ErrorCode.GOOGLE_AUTH_FAILED, f"Google's IAM Credentials API did not answer: {type(exc).__name__}") from None
+            if response.status_code != 401 or refreshed or not hasattr(self.host_token, "invalidate"):
+                break
+            self.host_token.invalidate()  # this host's own token expired; one more try with a fresh one
         if response.status_code != 200:
             raise DeliveryError(ErrorCode.GOOGLE_AUTH_FAILED, f"This host may not act as {service_account} (HTTP {response.status_code}): it needs "
                                 "roles/iam.serviceAccountTokenCreator on that account", {"service_account": service_account, "status": response.status_code})
