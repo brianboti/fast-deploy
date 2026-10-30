@@ -81,13 +81,16 @@ class ToolSpec:
 
 RELEASE = Input("release", "The release: environment, request_id (the infrastructure layer's request), target ({group} for every machine of a compute group, or "
                            "{cluster: NAME, workload, replicas, expose: {hostname, path}} for a workload on one of the request's clusters, cluster: true for its only one, "
-                           "expose to reach it through the cluster's front door; {service: NAME} for a managed container service, true for the request's only one), "
-                           "image (host/path@sha256:digest; a tag is refused), "
-                           "port, health {path, timeout_seconds}, env (NAME: {value} or {endpoint} or {secret}), note. No source, command or mount is accepted.", True)
+                           "expose to reach it through the cluster's front door; {service: NAME} for a managed container service, {job: NAME} for a managed job, "
+                           "each true for the "
+                           "request's only one), image (host/path@sha256:digest; a tag is refused), "
+                           "port and health {path, timeout_seconds} (not used for a job, which serves nothing), env (NAME: {value} or {endpoint} or {secret}), "
+                           "note. No source, command or mount is accepted.", True)
 RELEASE_ID = Input("release_id", "The release id this service issued (rel-<12 hex>).", True)
 WAIT = Input("wait_seconds", "Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the work running.")
 RELEASE_OUT = ("ReleaseResponse: release_id, status, environment, request_id, group, image, previous, can_roll_back, requested_by, approved_by, env (each name and "
                "its source, never a value), warnings, targets (each machine with its status, times, error and the failed container's scrubbed log), error.")
+RUN_OUT = "RunResponse: release_id, execution, status (RUNNING, SUCCEEDED, FAILED, CANCELLED), tasks, succeeded, failed, running, started_at, finished_at, log_url."
 FOLLOW = "It answers at once with the work running, or waits up to wait_seconds; follow it with get_release until the status is RUNNING, FAILED, ROLLED_BACK or REMOVED."
 PLAN_ERRORS = ("INVALID_RELEASE", "INVALID_BINDING", "UNKNOWN_ENVIRONMENT", "PERMISSION_DENIED", "NOT_FOUND", "INVALID_STATE", "NOT_GRANTED", "UNSUPPORTED_TARGET",
                "UNREACHABLE_TARGET", "REGISTRY_NOT_ALLOWED", "INFRA_UNAVAILABLE", "INFRA_AUTH_FAILED")
@@ -126,6 +129,14 @@ CATALOG = (
              "target while the previous one is kept: not for a target's first release, and not for one a rollback restored.",
              (RELEASE_ID, WAIT), RELEASE_OUT, ("NOT_FOUND", "PERMISSION_DENIED", "INVALID_STATE", "MACHINE_UNREACHABLE", "MACHINE_ERROR", "ROLLBACK_FAILED"),
              "Needs can_deploy in the release's environment.", "changes", FOLLOW),
+    ToolSpec("run_release", "Run a job now", "Start the job a release is on, as it holds that release: one run of its tasks, now. A job's schedule, when "
+             "the infrastructure layer made one, starts runs by itself as well.",
+             (RELEASE_ID, WAIT), RUN_OUT, ("NOT_FOUND", "PERMISSION_DENIED", "INVALID_STATE", "SERVICE_UNREACHABLE", "SERVICE_ERROR"),
+             "Needs can_deploy in the release's environment; the release must be the one its job holds.", "changes",
+             "It answers once the run has started, or waits up to wait_seconds for it to finish; follow it with get_release_run until the status is not RUNNING."),
+    ToolSpec("get_release_run", "Get a job's run", "How one run of a job went: its tasks' counts, when it started and finished, and where its log is.",
+             (RELEASE_ID, Input("execution", "The run's name, as run_release returned it.", True)), RUN_OUT,
+             ("NOT_FOUND", "PERMISSION_DENIED", "INVALID_STATE", "SERVICE_UNREACHABLE"), "Any principal of the team that owns the request.", "read_only"),
     ToolSpec("remove_release", "Remove a release", "Stop and delete the release's containers, and the previous ones, from every machine of the group, or "
              "its Deployment, Service and Secrets from the cluster; the machines and the cluster stay as the infrastructure layer made them.",
              (RELEASE_ID, WAIT), RELEASE_OUT, ("NOT_FOUND", "PERMISSION_DENIED", "INVALID_STATE", "MACHINE_UNREACHABLE", "MACHINE_ERROR", "REMOVE_FAILED"),

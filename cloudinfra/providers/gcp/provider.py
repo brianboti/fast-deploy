@@ -15,7 +15,7 @@ from .loadbalancer import GcpLoadBalancer
 from .monitoring import GcpMonitoring
 from .network import GcpNetwork
 from .queue import GcpQueue
-from .run import GcpRun
+from .run import GcpRun, GcpRunJob
 from .secret import GcpSecret
 from .storage import GcpStorage
 
@@ -30,7 +30,7 @@ class GCPProvider(CloudProvider):
     name = "gcp"
     supported_kinds = RESOURCE_KINDS
     stoppable_kinds = ("compute", "database")
-    grantable_kinds = ("compute", "storage", "secret", "queue", "cluster", "service")
+    grantable_kinds = ("compute", "storage", "secret", "queue", "cluster", "service", "job")
 
     def __init__(self, settings, api: GcpApi | None = None, token=None, kube=None):
         self.settings = settings
@@ -44,6 +44,7 @@ class GCPProvider(CloudProvider):
         self.secret = GcpSecret(self.api, settings)
         self.cluster = GcpCluster(self.api, settings, kube)
         self.run = GcpRun(self.api, settings)
+        self.job = GcpRunJob(self.api, settings)
         self.load_balancer = GcpLoadBalancer(self.api, settings, self.network)
         self.monitoring = GcpMonitoring(self.api)
         self.iam = GcpIam(self.api)
@@ -94,6 +95,8 @@ class GCPProvider(CloudProvider):
             if service.public and not self.settings.allow_public_services:
                 problems.append(Problem(ErrorCode.INVALID_SERVICE_CONFIGURATION, f"service {service.service_name}: this operator does not allow services callable "
                                         "without signing in (providers.gcp.allow_public_services)", "service.public"))
+        for job in request.jobs():
+            problems.extend(translate.service_problems(job, "job"))
         return problems
 
     def plan(self, request: InfrastructureRequest, ctx: ProvisionContext) -> list[PlannedResource]:
@@ -174,6 +177,11 @@ class GCPProvider(CloudProvider):
             planned.append(PlannedResource(kind="service", name=f"{prefix}-{service.service_name}", provider_mapping=mapping,
                                            spec={"service": service.service_name, "cpu": service.cpu, "memory_mb": service.memory_mb, "min_instances": service.min_instances,
                                                  "max_instances": service.max_instances, "public": service.public, "ingress": service.ingress}))
+        for job in request.jobs():
+            mapping = "run.jobs.create, iam.serviceAccounts.create" + (", cloudscheduler.jobs.create, run.jobs.setIamPolicy (the schedule's account)" if job.schedule else "")
+            planned.append(PlannedResource(kind="job", name=f"{prefix}-{job.job_name}", provider_mapping=mapping,
+                                           spec={"job": job.job_name, "cpu": job.cpu, "memory_mb": job.memory_mb, "tasks": job.tasks,
+                                                 "schedule": {"cron": job.schedule.cron, "time_zone": job.schedule.time_zone} if job.schedule else None}))
         if request.load_balancer:
             balancer = request.load_balancer
             group = request.group(balancer.backend_group)
@@ -294,6 +302,15 @@ class GCPProvider(CloudProvider):
 
     def delete_cluster(self, resource, ctx):
         self.cluster.delete(resource, ctx)
+
+    def create_job(self, spec, planned, ctx, network, secrets):
+        return self.job.create(spec, planned, ctx, network, secrets)
+
+    def get_job(self, resource):
+        return self.job.get(resource)
+
+    def delete_job(self, resource, ctx):
+        self.job.delete(resource, ctx)
 
     def create_service(self, spec, planned, ctx, network, secrets):
         return self.run.create(spec, planned, ctx, network, secrets)

@@ -92,6 +92,12 @@ def info(resource, resources: list, project: str, drivers: bool = False) -> Conn
             return ConnectInfo(commands={"call": f"curl {url}"}, notes=["Callable without signing in: the operator allowed it and the request asked for it"])
         return ConnectInfo(commands={"call": f'curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" {url}'},
                            notes=[f"Ingress {resource.ingress}; a caller needs the invoker role, which use grants"] + ([] if resource.access else [NOT_GRANTED]))
+    if kind == "job":
+        region = resource.region
+        notes = [f"Runs by itself on {resource.schedule['cron']} ({resource.schedule['time_zone']})"] if resource.schedule else ["Runs only when asked"]
+        return ConnectInfo(commands={"run": f"gcloud run jobs execute {resource.name} --region {region} --project {project}",
+                                     "runs": f"gcloud run jobs executions list --job {resource.name} --region {region} --project {project}"},
+                           notes=notes + ([] if resource.access else [NOT_GRANTED]))
     if kind == "load_balancer":
         address = resource.address or "ADDRESS"
         command = f"curl http://{address}:{resource.port}{resource.health_check_path or '/'}" if resource.type == "http" else f"nc -vz {address} {resource.port}"

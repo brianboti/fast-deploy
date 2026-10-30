@@ -176,3 +176,23 @@ def service_response(**overrides):
     data["resources"]["service"] = [service_resource()]
     data["access"][0]["resources"].append(SERVICE_ID)
     return data
+
+
+JOB_ID = "job-666666666666"
+JOB_NAME = "projects/infra-project/locations/us-central1/jobs/shop-job"
+
+
+def job_resource(**fields):
+    base = {"runtime_service_account": "run-aaaaaaaaaa-job@infra-project.iam.gserviceaccount.com", "cpu": 1, "memory_mb": 512, "tasks": 2, "parallelism": 0,
+            "max_retries": 3, "task_timeout_seconds": 600, "secrets": [], "schedule": {"cron": "0 2 * * *", "time_zone": "UTC"}, "provider_id": JOB_NAME,
+            "scheduler": "projects/infra-project/locations/us-central1/jobs/shop-job", "scheduler_service_account": "sch-aaaaaaaaaa-job@infra-project.iam.gserviceaccount.com"}
+    base.update(fields)
+    return _resource("job", JOB_ID, "shop-job", **base)
+
+
+def job_response(**overrides):
+    """The same request with a managed job too, the prod service account granted on it."""
+    data = infra_response(**overrides)
+    data["resources"]["job"] = [job_resource()]
+    data["access"][0]["resources"].append(JOB_ID)
+    return data

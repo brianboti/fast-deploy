@@ -1,6 +1,6 @@
 # Delivery service catalog
 
-Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DELIVERY-CATALOG.md`; a test keeps this file and the registered tools equal to the records. 9 tools, served at `/mcp` and as REST routes. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Release ids are `rel-` plus 12 hex characters. Authentication: a bearer token of a configured principal. See [DELIVERY-SPEC.md](DELIVERY-SPEC.md).
+Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DELIVERY-CATALOG.md`; a test keeps this file and the registered tools equal to the records. 11 tools, served at `/mcp` and as REST routes. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Release ids are `rel-` plus 12 hex characters. Authentication: a bearer token of a configured principal. See [DELIVERY-SPEC.md](DELIVERY-SPEC.md).
 
 ## At a glance
 
@@ -13,6 +13,8 @@ Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DE
 | `list_releases` | List releases | read only |
 | `get_running` | What runs where | read only |
 | `rollback_release` | Roll back a release | changes |
+| `run_release` | Run a job now | changes |
+| `get_release_run` | Get a job's run | read only |
 | `remove_release` | Remove a release | destructive |
 | `get_service_status` | Get the service status | read only |
 
@@ -56,7 +58,7 @@ Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DE
 
 | Field | Required | Description |
 |---|---|---|
-| `release` | yes | The release: environment, request_id (the infrastructure layer's request), target ({group} for every machine of a compute group, or {cluster: NAME, workload, replicas, expose: {hostname, path}} for a workload on one of the request's clusters, cluster: true for its only one, expose to reach it through the cluster's front door; {service: NAME} for a managed container service, true for the request's only one), image (host/path@sha256:digest; a tag is refused), port, health {path, timeout_seconds}, env (NAME: {value} or {endpoint} or {secret}), note. No source, command or mount is accepted. |
+| `release` | yes | The release: environment, request_id (the infrastructure layer's request), target ({group} for every machine of a compute group, or {cluster: NAME, workload, replicas, expose: {hostname, path}} for a workload on one of the request's clusters, cluster: true for its only one, expose to reach it through the cluster's front door; {service: NAME} for a managed container service, {job: NAME} for a managed job, each true for the request's only one), image (host/path@sha256:digest; a tag is refused), port and health {path, timeout_seconds} (not used for a job, which serves nothing), env (NAME: {value} or {endpoint} or {secret}), note. No source, command or mount is accepted. |
 
 **Output.** PlanResponse: status PLANNED, machines, env sources, attestation_required, approval_required, replaces, warnings.
 
@@ -72,7 +74,7 @@ Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DE
 
 | Field | Required | Description |
 |---|---|---|
-| `release` | yes | The release: environment, request_id (the infrastructure layer's request), target ({group} for every machine of a compute group, or {cluster: NAME, workload, replicas, expose: {hostname, path}} for a workload on one of the request's clusters, cluster: true for its only one, expose to reach it through the cluster's front door; {service: NAME} for a managed container service, true for the request's only one), image (host/path@sha256:digest; a tag is refused), port, health {path, timeout_seconds}, env (NAME: {value} or {endpoint} or {secret}), note. No source, command or mount is accepted. |
+| `release` | yes | The release: environment, request_id (the infrastructure layer's request), target ({group} for every machine of a compute group, or {cluster: NAME, workload, replicas, expose: {hostname, path}} for a workload on one of the request's clusters, cluster: true for its only one, expose to reach it through the cluster's front door; {service: NAME} for a managed container service, {job: NAME} for a managed job, each true for the request's only one), image (host/path@sha256:digest; a tag is refused), port and health {path, timeout_seconds} (not used for a job, which serves nothing), env (NAME: {value} or {endpoint} or {secret}), note. No source, command or mount is accepted. |
 | `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the work running. |
 
 **Output.** ReleaseResponse: release_id, status, environment, request_id, group, image, previous, can_roll_back, requested_by, approved_by, env (each name and its source, never a value), warnings, targets (each machine with its status, times, error and the failed container's scrubbed log), error.
@@ -171,6 +173,42 @@ Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DE
 **Security.** Changes what runs on machines. Needs can_deploy in the release's environment.
 
 **After the call.** It answers at once with the work running, or waits up to wait_seconds; follow it with get_release until the status is RUNNING, FAILED, ROLLED_BACK or REMOVED.
+
+## `run_release`
+
+**Purpose.** Start the job a release is on, as it holds that release: one run of its tasks, now. A job's schedule, when the infrastructure layer made one, starts runs by itself as well.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `release_id` | yes | The release id this service issued (rel-<12 hex>). |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the work running. |
+
+**Output.** RunResponse: release_id, execution, status (RUNNING, SUCCEEDED, FAILED, CANCELLED), tasks, succeeded, failed, running, started_at, finished_at, log_url.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `SERVICE_UNREACHABLE`, `SERVICE_ERROR`.
+
+**Security.** Changes what runs on machines. Needs can_deploy in the release's environment; the release must be the one its job holds.
+
+**After the call.** It answers once the run has started, or waits up to wait_seconds for it to finish; follow it with get_release_run until the status is not RUNNING.
+
+## `get_release_run`
+
+**Purpose.** How one run of a job went: its tasks' counts, when it started and finished, and where its log is.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `release_id` | yes | The release id this service issued (rel-<12 hex>). |
+| `execution` | yes | The run's name, as run_release returned it. |
+
+**Output.** RunResponse: release_id, execution, status (RUNNING, SUCCEEDED, FAILED, CANCELLED), tasks, succeeded, failed, running, started_at, finished_at, log_url.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `SERVICE_UNREACHABLE`.
+
+**Security.** Read-only; runs and changes nothing. Any principal of the team that owns the request.
 
 ## `remove_release`
 

@@ -174,6 +174,7 @@ policy for one thing only: a cluster's node account (below).
   | queue | `roles/pubsub.publisher` on the topic, `roles/pubsub.subscriber` on the subscription | the same |
   | cluster | a RoleBinding to the built-in ClusterRole `view` in the request's namespace | a RoleBinding to `edit` there |
   | service (Cloud Run) | `roles/run.invoker` on the service (call it) | the same, `roles/run.developer` on the service, and `roles/iam.serviceAccountUser` on its runtime account (deploy revisions) |
+  | job (Cloud Run) | `roles/run.invoker` on the job (run it) | the same, `roles/run.developer` on the job, and `roles/iam.serviceAccountUser` on its runtime account |
 
   A database and a cache are reached through their secrets and the request's network. A cluster gets one namespace,
   named after the request, when it is created, and its grants are Kubernetes RoleBindings in that namespace only: IAM's
@@ -237,6 +238,16 @@ The service's own identity also needs, for services: `roles/run.admin` (create, 
 invoker check off and holds grants), and `roles/iam.serviceAccountAdmin` limited by the same practice as node accounts
 (it grants Service Account User on a runtime account to the request's `admin` members); its `secretmanager.admin`
 already covers the secrets' policies.
+
+### A managed job
+
+`job: {cpu, memory_mb, tasks, parallelism, max_retries, task_timeout_seconds, network_id, egress, schedule}` makes a Cloud
+Run job that runs to completion, empty: Google's sample job image stands in until the delivery layer puts a release on
+it. Its tasks run as an account made for it (`run-<request id>-<name>`) that reads the request's secrets and nothing else.
+With `schedule: {cron, time_zone}` the service also makes a Cloud Scheduler job that calls the job's run endpoint as a
+second account (`sch-<request id>-<name>`), which holds `roles/run.invoker` on this job only. On destroy the schedule goes
+first, so nothing starts the job while it is deleted, then the job, then both accounts. A job costs only while it runs.
+The service's identity also needs `roles/cloudscheduler.admin`, and the project the Cloud Scheduler API.
 
 ### A cluster's front door
 
@@ -383,7 +394,7 @@ python -m pytest tests/cloudinfra -q                # the boundary tests, no clo
 CLOUDINFRA_INTEGRATION=1 CLOUDINFRA_PROJECT=my-project python -m pytest tests/integration/cloudinfra -q   # one real machine, then destroyed
 ```
 
-The catalog has 48 tools: create, get and delete for each of the ten kinds (plus list, resize, attach and firewall
+The catalog has 51 tools: create, get and delete for each of the eleven kinds (plus list, resize, attach and firewall
 configuration where they apply), the lifecycle tools (stop, start, extend and keep awake among them), access, and the
 operations tools. The MCP endpoint is `/mcp`; the REST endpoints are `POST /infrastructure/validate`,
 `POST /infrastructure/plan`, `POST /infrastructure`, `GET /infrastructure` (with `status` and `expiring_within_hours`),
