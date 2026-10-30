@@ -1,3 +1,17 @@
+# Unreleased: a workload identity with no key
+
+The first of the kinds the coverage research ranks highest (docs/RESEARCH-2026-10-28-infrastructure-layer.md section 7;
+docs/INFRASTRUCTURE-ARCHITECTURE.md, "A workload identity"):
+
+- **A thirteenth kind, `identity`.** One or a list (named): an account for the request's workloads, `id-<request id>-<name>`,
+  with no key, ever. It holds the request's grants at its `level` (`use` or `admin`) as any access member does, and
+  nothing outside the request. Made first, deleted last.
+- **Machines run as it**: `compute.identity` names an identity of the same request; a group that names none still runs as
+  no account.
+- **Pods act as it with no key**: with clusters in the request, the Kubernetes service account of its name in the
+  request's namespace gets Workload Identity on it.
+- **Tools**: `create_identity`, `get_identity`, `delete_identity` (57 tools).
+
 # Unreleased: images are built only in the trusted project
 
 Decided 2026-10-30, for security: no developer, CI job, local machine or other outside system builds a container image

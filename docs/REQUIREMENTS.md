@@ -171,6 +171,7 @@ recommender):
 | clusters | `roles/container.clusterAdmin` (which also lets it create namespaces, RoleBindings and policies in the clusters it made) |
 | image registries | `artifactregistry.repositories.{create,get,delete,getIamPolicy,setIamPolicy}` |
 | access grants (release A) | a custom role with exactly `getIamPolicy` and `setIamPolicy` on Compute Engine instances, IAP tunnel instances, secrets, buckets, topics, subscriptions and Artifact Registry repositories |
+| a workload identity per request | nothing beyond the node-account roles below |
 | a node account per cluster | `roles/iam.serviceAccountCreator`, `roles/iam.serviceAccountDeleter`, `roles/iam.serviceAccountUser` (the project), `roles/resourcemanager.projectIamAdmin` limited by the IAM condition `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])`, and `roles/artifactregistry.admin` on each repository in `providers.gcp.registries` |
 | managed services and jobs | `roles/run.admin`, `roles/iam.serviceAccountAdmin` (limited as the node accounts' role is), `roles/cloudscheduler.admin` |
 | usage and health | `roles/monitoring.viewer` |
@@ -228,6 +229,7 @@ The `cloudinfra` operator also defines the profile the delivery service needs fo
 
 | Kind | What a request may ask for | Provider mapping |
 |---|---|---|
+| identity | `{name, level}`: an account for the request's own workloads, no key ever; `compute.identity` runs a group as it; with clusters, the Kubernetes service account of its name may act as it | an IAM service account `id-<request id>-<name>`, granted on the request's resources at its level; Workload Identity Federation for GKE (`roles/iam.workloadIdentityUser`) |
 | compute, `os` | `ubuntu` (24.04 LTS amd64), `debian` (12), `rocky` (9) image families | Compute Engine E2 (`e2-standard`, `e2-highmem`, `e2-highcpu`, `e2-custom`, `e2-micro/small/medium`) |
 | compute, `accelerator` | `t4`, `l4`, `a100`, `h100` | `nvidia-tesla-t4` on N1, `nvidia-l4` on G2, `nvidia-tesla-a100` on A2, `nvidia-h100-80gb` on A3; boot disk 50 GB by default, at least 40 GB |
 | compute, `profile` | an operator profile, such as `container-host` (Container-Optimized OS 133 LTS; LTS 117 to 133 support OS Login and Shielded VM) or a GPU image with signed drivers | the profile's image family or pinned image |

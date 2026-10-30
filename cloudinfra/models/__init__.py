@@ -9,6 +9,7 @@ from .request import (
     ClusterRequest,
     ComputeRequest,
     DatabaseRequest,
+    IdentityRequest,
     InfrastructureRequest,
     JobRequest,
     LifetimeRequest,
@@ -30,6 +31,7 @@ from .resources import (
     DatabaseResource,
     FirewallRule,
     Grant,
+    IdentityResource,
     JobResource,
     LoadBalancerResource,
     NetworkResource,
@@ -70,5 +72,5 @@ __all__ = ["RESOURCE_KINDS", "AcceleratorRequest", "AccessGrant", "AccessRequest
            "ListResponse", "LoadBalancerRequest", "LoadBalancerResource", "NetworkRequest",
     "PublicRequest", "NetworkResource", "OperationRecord", "OperationStatus", "PlanResponse",
            "PlannedResource", "ProfileInfo", "QueueRequest", "QueueResource", "RegistryRequest", "RegistryResource", "RequestStatus", "ResourceKind", "ResourceKindsResponse",
-           "ResourceResponse", "ResourceStatus", "Resources", "JobRequest", "JobResource", "ScheduleRequest", "SecretRequest", "ServiceRequest", "ServiceResource", "SecretResource",
-           "StorageRequest", "StorageResource", "Usage", "ValidationResponse"]
+           "ResourceResponse", "ResourceStatus", "Resources", "IdentityRequest", "IdentityResource", "JobRequest", "JobResource", "ScheduleRequest", "SecretRequest",
+           "ServiceRequest", "ServiceResource", "SecretResource", "StorageRequest", "StorageResource", "Usage", "ValidationResponse"]

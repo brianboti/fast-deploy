@@ -107,6 +107,8 @@ def line(planned: PlannedResource) -> CostLine:
         monthly = idle
         basis = (f"{spec['min_instances']} warm instance{'s' if spec['min_instances'] != 1 else ''} at the idle rate; requests are billed by use on top"
                  if spec["min_instances"] else "billed by use only: CPU and memory while handling requests, and per million requests")
+    elif planned.kind == "identity":
+        monthly, basis = 0.0, "service accounts are free"
     elif planned.kind == "job":  # billed by run only (https://cloud.google.com/run/pricing)
         monthly = 0.0
         basis = "billed by run only: CPU and memory for each task's running time" + (f", on the schedule {spec['schedule']['cron']}" if spec.get("schedule") else "")

@@ -2,8 +2,8 @@
 
 Every field is a size, a count, a name, a version or a switch. There is no repository, image, command, script, key or
 provider-specific structure, so a request can describe "one Ubuntu machine with 4 CPUs and 16 GB" and nothing about any
-application. Strict models: no unknown field, no type coercion. Twelve kinds: network, storage, compute (one group or
-several), database, cache, queue, secret, registry, cluster, service, job and load_balancer.
+application. Strict models: no unknown field, no type coercion. Thirteen kinds: identity, network, storage, compute (one
+group or several), database, cache, queue, secret, registry, cluster, service, job and load_balancer.
 """
 import re
 from typing import Literal
@@ -27,13 +27,14 @@ RESERVED_SECRETS = {"db-password": "database", "cache-auth": "cache"}  # secrets
 LoadBalancerType = Literal["http", "tcp"]
 GROUP = r"^[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?$"  # a group's, queue's or secret's short name: up to 12 characters, part of resource names
 # The kinds, in the order they are created; destruction is the reverse. Every top-level block of a request is one of these.
-RESOURCE_KINDS = ("network", "storage", "compute", "database", "cache", "queue", "secret", "registry", "cluster", "service", "job", "load_balancer")
+RESOURCE_KINDS = ("identity", "network", "storage", "compute", "database", "cache", "queue", "secret", "registry", "cluster", "service", "job", "load_balancer")
 MAX_QUEUES = 8
 MAX_SECRETS = 16
 MAX_REGISTRIES = 4
 MAX_CLUSTERS = 4
 MAX_SERVICES = 8
 MAX_JOBS = 8
+MAX_IDENTITIES = 8
 CRON = re.compile(r"^[0-9A-Za-z*/,-]+( [0-9A-Za-z*/,-]+){4}$")  # five unix-cron fields
 TIME_ZONE = re.compile(r"^[A-Za-z_]+(?:/[A-Za-z0-9_+-]+){0,2}$")
 HOSTNAME = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
@@ -74,10 +75,24 @@ class AccessRequest(StrictModel):
         return validation.check_member(value)
 
 
+class IdentityRequest(StrictModel):
+    """An identity for the request's own workloads: an account with no key, that may use what this request creates and
+    nothing else. Machines of a group run as it (compute.identity); in the request's clusters, workloads using the
+    Kubernetes service account of the same name in the request's namespace act as it, with no key either."""
+    name: str | None = Field(default=None, pattern=GROUP, description="The identity's name, part of its account (<name> of the request); app when omitted. "
+                                                                      "Required and unique when a request has several identities.")
+    level: AccessLevel = Field(default="use", description="Its access on the request's resources: use (read and write data) or admin.")
+
+    @property
+    def identity_name(self) -> str:
+        return self.name or "app"
+
+
 class ComputeRequest(StrictModel):
     """Virtual machines of one shape: a group. A request may carry one group or a list of them."""
     group: str | None = Field(default=None, pattern=GROUP, description="The group's name, part of every machine name (<name>-<group>-<n>); vm when omitted. "
                                                                         "Required and unique when a request has several groups.")
+    identity: str | None = Field(default=None, pattern=GROUP, description="An identity of the same request the machines run as; none when omitted.")
     count: int = Field(default=1, ge=1, le=100, description="How many identical machines.")
     cpu: int = Field(ge=1, le=224, description="Virtual CPUs per machine.")
     memory_gb: int = Field(ge=1, le=1872, description="Memory per machine, in GB.")
@@ -380,6 +395,7 @@ class InfrastructureRequest(StrictModel):
     secret: SecretRequest | list[SecretRequest] | None = Field(default=None, description="One secret container, or a list of them.")
     registry: RegistryRequest | list[RegistryRequest] | None = Field(default=None, description="One image repository, or a list of them.")
     cluster: ClusterRequest | list[ClusterRequest] | None = Field(default=None, description="One cluster, or a list of them.")
+    identity: IdentityRequest | list[IdentityRequest] | None = Field(default=None, description="One workload identity, or a list of them.")
     service: ServiceRequest | list[ServiceRequest] | None = Field(default=None, description="One managed container service, or a list of them.")
     job: JobRequest | list[JobRequest] | None = Field(default=None, description="One managed job, or a list of them.")
     load_balancer: LoadBalancerRequest | None = None
@@ -411,7 +427,7 @@ class InfrastructureRequest(StrictModel):
 
     @model_validator(mode="after")
     def _consistent(self):
-        for kind in ("compute", "queue", "secret", "registry", "cluster", "service", "job"):
+        for kind in ("compute", "queue", "secret", "registry", "cluster", "service", "job", "identity"):
             if getattr(self, kind) == []:
                 raise ValueError(f"{kind}: a list cannot be empty")
         if not any(getattr(self, kind) for kind in RESOURCE_KINDS):
@@ -430,7 +446,8 @@ class InfrastructureRequest(StrictModel):
                 raise ValueError("compute: every group of a list needs a group name")
             if len(set(names)) != len(names):
                 raise ValueError("compute: group names must be unique")
-        for kind, items, limit in (("cluster", self.clusters(), MAX_CLUSTERS), ("service", self.services(), MAX_SERVICES), ("job", self.jobs(), MAX_JOBS)):
+        for kind, items, limit in (("cluster", self.clusters(), MAX_CLUSTERS), ("service", self.services(), MAX_SERVICES), ("job", self.jobs(), MAX_JOBS),
+                                   ("identity", self.identities(), MAX_IDENTITIES)):
             if len(items) > limit:
                 raise ValueError(f"{kind}: at most {limit} per request")
             if len(items) > 1:
@@ -445,6 +462,10 @@ class InfrastructureRequest(StrictModel):
                 raise ValueError(f"{kind}: at most {limit} per request")
             if len(set(names)) != len(names):
                 raise ValueError(f"{kind}: names must be unique")
+        names = {identity.identity_name for identity in self.identities()}
+        for group in groups:
+            if group.identity is not None and group.identity not in names:
+                raise ValueError(f"compute.identity names {group.identity!r}, which is not an identity of this request")
         if self.storage and self.storage.group and self.storage.group not in {group.group_name for group in groups}:
             raise ValueError(f"storage.group names {self.storage.group!r}, which is not a compute group of this request")
         if self.load_balancer and self.load_balancer.backends:
@@ -479,6 +500,12 @@ class InfrastructureRequest(StrictModel):
 
     def services(self) -> list[ServiceRequest]:
         return [] if self.service is None else (self.service if isinstance(self.service, list) else [self.service])
+
+    def identities(self) -> list[IdentityRequest]:
+        return [] if self.identity is None else (self.identity if isinstance(self.identity, list) else [self.identity])
+
+    def identity_named(self, name: str) -> IdentityRequest | None:
+        return next((identity for identity in self.identities() if identity.identity_name == name), None)
 
     def jobs(self) -> list[JobRequest]:
         return [] if self.job is None else (self.job if isinstance(self.job, list) else [self.job])

@@ -6,7 +6,7 @@ run containers on it without ever holding a cloud credential or writing infrastr
 - **`cloudinfra`, the Cloud Infrastructure MCP.** A provider-independent service that provisions, grants access to,
   stops, starts, prices, expires and destroys infrastructure from a typed request: machines (in groups, with or without
   GPUs), disks and buckets, networks and load balancers, managed databases, caches, queues, secrets, image registries,
-  Kubernetes clusters with a front door, and managed container services and jobs. Twelve kinds, 54 MCP tools, a REST
+  Kubernetes clusters with a front door, and managed container services and jobs. Thirteen kinds, 57 MCP tools, a REST
   API, one Google Cloud adapter today.
 - **`appdelivery`, the application delivery service.** A separate service above it that has an image built in the
   trusted Google Cloud project, by Cloud Build from one commit of a linked source, and runs it, named by digest, on
@@ -40,7 +40,7 @@ account, and is itself only a read-only caller of `cloudinfra`. Tests hold both 
 | [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) | Every requirement with its version: Python and packages, the images' pinned inputs, CI tools, what a host and the Google Cloud project need, product versions, limits, clients |
 | [docs/SETUP.md](docs/SETUP.md) | Setting both services up on a Google Cloud project, the first request and the first release, connecting Claude |
 | [docs/INFRASTRUCTURE-ARCHITECTURE.md](docs/INFRASTRUCTURE-ARCHITECTURE.md) | The infrastructure service: ownership, the contract, the lifecycle, access, time, state, security, observability |
-| [docs/MCP-CATALOG.md](docs/MCP-CATALOG.md) | The infrastructure service's 54 tools, their fields, outputs, provider mappings and error codes (generated) |
+| [docs/MCP-CATALOG.md](docs/MCP-CATALOG.md) | The infrastructure service's 57 tools, their fields, outputs, provider mappings and error codes (generated) |
 | [docs/PROVIDER-INTERFACE.md](docs/PROVIDER-INTERFACE.md) | The `CloudProvider` interface, the Google adapter's mapping, and how to add a provider |
 | [docs/DELIVERY-SPEC.md](docs/DELIVERY-SPEC.md) | The delivery service: who trusts whom, the release contract, the four targets, a release's life, boundaries |
 | [docs/DELIVERY-CATALOG.md](docs/DELIVERY-CATALOG.md) | The delivery service's 14 tools and error codes (generated) |

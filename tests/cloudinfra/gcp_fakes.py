@@ -172,6 +172,7 @@ class FakeGcpApi(GcpApi):
         key = (zone, body["name"])
         if key in self.instances:
             raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, "already exists", {"http_status": 409})
+        assert all(item["email"] in self.service_accounts for item in body.get("serviceAccounts", [])), "a machine runs as an account that exists"
         number = len(self.instances) + 2
         interface = {"networkIP": f"10.10.0.{number}", **{k: v for k, v in body["networkInterfaces"][0].items()}}
         if "accessConfigs" in interface:

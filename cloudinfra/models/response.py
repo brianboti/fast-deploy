@@ -11,6 +11,7 @@ from .resources import (
     ClusterResource,
     ComputeResource,
     DatabaseResource,
+    IdentityResource,
     JobResource,
     LoadBalancerResource,
     NetworkResource,
@@ -75,6 +76,7 @@ class Endpoints(Model):
 
 
 class Resources(Model):
+    identity: list[IdentityResource] = Field(default_factory=list)
     network: list[NetworkResource] = Field(default_factory=list)
     storage: list[StorageResource] = Field(default_factory=list)
     compute: list[ComputeResource] = Field(default_factory=list)
@@ -216,8 +218,8 @@ class ResourceResponse(Model):
     """One resource after a primitive call: its state now, and the operation that changes it when one is still running."""
     status: str
     request_id: str
-    resource: (ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | SecretResource | RegistryResource | ClusterResource
-               | ServiceResource | JobResource | LoadBalancerResource) = Field(discriminator="kind")
+    resource: (IdentityResource | ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | SecretResource | RegistryResource
+               | ClusterResource | ServiceResource | JobResource | LoadBalancerResource) = Field(discriminator="kind")
     operation: OperationRecord | None = None
 
 
