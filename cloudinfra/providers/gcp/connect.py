@@ -105,6 +105,12 @@ def info(resource, resources: list, project: str, drivers: bool = False) -> Conn
                            prerequisites=["Firestore has no policy per database: the platform team grants roles/datastore.user on the project once, with an IAM "
                                           f'condition resource.name == "projects/{project}/databases/{resource.database}"'],
                            notes=[f"Clients name the database {resource.database}, not (default)"])
+    if kind == "budget":
+        budget = (resource.budget or "").rsplit("/", 1)[-1]
+        account = (resource.billing_account or "").rsplit("/", 1)[-1]
+        return ConnectInfo(commands={"describe": f"gcloud billing budgets describe {budget} --billing-account={account}"},
+                           notes=[f"Counts the costs labelled cloudinfra-request={resource.watches}, which every resource of that request carries; billing data, "
+                                  "and so an alert, arrives some hours late", "It alerts and stops nothing"])
     if kind == "monitor":
         return ConnectInfo(commands={"policies": f"gcloud monitoring policies list --project {project} --filter='user_labels.cloudinfra-request={resource.request_id}'"},
                            notes=[f"Checks {item['url']} every {item['period_seconds']} seconds" for item in resource.checks]

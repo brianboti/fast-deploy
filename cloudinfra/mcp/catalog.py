@@ -325,6 +325,21 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Cloud Monitoring: uptimeCheckConfigs.get."),
     ToolSpec("delete_monitor", "Monitor", "Delete monitoring", "Delete the alert policies, the checks and the channels.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
              "Needs can_destroy.", "Cloud Monitoring: alertPolicies, uptimeCheckConfigs and notificationChannels delete."),
+    # ---- budget
+    ToolSpec("create_budget", "Budget", "Create a budget", "Create a monthly spending budget on an earlier request's costs, with an email to the given addresses as "
+             "spending crosses each threshold and when the month's forecast passes the amount. It alerts and stops nothing; a full request may carry its own budget block.",
+             (Input("request_id", "The request whose costs it counts; one of yours.", True), Input("monthly_amount", "The month's amount, in the billing account's currency.", True),
+              Input("notify", "Up to five email addresses alerted, in domains the operator allows.", True),
+              Input("thresholds", "Percentages of the amount at which actual spending alerts (default 50, 90, 100)."),
+              Input("forecast", "Also alert when the month's forecast passes the amount (default true)."), NAME, LABELS, WAIT),
+             RESPONSE, ("INVALID_ACCESS", "NOT_FOUND", *COMMON_ERRORS),
+             "Needs can_provision. It counts only costs labelled with that request, which every resource of it carries; billing data, and so an alert, arrives "
+             f"hours late. Alerts go only to the operator's allowed domains, not to the billing account's administrators. {OWNERSHIP}",
+             "Cloud Billing: billingbudgets.budgets.create; Cloud Monitoring: notificationChannels.create."),
+    ToolSpec("get_budget", "Budget", "Get a budget", "The budget's amount, thresholds, addresses and the request it counts.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only.",
+             "Cloud Billing: billingbudgets.budgets.get."),
+    ToolSpec("delete_budget", "Budget", "Delete a budget", "Delete the budget and its notification channels; nothing it watched is touched.", (RESOURCE_ID, WAIT), RESOURCE,
+             DELETE_ERRORS, "Needs can_destroy.", "Cloud Billing: billingbudgets.budgets.delete; Cloud Monitoring: notificationChannels.delete."),
     # ---- dns
     ToolSpec("create_dns", "DNS", "Create a DNS zone", "Create a public DNS zone for a domain the operator allows, with record sets written in one change. "
              "In a full request, an A record may point at the request's load balancer or a cluster's front door by name instead of an address.",
@@ -471,7 +486,7 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Read-only; no secret is included.", "None."),
 )
 BY_NAME = {spec.name: spec for spec in CATALOG}
-GROUPS = ("Identity", "Compute", "Storage", "Network", "Database", "Cache", "Queue", "Warehouse", "NoSQL", "Secret", "Cluster", "Service", "Job", "Load balancer", "DNS", "Monitor",
+GROUPS = ("Identity", "Compute", "Storage", "Network", "Database", "Cache", "Queue", "Warehouse", "NoSQL", "Secret", "Cluster", "Service", "Job", "Load balancer", "DNS", "Monitor", "Budget",
     "Infrastructure", "Operations")
 
 

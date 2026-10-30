@@ -29,6 +29,21 @@ def endpoint(check, created) -> tuple[str, bool, int]:
     return (urlparse(found.url).hostname if found and found.url else None), True, 443
 
 
+def email_channel(api, display: str, address: str, labels: dict) -> str:
+    """An email notification channel; its provider name."""
+    made = api.post(f"{MONITORING}/projects/{api.project}/notificationChannels", json={"type": "email", "displayName": display, "labels": {"email_address": address},
+                                                                                     "userLabels": labels})
+    return made["name"]
+
+
+def delete_quietly(api, url: str) -> None:
+    try:
+        api.delete(url)
+    except InfrastructureError as exc:
+        if exc.code != ErrorCode.NOT_FOUND:
+            raise
+
+
 class GcpMonitor:
     def __init__(self, api, settings):
         self.api, self.settings = api, settings
@@ -41,9 +56,7 @@ class GcpMonitor:
                                    provider_id=f"projects/{self.api.project}", status=ResourceStatus.CREATING, notify=list(spec.notify), labels=translate.labels(ctx))
         labels = translate.labels(ctx)
         for address in spec.notify:
-            made = self.api.post(self._base("notificationChannels"), json={"type": "email", "displayName": f"{planned.name} {address}",
-                                                                            "labels": {"email_address": address}, "userLabels": labels})
-            resource = resource.model_copy(update={"channels": [*resource.channels, made["name"]]})
+            resource = resource.model_copy(update={"channels": [*resource.channels, email_channel(self.api, f"{planned.name} {address}", address, labels)]})
             ctx.accepted(resource)  # each piece is known as Google takes it, so a failure further on deletes every one made
         for index, check in enumerate(spec.uptime, start=1):
             host, https, port = endpoint(check, created)
@@ -80,8 +93,4 @@ class GcpMonitor:
 
     def delete(self, resource: MonitorResource, ctx) -> None:
         for name in [*resource.policies, *(item["name"] for item in resource.checks), *resource.channels]:
-            try:
-                self.api.delete(f"{MONITORING}/{name}")
-            except InfrastructureError as exc:
-                if exc.code != ErrorCode.NOT_FOUND:
-                    raise
+            delete_quietly(self.api, f"{MONITORING}/{name}")

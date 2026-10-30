@@ -3,7 +3,7 @@
 Every field is a size, a count, a name, a version or a switch. There is no repository, image, command, script, key or
 provider-specific structure, so a request can describe "one Ubuntu machine with 4 CPUs and 16 GB" and nothing about any
 application. Strict models: no unknown field, no type coercion. Sixteen kinds: identity, network, storage, compute (one
-group or several), database, cache, queue, warehouse, nosql, secret, cluster, service, job, load_balancer, dns and monitor.
+group or several), database, cache, queue, warehouse, nosql, secret, cluster, service, job, load_balancer, dns, monitor and budget.
 """
 import re
 from typing import Literal
@@ -27,7 +27,7 @@ RESERVED_SECRETS = {"db-password": "database", "cache-auth": "cache"}  # secrets
 LoadBalancerType = Literal["http", "tcp"]
 GROUP = r"^[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?$"  # a group's, queue's or secret's short name: up to 12 characters, part of resource names
 # The kinds, in the order they are created; destruction is the reverse. Every top-level block of a request is one of these.
-RESOURCE_KINDS = ("identity", "network", "storage", "compute", "database", "cache", "queue", "warehouse", "nosql", "secret", "cluster", "service", "job", "load_balancer", "dns", "monitor")
+RESOURCE_KINDS = ("identity", "network", "storage", "compute", "database", "cache", "queue", "warehouse", "nosql", "secret", "cluster", "service", "job", "load_balancer", "dns", "monitor", "budget")
 MAX_QUEUES = 8
 MAX_SECRETS = 16
 MAX_CLUSTERS = 4
@@ -447,6 +447,39 @@ class MonitorRequest(StrictModel):
         return value
 
 
+class BudgetRequest(StrictModel):
+    """A monthly spending budget for the request's own costs, with an email as spending, or the month's forecast, crosses each
+    threshold. It alerts; it stops nothing."""
+    monthly_amount: int = Field(ge=1, le=10_000_000, description="The month's amount, in the billing account's currency (USD for most).")
+    notify: list[str] = Field(min_length=1, max_length=5, description="Email addresses alerted, in domains the operator allows.")
+    thresholds: list[int] = Field(default_factory=lambda: [50, 90, 100], min_length=1, max_length=8,
+                                  description="Percentages of the amount (1 to 500) at which actual spending alerts.")
+    forecast: bool = Field(default=True, description="Also alert when the month's forecast passes the amount.")
+    request_id: str | None = Field(default=None, description="Watch an earlier request of yours instead of this one (the create_budget tool sets it).")
+
+    @field_validator("notify")
+    @classmethod
+    def _notify(cls, value):
+        for address in value:
+            if not EMAIL.fullmatch(address):
+                raise ValueError(f"budget.notify: {address!r} is not a lowercase email address")
+        if len(set(value)) != len(value):
+            raise ValueError("budget.notify: each address once")
+        return value
+
+    @field_validator("thresholds")
+    @classmethod
+    def _thresholds(cls, value):
+        if any(not 1 <= percent <= 500 for percent in value) or len(set(value)) != len(value):
+            raise ValueError("budget.thresholds: distinct percentages from 1 to 500")
+        return sorted(value)
+
+    @field_validator("request_id")
+    @classmethod
+    def _request_id(cls, value):
+        return None if value is None else validation.check_request_id(value)
+
+
 class LoadBalancerRequest(StrictModel):
     """A public load balancer in front of one compute group."""
     type: LoadBalancerType = Field(default="http", description="http: an application load balancer with a health check on a path; tcp: a passthrough network load balancer.")
@@ -527,6 +560,7 @@ class InfrastructureRequest(StrictModel):
     load_balancer: LoadBalancerRequest | None = None
     dns: DnsRequest | None = Field(default=None, description="A public DNS zone and its records, made after everything they point to.")
     monitor: MonitorRequest | None = Field(default=None, description="Uptime checks on the request's public endpoints, and alerts when one fails.")
+    budget: BudgetRequest | None = Field(default=None, description="A monthly spending budget for what the request costs, with email alerts.")
     lifetime: LifetimeRequest | None = Field(default=None, description="How long the request lives; the operator's default applies when omitted, and there is none unless the operator sets one.")
     access: list[AccessRequest] = Field(default_factory=list, max_length=20, description="People, groups or service accounts to grant access to what is created; "
                                                                                           "the requester is added when the operator maps it to an identity.")

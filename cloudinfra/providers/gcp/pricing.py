@@ -121,6 +121,8 @@ def line(planned: PlannedResource) -> CostLine:
         basis = f"{spec['checks']} alert condition{'s' if spec['checks'] != 1 else ''}; uptime checks run within the free allotment at these periods"
     elif planned.kind == "dns":  # https://cloud.google.com/dns/pricing
         monthly, basis = PRICING["dns_zone_month"], "one managed zone; queries are billed by the million on top"
+    elif planned.kind == "budget":
+        monthly, basis = 0.0, "budgets and their alerts are free"
     elif planned.kind == "identity":
         monthly, basis = 0.0, "service accounts are free"
     elif planned.kind == "job":  # billed by run only (https://cloud.google.com/run/pricing)

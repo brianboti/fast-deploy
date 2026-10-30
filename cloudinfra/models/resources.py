@@ -24,6 +24,7 @@ class ResourceKind(StrEnum):
     load_balancer = "load_balancer"
     dns = "dns"
     monitor = "monitor"
+    budget = "budget"
 
 
 class ResourceStatus(StrEnum):
@@ -271,6 +272,19 @@ class MonitorResource(Resource):
     policies: list[str] = Field(default_factory=list, description="The alert policies made (provider names).")
 
 
+class BudgetResource(Resource):
+    """A monthly spending budget on one request's costs, and the addresses alerted."""
+    kind: Literal[ResourceKind.budget] = ResourceKind.budget
+    monthly_amount: int
+    thresholds: list[int] = Field(default_factory=list)
+    forecast: bool = True
+    notify: list[str] = Field(default_factory=list)
+    watches: str = Field(description="The request whose costs it counts.")
+    billing_account: str | None = None
+    budget: str | None = Field(default=None, description="The budget's provider name.")
+    channels: list[str] = Field(default_factory=list, description="The notification channels made (provider names).")
+
+
 class LoadBalancerResource(Resource):
     kind: Literal[ResourceKind.load_balancer] = ResourceKind.load_balancer
     type: Literal["http", "tcp"]
@@ -286,17 +300,17 @@ class LoadBalancerResource(Resource):
 
 AnyResource = Annotated[IdentityResource | ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | WarehouseResource | NoSqlResource
                        | SecretResource | ClusterResource | ServiceResource
-                       | JobResource | LoadBalancerResource | DnsResource | MonitorResource, Field(discriminator="kind")]
+                       | JobResource | LoadBalancerResource | DnsResource | MonitorResource | BudgetResource, Field(discriminator="kind")]
 RESOURCE_TYPES = {ResourceKind.identity: IdentityResource, ResourceKind.compute: ComputeResource, ResourceKind.storage: StorageResource,
                   ResourceKind.network: NetworkResource, ResourceKind.database: DatabaseResource,
                   ResourceKind.cache: CacheResource, ResourceKind.queue: QueueResource, ResourceKind.warehouse: WarehouseResource, ResourceKind.nosql: NoSqlResource,
                   ResourceKind.secret: SecretResource, ResourceKind.cluster: ClusterResource,
                   ResourceKind.service: ServiceResource, ResourceKind.job: JobResource, ResourceKind.load_balancer: LoadBalancerResource,
-                  ResourceKind.dns: DnsResource, ResourceKind.monitor: MonitorResource}
+                  ResourceKind.dns: DnsResource, ResourceKind.monitor: MonitorResource, ResourceKind.budget: BudgetResource}
 ID_PREFIX = {ResourceKind.identity: "idn", ResourceKind.compute: "cmp", ResourceKind.storage: "sto", ResourceKind.network: "net", ResourceKind.database: "db", ResourceKind.cache: "cac",
              ResourceKind.queue: "que", ResourceKind.warehouse: "whs", ResourceKind.nosql: "nsq", ResourceKind.secret: "sec", ResourceKind.cluster: "clu", ResourceKind.service: "svc",
              ResourceKind.job: "job",
-             ResourceKind.load_balancer: "lb", ResourceKind.dns: "dns", ResourceKind.monitor: "mon"}
+             ResourceKind.load_balancer: "lb", ResourceKind.dns: "dns", ResourceKind.monitor: "mon", ResourceKind.budget: "bud"}
 
 
 def load_resource(data: dict):
