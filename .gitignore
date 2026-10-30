@@ -3,22 +3,16 @@
 __pycache__/
 *.egg-info/
 .pytest_cache/
+.ruff_cache/
 .env
 *.pem
 *.db*
-gha-creds-*.json
+# Each operator's own configuration stays local
+cloudinfra.local.yaml
+appdelivery.local.yaml
+# Local leftovers of the removed Fast Deploy workflow (its configuration and Terraform working files), never committed
+config.local.yaml
 .terraform/
 *.tfstate*
-*.tfplan
-# Each environment's settings stay local: terraform.tfvars, staging.tfvars, production.tfvars
 *.tfvars
-config.local.yaml
-cloudinfra.local.yaml
-# Earlier versions of it, kept by the settings page beside the file
-/history/
-
-.ruff_cache/
-
-# Pipeline artefacts inside application roots
-infra/gcp/**/plan.json
-infra/gcp/**/outputs.json
+*.tfplan

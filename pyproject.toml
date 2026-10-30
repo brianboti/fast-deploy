@@ -3,9 +3,9 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lab-deploy"
+name = "infrastructure-layer"
 version = "1.37.1"
-description = "A provider-independent Cloud Infrastructure MCP, and the Fast Deploy application delivery workflow on top of it"
+description = "A provider-independent Cloud Infrastructure MCP (cloudinfra) and the application delivery service above it (appdelivery)"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
@@ -15,12 +15,11 @@ dependencies = ["mcp==1.30.0", "fastapi==0.143.0", "httpx==0.28.1", "pydantic==2
 dev = ["pytest==9.1.1", "python-hcl2==7.3.1", "ruff==0.17.0", "zizmor==1.30.1"]
 
 [project.scripts]
-lab-deploy = "labdeploy.cli:main"
 cloud-infra = "cloudinfra.cli:main"
 app-delivery = "appdelivery.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["labdeploy*", "cloudinfra*", "appdelivery*"]
+include = ["cloudinfra*", "appdelivery*"]
 
 [tool.setuptools.package-data]
 appdelivery = ["host/*.sh"]
@@ -32,7 +31,7 @@ markers = ["integration: needs a real cloud project (CLOUDINFRA_INTEGRATION=1); 
 [tool.ruff]
 line-length = 200
 target-version = "py312"
-extend-exclude = [".venv", "examples/demo-app/.test-venv"]
+extend-exclude = [".venv"]
 
 [tool.ruff.lint]
 # Correctness, imports, bug-prone patterns, modern syntax, and the bandit security rules.
@@ -42,7 +41,3 @@ ignore = ["S603", "S607"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "S105", "S106", "S107", "S108"]
-"examples/demo-app/*" = ["S101"]
-# The jobs example calls Google's APIs at fixed https addresses with the standard library only.
-"examples/jobs-demo/*" = ["S101", "S310"]
-

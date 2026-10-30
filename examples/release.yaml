@@ -1,0 +1,18 @@
+# A release (docs/DELIVERY-SPEC.md, section 3): an image that already exists, by digest, onto the machines of one compute
+# group of a cloudinfra request, with each environment value bound to a literal, an endpoint or a secret of that request.
+# Plan it against a running infrastructure layer (nothing runs on a machine):
+#   app-delivery plan examples/release.yaml --config appdelivery.local.yaml --as shop-team
+environment: dev
+request_id: 3f6c0b7d2a9e4c1f8b5d6e7a9c0b1d2e
+target: {group: web}
+image: us-central1-docker.pkg.dev/your-infrastructure-project/shop-images/web@sha256:9b2f1c5d4e3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c
+port: 8080
+health: {path: /healthz, timeout_seconds: 60}
+env:
+  LOG_LEVEL: {value: info}
+  DB_HOST: {endpoint: database_host}
+  DB_PORT: {endpoint: database_port}
+  DB_PASSWORD: {secret: db-password}
+  REDIS_AUTH: {secret: cache-auth}
+  API_KEY: {secret: api-key}
+note: first release of the web tier

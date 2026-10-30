@@ -1,8 +1,0 @@
-.git
-.env
-*.pem
-gha-creds-*.json
-.test-venv
-__pycache__
-.pytest_cache
-

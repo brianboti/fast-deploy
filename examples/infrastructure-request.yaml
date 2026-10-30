@@ -1,0 +1,19 @@
+# An infrastructure request (docs/INFRASTRUCTURE-ARCHITECTURE.md, "The contract"): a web tier, a database, a cache, a
+# secret and a registry, in one private network, for a team whose CI pushes images with its own federated identity.
+# Check it offline, without a cloud:   python -m cloudinfra.cli validate examples/infrastructure-request.yaml
+# Plan and price it offline:           python -m cloudinfra.cli plan examples/infrastructure-request.yaml
+provider: gcp
+region: us-central1
+name: shop
+labels: {team: shop}
+network: {cidr: 10.20.0.0/24, iap_ssh: true}
+compute:
+  - {group: web, count: 2, cpu: 2, memory_gb: 8, os: ubuntu}
+database: {engine: postgresql, version: "16", size: small, storage_gb: 20}
+cache: {engine: redis, memory_gb: 1}
+secret: [{name: api-key, generate_value: true}]
+registry: {name: images}
+lifetime: {hours: 720, on_expiry: stop}
+access:
+  - {member: "group:shop-devs@example.com", level: use}
+  - {member: "serviceAccount:appdelivery-dev@your-infrastructure-project.iam.gserviceaccount.com", level: admin}
