@@ -2,7 +2,7 @@
 
 Every field is a size, a count, a name, a version or a switch. There is no repository, image, command, script, key or
 provider-specific structure, so a request can describe "one Ubuntu machine with 4 CPUs and 16 GB" and nothing about any
-application. Strict models: no unknown field, no type coercion. Sixteen kinds: identity, network, storage, compute (one
+application. Strict models: no unknown field, no type coercion. Kinds: encryption_key, identity, network, storage, compute (one
 group or several), database, cache, queue, warehouse, nosql, secret, cluster, service, job, load_balancer, dns, monitor, budget and log_export.
 """
 import re
@@ -27,7 +27,8 @@ RESERVED_SECRETS = {"db-password": "database", "cache-auth": "cache"}  # secrets
 LoadBalancerType = Literal["http", "tcp"]
 GROUP = r"^[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?$"  # a group's, queue's or secret's short name: up to 12 characters, part of resource names
 # The kinds, in the order they are created; destruction is the reverse. Every top-level block of a request is one of these.
-RESOURCE_KINDS = ("identity", "network", "storage", "compute", "database", "cache", "queue", "warehouse", "nosql", "secret", "cluster", "service", "job", "load_balancer", "dns", "monitor", "budget",
+RESOURCE_KINDS = ("encryption_key",
+                  "identity", "network", "storage", "compute", "database", "cache", "queue", "warehouse", "nosql", "secret", "cluster", "service", "job", "load_balancer", "dns", "monitor", "budget",
                   "log_export")
 MAX_QUEUES = 8
 MAX_SECRETS = 16
@@ -232,12 +233,35 @@ class SecretRequest(StrictModel):
     generate_value: bool = Field(default=False, description="Write a generated random value as the first version; the value is never returned or logged.")
 
 
+class WafRequest(StrictModel):
+    """A web application firewall in front of public HTTP: refuse listed sources, limit each client address to a rate, and
+    refuse requests the provider's preconfigured OWASP rules recognise."""
+    owasp: bool = Field(default=True, description="Refuse SQL injection, cross-site scripting, file inclusion, remote code execution, scanners, protocol "
+                                                  "attacks and session fixation, with the provider's preconfigured rules at their lowest sensitivity.")
+    rate_limit_per_minute: int | None = Field(default=None, ge=10, le=100_000, description="Requests a minute one client address may make; over it, 429. "
+                                                                                           "No limit when omitted.")
+    deny_sources: list[str] = Field(default_factory=list, max_length=10, description="IPv4 ranges refused with 403.")
+    preview: bool = Field(default=False, description="Only log what the rules would refuse, to tune them before they enforce.")
+
+    @field_validator("deny_sources")
+    @classmethod
+    def _sources(cls, value):
+        return validation.check_sources(value) if value else value
+
+    @model_validator(mode="after")
+    def _something(self):
+        if not (self.owasp or self.rate_limit_per_minute or self.deny_sources):
+            raise ValueError("waf: nothing to do; keep owasp, or give rate_limit_per_minute or deny_sources")
+        return self
+
+
 class PublicRequest(StrictModel):
     """A front door for the cluster's workloads, made and owned by this service: a reserved public address and one
     Gateway in front of it that accepts routes from the request's namespace only. With hostnames it serves HTTPS with a
     Google-managed certificate for them and redirects HTTP; without, plain HTTP on the address."""
     hostnames: list[str] = Field(default_factory=list, max_length=5, description="DNS names the operator points at the address, in domains the operator allows; "
                                                                                 "the certificate covers them. Lowercase, no wildcard.")
+    waf: WafRequest | None = Field(default=None, description="A web application firewall on the workloads behind the door, applied as each is exposed.")
 
     @field_validator("hostnames")
     @classmethod
@@ -481,6 +505,14 @@ class BudgetRequest(StrictModel):
         return None if value is None else validation.check_request_id(value)
 
 
+class EncryptionKeyRequest(StrictModel):
+    """A customer-managed key in the request's region, rotated on a period, with which its disks, buckets and databases are
+    encrypted. The provider keeps the key itself forever; destroy schedules the destruction of its versions."""
+    rotation_days: int = Field(default=90, ge=1, le=365, description="A new version of the key is made this often; older ones still decrypt.")
+    destroy_after_days: int = Field(default=30, ge=1, le=120, description="Days between a destroy and the key's versions being destroyed, during which "
+                                                                          "the operator can still restore them.")
+
+
 class LogExportRequest(StrictModel):
     """The logs of the request's machines, clusters, services, jobs and databases, routed to its own bucket or dataset."""
     to: str = Field(pattern=r"^(storage|warehouse(:[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?)?)$",
@@ -497,6 +529,7 @@ class LoadBalancerRequest(StrictModel):
     backends: list[str] | None = Field(default=None, description="Machines this service created earlier (cmp-…), instead of a compute group of the same request.")
     hostnames: list[str] = Field(default_factory=list, max_length=5, description="With http: also serve HTTPS on 443, with a provider-managed certificate for "
                                                                                 "these names, in domains the operator allows.")
+    waf: WafRequest | None = Field(default=None, description="With http: a web application firewall on the load balancer.")
 
     @field_validator("hostnames")
     @classmethod
@@ -569,6 +602,7 @@ class InfrastructureRequest(StrictModel):
     dns: DnsRequest | None = Field(default=None, description="A public DNS zone and its records, made after everything they point to.")
     monitor: MonitorRequest | None = Field(default=None, description="Uptime checks on the request's public endpoints, and alerts when one fails.")
     budget: BudgetRequest | None = Field(default=None, description="A monthly spending budget for what the request costs, with email alerts.")
+    encryption_key: EncryptionKeyRequest | None = Field(default=None, description="A customer-managed key for the request's disks, buckets and databases.")
     log_export: LogExportRequest | None = Field(default=None, description="The logs of what the request runs, routed to its own bucket or dataset.")
     lifetime: LifetimeRequest | None = Field(default=None, description="How long the request lives; the operator's default applies when omitted, and there is none unless the operator sets one.")
     access: list[AccessRequest] = Field(default_factory=list, max_length=20, description="People, groups or service accounts to grant access to what is created; "
@@ -643,6 +677,8 @@ class InfrastructureRequest(StrictModel):
                 if cluster is None or cluster.public is None:
                     raise ValueError(f"dns.records {record.name}: to {record.to}, but the request has no such cluster with a front door"
                                      + (" (name it: cluster:NAME)" if name is None and len(self.clusters()) > 1 else ""))
+        if self.encryption_key is not None and not (self.storage or self.compute or self.database):
+            raise ValueError("encryption_key: the request has nothing it encrypts (storage, compute or database)")
         if self.log_export is not None:
             kind, _, name = self.log_export.to.partition(":")
             if kind == "storage" and not (self.storage and self.storage.type == "object"):
@@ -669,6 +705,8 @@ class InfrastructureRequest(StrictModel):
             raise ValueError(f"storage.group names {self.storage.group!r}, which is not a compute group of this request")
         if self.load_balancer and self.load_balancer.hostnames and self.load_balancer.type != "http":
             raise ValueError("load_balancer.hostnames: HTTPS needs type http; a tcp load balancer passes TLS through untouched")
+        if self.load_balancer and self.load_balancer.waf and self.load_balancer.type != "http":
+            raise ValueError("load_balancer.waf: a firewall reads HTTP, so it needs type http")
         if self.load_balancer and self.load_balancer.backends:
             if groups or self.load_balancer.backend_group:
                 raise ValueError("load_balancer.backends names existing machines; a compute group in the same request is one or the other")

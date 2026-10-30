@@ -266,6 +266,7 @@ CATALOG: tuple[ToolSpec, ...] = (
               Input("registries", "Artifact Registry repositories (LOCATION-docker.pkg.dev/PROJECT/REPO) the nodes may pull images from; only ones the operator lists."),
               Input("public", "A front door: a reserved public address and a Gateway taking routes from the request's namespace (default false)."),
               Input("hostnames", "The front door's DNS names, in domains the operator allows: HTTPS with a Google-managed certificate; none, plain HTTP."),
+              Input("waf", "A web application firewall on the door's workloads: owasp (default true), rate_limit_per_minute, deny_sources, preview."),
               ZONE, NAME, LABELS, WAIT),
              RESPONSE, ("INVALID_CLUSTER_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
              "Needs can_provision. The nodes run as a service account made for the cluster, with the minimum node role on the project and reader on the named "
@@ -325,6 +326,14 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Cloud Monitoring: uptimeCheckConfigs.get."),
     ToolSpec("delete_monitor", "Monitor", "Delete monitoring", "Delete the alert policies, the checks and the channels.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
              "Needs can_destroy.", "Cloud Monitoring: alertPolicies, uptimeCheckConfigs and notificationChannels delete."),
+    # ---- encryption key
+    ToolSpec("get_encryption_key", "Encryption", "Get an encryption key", "The key's rotation, what it encrypts and the service agents allowed to use it. A key is "
+             "made by a full request's encryption_key block, before the disks, buckets and databases it encrypts.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only.",
+             "Cloud KMS: cryptoKeys.get."),
+    ToolSpec("delete_encryption_key", "Encryption", "Destroy an encryption key", "Schedule the destruction of every version of the key, after its destroy_after_days; "
+             "the provider keeps the key and its ring by design. What it encrypted becomes unreadable from then, so it goes last.", (RESOURCE_ID, WAIT), RESOURCE,
+             DELETE_ERRORS, "Needs can_destroy. Until the versions are destroyed the operator can restore them in Cloud KMS.",
+             "Cloud KMS: cryptoKeyVersions.list, cryptoKeyVersions.destroy."),
     # ---- log export
     ToolSpec("get_log_export", "Logs", "Get a log export", "The export's filter, its destination and the identity it writes as. A log export is made by a full "
              "request's log_export block, beside the bucket or dataset it writes to and what it reads.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only.",
@@ -394,6 +403,7 @@ CATALOG: tuple[ToolSpec, ...] = (
              (REGION, Input("backends", "The machines behind it (cmp-…), all in one zone.", True), PROVIDER, Input("type", "http (default) or tcp."),
               Input("port", "The port the machines serve on; the public port is the same (default 80)."), Input("health_check_path", "The path an http health check requests (default /)."),
               Input("hostnames", "With http: names served over HTTPS on 443 with a provider-managed certificate, in domains the operator allows."),
+              Input("waf", "With http: a web application firewall (owasp, default true; rate_limit_per_minute; deny_sources; preview)."),
               NAME, LABELS, WAIT),
              RESPONSE, ("INVALID_LOAD_BALANCER_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
              f"Needs can_provision. HTTP only; TLS termination is a later feature. {OWNERSHIP}",
@@ -492,7 +502,8 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Read-only; no secret is included.", "None."),
 )
 BY_NAME = {spec.name: spec for spec in CATALOG}
-GROUPS = ("Identity", "Compute", "Storage", "Network", "Database", "Cache", "Queue", "Warehouse", "NoSQL", "Secret", "Cluster", "Service", "Job", "Load balancer", "DNS", "Monitor", "Logs", "Budget",
+GROUPS = ("Encryption", "Identity",
+          "Compute", "Storage", "Network", "Database", "Cache", "Queue", "Warehouse", "NoSQL", "Secret", "Cluster", "Service", "Job", "Load balancer", "DNS", "Monitor", "Logs", "Budget",
     "Infrastructure", "Operations")
 
 

@@ -32,6 +32,9 @@ PRICING = {
     "snapshot_gb_month": 0.05,  # a standard snapshot in one region (https://cloud.google.com/compute/disks-image-pricing)
     "nat_vm_hour": 0.0014,  # Cloud NAT per machine using it, up to 32 machines (https://cloud.google.com/vpc/network-pricing)
     "nat_max_vms": 32,
+    "kms_version_month": 0.06,
+    "armor_policy_month": 5.0,  # Cloud Armor Standard, per policy and per rule (https://cloud.google.com/armor/pricing)
+    "armor_rule_month": 1.0,  # an active software key version (https://cloud.google.com/kms/pricing)
     "external_ip_hour": 0.005,
     "bucket_gb_month": 0.020,
     "sql": {"db-f1-micro": 7.67, "db-g1-small": 25.55, "vcpu_hour": 0.0413, "gb_hour": 0.007, "storage_ssd_gb_month": 0.17, "ha_multiplier": 2.0},
@@ -73,6 +76,14 @@ def stopped(planned: PlannedResource, running: float) -> float:
     return running
 
 
+def armored(monthly: float, basis: str, waf_rules: int) -> tuple[float, str]:
+    """A web application firewall's policy and rules on top of what it protects; its requests are billed by the million."""
+    if not waf_rules:
+        return monthly, basis
+    return (monthly + PRICING["armor_policy_month"] + waf_rules * PRICING["armor_rule_month"],
+            f"{basis}; a firewall policy with {waf_rules} rules (requests it inspects billed by the million on top)")
+
+
 def line(planned: PlannedResource) -> CostLine:
     spec = planned.spec
     if planned.kind == "compute":
@@ -108,6 +119,7 @@ def line(planned: PlannedResource) -> CostLine:
             rules = 2 if spec["public"].get("hostnames") else 1
             monthly += rules * PRICING["forwarding_rule_hour"] * HOURS_PER_MONTH
             basis += f", and the front door's {rules} forwarding rule{'s' if rules > 1 else ''} (data processed is billed by the GB on top)"
+            monthly, basis = armored(monthly, basis, spec["public"].get("waf_rules", 0))
     elif planned.kind == "service":  # request-based billing: only warm instances cost when idle (https://cloud.google.com/run/pricing)
         idle = spec["min_instances"] * (spec["cpu"] * PRICING["run_idle_vcpu_second"] + spec["memory_mb"] / 1024 * PRICING["run_idle_gib_second"]) * HOURS_PER_MONTH * 3600
         monthly = idle
@@ -121,6 +133,9 @@ def line(planned: PlannedResource) -> CostLine:
         basis = f"{spec['checks']} alert condition{'s' if spec['checks'] != 1 else ''}; uptime checks run within the free allotment at these periods"
     elif planned.kind == "dns":  # https://cloud.google.com/dns/pricing
         monthly, basis = PRICING["dns_zone_month"], "one managed zone; queries are billed by the million on top"
+    elif planned.kind == "encryption_key":
+        monthly = PRICING["kms_version_month"]
+        basis = "one active key version; each rotation adds one, and operations are billed per 10,000 on top"
     elif planned.kind == "log_export":  # https://cloud.google.com/stackdriver/pricing
         monthly, basis = 0.0, "routing logs is free; the bucket or dataset bills what it stores"
     elif planned.kind == "budget":
@@ -134,6 +149,7 @@ def line(planned: PlannedResource) -> CostLine:
         rules = 2 if spec.get("hostnames") else 1
         monthly = rules * PRICING["forwarding_rule_hour"] * HOURS_PER_MONTH
         basis = f"{rules} forwarding rule{'s' if rules > 1 else ''}{' (http and https)' if rules > 1 else ''}; data processed is billed by the GB on top"
+        monthly, basis = armored(monthly, basis, spec.get("waf_rules", 0))
     elif planned.kind == "secret":
         monthly = PRICING["secret_version_month"] * spec.get("versions", 0)
         basis = f"{spec.get('versions', 0)} active versions; accesses are billed per 10,000 on top"

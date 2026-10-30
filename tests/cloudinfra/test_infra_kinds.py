@@ -23,7 +23,7 @@ def test_groups_accelerators_and_unknown_kinds():
     for bad, code, text in [
         ({"region": "us-central1", "loadbalancer": {}}, ErrorCode.UNSUPPORTED_RESOURCE_KIND, "did you mean load_balancer?"),
         ({"region": "us-central1", "vms": {"cpu": 2}}, ErrorCode.UNSUPPORTED_RESOURCE_KIND, "did you mean compute?"),
-        ({"region": "us-central1", "banana": {}}, ErrorCode.UNSUPPORTED_RESOURCE_KIND, "kinds: identity, network, storage, compute"),
+        ({"region": "us-central1", "banana": {}}, ErrorCode.UNSUPPORTED_RESOURCE_KIND, "kinds: encryption_key, identity, network, storage, compute"),
         ({"region": "us-central1", "compute": [{"cpu": 2, "memory_gb": 8}, {"cpu": 2, "memory_gb": 8}]}, ErrorCode.INVALID_REQUEST, "every group of a list needs a group name"),
         ({"region": "us-central1", "compute": [{"group": "a", "cpu": 2, "memory_gb": 8}, {"group": "a", "cpu": 2, "memory_gb": 8}]}, ErrorCode.INVALID_REQUEST, "unique"),
         ({"region": "us-central1", "compute": []}, ErrorCode.INVALID_REQUEST, "cannot be empty"),
@@ -293,7 +293,7 @@ def test_plan_warnings_cover_every_new_kind(tmp_path):
 def test_list_resource_kinds_describes_the_contract(tmp_path):
     orchestrator, _ = make_orchestrator(tmp_path)
     found = orchestrator.resource_kinds()
-    assert [item.kind for item in found.kinds] == ["identity", "network", "storage", "compute", "database", "cache", "queue", "warehouse", "nosql", "secret", "cluster",
+    assert [item.kind for item in found.kinds] == ["encryption_key", "identity", "network", "storage", "compute", "database", "cache", "queue", "warehouse", "nosql", "secret", "cluster",
                                                   "service", "job",
                                                   "load_balancer", "dns", "monitor", "budget", "log_export"]
     assert found.providers == ["gcp"] and all(item.providers == ["gcp"] for item in found.kinds)

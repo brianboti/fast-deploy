@@ -16,6 +16,7 @@ from ..models.request import (
     ComputeRequest,
     DatabaseRequest,
     DnsRequest,
+    EncryptionKeyRequest,
     IdentityRequest,
     InfrastructureRequest,
     JobRequest,
@@ -38,6 +39,7 @@ from ..models.resources import (
     ConnectInfo,
     DatabaseResource,
     DnsResource,
+    EncryptionKeyResource,
     FirewallRule,
     IdentityResource,
     JobResource,
@@ -268,6 +270,16 @@ class CloudProvider(ABC):
 
     @abstractmethod
     def delete_budget(self, resource: BudgetResource, ctx: ProvisionContext) -> None: ...
+
+    # ---- encryption_key (a customer-managed key for the request's disks, buckets and databases)
+    @abstractmethod
+    def create_encryption_key(self, spec: EncryptionKeyRequest, planned: PlannedResource, ctx: ProvisionContext) -> EncryptionKeyResource: ...
+
+    @abstractmethod
+    def get_encryption_key(self, resource: EncryptionKeyResource) -> EncryptionKeyResource: ...
+
+    @abstractmethod
+    def delete_encryption_key(self, resource: EncryptionKeyResource, ctx: ProvisionContext) -> None: ...
 
     # ---- log_export (the request's logs routed to its own bucket or dataset)
     @abstractmethod

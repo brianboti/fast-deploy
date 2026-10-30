@@ -49,7 +49,7 @@ class FakeGcpApi(GcpApi):
         self.fail_on = []
         self.instances, self.disks, self.networks, self.subnets, self.firewalls, self.addresses, self.sql, self.buckets, self.sql_users, self.sql_databases = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
         self.topics, self.subscriptions, self.secrets, self.secret_versions, self.clusters, self.redis, self.instance_groups, self.regional = {}, {}, {}, {}, {}, {}, {}, {}
-        for collection in ("healthChecks", "backendServices", "urlMaps", "targetHttpProxies", "targetHttpsProxies", "forwardingRules", "sslCertificates"):
+        for collection in ("healthChecks", "backendServices", "urlMaps", "targetHttpProxies", "targetHttpsProxies", "forwardingRules", "sslCertificates", "securityPolicies"):
             setattr(self, collection, {})
         self.bucket_objects = set()
         self.peerings = set()
@@ -68,6 +68,8 @@ class FakeGcpApi(GcpApi):
         self.firestore: dict[str, dict] = {}  # Firestore databases by id
         self.budgets: dict[str, dict] = {}  # Cloud Billing budgets by full name
         self.sinks: dict[str, dict] = {}  # Cloud Logging sinks by full name
+        self.key_rings: set[str] = set()  # Cloud KMS key rings by full name; never deleted, as Cloud KMS keeps them
+        self.crypto_keys: dict[str, dict] = {}  # Cloud KMS keys by full name, with their "versions"
         self.billing_info = {"billingEnabled": True, "billingAccountName": "billingAccounts/01ABCD-234567-89EFAB"}
         self.snapshots: dict[str, dict] = {}  # disk snapshots by name, as a schedule takes them (take_snapshot)
         self.schedules: dict[str, dict] = {}  # Cloud Scheduler jobs by full name
@@ -113,6 +115,16 @@ class FakeGcpApi(GcpApi):
             (r"^/v1/projects/[^/]+/databases/([^/]+)$", self._firestore_item) if host.startswith("firestore") else (r"^$", None),
             (r"^/v3/projects/[^/]+/(notificationChannels|uptimeCheckConfigs|alertPolicies)$", self._monitoring_collection) if host.startswith("monitoring") else (r"^$", None),
             (r"^/v2/projects/[^/]+/sinks$", self._sinks) if host.startswith("logging") else (r"^$", None),
+            (r"^/v1/projects/[^/]+/locations/[^/]+/keyRings$", self._key_rings) if host.startswith("cloudkms") else (r"^$", None),
+            (r"^/v1/(projects/[^/]+/locations/[^/]+/keyRings/[^/]+)/cryptoKeys$", self._crypto_keys) if host.startswith("cloudkms") else (r"^$", None),
+            (r"^/v1/(projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/:]+)(?::(getIamPolicy|setIamPolicy))?$", self._crypto_key)
+            if host.startswith("cloudkms") else (r"^$", None),
+            (r"^/v1/(projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+)/cryptoKeyVersions$", self._key_versions) if host.startswith("cloudkms") else (r"^$", None),
+            (r"^/v1/(projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+/cryptoKeyVersions/[^/:]+):destroy$", self._destroy_version)
+            if host.startswith("cloudkms") else (r"^$", None),
+            (r"^/storage/v1/projects/[^/]+/serviceAccount$", lambda m, *a: {"email_address": "service-123456789@gs-project-accounts.iam.gserviceaccount.com"}),
+            (r"^/v1beta1/projects/[^/]+/services/sqladmin\.googleapis\.com:generateServiceIdentity$",
+             lambda m, *a: {"name": "operations/x", "done": True, "response": {"email": "service-123456789@gcp-sa-cloud-sql.iam.gserviceaccount.com"}}),
             (r"^/v2/(projects/[^/]+/sinks/[^/]+)$", self._sink) if host.startswith("logging") else (r"^$", None),
             (r"^/v1/projects/[^/]+/billingInfo$", lambda m, *a: dict(self.billing_info)) if host.startswith("cloudbilling") else (r"^$", None),
             (r"^/v1/(billingAccounts/[^/]+)/budgets$", self._budgets) if host.startswith("billingbudgets") else (r"^$", None),
@@ -153,9 +165,9 @@ class FakeGcpApi(GcpApi):
             (r"^/compute/v1/projects/[^/]+/aggregated/instances$", self._aggregated),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/disks$", self._disks),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/disks/([^/]+)$", self._disk),
-            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses|healthChecks|backendServices|urlMaps|targetHttpProxies|targetHttpsProxies|forwardingRules|sslCertificates)$",
+            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses|healthChecks|backendServices|urlMaps|targetHttpProxies|targetHttpsProxies|forwardingRules|sslCertificates|securityPolicies)$",
              self._global_collection),
-            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses|healthChecks|backendServices|urlMaps|targetHttpProxies|targetHttpsProxies|forwardingRules|sslCertificates)/([^/]+)$",
+            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses|healthChecks|backendServices|urlMaps|targetHttpProxies|targetHttpsProxies|forwardingRules|sslCertificates|securityPolicies)/([^/]+)$",
              self._global_item),
             (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/subnetworks$", self._subnets),
             (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/subnetworks/([^/]+)$", self._subnet),
@@ -194,6 +206,8 @@ class FakeGcpApi(GcpApi):
         if key in self.instances:
             raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, "already exists", {"http_status": 409})
         assert all(item["email"] in self.service_accounts for item in body.get("serviceAccounts", [])), "a machine runs as an account that exists"
+        if body["disks"][0].get("diskEncryptionKey"):
+            self.may_use_key(body["disks"][0]["diskEncryptionKey"]["kmsKeyName"], "service-123456789@compute-system.iam.gserviceaccount.com")
         number = len(self.instances) + 2
         interface = {"networkIP": f"10.10.0.{number}", **{k: v for k, v in body["networkInterfaces"][0].items()}}
         if "accessConfigs" in interface:
@@ -385,6 +399,43 @@ class FakeGcpApi(GcpApi):
             return {}
         return self.monitoring[name]
 
+    # ---- Cloud KMS
+    def _key_rings(self, found, method, body, params):
+        name = f"{found.group(0)[4:]}/{params['keyRingId']}"
+        if name in self.key_rings:
+            raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, "Google Cloud refused the request: KeyRing already exists", {"http_status": 409})
+        self.key_rings.add(name)
+        return {"name": name}
+
+    def _crypto_keys(self, found, method, body, params):
+        assert found.group(1) in self.key_rings, "a key goes in a ring that exists"
+        name = f"{found.group(1)}/cryptoKeys/{params['cryptoKeyId']}"
+        version = {"name": f"{name}/cryptoKeyVersions/1", "state": "ENABLED"}
+        self.crypto_keys[name] = {**body, "name": name, "primary": version, "versions": [version]}
+        return self.crypto_keys[name]
+
+    def _crypto_key(self, found, method, body, params):
+        name = found.group(1)
+        if name not in self.crypto_keys:
+            raise self._not_found(name)
+        if found.group(2):
+            return self._policy(("key", name), found.group(2) == "setIamPolicy", (body or {}).get("policy"))
+        return {key: value for key, value in self.crypto_keys[name].items() if key != "versions"}
+
+    def _key_versions(self, found, method, body, params):
+        return {"cryptoKeyVersions": copy.deepcopy(self.crypto_keys[found.group(1)]["versions"])}
+
+    def _destroy_version(self, found, method, body, params):
+        key = found.group(1).rsplit("/cryptoKeyVersions/", 1)[0]
+        version = next(item for item in self.crypto_keys[key]["versions"] if item["name"] == found.group(1))
+        version["state"] = "DESTROY_SCHEDULED"
+        return version
+
+    def may_use_key(self, key: str, agent: str) -> None:
+        """What Google checks before it encrypts with a customer's key: its service agent holds the role on that key."""
+        assert key in self.crypto_keys, f"{key} does not exist"
+        assert f"serviceAccount:{agent}" in self.members(("key", key), "roles/cloudkms.cryptoKeyEncrypterDecrypter"), f"{agent} may not use {key}"
+
     # ---- Cloud Logging sinks
     def _sinks(self, found, method, body, params):
         assert params.get("uniqueWriterIdentity") == "true", "a sink writes as an identity of its own"
@@ -527,6 +578,8 @@ class FakeGcpApi(GcpApi):
 
     def _disks(self, found, method, body, params):
         zone = found.group(1)
+        if body.get("diskEncryptionKey"):
+            self.may_use_key(body["diskEncryptionKey"]["kmsKeyName"], "service-123456789@compute-system.iam.gserviceaccount.com")
         self.disks[(zone, body["name"])] = {**body, "status": "READY", "selfLink": f"https://compute.googleapis.com/compute/v1/projects/{self.project}/zones/{zone}/disks/{body['name']}"}
         return self._op()
 
@@ -709,6 +762,9 @@ class FakeGcpApi(GcpApi):
         if method == "DELETE":
             if found.group(1) == "networks" and any(subnet["network"].endswith("/" + name) for subnet in self.subnets.values()):
                 raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, "network still has subnets", {"http_status": 400})
+            if found.group(1) == "securityPolicies" and any(item.get("securityPolicy", "").endswith("/" + name) for item in self.backendServices.values()):
+                raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"Google Cloud refused the request: The security_policy resource '{name}' is already being used",
+                                          {"http_status": 400})
             del store[name]
             return self._op()
         return store[name]
@@ -732,6 +788,8 @@ class FakeGcpApi(GcpApi):
     # ---- sql
     def _sql_instances(self, found, method, body, params):
         name = body["name"]
+        if body.get("diskEncryptionConfiguration"):
+            self.may_use_key(body["diskEncryptionConfiguration"]["kmsKeyName"], "service-123456789@gcp-sa-cloud-sql.iam.gserviceaccount.com")
         private = body["settings"]["ipConfiguration"].get("privateNetwork")
         addresses = [{"type": "PRIVATE", "ipAddress": "10.20.0.3"}] if private else [{"type": "PRIMARY", "ipAddress": "35.0.0.9"}]
         self.sql[name] = {**body, "state": "RUNNABLE", "ipAddresses": addresses, "connectionName": f"{self.project}:{body['region']}:{name}", "createTime": "2026-10-28T10:00:00Z"}
@@ -758,6 +816,8 @@ class FakeGcpApi(GcpApi):
     # ---- storage
     def _buckets(self, found, method, body, params):
         assert params.get("project") == self.project
+        if body.get("encryption"):
+            self.may_use_key(body["encryption"]["defaultKmsKeyName"], "service-123456789@gs-project-accounts.iam.gserviceaccount.com")
         self.buckets[body["name"]] = {**body, "id": body["name"], "timeCreated": "2026-10-28T10:00:00Z"}
         return self.buckets[body["name"]]
 

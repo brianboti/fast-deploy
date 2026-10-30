@@ -38,7 +38,8 @@ class GcpCompute:
             "description": translate.description(ctx),
             "machineType": f"zones/{zone}/machineTypes/{shape['machine_type']}",
             "disks": [{"boot": True, "autoDelete": True, "initializeParams": {"sourceImage": shape["image"], "diskSizeGb": str(shape["boot_disk_gb"]),
-                                                                              "diskType": f"zones/{zone}/diskTypes/pd-balanced"}}],
+                                                                              "diskType": f"zones/{zone}/diskTypes/pd-balanced"},
+                       **({"diskEncryptionKey": {"kmsKeyName": shape["kms_key"]}} if shape.get("kms_key") else {})}],
             "networkInterfaces": [self._interface({**shape, "region": ctx.region}, network)],
             "labels": translate.labels(ctx),
             # OS Login: access through IAM, no key material through this service. The machine runs as the request's identity

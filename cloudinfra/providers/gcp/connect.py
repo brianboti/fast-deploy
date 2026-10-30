@@ -105,6 +105,11 @@ def info(resource, resources: list, project: str, drivers: bool = False) -> Conn
                            prerequisites=["Firestore has no policy per database: the platform team grants roles/datastore.user on the project once, with an IAM "
                                           f'condition resource.name == "projects/{project}/databases/{resource.database}"'],
                            notes=[f"Clients name the database {resource.database}, not (default)"])
+    if kind == "encryption_key":
+        return ConnectInfo(commands={"versions": f"gcloud kms keys versions list --key {resource.provider_id}"},
+                           notes=[f"Encrypts the request's {', '.join(resource.encrypts)}; rotated every {resource.rotation_days} days",
+                                  f"Cloud KMS keeps the key itself; destroy schedules its versions' destruction after {resource.destroy_after_days} days, "
+                                  "and what it encrypted is unreadable from then"])
     if kind == "log_export":
         read = (f"gcloud storage ls gs://{resource.destination_name}/" if resource.to == "storage" else f"bq ls {project}:{resource.destination_name}")
         return ConnectInfo(commands={"read": read, "sink": f"gcloud logging sinks describe {resource.name} --project {project}"},

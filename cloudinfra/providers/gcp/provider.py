@@ -5,6 +5,7 @@ from ...models.response import CostEstimate, Health, PlannedResource, Usage
 from ..base import CloudProvider, Problem, ProvisionContext
 from . import connect, pricing, translate
 from .api import COMPUTE, GcpApi
+from .armor import rules as armor_rules
 from .auth import GoogleToken
 from .budget import GcpBudget
 from .cache import GcpCache
@@ -15,6 +16,7 @@ from .database import GcpDatabase
 from .dns import GcpDns
 from .iam import GcpIam
 from .identity import GcpIdentity
+from .kms import GcpKms, key_name, key_ring
 from .loadbalancer import GcpLoadBalancer
 from .logs import GcpLogExport
 from .monitor import GcpMonitor
@@ -55,6 +57,7 @@ class GCPProvider(CloudProvider):
         self.dns = GcpDns(self.api, settings)
         self.monitor = GcpMonitor(self.api, settings)
         self.budget = GcpBudget(self.api, settings)
+        self.kms = GcpKms(self.api, settings)
         self.warehouse, self.nosql = GcpWarehouse(self.api, settings), GcpNoSql(self.api, settings)
         self.load_balancer = GcpLoadBalancer(self.api, settings, self.network)
         self.monitoring = GcpMonitoring(self.api)
@@ -124,6 +127,14 @@ class GCPProvider(CloudProvider):
         if request.budget is not None:  # first: it counts from the request's first cost
             planned.append(PlannedResource(kind="budget", name=f"{prefix}-budget", provider_mapping="monitoring.notificationChannels.create, billingbudgets.budgets.create",
                                            spec={"watch": request.budget.request_id or ctx.request_id, "monthly_amount": request.budget.monthly_amount}))
+        kms_key = None
+        if request.encryption_key is not None:  # before everything it encrypts, and so destroyed after it
+            ring = key_ring(prefix, ctx.request_id)
+            kms_key = key_name(self.settings.project_id, request.region, ring)
+            encrypts = (["storage" if request.storage.type == "persistent" else "bucket"] if request.storage else []) + (["compute"] if request.compute else []) \
+                + (["database"] if request.database else [])
+            planned.append(PlannedResource(kind="encryption_key", name=f"{prefix}-key", provider_mapping="cloudkms.keyRings.create, cloudkms.cryptoKeys.create, "
+                                           "cloudkms.cryptoKeys.setIamPolicy (service agents)", spec={"key_ring": ring, "key": kms_key, "encrypts": encrypts}))
         for identity in request.identities():  # first: machines run as them, and they are granted on everything after
             planned.append(PlannedResource(kind="identity", name=f"{prefix}-{identity.identity_name}", provider_mapping="iam.serviceAccounts.create"
                                            + (", iam.serviceAccounts.setIamPolicy (Workload Identity)" if request.clusters() else ""),
@@ -146,10 +157,10 @@ class GCPProvider(CloudProvider):
                 planned.append(PlannedResource(kind="storage", name=disk, index=index, provider_mapping=("compute.resourcePolicies.insert (snapshot schedule), " if snapshots else "")
                                                + "compute.disks.insert" + (", compute.instances.attachDisk" if machine else ""),
                                                spec={"type": "persistent", "zone": zone, "disk_type": translate.disk_type(request.storage.performance), "size_gb": request.storage.size_gb,
-                                                     "attach_to": machine, "snapshots": snapshots}))
+                                                     "attach_to": machine, "snapshots": snapshots, "kms_key": kms_key}))
         elif request.storage:
             planned.append(PlannedResource(kind="storage", name=f"{self.settings.project_id}-{prefix}-{ctx.request_id[:6]}", provider_mapping="storage.buckets.insert",
-                                           spec={"type": "object", "location": request.region, "size_gb": request.storage.size_gb}))
+                                           spec={"type": "object", "location": request.region, "size_gb": request.storage.size_gb, "kms_key": kms_key}))
         for group in groups:
             machine, cpu, memory = translate.compute_shape(group)
             accelerator = {"type": translate.ACCELERATORS[group.accelerator.type], "count": group.accelerator.count} if group.accelerator else None
@@ -163,7 +174,7 @@ class GCPProvider(CloudProvider):
                                                      "drivers": software["drivers"],
                                                      "boot_disk_gb": software["boot_disk_gb"], "public_ip": group.public_ip, "accelerator": accelerator,
                                                      "max_run_hours": group.max_run_hours, "network": own_network or group.network_id or self.settings.default_network,
-                                                     "identity": group.identity}))
+                                                     "identity": group.identity, "kms_key": kms_key}))
         if request.database:
             label, api_version = translate.database_version(request.database)
             mapping = ("compute.addresses.insert, servicenetworking.connections.create, " if private_database else "") + "sqladmin.instances.insert, sqladmin.databases.insert, sqladmin.users.insert"
@@ -173,7 +184,7 @@ class GCPProvider(CloudProvider):
                                                  "port": translate.DB_PORTS[request.database.engine],
                                                  "extended_support": label in translate.EXTENDED_SUPPORT[request.database.engine],
                                                  "recommended_version": translate.DB_VERSIONS[request.database.engine]["default"],
-                                                 "network": (own_network or request.database.network_id) if private_database else None}))
+                                                 "network": (own_network or request.database.network_id) if private_database else None, "kms_key": kms_key}))
         if request.cache:
             label, api_version = translate.cache_version(request.cache)
             planned.append(PlannedResource(kind="cache", name=f"{prefix}-cache", provider_mapping="redis.instances.create",
@@ -209,7 +220,8 @@ class GCPProvider(CloudProvider):
                                                  "machine_type": translate.machine_type(cluster.node_cpu, cluster.node_memory_gb),
                                                  "node_count": cluster.node_count, "node_disk_gb": cluster.node_disk_gb, "private_nodes": cluster.private_nodes,
                                                  "network": own_network or cluster.network_id or self.settings.default_network,
-                                                 "public": {"hostnames": list(cluster.public.hostnames)} if cluster.public else None}))
+                                                 "public": {"hostnames": list(cluster.public.hostnames),
+                                                            "waf_rules": len(armor_rules(cluster.public.waf)) if cluster.public.waf else 0} if cluster.public else None}))
         for service in request.services():
             mapping = "run.services.create, iam.serviceAccounts.create" + (", run.services.setIamPolicy (invoker check off)" if service.public else "")
             planned.append(PlannedResource(kind="service", name=f"{prefix}-{service.service_name}", provider_mapping=mapping,
@@ -227,7 +239,7 @@ class GCPProvider(CloudProvider):
             planned.append(PlannedResource(kind="load_balancer", name=f"{prefix}-lb", provider_mapping=HTTP_LB_MAPPING if balancer.type == "http" else TCP_LB_MAPPING,
                                            spec={"type": balancer.type, "port": balancer.port, "backend_group": group.group_name if group else "external", "backends": backends,
                                                  "health_check_path": balancer.health_check_path if balancer.type == "http" else None,
-                                                 "hostnames": list(balancer.hostnames)}))
+                                                 "hostnames": list(balancer.hostnames), "waf_rules": len(armor_rules(balancer.waf)) if balancer.waf else 0}))
         if request.monitor is not None:  # after what it watches
             planned.append(PlannedResource(kind="monitor", name=f"{prefix}-monitor", provider_mapping="monitoring.notificationChannels.create, "
                                            "monitoring.uptimeCheckConfigs.create, monitoring.alertPolicies.create",
@@ -378,6 +390,15 @@ class GCPProvider(CloudProvider):
 
     def delete_monitor(self, resource, ctx):
         self.monitor.delete(resource, ctx)
+
+    def create_encryption_key(self, spec, planned, ctx):
+        return self.kms.create(spec, planned, ctx)
+
+    def get_encryption_key(self, resource):
+        return self.kms.get(resource)
+
+    def delete_encryption_key(self, resource, ctx):
+        self.kms.delete(resource, ctx)
 
     def create_log_export(self, spec, planned, ctx, created):
         return self.log_export.create(spec, planned, ctx, created)

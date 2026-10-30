@@ -12,6 +12,7 @@ from .request import (
     DatabaseRequest,
     DnsRecordRequest,
     DnsRequest,
+    EncryptionKeyRequest,
     IdentityRequest,
     InfrastructureRequest,
     JobRequest,
@@ -29,6 +30,7 @@ from .request import (
     SnapshotRequest,
     StorageRequest,
     UptimeRequest,
+    WafRequest,
     WarehouseRequest,
 )
 from .resources import (
@@ -39,6 +41,7 @@ from .resources import (
     ConnectInfo,
     DatabaseResource,
     DnsResource,
+    EncryptionKeyResource,
     FirewallRule,
     Grant,
     IdentityResource,
@@ -80,14 +83,15 @@ from .response import (
 )
 
 __all__ = ["RESOURCE_KINDS", "AcceleratorRequest", "AccessGrant", "AccessRequest", "AutostopRequest",
-           "BudgetRequest", "BudgetResource", "LogExportRequest", "LogExportResource", "CacheRequest", "CacheResource", "ClusterRequest", "ClusterResource",
+           "BudgetRequest", "BudgetResource", "LogExportRequest", "LogExportResource", "EncryptionKeyRequest", "EncryptionKeyResource",
+           "CacheRequest", "CacheResource", "ClusterRequest", "ClusterResource",
            "ComputeRequest", "ComputeResource", "ConnectInfo", "CostEstimate", "CostLine", "Credentials", "DatabaseRequest", "DatabaseResource", "Endpoints", "ErrorCode",
            "ErrorDetail", "FirewallRule", "Grant", "Health", "InfrastructureError", "InfrastructureRequest", "InfrastructureResponse", "Lifecycle", "LifetimeRequest",
            "ListResponse", "LoadBalancerRequest", "LoadBalancerResource", "NetworkRequest",
     "PublicRequest", "NetworkResource", "OperationRecord", "OperationStatus", "PlanResponse",
            "PlannedResource", "ProfileInfo", "QueueRequest", "QueueResource", "RequestStatus", "ResourceKind", "ResourceKindsResponse", "ResourceResponse", "ResourceStatus",
            "Resources", "DnsRecordRequest", "DnsRequest", "DnsResource", "IdentityRequest", "IdentityResource", "JobRequest", "NoSqlRequest", "NoSqlResource", "WarehouseRequest",
-           "WarehouseResource", "MonitorRequest", "MonitorResource", "UptimeRequest",
+           "WarehouseResource", "MonitorRequest", "MonitorResource", "UptimeRequest", "WafRequest",
            "JobResource", "ScheduleRequest", "SecretRequest",
            "ServiceRequest", "SnapshotRequest", "ServiceResource", "SecretResource", "StorageRequest",
            "StorageResource", "Usage", "ValidationResponse"]

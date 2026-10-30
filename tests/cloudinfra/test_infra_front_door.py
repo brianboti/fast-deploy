@@ -59,7 +59,7 @@ def test_a_namespace_with_edit_may_write_routes_and_not_gateways(tmp_path):
     role = objects(fake, response.resources.cluster[0].endpoint)["/apis/rbac.authorization.k8s.io/v1/clusterroles/cloudinfra-routes"]
     assert role["metadata"]["labels"]["rbac.authorization.k8s.io/aggregate-to-edit"] == "true"
     assert [(rule["apiGroups"], rule["resources"]) for rule in role["rules"]] == [(["gateway.networking.k8s.io"], ["httproutes"]),
-                                                                                (["networking.gke.io"], ["healthcheckpolicies"])]
+                                                                                (["networking.gke.io"], ["healthcheckpolicies", "gcpbackendpolicies"])]
 
 
 def test_a_front_door_without_hostnames_serves_plain_http_and_has_no_certificate(tmp_path):

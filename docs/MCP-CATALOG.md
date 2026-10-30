@@ -1,11 +1,13 @@
 # MCP service catalog
 
-Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 71 tools in 20 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, `cac-`, `que-`, `sec-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
+Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 73 tools in 21 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, `cac-`, `que-`, `sec-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
 
 ## At a glance
 
 | Group | Tool | Purpose | Safety hint |
 |---|---|---|---|
+| Encryption | `get_encryption_key` | Get an encryption key | read only |
+| Encryption | `delete_encryption_key` | Destroy an encryption key | destructive |
 | Identity | `create_identity` | Create a workload identity | changes cloud |
 | Identity | `get_identity` | Get an identity | read only |
 | Identity | `delete_identity` | Delete an identity | destructive |
@@ -112,6 +114,51 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `PROVISIONING_FAILED` | A request failed while provisioning; details name the cause and what cleanup did. |
 | `DESTROY_FAILED` | Some resources could not be deleted; details name them, and the call can be repeated. |
 | `INTERNAL_ERROR` | The service stopped on an unexpected exception; nothing was retried. |
+
+## Encryption
+
+### `get_encryption_key`
+
+**Purpose.** The key's rotation, what it encrypts and the service agents allowed to use it. A key is made by a full request's encryption_key block, before the disks, buckets and databases it encrypts.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** none.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`.
+
+**Security.** Read-only; creates and changes nothing. Read-only.
+
+**Provider mapping (Google Cloud).** Cloud KMS: cryptoKeys.get.
+
+### `delete_encryption_key`
+
+**Purpose.** Schedule the destruction of every version of the key, after its destroy_after_days; the provider keeps the key and its ring by design. What it encrypted becomes unreadable from then, so it goes last.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** `wait_seconds`.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `DESTROY_FAILED`.
+
+**Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy. Until the versions are destroyed the operator can restore them in Cloud KMS.
+
+**Provider mapping (Google Cloud).** Cloud KMS: cryptoKeyVersions.list, cryptoKeyVersions.destroy.
 
 ## Identity
 
@@ -971,13 +1018,14 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `registries` | no | Artifact Registry repositories (LOCATION-docker.pkg.dev/PROJECT/REPO) the nodes may pull images from; only ones the operator lists. |
 | `public` | no | A front door: a reserved public address and a Gateway taking routes from the request's namespace (default false). |
 | `hostnames` | no | The front door's DNS names, in domains the operator allows: HTTPS with a Google-managed certificate; none, plain HTTP. |
+| `waf` | no | A web application firewall on the door's workloads: owasp (default true), rate_limit_per_minute, deny_sources, preview. |
 | `zone` | no | A zone of the region; the provider picks the first when omitted. |
 | `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
 | `labels` | no | Labels for every resource, next to the service's ownership labels. |
 | `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
 
 **Required fields.** `region`.
-**Optional fields.** `provider`, `node_count`, `node_cpu`, `node_memory_gb`, `node_disk_gb`, `kubernetes_version`, `private_nodes`, `network_id`, `registries`, `public`, `hostnames`, `zone`, `name`, `labels`, `wait_seconds`.
+**Optional fields.** `provider`, `node_count`, `node_cpu`, `node_memory_gb`, `node_disk_gb`, `kubernetes_version`, `private_nodes`, `network_id`, `registries`, `public`, `hostnames`, `waf`, `zone`, `name`, `labels`, `wait_seconds`.
 
 **Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
 
@@ -1207,12 +1255,13 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `port` | no | The port the machines serve on; the public port is the same (default 80). |
 | `health_check_path` | no | The path an http health check requests (default /). |
 | `hostnames` | no | With http: names served over HTTPS on 443 with a provider-managed certificate, in domains the operator allows. |
+| `waf` | no | With http: a web application firewall (owasp, default true; rate_limit_per_minute; deny_sources; preview). |
 | `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
 | `labels` | no | Labels for every resource, next to the service's ownership labels. |
 | `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
 
 **Required fields.** `region`, `backends`.
-**Optional fields.** `provider`, `type`, `port`, `health_check_path`, `hostnames`, `name`, `labels`, `wait_seconds`.
+**Optional fields.** `provider`, `type`, `port`, `health_check_path`, `hostnames`, `waf`, `name`, `labels`, `wait_seconds`.
 
 **Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
 

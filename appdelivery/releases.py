@@ -208,7 +208,8 @@ class Delivery:
         cluster = infra.cluster(release.target.cluster)
         door = cluster.public
         return ClusterTarget(cluster.id, cluster.name, cluster.endpoint, cluster.ca_certificate, cluster.namespace,
-                             gateway=door.gateway if door else None, https=bool(door and door.hostnames))
+                             gateway=door.gateway if door else None, https=bool(door and door.hostnames),
+                             security_policy=door.security_policy if door else None)
 
     def _registry_token(self, release: ReleaseRequest, environment) -> str | None:
         return self.tokens(environment.service_account) if release.registry().endswith(planner.ARTIFACT_REGISTRY_SUFFIX) else None

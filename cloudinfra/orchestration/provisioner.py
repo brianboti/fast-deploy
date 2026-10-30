@@ -22,6 +22,7 @@ from ..models.request import (
     ComputeRequest,
     DatabaseRequest,
     DnsRequest,
+    EncryptionKeyRequest,
     IdentityRequest,
     InfrastructureRequest,
     JobRequest,
@@ -46,6 +47,7 @@ from ..models.resources import (
     ComputeResource,
     DatabaseResource,
     DnsResource,
+    EncryptionKeyResource,
     Grant,
     IdentityResource,
     JobResource,
@@ -95,7 +97,7 @@ POLL_SECONDS = 0.5
 DESTROY_ORDER = tuple(ResourceKind(kind) for kind in reversed(RESOURCE_KINDS))
 KIND_MODELS = {"network": NetworkRequest, "storage": StorageRequest, "compute": ComputeRequest, "database": DatabaseRequest, "cache": CacheRequest, "queue": QueueRequest,
                "secret": SecretRequest, "cluster": ClusterRequest, "service": ServiceRequest, "job": JobRequest, "identity": IdentityRequest, "dns": DnsRequest, "monitor": MonitorRequest,
-               "budget": BudgetRequest, "log_export": LogExportRequest,
+               "budget": BudgetRequest, "log_export": LogExportRequest, "encryption_key": EncryptionKeyRequest,
                "warehouse": WarehouseRequest,
                "nosql": NoSqlRequest,
                "load_balancer": LoadBalancerRequest}
@@ -380,6 +382,9 @@ class Orchestrator:
             return NoSqlResource(**common, database=item.name, location=ctx.region)
         if item.kind == "monitor":
             return MonitorResource(**common, notify=list(request.monitor.notify))
+        if item.kind == "encryption_key":
+            return EncryptionKeyResource(**common, key_ring=spec["key_ring"], rotation_days=request.encryption_key.rotation_days,
+                                         destroy_after_days=request.encryption_key.destroy_after_days, encrypts=list(spec["encrypts"]))
         if item.kind == "log_export":
             return LogExportResource(**common, to=request.log_export.to, min_severity=request.log_export.min_severity)
         if item.kind == "budget":
@@ -435,6 +440,8 @@ class Orchestrator:
                         resource = provider.create_nosql(next(item_ for item_ in request.nosqls() if item_.nosql_name == item.spec["nosql"]), item, ctx)
                     elif item.kind == "monitor":
                         resource = provider.create_monitor(request.monitor, item, ctx, created)
+                    elif item.kind == "encryption_key":
+                        resource = provider.create_encryption_key(request.encryption_key, item, ctx)
                     elif item.kind == "log_export":
                         resource = provider.create_log_export(request.log_export, item, ctx, created)
                     elif item.kind == "budget":
@@ -1155,8 +1162,8 @@ class Orchestrator:
         return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, secret=secret), principal, wait_seconds)
 
     def create_cluster(self, principal, *, region, provider="gcp", node_count=1, node_cpu=2, node_memory_gb=8, node_disk_gb=50, kubernetes_version=None, private_nodes=False,
-                       network_id=None, registries=None, public=False, hostnames=None, zone=None, name=None, labels=None, wait_seconds=0):
-        door = PublicRequest(hostnames=hostnames or []) if public or hostnames else None
+                       network_id=None, registries=None, public=False, hostnames=None, zone=None, name=None, labels=None, wait_seconds=0, waf=None):
+        door = PublicRequest(hostnames=hostnames or [], waf=waf) if public or hostnames or waf else None
         cluster = ClusterRequest(node_count=node_count, node_cpu=node_cpu, node_memory_gb=node_memory_gb, node_disk_gb=node_disk_gb, kubernetes_version=kubernetes_version,
                                  private_nodes=private_nodes, network_id=network_id, registries=registries or [], public=door)
         return self.provision(InfrastructureRequest(provider=provider, region=region, zone=zone, name=name, labels=labels or {}, cluster=cluster), principal, wait_seconds)
@@ -1199,8 +1206,8 @@ class Orchestrator:
         return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, job=job), principal, wait_seconds)
 
     def create_load_balancer(self, principal, *, region, backends, provider="gcp", type="http", port=80, health_check_path="/", hostnames=None, name=None, labels=None,
-                             wait_seconds=0):
-        balancer = LoadBalancerRequest(type=type, port=port, health_check_path=health_check_path, backends=backends, hostnames=hostnames or [])
+                             wait_seconds=0, waf=None):
+        balancer = LoadBalancerRequest(type=type, port=port, health_check_path=health_check_path, backends=backends, hostnames=hostnames or [], waf=waf)
         return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, load_balancer=balancer), principal, wait_seconds)
 
     def resource_kinds(self) -> ResourceKindsResponse:
