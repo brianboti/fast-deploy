@@ -1,7 +1,8 @@
-# Keeps the GitHub Actions this repository's own workflow uses current with weekly pull requests. Python dependencies
-# are hash-locked with uv; refresh them deliberately (docs/DEVELOPMENT.md) and rely on the pip-audit step in CI to flag
-# known vulnerabilities in between. The two images' pinned inputs (the Python base image, the gcloud CLI, Cosign) and
-# CI's hadolint are moved by hand, with their checksums (docs/REQUIREMENTS.md).
+# Keeps the GitHub Actions this repository's own workflow uses, and the two Dockerfiles' base image digests, current
+# with weekly pull requests. Python dependencies are hash-locked with uv; refresh them deliberately (docs/DEVELOPMENT.md)
+# and rely on the pip-audit step in CI to flag known vulnerabilities in between. The images' other pinned inputs (the
+# gcloud CLI, Cosign) and CI's hadolint are moved by hand, with their checksums (docs/REQUIREMENTS.md). Dependabot's
+# alerts (Settings, Code security) are the signal between CI runs; they are expected to be on.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -9,5 +10,12 @@ updates:
     schedule:
       interval: weekly
     # A release must be a week old before it is proposed: a compromised or broken one is usually caught by then.
+    cooldown:
+      default-days: 7
+  # The python:3.12-slim digest in both Dockerfiles: Debian point rebuilds carry libc, OpenSSL and zlib fixes.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
     cooldown:
       default-days: 7

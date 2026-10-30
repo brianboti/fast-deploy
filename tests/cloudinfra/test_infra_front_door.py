@@ -47,7 +47,8 @@ def test_a_front_door_with_hostnames_serves_https_on_a_reserved_address(tmp_path
     assert gateway["spec"]["gatewayClassName"] == GATEWAY_CLASS and gateway["spec"]["addresses"] == [{"type": "NamedAddress", "value": "shop-cluster-door"}]
     https, http = gateway["spec"]["listeners"]
     assert https["port"] == 443 and https["tls"]["options"] == {"networking.gke.io/pre-shared-certs": "shop-cluster-door"}
-    assert https["allowedRoutes"]["namespaces"]["selector"]["matchLabels"] == {"kubernetes.io/metadata.name": "shop"}, "routes from the request's namespace only"
+    assert https["allowedRoutes"]["namespaces"]["selector"]["matchLabels"] == {"kubernetes.io/metadata.name": cluster.namespace}, "routes from the request's namespace only"
+    assert cluster.namespace == f"shop-{response.request_id[:6]}"
     assert http["allowedRoutes"] == {"namespaces": {"from": "Same"}}, "plain HTTP only redirects"
     redirect = found[f"{ROUTES}/to-https"]["spec"]["rules"][0]["filters"][0]
     assert redirect == {"type": "RequestRedirect", "requestRedirect": {"scheme": "https", "statusCode": 301}}

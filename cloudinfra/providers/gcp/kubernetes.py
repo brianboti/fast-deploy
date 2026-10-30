@@ -15,6 +15,14 @@ from ...observability.logging import event
 # services, config maps and secrets, and cannot change RBAC or the namespace itself.
 CLUSTER_ROLES = {"use": "view", "admin": "edit"}
 SUBJECT_KINDS = {"user": "User", "serviceAccount": "User", "group": "Group"}  # GKE names a Google identity by its email
+def tenant_namespace(ctx) -> str:
+    """The namespace a request gets in each of its clusters: its name plus the start of its id. Request names are not
+    unique, and a Workload Identity principal PROJECT.svc.id.goog[NAMESPACE/NAME] is the same in every cluster of the
+    project, so a namespace named after the request alone would let another request of the same name act as this one's
+    identities (found in the review of 2026-10-30)."""
+    return f"{ctx.name}-{ctx.request_id[:6]}"
+
+
 # The label on the namespaces made for requests. `edit` cannot change a namespace, so a team cannot take it off.
 TENANT = {"cloudinfra-tenant": "true"}
 ADMISSION = "/apis/admissionregistration.k8s.io/v1"

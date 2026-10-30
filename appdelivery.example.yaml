@@ -7,6 +7,8 @@ database: appdelivery.db
 # allowed_hosts: ["127.0.0.1:*", "localhost:*"]  # Host headers the MCP endpoint answers; add the service's own name behind a proxy
 # rate_limit_per_minute: 120                     # requests per caller identity
 # auth_failures_per_minute: 20                   # failed sign-ins per client address
+# registrations_per_hour: 10                     # OAuth client registrations one address may make in an hour, with sign-in on
+# max_request_bytes: 65536                       # larger request bodies are refused with 413 before they are read
 # sign_in:                                       # sign-in for Claude chat (docs/INFRASTRUCTURE-ARCHITECTURE.md, "Connect Claude chat")
 #   url: https://delivery.example.com            # the public HTTPS address; add its host to allowed_hosts
 cloudinfra:
@@ -22,17 +24,24 @@ environments:
     # identity serviceAccount:<service_account below>. Its token goes in this variable.
     token_env: APPDELIVERY_DEV_INFRA_TOKEN
     service_account: appdelivery-dev@your-infrastructure-project.iam.gserviceaccount.com
+    # The account a machine pulls images as: artifactregistry.reader on allowed_registries and nothing else. Its five-minute
+    # token is the only credential a machine ever receives; the environment's own token never leaves this service.
+    pull_service_account: pull-dev@your-infrastructure-project.iam.gserviceaccount.com
     allowed_registries: [us-central1-docker.pkg.dev/your-infrastructure-project/shop-images]
+    # workload: {cpu_millicores: 1000, memory_mb: 1024, pids: 512}   # the bounds every released container runs under
     # Builds in the trusted project (docs/DELIVERY-SPEC.md section 3): Cloud Build runs them as this account, which may
     # push to the teams' registries and write logs, and nothing else. A release names only a digest built here.
     build:
       service_account: build-dev@your-infrastructure-project.iam.gserviceaccount.com
       # machine_type: E2_STANDARD_2                # E2_MEDIUM, E2_STANDARD_2, E2_HIGHCPU_8, E2_HIGHCPU_32
       # timeout_seconds: 1200
+      # max_concurrent_builds: 3                   # a team's builds queued or working in this environment at once
+      # max_builds_per_day: 50                     # a team's builds in this environment in 24 hours
       # builder: gcr.io/cloud-builders/docker@sha256:…   # the docker build step's image, by digest; the default is pinned
   prod:
     token_env: APPDELIVERY_PROD_INFRA_TOKEN
     service_account: appdelivery-prod@your-infrastructure-project.iam.gserviceaccount.com
+    pull_service_account: pull-prod@your-infrastructure-project.iam.gserviceaccount.com
     allowed_registries: [us-central1-docker.pkg.dev/your-infrastructure-project/shop-images]
     build:
       service_account: build-prod@your-infrastructure-project.iam.gserviceaccount.com

@@ -22,6 +22,10 @@ def test_it_builds_both_images_and_cloud_build_pushes_them():
         assert step["args"][0] == "build" and "push" not in step["args"] and "entrypoint" not in step and "script" not in step, step["id"]
 
 
+def test_the_build_runs_as_the_platforms_own_account():
+    assert CONFIG["serviceAccount"] == "projects/$PROJECT_ID/serviceAccounts/platform-build@$PROJECT_ID.iam.gserviceaccount.com", "never a default build account"
+
+
 def test_provenance_is_required_and_logs_stay_in_cloud_logging():
     assert CONFIG["options"]["requestedVerifyOption"] == "VERIFIED"
     assert CONFIG["options"]["logging"] == "CLOUD_LOGGING_ONLY", "a user-specified build account cannot write to Google's log bucket"
@@ -44,8 +48,8 @@ def test_a_local_submit_uploads_only_what_the_dockerfiles_copy():
     lines = [line for line in (ROOT / ".gcloudignore").read_text().splitlines() if line and not line.startswith("#")]
     assert lines[0] == "*", "everything is ignored first"
     kept = {line[1:].rstrip("*").rstrip("/") for line in lines if line.startswith("!")}
-    assert kept == {"Dockerfile.cloudinfra", "Dockerfile.appdelivery", "requirements.lock", "cloudinfra", "appdelivery"}
+    assert kept == {"Dockerfile.cloudinfra", "Dockerfile.appdelivery", "requirements.lock", "pip.lock", "cloudinfra", "appdelivery"}
     copied = set()
     for dockerfile in ("Dockerfile.cloudinfra", "Dockerfile.appdelivery"):
-        copied |= {line.split()[1] for line in (ROOT / dockerfile).read_text().splitlines() if line.startswith("COPY ")}
+        copied |= {part for line in (ROOT / dockerfile).read_text().splitlines() if line.startswith("COPY ") for part in line.split()[1:-1]}
     assert copied | {"Dockerfile.cloudinfra", "Dockerfile.appdelivery"} == kept

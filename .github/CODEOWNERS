@@ -1,5 +1,6 @@
 # Every change to the services' trust boundaries is reviewed by the owner: the contracts, the orchestrators, the
-# Google adapter, the authentication and the workflow. Branch protection requires a pull request on main.
+# Google adapter, the authentication and the workflow. Branch protection is expected to require a pull request on main
+# with one approving review by an owner and status checks on the merged base (docs/DEVELOPMENT.md).
 *                         @brianboti
 /cloudinfra/              @brianboti
 /appdelivery/             @brianboti

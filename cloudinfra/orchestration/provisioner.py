@@ -1274,6 +1274,12 @@ class Orchestrator:
         problem = provider.resize_problem(resource, cpu, memory_gb)  # refused now, before the machine is touched
         if problem is not None:
             raise InfrastructureError(problem.code, problem.message, {"field": problem.field, "cpu": cpu, "memory_gb": memory_gb})
+        # The ceiling holds after a resize as at provisioning: the request priced as it would be, with this machine in its new shape
+        preview = provider.resize_preview(resource, cpu, memory_gb)
+        existing = [preview if item.id == resource.id else item for item in self._live_resources(record["request_id"])]
+        too_much = planner.cost_problem(provider.estimate_resources(existing), self.config, principal)
+        if too_much is not None:
+            raise InfrastructureError(too_much.code, too_much.message, {"resource_id": resource_id, "cpu": cpu, "memory_gb": memory_gb})
         with self.lock(record["request_id"]):
             record, resource = self.state.get_request(record["request_id"]), self.state.get_resource(resource_id)
             self._refuse_if_busy(record)  # never under a stop, a start or a destroy of its request, nor another change
@@ -1329,6 +1335,7 @@ class Orchestrator:
     def configure_firewall(self, network_id: str, ports: list[int], sources: list[str], principal) -> ResourceResponse:
         self.require(principal, "provision")
         ports, sources = validation.check_ports(ports, "ports"), validation.check_sources(sources)
+        validation.check_public_rule(ports, sources, self.config.closed_public_ports, "ports")
         network, record = self._resource(network_id, principal)
         if network.kind != ResourceKind.network:
             raise InfrastructureError(ErrorCode.NOT_FOUND, f"{network_id} is a {network.kind.value}, not a network", {"resource_id": network_id})
@@ -1366,6 +1373,11 @@ class Orchestrator:
         resource, record = self._resource(resource_id, principal)
         return self.registry.get(record["provider"]).resource_usage(resource, max(5, min(minutes, 1440)))
 
+    def _live_resources(self, request_id: str) -> list:
+        """What a request has now: not what was deleted, nor what failed before the provider took it."""
+        return [item for item in self.state.resources_of(request_id)
+                if item.status != ResourceStatus.DELETED and not (item.status == ResourceStatus.FAILED and item.provider_id is None)]
+
     def cost(self, principal, request_id: str | None = None, resource_id: str | None = None) -> dict:
         if not request_id and not resource_id:
             raise InfrastructureError(ErrorCode.INVALID_REQUEST, "Give request_id or resource_id")
@@ -1376,8 +1388,7 @@ class Orchestrator:
         provider = self.registry.get(record["provider"])
         # What exists now, as it is now: a resize, a deleted resource or a changed profile is priced as it is, and a request
         # stored by an earlier release is never validated again against a newer contract.
-        found = [resource] if resource is not None else self.state.resources_of(record["request_id"])
-        existing = [item for item in found if item.status != ResourceStatus.DELETED and not (item.status == ResourceStatus.FAILED and item.provider_id is None)]
+        existing = [resource] if resource is not None else self._live_resources(record["request_id"])
         estimate = provider.estimate_resources(existing)
         stopped = {item.name for item in existing if item.status == ResourceStatus.STOPPED}
         current = round(sum(line.stopped_usd if line.resource in stopped and line.stopped_usd is not None else line.monthly_usd for line in estimate.lines), 2)

@@ -1,4 +1,7 @@
 .venv/
+# Presentations rendered locally and the app's own session files
+output/
+.claude/
 .DS_Store
 __pycache__/
 *.egg-info/

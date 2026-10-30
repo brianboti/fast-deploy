@@ -13,6 +13,9 @@ allowed_hosts:
 # cleanup_on_failure: true                        # delete what a failed request created; false keeps it for inspection and says so
 # sign_in:                                       # sign-in for Claude chat (docs/INFRASTRUCTURE-ARCHITECTURE.md, "Connect Claude chat")
 #   url: https://infra.example.com                # the public HTTPS address; add its host to allowed_hosts
+# closed_public_ports: [22, 3389]               # never opened from a public range by a network block or configure_firewall; 22 and 3389 always
+# registrations_per_hour: 10                      # OAuth client registrations one address may make in an hour, with sign-in on
+# max_request_bytes: 65536                        # larger request bodies are refused with 413 before they are read
 # sweep_interval_seconds: 300                     # how often expiry and idle stop are checked; 0 turns the sweeper off, and with it lifetimes and idle stop
 # return_database_password: false                 # true also returns a generated database password once; it always goes to a secret
 labels:                                           # the operator's labels on every resource the service creates

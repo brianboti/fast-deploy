@@ -34,20 +34,41 @@ def tagged(source: BuildSource, request: BuildRequest, build_id: str) -> str:
     return f"{image_path(source, request)}:{build_id}"
 
 
+def anchored(context: str) -> str:
+    """The build context as a path docker cannot read as anything else: `.` stays, any other path gets `./` in front, so
+    `github.com/org/repo` is a directory of the source (which does not exist) and never a repository docker clones."""
+    return context if context == "." else f"./{context}"
+
+
+def args(tag: str, dockerfile: str, context: str) -> list[str]:
+    """The one docker build step's arguments; the same function checks a build's provenance against what was composed."""
+    # TARGETARCH: Cloud Build's docker step has no BuildKit to set it (found 2026-10-29); Dockerfiles that read it get amd64,
+    # the workers' architecture, and others ignore it
+    return ["build", "--build-arg", "TARGETARCH=amd64", "-t", tag, "-f", dockerfile, anchored(context)]
+
+
+def tags(infra_owner: str, environment: str, build_id: str) -> list[str]:
+    return ["appdelivery", infra_owner, environment, build_id]
+
+
+def expected(record: dict, builder: str) -> dict:
+    """What a recorded build's signed provenance must say it ran: this service's step and tags, nothing a caller composed."""
+    request = record["request"]
+    return {"builder": builder, "args": args(record["image"], request.get("dockerfile", "Dockerfile"), request.get("context", ".")),
+            "tags": tags(record["infra_owner"], record["environment"], record["build_id"])}
+
+
 def compose(request: BuildRequest, source: BuildSource, settings: BuildSettings, build_id: str, infra_owner: str) -> dict:
     """The Build resource Cloud Build is sent: one docker build step, the image pushed by Cloud Build, provenance required."""
     tag = tagged(source, request, build_id)
-    # TARGETARCH: Cloud Build's docker step has no BuildKit to set it (found 2026-10-29); Dockerfiles that read it get amd64,
-    # the workers' architecture, and others ignore it
-    args = ["build", "--build-arg", "TARGETARCH=amd64", "-t", tag, "-f", request.dockerfile, request.context]
     return {
         "source": {"connectedRepository": {"repository": source.repository, "revision": request.revision}},
-        "steps": [{"name": settings.builder, "args": args}],
+        "steps": [{"name": settings.builder, "args": args(tag, request.dockerfile, request.context)}],
         "images": [tag],
         "serviceAccount": f"projects/{source.project}/serviceAccounts/{settings.service_account}",
         "options": {"logging": "CLOUD_LOGGING_ONLY", "requestedVerifyOption": "VERIFIED", "machineType": settings.machine_type},
         "timeout": f"{settings.timeout_seconds}s",
-        "tags": ["appdelivery", infra_owner, request.environment, build_id],
+        "tags": tags(infra_owner, request.environment, build_id),
     }
 
 

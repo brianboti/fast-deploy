@@ -5,6 +5,7 @@
 !Dockerfile.cloudinfra
 !Dockerfile.appdelivery
 !requirements.lock
+!pip.lock
 !cloudinfra/
 !cloudinfra/**
 !appdelivery/

@@ -61,6 +61,7 @@ class Authenticate:
         self.identities = RateLimiter(config.rate_limit_per_minute)
         self.failures = RateLimiter(config.auth_failures_per_minute)
         self.public = RateLimiter(config.rate_limit_per_minute)
+        self.registrations = RateLimiter(config.registrations_per_hour, window_seconds=3600)  # anyone may register before a token: few, per address
         self.challenge = "Bearer" if sign_in is None else f'Bearer resource_metadata="{sign_in.metadata_url}"'
 
     async def __call__(self, scope, receive, send):
@@ -71,6 +72,8 @@ class Authenticate:
         try:
             if self.sign_in is not None and self.sign_in.is_public(scope["path"]):
                 allowed, retry_after = self.public.allow(client)
+                if allowed and scope["path"] == "/register" and scope.get("method") == "POST":
+                    allowed, retry_after = self.registrations.allow(client)
                 if not allowed:
                     return await JSONResponse({"error": "temporarily_unavailable", "error_description": "Too many requests from this address"},
                                               status_code=429, headers={"Retry-After": str(retry_after)})(scope, receive, send)

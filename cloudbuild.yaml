@@ -25,6 +25,9 @@ steps:
 images:
   - "${_REGISTRY}/cloudinfra:${BUILD_ID}"
   - "${_REGISTRY}/appdelivery:${BUILD_ID}"
+# The platform's build account, in the file as well as on the command line: a submit without --service-account would
+# otherwise run as the project's default build account (the review of 2026-10-30).
+serviceAccount: projects/$PROJECT_ID/serviceAccounts/platform-build@$PROJECT_ID.iam.gserviceaccount.com
 options:
   logging: CLOUD_LOGGING_ONLY
   requestedVerifyOption: VERIFIED

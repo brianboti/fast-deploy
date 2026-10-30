@@ -77,8 +77,44 @@ def signed_statement(envelope: dict, keys: dict) -> tuple[dict, str] | None:
     return None
 
 
-def problems(statement: dict, image: str, build: dict) -> list[str]:
-    """What in a signed statement does not match this release and the build this service recorded for it."""
+def build_config(statement: dict) -> dict | None:
+    """The Cloud Build config the statement says ran: externalParameters.buildConfig, base64 JSON (the run of 2026-10-30)."""
+    config = ((statement.get("predicate") or {}).get("buildDefinition") or {}).get("externalParameters", {}).get("buildConfig")
+    if not isinstance(config, str):
+        return config if isinstance(config, dict) else None
+    try:
+        found = json.loads(_decode(config))
+    except (binascii.Error, ValueError):
+        return None
+    return found if isinstance(found, dict) else None
+
+
+def config_problems(statement: dict, expected: dict) -> list[str]:
+    """What in the statement's build config is not the one step this service composed: SLSA's rule that unrecognised
+    external parameters fail verification. The builder's name may be recorded without the digest it was pinned by."""
+    config = build_config(statement)
+    if config is None:
+        return ["its build config is missing or unreadable"]
+    steps = config.get("steps") or []
+    if len(steps) != 1:
+        return [f"{len(steps)} build steps, not the one this service composes"]
+    found = []
+    name = str(steps[0].get("name", ""))
+    if name not in (expected["builder"], expected["builder"].split("@", 1)[0]):
+        found.append(f"a builder {name!r}, not {expected['builder']}")
+    if steps[0].get("args") != expected["args"]:
+        found.append("build arguments that are not the ones this service composed")
+    options = config.get("options") or {}
+    if options.get("requestedVerifyOption") != "VERIFIED" or options.get("logging") != "CLOUD_LOGGING_ONLY":
+        found.append("options that are not this service's (VERIFIED provenance, Cloud Logging only)")
+    if config.get("tags") != expected["tags"]:
+        found.append("tags that are not this service's")
+    return found
+
+
+def problems(statement: dict, image: str, build: dict, expected: dict | None = None) -> list[str]:
+    """What in a signed statement does not match this release and the build this service recorded for it, and, when the
+    expected build config is given, what it ran."""
     repository, digest = image.split("@sha256:")
     found = []
     if statement.get("predicateType") != PREDICATE_V1:
@@ -97,6 +133,8 @@ def problems(statement: dict, image: str, build: dict) -> list[str]:
     commits = [item.get("digest", {}).get("gitCommit") for item in (predicate.get("buildDefinition") or {}).get("resolvedDependencies") or []]
     if build["revision"] not in commits:
         found.append(f"its source is not commit {build['revision']}")
+    if expected is not None:
+        found.extend(config_problems(statement, expected))
     return found
 
 
@@ -118,7 +156,7 @@ def occurrences(client: httpx.Client, token: str, image: str) -> list[dict]:
     return response.json().get("occurrences", [])
 
 
-def verify(image: str, build: dict, found: list[dict], keys: dict | None = None) -> dict:
+def verify(image: str, build: dict, found: list[dict], keys: dict | None = None, expected: dict | None = None) -> dict:
     """{'build', 'source', 'commit', 'key'} from the first occurrence whose signed statement matches; else PROVENANCE_FAILED
     naming why each signed one did not."""
     keys = GOOGLE_KEYS if keys is None else keys
@@ -128,7 +166,7 @@ def verify(image: str, build: dict, found: list[dict], keys: dict | None = None)
         if signed is None:
             continue
         statement, key = signed
-        wrong = problems(statement, image, build)
+        wrong = problems(statement, image, build, expected)
         if not wrong:
             sources = [item for item in (statement["predicate"].get("buildDefinition") or {}).get("resolvedDependencies") or []
                        if item.get("digest", {}).get("gitCommit") == build["revision"]]

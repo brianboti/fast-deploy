@@ -48,7 +48,7 @@ def test_a_deploy_runs_the_script_through_iap_as_the_environment_and_sends_every
     assert report.result == "healthy" and report.fields["image"] == IMAGE and report.attempts == 1
     call = runner.calls[0]
     assert call["argv"] == ["gcloud", "compute", "ssh", "shop-web-1", "--zone", "us-central1-a", "--project", "infra-project", "--tunnel-through-iap",
-                            "--impersonate-service-account", PROD_SA, "--quiet", "--strict-host-key-checking=no", "--command", "sudo bash -s"]
+                            "--impersonate-service-account", PROD_SA, "--quiet", "--strict-host-key-checking=no", "--ssh-key-expire-after=15m", "--command", "sudo bash -s"]
     assert call["timeout"] == machine.BASE_TIMEOUT + 90
     assert "s3cr3t" not in " ".join(call["argv"]) and "ya29" not in " ".join(call["argv"])
     assert decoded_inputs(call["stdin"]) == {"IN_ACTION": "deploy", "IN_RELEASE": "rel-000000000002", "IN_IMAGE": IMAGE, "IN_PORT": "8080", "IN_HEALTH_PATH": "/healthz",
@@ -141,3 +141,11 @@ def test_rollback_sends_only_the_health_check():
     machines, runner, _ = session(Completed(0, "APPDELIVERY result=rolled_back image=x release=rel-000000000001\n", ""))
     assert machines.rollback(WEB1, release()).result == "rolled_back"
     assert decoded_inputs(runner.calls[0]["stdin"]) == {"IN_ACTION": "rollback", "IN_PORT": "8080", "IN_HEALTH_PATH": "/healthz", "IN_TIMEOUT": "90"}
+
+
+def test_the_bounds_travel_to_the_host_as_inputs_like_everything_else():
+    from appdelivery.config import WorkloadLimits
+    machines, runner, _ = session(HEALTHY)
+    machines.deploy(WEB1, "rel-000000000002", release(), "", None, WorkloadLimits(cpu_millicores=2500, memory_mb=4096, pids=1024))
+    inputs = decoded_inputs(runner.calls[0]["stdin"])
+    assert (inputs["IN_CPUS"], inputs["IN_MEMORY_MB"], inputs["IN_PIDS"]) == ("2.5", "4096", "1024")

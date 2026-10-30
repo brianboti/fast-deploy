@@ -14,9 +14,10 @@ import time
 
 import httpx
 
-from . import attest, bindings, planner, provenance, remote
+from . import attest, bindings, cloudbuild, planner, provenance, remote
 from .building import Builder
 from .cloudbuild import CloudBuildClient
+from .config import BuildSettings
 from .errors import DeliveryError, ErrorCode
 from .events import bound, event
 from .google import HostToken, ServiceAccountTokens
@@ -60,7 +61,8 @@ class Delivery:
         self.machines = machines or (lambda environment: MachineSession(config.gcp.project_id, config.environments[environment].service_account))
         self.http = http or httpx.Client(timeout=30, follow_redirects=False)
         self.tokens = tokens or ServiceAccountTokens(self.http, HostToken(self.http))
-        self.clusters = clusters or (lambda environment: ClusterDeployer(lambda: self.tokens(config.environments[environment].service_account)))
+        self.clusters = clusters or (lambda environment: ClusterDeployer(lambda: self.tokens(config.environments[environment].service_account),
+                                                                          limits=config.environments[environment].workload))
         self.services = services or (lambda environment: RunDeployer(lambda: self.tokens(config.environments[environment].service_account)))
         self.jobs = jobs or (lambda environment: JobDeployer(lambda: self.tokens(config.environments[environment].service_account)))
         self.runner = runner
@@ -242,7 +244,12 @@ class Delivery:
                              gateway=door.gateway if door else None, https=bool(door and door.hostnames))
 
     def _registry_token(self, release: ReleaseRequest, environment) -> str | None:
-        return self.tokens(environment.service_account) if release.registry().endswith(planner.ARTIFACT_REGISTRY_SUFFIX) else None
+        """A token that reads the image and nothing else: the environment's pull account, minted fresh for this one use. The
+        environment's own token never leaves this service (the review of 2026-10-30: root on a team's machine could read it)."""
+        if not release.registry().endswith(planner.ARTIFACT_REGISTRY_SUFFIX):
+            return None
+        mint = getattr(self.tokens, "fresh", self.tokens)
+        return mint(environment.pull_service_account)
 
     def _rollout(self, release_id: str) -> None:
         record = self.state.get_release(release_id)
@@ -258,7 +265,9 @@ class Delivery:
                     if build is None:
                         raise DeliveryError(ErrorCode.NOT_BUILT_HERE, f"{release.image} was not built by this service", {"image": release.image})
                     found = provenance.occurrences(self.http, self.tokens(environment.service_account), release.image)
-                    event("provenance_verified", **provenance.verify(release.image, build, found))
+                    settings = self.config.environments[build["environment"]].build
+                    builder = settings.builder if settings is not None else BuildSettings.model_fields["builder"].default
+                    event("provenance_verified", **provenance.verify(release.image, build, found, expected=cloudbuild.expected(build, builder)))
                 if environment.require_attestation:
                     verified = attest.verify(release, environment, self._registry_token(release, environment), self.runner)
                     event("image_verified", **verified)
@@ -334,7 +343,7 @@ class Delivery:
             self.state.set_target(release_id, target["resource_id"], "DEPLOYING", started=True)
             event("machine_deploying", machine=machine.name)
             try:
-                report = session.deploy(machine, release_id, release, text, self._registry_token(release, environment))
+                report = session.deploy(machine, release_id, release, text, self._registry_token(release, environment), environment.workload)
             except DeliveryError as exc:
                 self.state.set_target(release_id, target["resource_id"], "FAILED", exc.detail().model_dump(mode="json"), finished=True)
                 failure = (machine.name, exc.detail().model_dump(mode="json"))

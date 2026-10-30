@@ -16,6 +16,8 @@ PROD_SA = "appdelivery-prod@infra-project.iam.gserviceaccount.com"
 DEV_SA = "appdelivery-dev@infra-project.iam.gserviceaccount.com"
 TEAM_TOKEN = "team-token"
 DEV_BUILD_SA = "build-dev@infra-project.iam.gserviceaccount.com"
+DEV_PULL_SA = "pull-dev@infra-project.iam.gserviceaccount.com"
+PROD_PULL_SA = "pull-prod@infra-project.iam.gserviceaccount.com"
 PROD_BUILD_SA = "build-prod@infra-project.iam.gserviceaccount.com"
 SOURCE_REPOSITORY = "projects/infra-project/locations/us-central1/connections/github/repositories/acme-shop"
 TEAM_REGISTRY = "us-central1-docker.pkg.dev/infra-project/shop-images"
@@ -28,9 +30,11 @@ def config_dict(**overrides):
         "cloudinfra": {"url": "https://infra.example.com"},
         "gcp": {"project_id": "infra-project"},
         "environments": {
-            "dev": {"token_env": "APPDELIVERY_DEV_INFRA_TOKEN", "service_account": DEV_SA, "allowed_registries": ["us-central1-docker.pkg.dev/acme-apps", TEAM_REGISTRY],
+            "dev": {"token_env": "APPDELIVERY_DEV_INFRA_TOKEN", "service_account": DEV_SA, "pull_service_account": DEV_PULL_SA,
+                    "allowed_registries": ["us-central1-docker.pkg.dev/acme-apps", TEAM_REGISTRY],
                     "build": {"service_account": DEV_BUILD_SA}},
-            "prod": {"token_env": "APPDELIVERY_PROD_INFRA_TOKEN", "service_account": PROD_SA, "allowed_registries": ["us-central1-docker.pkg.dev/acme-apps", TEAM_REGISTRY],
+            "prod": {"token_env": "APPDELIVERY_PROD_INFRA_TOKEN", "service_account": PROD_SA, "pull_service_account": PROD_PULL_SA,
+                     "allowed_registries": ["us-central1-docker.pkg.dev/acme-apps", TEAM_REGISTRY],
                      "require_attestation": True, "trusted_signers": ["/etc/appdelivery/keys/prod.pub"], "require_approval": True,
                      "build": {"service_account": PROD_BUILD_SA, "machine_type": "E2_HIGHCPU_8", "timeout_seconds": 1800}},
         },

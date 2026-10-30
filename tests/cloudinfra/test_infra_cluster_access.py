@@ -1,4 +1,4 @@
-"""Clusters take grants (docs/DELIVERY-SPEC.md, phase 2): one namespace per cluster, named after the request, and each
+"""Clusters take grants (docs/DELIVERY-SPEC.md, phase 2): one namespace per cluster, named after the request and the start of its id, and each
 member bound in it to the built-in ClusterRole view (use) or edit (admin) through a RoleBinding; never an IAM role that
 would reach every cluster of the project."""
 import base64
@@ -31,20 +31,25 @@ def setup(tmp_path, access=None):
     return orchestrator, fake, who, response
 
 
+def namespace_of(response):
+    return f"shop-{response.request_id[:6]}"
+
+
 def bindings(fake):
     return {(namespace, item["role"], item["member"]) for (_, namespace, _), item in fake.role_bindings.items()}
 
 
-def test_a_cluster_gets_one_namespace_named_after_its_request(tmp_path):
+def test_a_cluster_gets_one_namespace_named_after_its_request_and_its_id(tmp_path):
     _, fake, _, response = setup(tmp_path)
     [cluster] = response.resources.cluster
-    assert cluster.namespace == "shop" and fake.namespaces == {ENDPOINT: {"shop"}}
+    assert cluster.namespace == namespace_of(response) and fake.namespaces == {ENDPOINT: {namespace_of(response)}}
     assert cluster.ca_certificate == "RkFLRSBDQQ==" and cluster.endpoint == ENDPOINT
 
 
 def test_members_are_bound_in_the_namespace_at_their_level(tmp_path):
     _, fake, _, response = setup(tmp_path, access=[{"member": DELIVERY, "level": "admin"}, {"member": DATA, "level": "use"}])
-    assert bindings(fake) == {("shop", "edit", DELIVERY), ("shop", "view", DATA)}
+    namespace = namespace_of(response)
+    assert bindings(fake) == {(namespace, "edit", DELIVERY), (namespace, "view", DATA)}
     [cluster] = response.resources.cluster
     assert {(grant.member, grant.role) for grant in cluster.access} == {(DELIVERY, "kubernetes:edit"), (DATA, "kubernetes:view")}
     assert all(entry.status == "GRANTED" and cluster.id in entry.resources for entry in response.access)
@@ -52,10 +57,11 @@ def test_members_are_bound_in_the_namespace_at_their_level(tmp_path):
 
 def test_a_level_change_leaves_one_binding_and_a_revoke_none(tmp_path):
     orchestrator, fake, who, response = setup(tmp_path)
+    namespace = namespace_of(response)
     orchestrator.manage_access(response.request_id, "grant", DELIVERY, who, level="admin")
-    assert bindings(fake) == {("shop", "edit", DELIVERY)}
+    assert bindings(fake) == {(namespace, "edit", DELIVERY)}
     orchestrator.manage_access(response.request_id, "grant", DELIVERY, who, level="use")
-    assert bindings(fake) == {("shop", "view", DELIVERY)}, "a lower level takes edit away"
+    assert bindings(fake) == {(namespace, "view", DELIVERY)}, "a lower level takes edit away"
     revoked = orchestrator.manage_access(response.request_id, "revoke", DELIVERY, who)
     assert bindings(fake) == set() and next(item for item in revoked.access if item.member == DELIVERY).status == "REVOKED"
 
@@ -71,8 +77,8 @@ def test_a_grant_the_cluster_refuses_is_recorded_on_the_member(tmp_path):
 def test_the_connect_block_names_the_namespace(tmp_path):
     _, _, _, response = setup(tmp_path, access=[{"member": DELIVERY, "level": "admin"}])
     connect = response.resources.cluster[0].connect
-    assert connect.commands["namespace"] == "kubectl config set-context --current --namespace shop"
-    assert any("namespace shop only" in note for note in connect.notes)
+    assert connect.commands["namespace"] == f"kubectl config set-context --current --namespace {namespace_of(response)}"
+    assert any(f"namespace {namespace_of(response)} only" in note for note in connect.notes)
     assert any("container.clusterViewer" in item for item in connect.prerequisites)
 
 

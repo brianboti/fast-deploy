@@ -466,7 +466,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Possible errors.** `INVALID_NETWORK_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `PROVIDER_ERROR`, `PROVIDER_UNAVAILABLE`, `OPERATION_TIMEOUT`.
 
-**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Ingress only; ports and ranges are validated.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Ingress only; ports and ranges are validated; 22 and 3389 (closed_public_ports) are never opened from a public range.
 
 **Provider mapping (Google Cloud).** Compute Engine: compute.firewalls.insert.
 

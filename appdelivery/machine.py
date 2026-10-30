@@ -19,9 +19,9 @@ from .errors import DeliveryError, ErrorCode
 from .models import ReleaseRequest
 
 SCRIPT = "host/release.sh"
-SCRIPT_SHA256 = "ef2dc2ea92f24590b023ffe64fb1df61e2fe9ef40238b3704e6c4b96ef43c285"
+SCRIPT_SHA256 = "2e4b8cfb61d09bca9d67b65f218f496d119baf82861a36bdfb2a88d587291568"
 ACTIONS = ("deploy", "rollback", "remove", "status")
-INPUTS = ("RELEASE", "IMAGE", "PORT", "HEALTH_PATH", "TIMEOUT", "REGISTRY", "TOKEN", "ENV")
+INPUTS = ("RELEASE", "IMAGE", "PORT", "HEALTH_PATH", "TIMEOUT", "REGISTRY", "TOKEN", "ENV", "CPUS", "MEMORY_MB", "PIDS")
 RELEASE_ID = re.compile(r"^rel-[a-f0-9]{12}$")
 REPORT = re.compile(r"^APPDELIVERY (.*)$")
 # IAP's refusals that pass by themselves: (code in gcloud's output, how long to keep trying, pause between tries)
@@ -124,11 +124,13 @@ class MachineSession:
             raise DeliveryError(ErrorCode.MACHINE_UNREACHABLE, f"Cannot reach {machine.name}: {reason}",
                                 {"machine": machine.name, "action": action, "attempts": attempts, "said": _tail(said)})
 
-    def deploy(self, machine: Machine, release_id: str, release: ReleaseRequest, env_text: str, token: str | None) -> HostReport:
-        """Pull release.image (logging in with the token when there is one), start it with env_text, check its health,
-        restore the previous container on failure."""
+    def deploy(self, machine: Machine, release_id: str, release: ReleaseRequest, env_text: str, token: str | None, limits=None) -> HostReport:
+        """Pull release.image (logging in with the token when there is one), start it with env_text under the environment's
+        limits, check its health, restore the previous container on failure."""
         inputs = {"RELEASE": self._release_id(release_id), "IMAGE": release.image, "PORT": str(release.port), "HEALTH_PATH": release.health.path,
                   "TIMEOUT": str(release.health.timeout_seconds), "REGISTRY": release.registry(), "ENV": env_text}
+        if limits is not None:
+            inputs.update({"CPUS": f"{limits.cpu_millicores / 1000:g}", "MEMORY_MB": str(limits.memory_mb), "PIDS": str(limits.pids)})
         if token:
             inputs["TOKEN"] = token
         return self.run(machine, "deploy", inputs, BASE_TIMEOUT + release.health.timeout_seconds)

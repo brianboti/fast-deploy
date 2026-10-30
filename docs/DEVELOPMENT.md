@@ -88,7 +88,8 @@ role, API, limit or tool, `docs/SETUP.md` for a new operator step.
 - Direct dependencies are pinned exactly in `pyproject.toml`; the hash locks are regenerated with
   `uv pip compile --generate-hashes pyproject.toml -o requirements.lock` and
   `uv pip compile --generate-hashes pyproject.toml --extra dev -o requirements-dev.lock`;
-  `audit.lock` from `audit.in` the same way. Run the tests and `python -m pip_audit --require-hashes -r <lock>` after.
+  `audit.lock` from `audit.in` and `pip.lock` from `pip.in` the same way (with `--upgrade --refresh` to move past a
+  cached index). Run the tests and `python -m pip_audit --require-hashes -r <lock>` on every lock after.
 - The Python image digest is the same in both Dockerfiles; the gcloud and Cosign pins in `Dockerfile.appdelivery` are
   moved as its header describes. CI's hadolint and the actions are pinned by commit or checksum in
   `.github/workflows/ci.yml`; Dependabot proposes action updates weekly.
@@ -99,5 +100,8 @@ role, API, limit or tool, `docs/SETUP.md` for a new operator step.
 - `pyproject.toml` and `cloudinfra/__init__.py` carry the repository's version (a test ties them);
   `appdelivery/__init__.py` carries the delivery service's own.
 - A release is a version bump, the `CHANGES.md` heading for it, green CI, and a pull request on `main` (branch
-  protection requires one). Stacked pull requests are retargeted to `main` before each is merged, or a squash merge
+  protection requires one). The repository's settings are expected to hold what the security assessment of 2026-10-30
+  asked for: Dependabot alerts on, and branch protection on `main` with one approving review, code-owner review,
+  status checks on the merged base (`strict`) and conversation resolution; checked with
+  `gh api repos/{owner}/{repo}/branches/main/protection` and `gh api repos/{owner}/{repo}/vulnerability-alerts`. Stacked pull requests are retargeted to `main` before each is merged, or a squash merge
   lands in the stack's base instead of `main` (seen twice on 2026-10-29 and 2026-10-30).

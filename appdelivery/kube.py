@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from .config import WorkloadLimits
 from .errors import DeliveryError, ErrorCode
 from .machine import HostReport
 from .models import ReleaseRequest
@@ -100,20 +101,38 @@ def secret_body(namespace: str, workload: str, release_id: str, values: dict[str
             "stringData": values}
 
 
-def deployment_body(namespace: str, release_id: str, release: ReleaseRequest) -> dict:
-    """The workload's Deployment for one release: its image, port, health probe and its own Secret; nothing else runs."""
+# The capabilities an image's own entrypoint commonly needs to start as root and drop to its user (chown, setuid, a port
+# under 1024); everything else (raw sockets, chroot, mknod, module loading) is dropped. Pod Security's baseline profile.
+ENTRYPOINT_CAPABILITIES = ["CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "SETGID", "SETUID", "NET_BIND_SERVICE", "KILL"]
+
+
+def security_context(limits: WorkloadLimits) -> tuple[dict, dict, dict]:
+    """(pod securityContext, container securityContext, container resources): no privilege escalation, the default seccomp
+    profile, a bounded capability set, and CPU, memory and process limits (the review of 2026-10-30)."""
+    pod = {"seccompProfile": {"type": "RuntimeDefault"}}
+    container = {"allowPrivilegeEscalation": False, "privileged": False, "capabilities": {"drop": ["ALL"], "add": list(ENTRYPOINT_CAPABILITIES)}}
+    resources = {"requests": {"cpu": f"{min(limits.cpu_millicores, 100)}m", "memory": f"{limits.memory_mb}Mi"},
+                 "limits": {"cpu": f"{limits.cpu_millicores}m", "memory": f"{limits.memory_mb}Mi"}}
+    return pod, container, resources
+
+
+def deployment_body(namespace: str, release_id: str, release: ReleaseRequest, limits: WorkloadLimits | None = None) -> dict:
+    """The workload's Deployment for one release: its image, port, health probe, its own Secret and the environment's
+    bounds; nothing else runs."""
     workload = release.target.workload
+    pod_context, container_context, resources = security_context(limits or WorkloadLimits())
     return {"apiVersion": "apps/v1", "kind": "Deployment",
             "metadata": {"name": workload, "namespace": namespace, "labels": {**MANAGED, NAME_LABEL: workload}, "annotations": {RELEASE_LABEL: release_id}},
             "spec": {"replicas": release.target.replicas, "revisionHistoryLimit": 2, "progressDeadlineSeconds": release.health.timeout_seconds,
                      "selector": {"matchLabels": {NAME_LABEL: workload}},
                      "strategy": {"type": "RollingUpdate", "rollingUpdate": {"maxUnavailable": 0, "maxSurge": 1}},
                      "template": {"metadata": {"labels": {**MANAGED, NAME_LABEL: workload, RELEASE_LABEL: release_id}},
-                                  "spec": {"automountServiceAccountToken": False,
+                                  "spec": {"automountServiceAccountToken": False, "securityContext": pod_context,
                                            "containers": [{"name": "app", "image": release.image, "ports": [{"containerPort": release.port}],
                                                            "envFrom": [{"secretRef": {"name": secret_name(workload, release_id)}}],
                                                            "readinessProbe": {"httpGet": {"path": release.health.path, "port": release.port}, "periodSeconds": 5,
-                                                                              "failureThreshold": 3}}]}}}}
+                                                                              "failureThreshold": 3},
+                                                           "securityContext": container_context, "resources": resources}]}}}}
 
 
 def service_body(namespace: str, release: ReleaseRequest) -> dict:
@@ -148,8 +167,8 @@ def health_check_body(namespace: str, release: ReleaseRequest) -> dict:
 class ClusterDeployer:
     """Runs a release's workload on a cluster as the environment's service account."""
 
-    def __init__(self, token, kube=None, sleep=time.sleep, clock=time.monotonic):
-        self.token, self.sleep, self.clock = token, sleep, clock
+    def __init__(self, token, kube=None, sleep=time.sleep, clock=time.monotonic, limits: WorkloadLimits | None = None):
+        self.token, self.sleep, self.clock, self.limits = token, sleep, clock, limits or WorkloadLimits()
         self.kube = kube or (lambda target: KubeClient(target.endpoint, target.ca_certificate, token))
 
     # ---- applying
@@ -213,7 +232,7 @@ class ClusterDeployer:
                previous: tuple[str, ReleaseRequest] | None) -> HostReport:
         kube, where = self.kube(target), paths(target.namespace, release.target.workload)
         kube.create(where["secrets"], secret_body(target.namespace, release.target.workload, release_id, values))
-        self._apply(kube, where["deployments"], deployment_body(target.namespace, release_id, release))
+        self._apply(kube, where["deployments"], deployment_body(target.namespace, release_id, release, self.limits))
         self._apply(kube, where["services"], service_body(target.namespace, release))
         healthy, reason = self._wait(kube, where, release_id, release.health.timeout_seconds + 120)
         if healthy:
@@ -224,7 +243,7 @@ class ClusterDeployer:
         log = self._log(kube, where, release_id)
         restored = "none"
         if previous:
-            self._apply(kube, where["deployments"], deployment_body(target.namespace, previous[0], previous[1]))
+            self._apply(kube, where["deployments"], deployment_body(target.namespace, previous[0], previous[1], self.limits))
             back, _ = self._wait(kube, where, previous[0], previous[1].health.timeout_seconds + 120)
             restored = "yes" if back else "failed"
         else:
@@ -242,7 +261,7 @@ class ClusterDeployer:
         kube, where = self.kube(target), paths(target.namespace, previous.target.workload)
         if kube.get(f"{where['secrets']}/{secret_name(previous.target.workload, previous_id)}") is None:
             return HostReport("no_previous")
-        self._apply(kube, where["deployments"], deployment_body(target.namespace, previous_id, previous))
+        self._apply(kube, where["deployments"], deployment_body(target.namespace, previous_id, previous, self.limits))
         healthy, reason = self._wait(kube, where, previous_id, previous.health.timeout_seconds + 120)
         if not healthy:
             return HostReport("rollback_unhealthy", {"reason": reason})

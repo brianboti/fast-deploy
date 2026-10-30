@@ -28,7 +28,8 @@ def test_a_first_deploy_starts_the_image_with_its_environment_and_leaves_no_file
     report = deploy(host, image=OLD, release="rel-000000000001")
     assert report.result == "healthy" and report.fields["image"] == OLD and report.fields["previous"] == ""
     app = host.container("app")
-    assert app == {"image": OLD, "running": "true", "restart": "always", "release": "rel-000000000001", "env": "LOG_LEVEL=info\nDB_PASSWORD=s3cr3t"}
+    assert {key: value for key, value in app.items() if key != "flags"} == {"image": OLD, "running": "true", "restart": "always", "release": "rel-000000000001",
+                                                                            "env": "LOG_LEVEL=info\nDB_PASSWORD=s3cr3t"}
     assert host.container("app-previous") is None
     assert list(host.run_dir.iterdir()) == [], "the env file must be gone when the script ends"
     assert (host.state / "health_urls").read_text().strip() == "http://127.0.0.1:8080/healthz"
@@ -162,3 +163,16 @@ def test_the_script_has_no_eval_no_sudo_and_reads_inputs_only_through_decode():
     assert not re.search(r"\beval\b|\bsudo\b|\bsource\b", text)
     for use in re.findall(r".{0,12}\$\{?IN_[A-Z_]+[^\s\"]*", text):
         assert "decode" in use or '-n "' in use, f"input used outside decode: {use!r}"
+
+
+# ---- the review of 2026-10-30: the container runs under bounds with a reduced capability set
+def test_the_container_runs_without_privilege_escalation_under_the_bounds_the_service_sends(host):
+    deploy(host, image=OLD, release="rel-000000000001")  # no bounds sent: the script's own defaults
+    assert host.container("app")["flags"] == ("--security-opt=no-new-privileges --cap-drop=ALL --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER --cap-add=FSETID "
+                                              "--cap-add=SETGID --cap-add=SETUID --cap-add=NET_BIND_SERVICE --cap-add=KILL --cpus=1 --memory=1024m --pids-limit=512 "
+                                              "--log-opt=max-size=50m --log-opt=max-file=3")
+    inputs = {"RELEASE": "rel-000000000002", "IMAGE": NEW, "PORT": "8080", "HEALTH_PATH": "/healthz", "TIMEOUT": "1", "REGISTRY": "us-central1-docker.pkg.dev",
+              "ENV": "", "CPUS": "2.5", "MEMORY_MB": "4096", "PIDS": "1024"}
+    assert host.report("deploy", inputs).result == "healthy"
+    flags = host.container("app")["flags"]
+    assert "--cpus=2.5 --memory=4096m --pids-limit=1024" in flags and "--privileged" not in flags and "--network=host" not in flags

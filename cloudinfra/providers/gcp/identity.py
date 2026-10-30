@@ -9,6 +9,7 @@ from ...models.resources import IdentityResource, ResourceStatus
 from . import translate
 from .api import IAM
 from .iam import GcpIam, update_policy, with_member
+from .kubernetes import tenant_namespace
 from .nodeaccount import NOT_YET, NodeAccounts
 
 WORKLOAD_USER = "roles/iam.workloadIdentityUser"
@@ -35,7 +36,8 @@ class GcpIdentity:
                                     level=spec.level, labels=translate.labels(ctx))
         ctx.accepted(resource)  # known from here: a failed binding still deletes the account
         if planned.spec.get("kubernetes"):
-            principal = f"serviceAccount:{self.api.project}.svc.id.goog[{ctx.name}/{name}]"
+            namespace = tenant_namespace(ctx)  # unique per request: a principal is project-wide, a request name is not
+            principal = f"serviceAccount:{self.api.project}.svc.id.goog[{namespace}/{name}]"
             for attempt in range(NOT_YET[0]):  # a new account is unknown to IAM policies for a few seconds
                 try:
                     update_policy(self.iam._account(found), lambda policy: with_member(policy, WORKLOAD_USER, principal))
@@ -44,7 +46,7 @@ class GcpIdentity:
                     if "does not exist" not in exc.message or attempt == NOT_YET[0] - 1:
                         raise
                     self.api.sleep(NOT_YET[1])
-            resource = resource.model_copy(update={"kubernetes_service_account": f"{ctx.name}/{name}"})
+            resource = resource.model_copy(update={"kubernetes_service_account": f"{namespace}/{name}"})
         return resource.model_copy(update={"status": ResourceStatus.READY})
 
     def get(self, resource: IdentityResource) -> IdentityResource:

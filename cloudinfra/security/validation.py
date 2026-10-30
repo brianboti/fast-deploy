@@ -25,6 +25,9 @@ MEMBER = re.compile(r"^(user|group|serviceAccount):[A-Za-z0-9._%+-]{1,64}@[A-Za-
 IDENTIFIER = re.compile(r"^[a-z]{2,8}-[a-f0-9]{12}$")  # a resource id this service issued (cmp-…, sto-…, net-…, db-…)
 REQUEST_ID = re.compile(r"^[a-f0-9]{32}$")
 PRIVATE_RANGES = [ipaddress.ip_network(cidr) for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
+# Ranges a provider's own identity-aware proxy reaches machines from: not public, though outside the private ranges.
+PROXY_RANGES = [ipaddress.ip_network("35.235.240.0/20")]  # Google's Identity-Aware Proxy TCP forwarding (translate.IAP_RANGE)
+CLOSED_PUBLIC_PORTS = (22, 3389)  # never opened to a public range: SSH goes through the proxy, RDP is not offered
 
 
 def check_name(name: str, what: str = "name") -> str:
@@ -84,6 +87,25 @@ def check_ports(ports: list[int], field: str = "allowed_ports") -> list[int]:
     if len(set(ports)) != len(ports):
         raise InfrastructureError(ErrorCode.INVALID_NETWORK_CONFIGURATION, f"{field} must be unique", {"field": field})
     return sorted(ports)
+
+
+def is_public_source(source: str) -> bool:
+    """A range outside the private ranges and the provider's proxy range."""
+    network = ipaddress.IPv4Network(source, strict=False)
+    return not any(network.subnet_of(known) for known in (*PRIVATE_RANGES, *PROXY_RANGES))
+
+
+def check_public_rule(ports: list[int], sources: list[str], closed: tuple[int, ...] | list[int] = CLOSED_PUBLIC_PORTS, field: str = "network.allowed_ports") -> None:
+    """A rule that opens a closed port (22, 3389, and whatever the operator adds) from a public range is refused: SSH is
+    reached through the provider's identity-aware proxy only, however the rule is asked for (the review of 2026-10-30,
+    CIS GCP 3.6 and 3.7)."""
+    opened = sorted(port for port in ports if port in closed)
+    public = [source for source in sources if is_public_source(source)]
+    if opened and public:
+        raise InfrastructureError(ErrorCode.INVALID_NETWORK_CONFIGURATION,
+                                  f"Port{'s' if len(opened) > 1 else ''} {', '.join(map(str, opened))} cannot be opened from {', '.join(public)}: this service never opens "
+                                  "SSH or RDP to a public range; SSH goes through the identity-aware proxy (network.iap_ssh). Drop the port, or limit the sources "
+                                  "to private ranges", {"field": field, "ports": opened, "sources": public})
 
 
 def check_labels(labels: dict[str, str]) -> dict[str, str]:

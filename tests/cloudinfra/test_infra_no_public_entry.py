@@ -26,7 +26,7 @@ def test_every_cluster_gets_the_policy_and_the_requests_namespace_its_label(tmp_
     fake, response = provision(tmp_path, [{"name": "blue"}, {"name": "green"}])
     for cluster in response.resources.cluster:
         assert {path for endpoint, path in fake.cluster_objects if endpoint == cluster.endpoint} == {POLICY, BINDING, ROUTES_ROLE}
-        assert fake.namespace_labels[(cluster.endpoint, "shop")]["cloudinfra-tenant"] == "true"
+        assert fake.namespace_labels[(cluster.endpoint, cluster.namespace)]["cloudinfra-tenant"] == "true" and cluster.namespace == f"shop-{response.request_id[:6]}"
         binding = fake.cluster_objects[(cluster.endpoint, BINDING)]
         assert binding["spec"]["matchResources"]["namespaceSelector"] == {"matchLabels": TENANT} and binding["spec"]["validationActions"] == ["Deny"]
 

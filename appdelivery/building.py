@@ -5,6 +5,7 @@ pushed anywhere else never runs (docs/research/RESEARCH-2026-10-30-trusted-build
 The build runs in Cloud Build, not in this service. A follower polls it from a pool of its own, so a long build never
 holds a worker a rollout needs; a restart resumes following, since the build carries on in Cloud Build meanwhile."""
 import concurrent.futures
+import datetime
 import threading
 import time
 
@@ -28,6 +29,7 @@ class Builder:
         self.executor = executor or concurrent.futures.ThreadPoolExecutor(max_workers=config.workers, thread_name_prefix="appdelivery-build")
         self.sleep, self.clock = sleep, clock
         self.stopping = threading.Event()
+        self.ordering = threading.Lock()  # the budget is counted and the build ordered under it
 
     # ---- helpers
     def authorize(self, request: BuildRequest, principal):
@@ -53,6 +55,20 @@ class Builder:
             raise DeliveryError(ErrorCode.REGISTRY_NOT_ALLOWED, f"{path} is not under the registries allowed in {request.environment}: "
                                 f"{', '.join(environment.allowed_registries)}", {"field": "image"})
         return environment, source
+
+    def budget(self, request: BuildRequest, principal, settings) -> None:
+        """A team's builds in an environment are bounded, at once and per day (the review of 2026-10-30): one team, or one
+        stolen token, cannot fill Cloud Build's pool for every other team or run up the operator's bill."""
+        moving = self.state.count_builds(principal.infra_owner, request.environment, MOVING)
+        if moving >= settings.max_concurrent_builds:
+            raise DeliveryError(ErrorCode.BUILD_LIMIT_EXCEEDED, f"{principal.infra_owner} already has {moving} builds queued or working in {request.environment}; at most "
+                                f"{settings.max_concurrent_builds} at once. Wait for one to end, or ask the operator for more",
+                                {"environment": request.environment, "moving": moving, "max_concurrent_builds": settings.max_concurrent_builds})
+        since = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=1)).isoformat(timespec="seconds").replace("+00:00", "Z")
+        today = self.state.count_builds(principal.infra_owner, request.environment, since=since)
+        if today >= settings.max_builds_per_day:
+            raise DeliveryError(ErrorCode.BUILD_LIMIT_EXCEEDED, f"{principal.infra_owner} ordered {today} builds in {request.environment} in the last 24 hours; at most "
+                                f"{settings.max_builds_per_day} a day", {"environment": request.environment, "today": today, "max_builds_per_day": settings.max_builds_per_day})
 
     def _record(self, build_id: str, principal) -> dict:
         record = self.state.get_build(build_id)
@@ -80,7 +96,8 @@ class Builder:
         build_id = new_build_id()
         tag = cloudbuild.tagged(source, request, build_id)
         body = cloudbuild.compose(request, source, environment.build, build_id, principal.infra_owner)
-        with bound(identity=principal.name):
+        with bound(identity=principal.name), self.ordering:
+            self.budget(request, principal, environment.build)
             event("build_received", build_id=build_id, environment=request.environment, source=request.source, revision=request.revision, image=tag)
             created = self.client(request.environment).create(source.project, source.region, body)
             status, _, _ = cloudbuild.outcome(created, tag)
