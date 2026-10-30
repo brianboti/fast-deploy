@@ -17,10 +17,12 @@ from .resources import (
     LoadBalancerResource,
     MonitorResource,
     NetworkResource,
+    NoSqlResource,
     QueueResource,
     SecretResource,
     ServiceResource,
     StorageResource,
+    WarehouseResource,
 )
 
 
@@ -83,6 +85,8 @@ class Resources(Model):
     database: list[DatabaseResource] = Field(default_factory=list)
     cache: list[CacheResource] = Field(default_factory=list)
     queue: list[QueueResource] = Field(default_factory=list)
+    warehouse: list[WarehouseResource] = Field(default_factory=list)
+    nosql: list[NoSqlResource] = Field(default_factory=list)
     secret: list[SecretResource] = Field(default_factory=list)
     cluster: list[ClusterResource] = Field(default_factory=list)
     service: list[ServiceResource] = Field(default_factory=list)
@@ -219,7 +223,8 @@ class ResourceResponse(Model):
     """One resource after a primitive call: its state now, and the operation that changes it when one is still running."""
     status: str
     request_id: str
-    resource: (IdentityResource | ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | SecretResource | ClusterResource | ServiceResource
+    resource: (IdentityResource | ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | WarehouseResource | NoSqlResource | SecretResource
+               | ClusterResource | ServiceResource
                | JobResource | LoadBalancerResource | DnsResource
                | MonitorResource) = Field(discriminator="kind")
     operation: OperationRecord | None = None

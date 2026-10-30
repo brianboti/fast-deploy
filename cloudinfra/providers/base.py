@@ -21,10 +21,12 @@ from ..models.request import (
     LoadBalancerRequest,
     MonitorRequest,
     NetworkRequest,
+    NoSqlRequest,
     QueueRequest,
     SecretRequest,
     ServiceRequest,
     StorageRequest,
+    WarehouseRequest,
 )
 from ..models.resources import (
     CacheResource,
@@ -39,11 +41,13 @@ from ..models.resources import (
     LoadBalancerResource,
     MonitorResource,
     NetworkResource,
+    NoSqlResource,
     QueueResource,
     ResourceStatus,
     SecretResource,
     ServiceResource,
     StorageResource,
+    WarehouseResource,
 )
 from ..models.response import CostEstimate, Health, PlannedResource, Usage
 
@@ -221,6 +225,25 @@ class CloudProvider(ABC):
 
     @abstractmethod
     def delete_service(self, resource: ServiceResource, ctx: ProvisionContext) -> None: ...
+
+    # ---- warehouse and nosql (an analytics dataset; a document database)
+    @abstractmethod
+    def create_warehouse(self, spec: WarehouseRequest, planned: PlannedResource, ctx: ProvisionContext) -> WarehouseResource: ...
+
+    @abstractmethod
+    def get_warehouse(self, resource: WarehouseResource) -> WarehouseResource: ...
+
+    @abstractmethod
+    def delete_warehouse(self, resource: WarehouseResource, ctx: ProvisionContext) -> None: ...
+
+    @abstractmethod
+    def create_nosql(self, spec: NoSqlRequest, planned: PlannedResource, ctx: ProvisionContext) -> NoSqlResource: ...
+
+    @abstractmethod
+    def get_nosql(self, resource: NoSqlResource) -> NoSqlResource: ...
+
+    @abstractmethod
+    def delete_nosql(self, resource: NoSqlResource, ctx: ProvisionContext) -> None: ...
 
     # ---- monitor (uptime checks and alerts on the request's public endpoints)
     @abstractmethod

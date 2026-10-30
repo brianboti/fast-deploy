@@ -107,6 +107,9 @@ def line(planned: PlannedResource) -> CostLine:
         monthly = idle
         basis = (f"{spec['min_instances']} warm instance{'s' if spec['min_instances'] != 1 else ''} at the idle rate; requests are billed by use on top"
                  if spec["min_instances"] else "billed by use only: CPU and memory while handling requests, and per million requests")
+    elif planned.kind in ("warehouse", "nosql"):  # https://cloud.google.com/bigquery/pricing, https://cloud.google.com/firestore/pricing
+        monthly = 0.0
+        basis = "billed by use: storage and queries" if planned.kind == "warehouse" else "billed by use: documents stored, reads and writes, within a free allotment"
     elif planned.kind == "monitor":  # https://cloud.google.com/stackdriver/pricing
         monthly = spec["checks"] * PRICING["alert_condition_month"]
         basis = f"{spec['checks']} alert condition{'s' if spec['checks'] != 1 else ''}; uptime checks run within the free allotment at these periods"

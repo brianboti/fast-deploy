@@ -9,6 +9,7 @@ from .auth import GoogleToken
 from .cache import GcpCache
 from .cluster import GcpCluster
 from .compute import GcpCompute
+from .data import GcpNoSql, GcpWarehouse
 from .database import GcpDatabase
 from .dns import GcpDns
 from .iam import GcpIam
@@ -33,7 +34,7 @@ class GCPProvider(CloudProvider):
     name = "gcp"
     supported_kinds = RESOURCE_KINDS
     stoppable_kinds = ("compute", "database")
-    grantable_kinds = ("compute", "storage", "secret", "queue", "cluster", "service", "job", "dns")
+    grantable_kinds = ("compute", "storage", "secret", "queue", "cluster", "service", "job", "dns", "warehouse")
 
     def __init__(self, settings, api: GcpApi | None = None, token=None, kube=None):
         self.settings = settings
@@ -51,6 +52,7 @@ class GCPProvider(CloudProvider):
         self.identity = GcpIdentity(self.api, settings)
         self.dns = GcpDns(self.api, settings)
         self.monitor = GcpMonitor(self.api, settings)
+        self.warehouse, self.nosql = GcpWarehouse(self.api, settings), GcpNoSql(self.api, settings)
         self.load_balancer = GcpLoadBalancer(self.api, settings, self.network)
         self.monitoring = GcpMonitoring(self.api)
         self.iam = GcpIam(self.api)
@@ -180,6 +182,12 @@ class GCPProvider(CloudProvider):
                 planned.append(PlannedResource(kind="secret", name=f"{prefix}-{secret}-{ctx.request_id[:6]}",
                                                provider_mapping="secretmanager.secrets.create, secretmanager.secrets.addVersion",
                                                spec={"secret": secret, "versions": 1, "purpose": purpose}))
+        for warehouse in request.warehouses():
+            planned.append(PlannedResource(kind="warehouse", name=f"{prefix}-{warehouse.warehouse_name}", provider_mapping="bigquery.datasets.create",
+                                           spec={"warehouse": warehouse.warehouse_name, "table_expiration_days": warehouse.table_expiration_days}))
+        for nosql in request.nosqls():
+            planned.append(PlannedResource(kind="nosql", name=f"{prefix}-{nosql.nosql_name}", provider_mapping="datastore.databases.create",
+                                           spec={"nosql": nosql.nosql_name}))
         for cluster in request.clusters():
             mapping = "container.clusters.create" + (", iam.serviceAccounts.create, projects.setIamPolicy (node role)" if self.settings.cluster_node_accounts else "")
             mapping += ", artifactregistry.repositories.setIamPolicy" if cluster.registries else ""
@@ -330,6 +338,24 @@ class GCPProvider(CloudProvider):
     def delete_cluster(self, resource, ctx):
         self.cluster.delete(resource, ctx)
 
+    def create_warehouse(self, spec, planned, ctx):
+        return self.warehouse.create(spec, planned, ctx)
+
+    def get_warehouse(self, resource):
+        return self.warehouse.get(resource)
+
+    def delete_warehouse(self, resource, ctx):
+        self.warehouse.delete(resource, ctx)
+
+    def create_nosql(self, spec, planned, ctx):
+        return self.nosql.create(spec, planned, ctx)
+
+    def get_nosql(self, resource):
+        return self.nosql.get(resource)
+
+    def delete_nosql(self, resource, ctx):
+        self.nosql.delete(resource, ctx)
+
     def create_monitor(self, spec, planned, ctx, created):
         return self.monitor.create(spec, planned, ctx, created)
 
@@ -400,6 +426,8 @@ class GCPProvider(CloudProvider):
     def grant(self, resource, member, level, ctx) -> list[str]:
         if resource.kind.value == "cluster":
             return self.cluster.grant(resource, member, level)  # a RoleBinding in the request's namespace, not IAM
+        if resource.kind.value == "warehouse":
+            return self.warehouse.grant(resource, member, level)  # the dataset's own access list
         if resource.kind.value == "compute" and resource.instance_id is None:
             resource = self.compute.get(resource)  # the IAP tunnel grant is bound to the numeric id
         return self.iam.grant(resource, member, level)
@@ -407,6 +435,9 @@ class GCPProvider(CloudProvider):
     def revoke(self, resource, member, ctx) -> None:
         if resource.kind.value == "cluster":
             self.cluster.revoke(resource, member)
+            return
+        if resource.kind.value == "warehouse":
+            self.warehouse.revoke(resource, member)
             return
         if resource.kind.value == "compute" and resource.instance_id is None:
             resource = self.compute.get(resource)

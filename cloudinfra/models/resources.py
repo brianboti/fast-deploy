@@ -15,6 +15,8 @@ class ResourceKind(StrEnum):
     database = "database"
     cache = "cache"
     queue = "queue"
+    warehouse = "warehouse"
+    nosql = "nosql"
     secret = "secret"  # noqa: S105 - the kind's name, not a credential
     cluster = "cluster"
     service = "service"
@@ -158,6 +160,21 @@ class QueueResource(Resource):
     retention_hours: int
 
 
+class WarehouseResource(Resource):
+    """An analytics dataset; its tables are the Application Layer's."""
+    kind: Literal[ResourceKind.warehouse] = ResourceKind.warehouse
+    dataset: str = Field(description="The dataset's id at the provider.")
+    location: str
+    table_expiration_days: int | None = None
+
+
+class NoSqlResource(Resource):
+    """A document database; its documents are the Application Layer's."""
+    kind: Literal[ResourceKind.nosql] = ResourceKind.nosql
+    database: str = Field(description="The database's id at the provider.")
+    location: str
+
+
 class SecretResource(Resource):
     kind: Literal[ResourceKind.secret] = ResourceKind.secret
     resource_name: str = Field(description="The secret's full name at the provider; versions are read and written with the caller's own identity.")
@@ -264,15 +281,18 @@ class LoadBalancerResource(Resource):
     components: list[dict[str, Any]] = Field(default_factory=list, description="The provider pieces in creation order (kind, name, url), for teardown in reverse.")
 
 
-AnyResource = Annotated[IdentityResource | ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | SecretResource | ClusterResource | ServiceResource
+AnyResource = Annotated[IdentityResource | ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | WarehouseResource | NoSqlResource
+                       | SecretResource | ClusterResource | ServiceResource
                        | JobResource | LoadBalancerResource | DnsResource | MonitorResource, Field(discriminator="kind")]
 RESOURCE_TYPES = {ResourceKind.identity: IdentityResource, ResourceKind.compute: ComputeResource, ResourceKind.storage: StorageResource,
                   ResourceKind.network: NetworkResource, ResourceKind.database: DatabaseResource,
-                  ResourceKind.cache: CacheResource, ResourceKind.queue: QueueResource, ResourceKind.secret: SecretResource, ResourceKind.cluster: ClusterResource,
+                  ResourceKind.cache: CacheResource, ResourceKind.queue: QueueResource, ResourceKind.warehouse: WarehouseResource, ResourceKind.nosql: NoSqlResource,
+                  ResourceKind.secret: SecretResource, ResourceKind.cluster: ClusterResource,
                   ResourceKind.service: ServiceResource, ResourceKind.job: JobResource, ResourceKind.load_balancer: LoadBalancerResource,
                   ResourceKind.dns: DnsResource, ResourceKind.monitor: MonitorResource}
 ID_PREFIX = {ResourceKind.identity: "idn", ResourceKind.compute: "cmp", ResourceKind.storage: "sto", ResourceKind.network: "net", ResourceKind.database: "db", ResourceKind.cache: "cac",
-             ResourceKind.queue: "que", ResourceKind.secret: "sec", ResourceKind.cluster: "clu", ResourceKind.service: "svc", ResourceKind.job: "job",
+             ResourceKind.queue: "que", ResourceKind.warehouse: "whs", ResourceKind.nosql: "nsq", ResourceKind.secret: "sec", ResourceKind.cluster: "clu", ResourceKind.service: "svc",
+             ResourceKind.job: "job",
              ResourceKind.load_balancer: "lb", ResourceKind.dns: "dns", ResourceKind.monitor: "mon"}
 
 

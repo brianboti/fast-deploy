@@ -28,12 +28,14 @@ from ..models.request import (
     LoadBalancerRequest,
     MonitorRequest,
     NetworkRequest,
+    NoSqlRequest,
     PublicRequest,
     QueueRequest,
     ScheduleRequest,
     SecretRequest,
     ServiceRequest,
     StorageRequest,
+    WarehouseRequest,
 )
 from ..models.resources import (
     CacheResource,
@@ -47,12 +49,14 @@ from ..models.resources import (
     LoadBalancerResource,
     MonitorResource,
     NetworkResource,
+    NoSqlResource,
     QueueResource,
     ResourceKind,
     ResourceStatus,
     SecretResource,
     ServiceResource,
     StorageResource,
+    WarehouseResource,
 )
 from ..models.response import (
     AccessGrant,
@@ -87,8 +91,10 @@ POLL_SECONDS = 0.5
 DESTROY_ORDER = tuple(ResourceKind(kind) for kind in reversed(RESOURCE_KINDS))
 KIND_MODELS = {"network": NetworkRequest, "storage": StorageRequest, "compute": ComputeRequest, "database": DatabaseRequest, "cache": CacheRequest, "queue": QueueRequest,
                "secret": SecretRequest, "cluster": ClusterRequest, "service": ServiceRequest, "job": JobRequest, "identity": IdentityRequest, "dns": DnsRequest, "monitor": MonitorRequest,
+               "warehouse": WarehouseRequest,
+               "nosql": NoSqlRequest,
                "load_balancer": LoadBalancerRequest}
-SEVERAL = ("compute", "queue", "secret", "cluster", "service", "job", "identity")
+SEVERAL = ("compute", "queue", "secret", "cluster", "service", "job", "identity", "warehouse", "nosql")
 LIVE = (RequestStatus.PROVISIONING, RequestStatus.READY, RequestStatus.STOPPING, RequestStatus.STOPPED, RequestStatus.STARTING, RequestStatus.FAILED,
         RequestStatus.DESTROYING, RequestStatus.DESTROY_FAILED)
 MOVING = (RequestStatus.PROVISIONING, RequestStatus.DESTROYING, RequestStatus.STOPPING, RequestStatus.STARTING)  # a worker is changing the request
@@ -361,6 +367,10 @@ class Orchestrator:
                                    secure_boot=spec.get("secure_boot"), autostop_idle_minutes=spec.get("autostop_idle_minutes"), max_run_hours=spec.get("max_run_hours"))
         if item.kind == "storage":
             return StorageResource(**common, zone=spec.get("zone"), type=spec["type"], size_gb=spec["size_gb"], performance=request.storage.performance)
+        if item.kind == "warehouse":
+            return WarehouseResource(**common, dataset="", location=ctx.region)
+        if item.kind == "nosql":
+            return NoSqlResource(**common, database=item.name, location=ctx.region)
         if item.kind == "monitor":
             return MonitorResource(**common, notify=list(request.monitor.notify))
         if item.kind == "dns":
@@ -408,7 +418,11 @@ class Orchestrator:
                     current = item
                     pending = self.state.get_resource(item.spec["resource_id"])
                     self.state.save_resource(pending.model_copy(update={"status": ResourceStatus.CREATING}))
-                    if item.kind == "monitor":
+                    if item.kind == "warehouse":
+                        resource = provider.create_warehouse(next(item_ for item_ in request.warehouses() if item_.warehouse_name == item.spec["warehouse"]), item, ctx)
+                    elif item.kind == "nosql":
+                        resource = provider.create_nosql(next(item_ for item_ in request.nosqls() if item_.nosql_name == item.spec["nosql"]), item, ctx)
+                    elif item.kind == "monitor":
                         resource = provider.create_monitor(request.monitor, item, ctx, created)
                     elif item.kind == "dns":
                         resource = provider.create_dns(request.dns, item, ctx, created)  # made last: what its records point to is made
@@ -1137,6 +1151,13 @@ class Orchestrator:
         service = ServiceRequest(cpu=cpu, memory_mb=memory_mb, min_instances=min_instances, max_instances=max_instances, concurrency=concurrency,
                                  timeout_seconds=timeout_seconds, ingress=ingress, public=public, network_id=network_id, egress=egress)
         return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, service=service), principal, wait_seconds)
+
+    def create_warehouse(self, principal, *, region, table_expiration_days=None, provider="gcp", name=None, labels=None, wait_seconds=0):
+        warehouse = WarehouseRequest(table_expiration_days=table_expiration_days)
+        return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, warehouse=warehouse), principal, wait_seconds)
+
+    def create_nosql(self, principal, *, region, provider="gcp", name=None, labels=None, wait_seconds=0):
+        return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, nosql=NoSqlRequest()), principal, wait_seconds)
 
     def create_monitor(self, principal, *, region, notify, uptime, provider="gcp", name=None, labels=None, wait_seconds=0):
         monitor = MonitorRequest(notify=list(notify), uptime=list(uptime))
