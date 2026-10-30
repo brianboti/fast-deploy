@@ -66,6 +66,7 @@ class FakeGcpApi(GcpApi):
         self.monitoring: dict[str, dict] = {}  # Cloud Monitoring channels, uptime checks and alert policies by full name
         self.datasets: dict[str, dict] = {}  # BigQuery datasets by id, with "tables" a test may set
         self.firestore: dict[str, dict] = {}  # Firestore databases by id
+        self.snapshots: dict[str, dict] = {}  # disk snapshots by name, as a schedule takes them (take_snapshot)
         self.schedules: dict[str, dict] = {}  # Cloud Scheduler jobs by full name
         self.repositories = {"us-central1-docker.pkg.dev/test-project/apps", "us-central1-docker.pkg.dev/test-project/shared"}
         self.account_unknown_to_gke_for = 0  # how many more cluster creates GKE refuses because it does not know the new node account yet
@@ -135,8 +136,8 @@ class FakeGcpApi(GcpApi):
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instanceGroups$", self._instance_groups),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instanceGroups/([^/]+)$", self._instance_group),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instanceGroups/([^/]+)/(addInstances|setNamedPorts|removeInstances)$", self._instance_group_action),
-            (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/(healthChecks|backendServices|forwardingRules|addresses)$", self._regional_collection),
-            (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/(healthChecks|backendServices|forwardingRules|addresses)/([^/]+)$", self._regional_item),
+            (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/(healthChecks|backendServices|forwardingRules|addresses|routers|resourcePolicies)$", self._regional_collection),
+            (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/(healthChecks|backendServices|forwardingRules|addresses|routers|resourcePolicies)/([^/]+)$", self._regional_item),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances$", self._instances),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances/([^/]+)$", self._instance),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances/([^/]+)/(stop|start|resume|setMachineType|attachDisk)$", self._instance_action),
@@ -151,6 +152,8 @@ class FakeGcpApi(GcpApi):
             (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/subnetworks$", self._subnets),
             (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/subnetworks/([^/]+)$", self._subnet),
             (r"^/compute/v1/projects/[^/]+/regions/([^/]+)$", self._region),
+            (r"^/compute/v1/projects/[^/]+/global/snapshots$", self._snapshots),
+            (r"^/compute/v1/projects/[^/]+/global/snapshots/([^/]+)$", self._snapshot),
             (r"^/compute/v1/projects/[^/]+/global/operations/[^/]+/wait$", lambda m, *a: self._op()),
             (r"^/v1/projects/[^/]+/instances$", self._sql_instances),
             (r"^/v1/projects/[^/]+/instances/([^/]+)$", self._sql_instance),
@@ -519,9 +522,30 @@ class FakeGcpApi(GcpApi):
         if name not in store:
             raise self._not_found(name)
         if method == "DELETE":
+            used = [disk for disk in self.disks.values() if any(link.endswith(f"/resourcePolicies/{name}") for link in disk.get("resourcePolicies", []))]
+            if found.group(2) == "resourcePolicies" and used:
+                raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"Google Cloud refused the request: The resource_policy resource '{name}' is already being used",
+                                          {"http_status": 400})
             del store[name]
             return self._op()
         return store[name]
+
+    def take_snapshot(self, disk: str, policy: str):
+        """What the schedule does each day: a snapshot carrying the schedule's labels."""
+        labels = self.regional["resourcePolicies"][policy]["snapshotSchedulePolicy"]["snapshotProperties"]["labels"]
+        name = f"{disk}-snap-{len(self.snapshots) + 1}"
+        self.snapshots[name] = {"name": name, "labels": dict(labels)}
+        return name
+
+    def _snapshots(self, found, method, body, params):
+        wanted = dict(re.findall(r'labels\.([a-z0-9_-]+)="([^"]*)"', params.get("filter", "")))
+        return {"items": [item for item in self.snapshots.values() if all(item["labels"].get(key) == value for key, value in wanted.items())]}
+
+    def _snapshot(self, found, method, body, params):
+        if found.group(1) not in self.snapshots:
+            raise self._not_found(found.group(1))
+        del self.snapshots[found.group(1)]
+        return self._op()
 
     def _instance_groups(self, found, method, body, params):
         self.instance_groups[(found.group(1), body["name"])] = {**body, "members": []}

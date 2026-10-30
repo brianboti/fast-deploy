@@ -1,4 +1,7 @@
-"""A VPC network, its subnet, firewall rules and Private Services Access behind the generic network primitives."""
+"""A VPC network, its subnet, firewall rules, Private Services Access and Cloud NAT behind the generic network primitives.
+
+Cloud NAT gives machines and cluster nodes without public addresses outbound internet (package mirrors, public images)
+through a router on the network; it takes no inbound connection (https://docs.cloud.google.com/nat/docs/overview)."""
 from ...models.errors import ErrorCode, InfrastructureError
 from ...models.resources import FirewallRule, NetworkResource, ResourceStatus
 from . import translate
@@ -13,6 +16,9 @@ class GcpNetwork:
 
     def _global(self, collection):
         return f"{COMPUTE}/projects/{self.api.project}/global/{collection}"
+
+    def _router(self, region, name=""):
+        return f"{COMPUTE}/projects/{self.api.project}/regions/{region}/routers" + (f"/{name}" if name else "")
 
     def _rule(self, network_link, name, ctx, sources, allowed) -> dict:
         return {"name": name, "description": translate.description(ctx), "network": network_link, "direction": "INGRESS", "sourceRanges": sources, "allowed": allowed}
@@ -41,7 +47,8 @@ class GcpNetwork:
         if spec.public_access:
             rules.append(self._firewall(f"{name}-allow-public", spec.allowed_ports, spec.allowed_sources))
         resource = NetworkResource(id=planned.spec["resource_id"], name=name, request_id=ctx.request_id, provider="gcp", region=region, provider_id=network_link,
-                                   subnet=subnet_link, cidr=spec.cidr, public_access=spec.public_access, firewall_rules=rules, status=ResourceStatus.READY, labels=translate.labels(ctx))
+                                   subnet=subnet_link, cidr=spec.cidr, public_access=spec.public_access, firewall_rules=rules, status=ResourceStatus.READY, labels=translate.labels(ctx),
+                                   nat_router=f"{name}-router" if spec.nat else None)
         operation = self.api.post(self._global("networks"), json={"name": name, "description": translate.description(ctx), "autoCreateSubnetworks": False, "routingMode": "REGIONAL"})
         # Google took the network's name as new, so its subnet and rules, named after it, are this request's too: all known from here
         ctx.accepted(resource.model_copy(update={"status": ResourceStatus.CREATING}))
@@ -50,6 +57,11 @@ class GcpNetwork:
                                             json={"name": subnet, "description": translate.description(ctx), "network": network_link, "ipCidrRange": spec.cidr, "privateIpGoogleAccess": True}))
         for rule in rules:
             self._add_rule(network_link, rule.name, ctx, rule.ports, rule.sources)
+        if resource.nat_router:
+            nat = {"name": f"{name}-nat", "natIpAllocateOption": "AUTO_ONLY", "sourceSubnetworkIpRangesToNat": "ALL_SUBNETWORKS_ALL_IP_RANGES",
+                   "logConfig": {"enable": True, "filter": "ERRORS_ONLY"}}
+            self.api.wait_compute(self.api.post(self._router(region), json={"name": resource.nat_router, "description": translate.description(ctx), "network": network_link,
+                                                                            "nats": [nat]}))
         return self.ensure_private_services(resource, ctx) if planned.spec.get("private_services") else resource
 
     def ensure_private_services(self, network: NetworkResource, ctx) -> NetworkResource:
@@ -91,6 +103,8 @@ class GcpNetwork:
                 raise
 
     def delete(self, resource: NetworkResource, ctx) -> None:
+        if resource.nat_router:  # the router carries the NAT; both go before the network can
+            self._delete_quietly(self._router(resource.region, resource.nat_router))
         for rule in resource.firewall_rules:
             self._delete_quietly(f"{self._global('firewalls')}/{rule.name}")
         if resource.private_services_range:

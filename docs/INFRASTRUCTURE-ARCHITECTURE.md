@@ -223,6 +223,23 @@ The service's own identity then needs, once, from the platform team:
 | give a node account its project role | `roles/resourcemanager.projectIamAdmin` | an IAM condition, so it can grant that one role and no other: `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])` ([limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)) |
 | let a node account read a repository | `roles/artifactregistry.admin` | each repository listed in `providers.gcp.registries`, granted on the repository |
 
+### Outbound internet and disk snapshots
+
+`network.nat: true` adds a Cloud Router on the request's network carrying a Cloud NAT for every range of its subnet,
+with addresses Google allocates. Machines and cluster nodes without public addresses then reach package mirrors and
+public images; nothing reaches them in through it ([Cloud NAT](https://docs.cloud.google.com/nat/docs/overview)). The
+router is deleted before the network. Priced per machine behind it, up to 32, with data processed on top.
+
+`storage.snapshots: {keep_days, hour_utc}` (disks only) gives each disk a daily snapshot schedule of its own, a
+resource policy in the region named in the disk's create. Snapshots are kept in the region for `keep_days` and labelled
+`cloudinfra-disk` with the disk's name, which the connect block uses to list them. Deleting the disk deletes its schedule
+and then its snapshots, as deleting a database deletes its backups; a snapshot of anything else is never touched. Priced
+as one full copy of the disk, since later snapshots store only what changed
+([scheduled snapshots](https://docs.cloud.google.com/compute/docs/disks/scheduled-snapshots)).
+
+The service's identity needs `roles/compute.networkAdmin` for the router and `roles/compute.storageAdmin` for the
+schedules and snapshots, if its compute role does not already cover them.
+
 ### An analytics dataset and a document database
 
 `warehouse: {name, table_expiration_days}` makes an empty BigQuery dataset `<request>_<name>` in the request's region,

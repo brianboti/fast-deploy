@@ -101,6 +101,8 @@ class StorageResource(Resource):
     performance: str | None = None
     attached_to: str | None = Field(default=None, description="The compute resource id a disk is attached to.")
     url: str | None = Field(default=None, description="A bucket's URL (gs://…).")
+    snapshot_schedule: str | None = Field(default=None, description="The disk's daily snapshot schedule, when it has one.")
+    snapshot_keep_days: int | None = None
 
 
 class FirewallRule(BaseModel):
@@ -119,6 +121,7 @@ class NetworkResource(Resource):
     public_access: bool = False
     firewall_rules: list[FirewallRule] = Field(default_factory=list)
     private_services_range: str | None = Field(default=None, description="The range reserved for managed services (databases) on this network.")
+    nat_router: str | None = Field(default=None, description="The router carrying the network's NAT, when it has outbound internet.")
 
 
 class DatabaseResource(Resource):

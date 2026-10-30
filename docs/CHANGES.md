@@ -1,3 +1,13 @@
+# Unreleased: outbound internet and disk snapshots
+
+Beside the four kinds (docs/INFRASTRUCTURE-ARCHITECTURE.md, "Outbound internet and disk snapshots"):
+
+- **`network.nat`.** Cloud NAT on the request's network: machines and nodes without public addresses reach out, nothing
+  reaches in. Deleted before the network.
+- **`storage.snapshots`.** A daily snapshot schedule per disk, kept in the region for `keep_days`; deleting the disk
+  deletes its schedule and its snapshots.
+- **Tools**: `create_network` takes `nat`, `create_storage` takes `snapshot_keep_days`.
+
 # Unreleased: an analytics dataset and a document database
 
 Fourth of the kinds the operator chose (docs/INFRASTRUCTURE-ARCHITECTURE.md, "An analytics dataset and a document

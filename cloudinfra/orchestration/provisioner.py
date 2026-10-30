@@ -1201,13 +1201,15 @@ class Orchestrator:
                                      "a network created earlier, and load_balancer.backends names machines created earlier. Beside the kinds, a request takes lifetime "
                                      "(hours, on_expiry) and access (members granted on what it creates); compute.profile names one of the profiles listed here.")
 
-    def create_storage(self, principal, *, region, size_gb, provider="gcp", type="persistent", performance="balanced", zone=None, name=None, labels=None, wait_seconds=0):
-        storage = StorageRequest(type=type, size_gb=size_gb, performance=performance)
+    def create_storage(self, principal, *, region, size_gb, provider="gcp", type="persistent", performance="balanced", zone=None, name=None, labels=None, wait_seconds=0,
+                       snapshot_keep_days=None):
+        storage = StorageRequest(type=type, size_gb=size_gb, performance=performance, snapshots=None if snapshot_keep_days is None else {"keep_days": snapshot_keep_days})
         return self.provision(InfrastructureRequest(provider=provider, region=region, zone=zone, name=name, labels=labels or {}, storage=storage), principal, wait_seconds)
 
     def create_network(self, principal, *, region, provider="gcp", public_access=False, cidr="10.10.0.0/24", allowed_ports=None, allowed_sources=None, iap_ssh=True, name=None,
-                       labels=None, wait_seconds=0):
-        network = NetworkRequest(public_access=public_access, cidr=cidr, allowed_ports=allowed_ports or [80, 443], allowed_sources=allowed_sources or ["0.0.0.0/0"], iap_ssh=iap_ssh)
+                       labels=None, wait_seconds=0, nat=False):
+        network = NetworkRequest(public_access=public_access, cidr=cidr, allowed_ports=allowed_ports or [80, 443], allowed_sources=allowed_sources or ["0.0.0.0/0"], iap_ssh=iap_ssh,
+                                 nat=nat)
         return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, network=network), principal, wait_seconds)
 
     def create_database(self, principal, *, region, provider="gcp", engine="postgresql", version=None, size="small", storage_gb=10, high_availability=False, public_access=False,

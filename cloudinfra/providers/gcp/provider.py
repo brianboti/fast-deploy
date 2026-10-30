@@ -126,16 +126,20 @@ class GCPProvider(CloudProvider):
         private_database = request.database is not None and not request.database.public_access
         if request.network:
             rules = [f"{prefix}-net-allow-internal"] + ([f"{prefix}-net-allow-iap-ssh"] if request.network.iap_ssh else []) + ([f"{prefix}-net-allow-public"] if request.network.public_access else [])
-            planned.append(PlannedResource(kind="network", name=own_network, provider_mapping="compute.networks.insert, compute.subnetworks.insert, compute.firewalls.insert",
+            behind_nat = sum(group.count for group in groups) + sum(cluster.node_count for cluster in request.clusters())
+            planned.append(PlannedResource(kind="network", name=own_network, provider_mapping="compute.networks.insert, compute.subnetworks.insert, compute.firewalls.insert"
+                                           + (", compute.routers.insert (Cloud NAT)" if request.network.nat else ""),
                                            spec={"subnet": f"{prefix}-subnet", "cidr": request.network.cidr, "public_access": request.network.public_access,
-                                                 "firewall_rules": rules, "private_services": False}))
+                                                 "firewall_rules": rules, "private_services": False, "nat": request.network.nat, "machines": max(behind_nat, 1)}))
         if request.storage and request.storage.type == "persistent":
             targets = [group for group in groups if request.storage.group in (None, group.group_name)]
             machines = [(f"{prefix}-{group.group_name}-disk-{index}", f"{prefix}-{group.group_name}-{index}") for group in targets for index in range(1, group.count + 1)]
+            snapshots = request.storage.snapshots.model_dump() if request.storage.snapshots else None
             for index, (disk, machine) in enumerate(machines or [(f"{prefix}-disk-1", None)], start=1):
-                planned.append(PlannedResource(kind="storage", name=disk, index=index, provider_mapping="compute.disks.insert" + (", compute.instances.attachDisk" if machine else ""),
+                planned.append(PlannedResource(kind="storage", name=disk, index=index, provider_mapping=("compute.resourcePolicies.insert (snapshot schedule), " if snapshots else "")
+                                               + "compute.disks.insert" + (", compute.instances.attachDisk" if machine else ""),
                                                spec={"type": "persistent", "zone": zone, "disk_type": translate.disk_type(request.storage.performance), "size_gb": request.storage.size_gb,
-                                                     "attach_to": machine}))
+                                                     "attach_to": machine, "snapshots": snapshots}))
         elif request.storage:
             planned.append(PlannedResource(kind="storage", name=f"{self.settings.project_id}-{prefix}-{ctx.request_id[:6]}", provider_mapping="storage.buckets.insert",
                                            spec={"type": "object", "location": request.region, "size_gb": request.storage.size_gb}))
