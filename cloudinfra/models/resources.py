@@ -8,6 +8,7 @@ from .errors import ErrorDetail
 
 
 class ResourceKind(StrEnum):
+    identity = "identity"
     compute = "compute"
     storage = "storage"
     network = "network"
@@ -205,6 +206,15 @@ class ServiceResource(Resource):
     revision: str | None = Field(default=None, description="The revision serving all traffic now, when one does.")
 
 
+class IdentityResource(Resource):
+    """A workload identity: an account with no key, holding the request's grants at its level."""
+    kind: Literal[ResourceKind.identity] = ResourceKind.identity
+    email: str
+    level: str = "use"
+    kubernetes_service_account: str | None = Field(default=None, description="namespace/name of the Kubernetes service account that acts as it in the "
+                                                                             "request's clusters, when the request has one.")
+
+
 class JobResource(Resource):
     """A managed job: the shell this service made, and when it runs by itself."""
     kind: Literal[ResourceKind.job] = ResourceKind.job
@@ -233,12 +243,13 @@ class LoadBalancerResource(Resource):
     components: list[dict[str, Any]] = Field(default_factory=list, description="The provider pieces in creation order (kind, name, url), for teardown in reverse.")
 
 
-AnyResource = Annotated[ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | SecretResource | ClusterResource | ServiceResource
+AnyResource = Annotated[IdentityResource | ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | SecretResource | ClusterResource | ServiceResource
                        | JobResource | LoadBalancerResource, Field(discriminator="kind")]
-RESOURCE_TYPES = {ResourceKind.compute: ComputeResource, ResourceKind.storage: StorageResource, ResourceKind.network: NetworkResource, ResourceKind.database: DatabaseResource,
+RESOURCE_TYPES = {ResourceKind.identity: IdentityResource, ResourceKind.compute: ComputeResource, ResourceKind.storage: StorageResource,
+                  ResourceKind.network: NetworkResource, ResourceKind.database: DatabaseResource,
                   ResourceKind.cache: CacheResource, ResourceKind.queue: QueueResource, ResourceKind.secret: SecretResource, ResourceKind.cluster: ClusterResource,
                   ResourceKind.service: ServiceResource, ResourceKind.job: JobResource, ResourceKind.load_balancer: LoadBalancerResource}
-ID_PREFIX = {ResourceKind.compute: "cmp", ResourceKind.storage: "sto", ResourceKind.network: "net", ResourceKind.database: "db", ResourceKind.cache: "cac",
+ID_PREFIX = {ResourceKind.identity: "idn", ResourceKind.compute: "cmp", ResourceKind.storage: "sto", ResourceKind.network: "net", ResourceKind.database: "db", ResourceKind.cache: "cac",
              ResourceKind.queue: "que", ResourceKind.secret: "sec", ResourceKind.cluster: "clu", ResourceKind.service: "svc", ResourceKind.job: "job",
              ResourceKind.load_balancer: "lb"}
 

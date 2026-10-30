@@ -6,6 +6,7 @@ from ...observability.logging import event
 from ..base import Problem
 from . import translate
 from .api import COMPUTE
+from .identity import email as identity_email
 
 STATUS = {"PROVISIONING": ResourceStatus.CREATING, "STAGING": ResourceStatus.CREATING, "RUNNING": ResourceStatus.READY, "STOPPING": ResourceStatus.UPDATING,
           "SUSPENDING": ResourceStatus.UPDATING, "SUSPENDED": ResourceStatus.STOPPED, "REPAIRING": ResourceStatus.UPDATING, "TERMINATED": ResourceStatus.STOPPED,
@@ -40,10 +41,11 @@ class GcpCompute:
                                                                               "diskType": f"zones/{zone}/diskTypes/pd-balanced"}}],
             "networkInterfaces": [self._interface({**shape, "region": ctx.region}, network)],
             "labels": translate.labels(ctx),
-            # OS Login: access through IAM, no key material through this service; no service account on the machine: the
-            # Application Layer attaches one with its own permissions if it needs Google APIs from inside.
+            # OS Login: access through IAM, no key material through this service. The machine runs as the request's identity
+            # its group names, which holds only the request's grants and has no key; otherwise as no account at all.
             "metadata": {"items": [{"key": "enable-oslogin", "value": "TRUE"}]},
-            "serviceAccounts": [],
+            "serviceAccounts": [{"email": identity_email(self.api.project, ctx.request_id, shape["identity"]), "scopes": ["https://www.googleapis.com/auth/cloud-platform"]}]
+            if shape.get("identity") else [],
             # vTPM and integrity monitoring always; Secure Boot as the planned software allows: on, except an image without GPU
             # drivers on a GPU machine, whose drivers Google's installer builds unsigned. A GPU profile with signed drivers keeps it on.
             "shieldedInstanceConfig": {"enableSecureBoot": shape.get("secure_boot", True), "enableVtpm": True, "enableIntegrityMonitoring": True},

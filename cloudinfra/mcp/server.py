@@ -31,6 +31,7 @@ from ..security.oauth import SignIn
 from ..state.state_manager import ProcessLock, StateManager
 from .catalog import CATALOG, render_markdown
 from .tools import cache, cluster, compute, database, infrastructure, job, loadbalancer, network, operations, queue, secret, service, storage
+from .tools import identity as identity_kind  # the kind's tools; `identity` is the caller's
 
 INSTRUCTIONS = (
     "Cloud Infrastructure MCP: a provider-independent infrastructure service. You ask for what infrastructure is needed (machines by CPU, memory and GPU, "
@@ -150,7 +151,7 @@ def build_app(config, registry: ProviderRegistry | None = None, state: StateMana
                     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=config.allowed_hosts, allowed_origins=[]))
     mcp._mcp_server.version = __version__
     wrap = audited(state)
-    for module in (compute, storage, network, database, cache, queue, secret, cluster, service, job, loadbalancer, infrastructure, operations):
+    for module in (identity_kind, compute, storage, network, database, cache, queue, secret, cluster, service, job, loadbalancer, infrastructure, operations):
         module.tools(mcp, orchestrator, wrap, identity.get)
     registered = {tool.name for tool in mcp._tool_manager.list_tools()}
     missing = {spec.name for spec in CATALOG} ^ registered

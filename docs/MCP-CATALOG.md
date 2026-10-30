@@ -1,11 +1,14 @@
 # MCP service catalog
 
-Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 51 tools in 13 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, `cac-`, `que-`, `sec-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
+Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 54 tools in 14 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, `cac-`, `que-`, `sec-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
 
 ## At a glance
 
 | Group | Tool | Purpose | Safety hint |
 |---|---|---|---|
+| Identity | `create_identity` | Create a workload identity | changes cloud |
+| Identity | `get_identity` | Get an identity | read only |
+| Identity | `delete_identity` | Delete an identity | destructive |
 | Compute | `create_compute` | Create virtual machines | changes cloud |
 | Compute | `get_compute` | Get a machine | read only |
 | Compute | `list_compute` | List machines | read only |
@@ -91,6 +94,77 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `PROVISIONING_FAILED` | A request failed while provisioning; details name the cause and what cleanup did. |
 | `DESTROY_FAILED` | Some resources could not be deleted; details name them, and the call can be repeated. |
 | `INTERNAL_ERROR` | The service stopped on an unexpected exception; nothing was retried. |
+
+## Identity
+
+### `create_identity`
+
+**Purpose.** Create an identity for a request's workloads: an account with no key that holds the request's grants at its level. In a full request, machines of a group that names it run as it, and pods of the request's clusters using the Kubernetes service account of its name act as it.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
+| `provider` | no | The cloud provider adapter; gcp (default) is the one implemented. |
+| `level` | no | use (default) or admin: its access on the request's resources. |
+| `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
+| `labels` | no | Labels for every resource, next to the service's ownership labels. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `region`.
+**Optional fields.** `provider`, `level`, `name`, `labels`, `wait_seconds`.
+
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
+
+**Possible errors.** `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
+
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. No key is ever made for it, and it is granted on nothing outside its request. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+
+**Provider mapping (Google Cloud).** IAM: serviceAccounts.create, delete and setIamPolicy (Workload Identity).
+
+### `get_identity`
+
+**Purpose.** The identity's account, level and Kubernetes service account.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** none.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`.
+
+**Security.** Read-only; creates and changes nothing. Read-only.
+
+**Provider mapping (Google Cloud).** IAM: serviceAccounts.get.
+
+### `delete_identity`
+
+**Purpose.** Delete the identity's account; what it was granted goes with it.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** `wait_seconds`.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `DESTROY_FAILED`.
+
+**Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy.
+
+**Provider mapping (Google Cloud).** IAM: serviceAccounts.delete.
 
 ## Compute
 

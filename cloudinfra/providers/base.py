@@ -14,6 +14,7 @@ from ..models.request import (
     ClusterRequest,
     ComputeRequest,
     DatabaseRequest,
+    IdentityRequest,
     InfrastructureRequest,
     JobRequest,
     LoadBalancerRequest,
@@ -30,6 +31,7 @@ from ..models.resources import (
     ConnectInfo,
     DatabaseResource,
     FirewallRule,
+    IdentityResource,
     JobResource,
     LoadBalancerResource,
     NetworkResource,
@@ -215,6 +217,16 @@ class CloudProvider(ABC):
 
     @abstractmethod
     def delete_service(self, resource: ServiceResource, ctx: ProvisionContext) -> None: ...
+
+    # ---- identity (a workload identity with no key)
+    @abstractmethod
+    def create_identity(self, spec: IdentityRequest, planned: PlannedResource, ctx: ProvisionContext) -> IdentityResource: ...
+
+    @abstractmethod
+    def get_identity(self, resource: IdentityResource) -> IdentityResource: ...
+
+    @abstractmethod
+    def delete_identity(self, resource: IdentityResource, ctx: ProvisionContext) -> None: ...
 
     # ---- job (a managed job that runs to completion)
     @abstractmethod
