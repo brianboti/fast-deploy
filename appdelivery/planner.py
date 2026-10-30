@@ -1,5 +1,6 @@
 """The plan: every check a release must pass before anything touches a machine, against the request as the
-infrastructure layer reports it now. Pure: it reads, and records nothing. All problems are reported, each with a code."""
+infrastructure layer reports it now. Pure: it reads, and records nothing. All problems are reported, each with a code.
+That the image was built by this service is checked beside it, from the service's own records (Delivery.built_here)."""
 from .errors import DeliveryError, ErrorCode, ErrorDetail
 from .infra import IAP_RANGE, InfraRequest
 from .models import PlannedMachine, PlanResponse, ReleaseRequest
@@ -141,7 +142,7 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
         if any(machine.max_run_hours for machine in machines):
             warnings.append(f"Group {release.target.group} stops after max_run_hours from each start")
 
-    if not any(release.repository() == prefix or release.repository().startswith(prefix.rstrip("/") + "/") for prefix in environment.allowed_registries):
+    if not environment.allows(release.repository()):
         problems.append(_problem(ErrorCode.REGISTRY_NOT_ALLOWED, f"{release.repository()} is not under the registries allowed in {release.environment}: "
                                  f"{', '.join(environment.allowed_registries)}", field="image"))
 
@@ -221,4 +222,5 @@ def plan(release: ReleaseRequest, principal, config, infra: InfraRequest) -> Pla
                     for machine in infra.group(release.target.group)]
     return PlanResponse(environment=release.environment, request_id=release.request_id, image=release.image, service_account=environment.service_account,
                         machines=machines, env={name: binding.source() for name, binding in release.env.items()},
-                        attestation_required=environment.require_attestation, approval_required=environment.require_approval, warnings=warnings, **extra)
+                        attestation_required=environment.require_attestation, provenance_required=environment.require_provenance,
+                        approval_required=environment.require_approval, warnings=warnings, **extra)

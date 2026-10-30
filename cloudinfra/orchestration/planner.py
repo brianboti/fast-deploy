@@ -111,6 +111,9 @@ def warnings(request: InfrastructureRequest, planned: list[PlannedResource], con
             found.append("private nodes have no public address: the Application Layer needs the provider's NAT for them to reach the internet")
     if request.load_balancer:
         found.append(f"the load balancer is public on port {request.load_balancer.port}; it serves plain {request.load_balancer.type}, and TLS termination is a later feature")
+    if "registry" in request.kinds():
+        found.append("registries: images are built only in the trusted project; only the operator's registry writers, named at admin, push, and every other "
+                     "member pulls, whatever its level")
     found.extend(time_warnings(request, config))
     if request.access and provider is not None:
         takes = [kind for kind in request.kinds() if provider.takes_grants(kind, request.storage.type if kind == "storage" else None)]

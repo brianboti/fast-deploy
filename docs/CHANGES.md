@@ -1,3 +1,47 @@
+# Unreleased: images are built only in the trusted project
+
+Decided 2026-10-30, for security: no developer, CI job, local machine or other outside system builds a container image
+and uploads it into the trusted Google Cloud project. A team asks for a build; the project fetches the source and builds
+it ([research/RESEARCH-2026-10-30-trusted-build.md](research/RESEARCH-2026-10-30-trusted-build.md)).
+
+- **`appdelivery`: builds.** `build_image` (`POST /builds`), `get_build`, `list_builds`: one commit (a full SHA) of a
+  source the operator linked to Cloud Build (2nd gen), a Dockerfile and a context in it, and an image name. The service
+  composes the build itself (one `docker build` step; the image pushed by Cloud Build with `requestedVerifyOption:
+  VERIFIED`; the environment's build account; Cloud Logging only) and follows it in a pool of its own, resumed after a
+  restart. The build request takes no step, command, argument, secret, account or registry. Fourteen tools.
+- **`appdelivery`: only built images run.** A release whose digest is not the `built` digest of a succeeded build of
+  the same team is refused with `NOT_BUILT_HERE` before anything else is read; plans and releases name their
+  `build_id`. New codes `INVALID_BUILD`, `NOT_BUILT_HERE`, `BUILD_UNAVAILABLE`, `BUILD_FAILED`.
+- **`cloudinfra`: a registry has one kind of writer.** `access.registry_writers` lists the service accounts that build
+  images in the trusted project. Named in a request at `admin`, they push (`roles/artifactregistry.writer`, which never
+  deletes) and are granted on registries only; every other member of a registry pulls, whatever its level. A CI job's
+  federated identity (`principal://`, `principalSet://`) is no longer a member, and `access.workload_identity_pools` is
+  refused with a message naming its replacement. The registry's connect block has no push command; the plan warns who
+  pushes.
+- **Configuration.** `environments.<name>.build` (`service_account`, never the environment's own; `machine_type`,
+  `timeout_seconds`, `builder`), `sources` (`repository`, `infra_owner`, `registry`, all in the trusted project), and
+  `can_build` on a principal.
+
+Upgrading: a release of an image that was built elsewhere is now refused. Link each source, create the build accounts
+(docs/SETUP.md section 4), add `build`, `sources` and `can_build`, and build the images to release. In `cloudinfra`,
+replace `access.workload_identity_pools` with `access.registry_writers` and revoke any federated member before
+upgrading, since a stored one no longer validates.
+
+Run on Google Cloud on 2026-10-30 (docs/DELIVERY-SPIKE.md section 14): a build by commit succeeded with signed SLSA
+provenance naming the GitHub source, and a digest pushed by hand was refused. Making the connection needs the Cloud
+Build service agent to hold Secret Manager Admin (docs/SETUP.md). After the run, the release gate verifies provenance too:
+
+- **`require_provenance`** per environment: at rollout the image's Cloud Build provenance is read from Container
+  Analysis and must be signed by Google's key for Cloud Build's hosted workers (pinned), with the signed SLSA v1
+  statement naming the digest, the builder, the recorded Cloud Build build and its commit. Otherwise
+  `PROVENANCE_FAILED`, and no target is touched. Plans say `provenance_required`. The environment's account needs
+  `roles/containeranalysis.occurrences.viewer`. Tested against the real answer from the run, kept as a fixture.
+- **The platform's own images** are built the same way: `cloudbuild.yaml` builds `Dockerfile.cloudinfra` and
+  `Dockerfile.appdelivery` in the trusted project, pushed by Cloud Build with provenance, as a platform build account,
+  from the platform's linked repository at a commit (docs/SETUP.md section 3); `.gcloudignore` keeps a local submit to
+  the files the Dockerfiles copy. The docker builder is pinned by digest there and as the delivery service's default
+  `builder`. A local `docker build` is for development only. Run in the sandbox (docs/DELIVERY-SPIKE.md section 15).
+
 # Unreleased: the repository is the two services, and the documents say so
 
 The Fast Deploy workflow (`labdeploy`), retired on 2026-10-29, is removed with everything that existed only for it: the
@@ -7,9 +51,8 @@ contracts, examples and twenty-four documents. Git history keeps them. The repos
 `app-delivery`.
 
 - **A twelfth kind, `registry`** (from the `registry-kind` branch, merged here with phase 4): a Docker repository in
-  Artifact Registry, made and deleted with its request; `use` pulls, `admin` pushes; a team's CI job may be named in
-  `access` by its own federated identity (`principal://`, `principalSet://`) from a pool the operator lists in
-  `access.workload_identity_pools`, and is granted on registries only. Tools `create_registry`, `get_registry`,
+  Artifact Registry, made and deleted with its request; `use` pulls, `admin` pushes (narrowed the same day to the
+  operator's registry writers, above; the federated CI members first offered here are gone). Tools `create_registry`, `get_registry`,
   `delete_registry`: 54 tools, twelve kinds, `reg-` ids, `endpoints.registry_addresses`.
 - **Images.** `Dockerfile` is now `Dockerfile.cloudinfra` and runs the infrastructure service (port 8100,
   `CLOUDINFRA_CONFIG=/config/cloudinfra.yaml`, state under `/data`); `Dockerfile.appdelivery` is unchanged.

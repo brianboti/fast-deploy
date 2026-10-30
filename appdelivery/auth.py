@@ -119,7 +119,7 @@ def invoke(state, kind: str, name: str, fn, subject=None):
             note("error", f"{exc.code.value}: {exc.message}"[:500])
             return exc.to_dict()
         except pydantic.ValidationError as exc:
-            problems = problems_from(exc)
+            problems = problems_from(exc, "build" if exc.title == "BuildRequest" else "release")
             first = problems[0] if problems else None
             error = DeliveryError(first.code if first else ErrorCode.INVALID_RELEASE, first.message if first else "Invalid release",
                                   {"problems": [item.model_dump(mode="json") for item in problems]})
@@ -151,7 +151,7 @@ def audited(state):
     def decorate(fn):
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
-            subject = kwargs.get("release_id")
+            subject = kwargs.get("release_id") or kwargs.get("build_id")
             principal, client = identity.get(None), client_address.get(None)
 
             def call():

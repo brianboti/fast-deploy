@@ -8,17 +8,19 @@ run containers on it without ever holding a cloud credential or writing infrastr
   GPUs), disks and buckets, networks and load balancers, managed databases, caches, queues, secrets, image registries,
   Kubernetes clusters with a front door, and managed container services and jobs. Twelve kinds, 54 MCP tools, a REST
   API, one Google Cloud adapter today.
-- **`appdelivery`, the application delivery service.** A separate service above it that runs an image that already
-  exists, named by digest, on what a `cloudinfra` request created: a group of machines, a cluster, a managed container
-  service or a job. Health checks, rollback, approval and attestation per environment. Eleven tools.
+- **`appdelivery`, the application delivery service.** A separate service above it that has an image built in the
+  trusted Google Cloud project, by Cloud Build from one commit of a linked source, and runs it, named by digest, on
+  what a `cloudinfra` request created: a group of machines, a cluster, a managed container service or a job. Images
+  built or pushed anywhere else are refused. Health checks, rollback, approval and attestation per environment.
+  Fourteen tools.
 
 ```
-Application teams, Claude, CI        code · build · image in a registry · the request for infrastructure
-        │  image@sha256 + request_id + port + env bindings           │  InfrastructureRequest
-        ▼                                                            │
-appdelivery   verify · bind · run · health · roll back · record      │
-        │  reads the request over cloudinfra's REST API              │
-        ▼                                                            ▼
+Application teams, Claude, CI     code · a build request · a release of the built digest · the infrastructure request
+        │  source + commit, then image@sha256 + request_id + port + env      │  InfrastructureRequest
+        ▼                                                                    │
+appdelivery   build (Cloud Build) · bind · run · health · roll back · record │
+        │  reads the request over cloudinfra's REST API                      │
+        ▼                                                                    ▼
 cloudinfra    validate → plan → price → provision → grant access → stop/start → expire → destroy
         │  CloudProvider
         ▼
@@ -26,8 +28,9 @@ Google Cloud  (AWS, Azure: adapters to come; nothing above changes)
 ```
 
 The infrastructure service takes no repository, image, script, command or key, holds no credential in any file, and
-grants access only on what it created, never on the project. The delivery service takes no source, Dockerfile or
-command, creates no infrastructure, reaches machines only through Identity-Aware Proxy as an environment's own service
+grants access only on what it created, never on the project. The delivery service runs no build itself and takes no
+build step or command: it orders a build of a linked source from Cloud Build and releases only the digests those builds
+report. It creates no infrastructure, reaches machines only through Identity-Aware Proxy as an environment's own service
 account, and is itself only a read-only caller of `cloudinfra`. Tests hold both lines.
 
 ## Documentation
@@ -40,7 +43,7 @@ account, and is itself only a read-only caller of `cloudinfra`. Tests hold both 
 | [docs/MCP-CATALOG.md](docs/MCP-CATALOG.md) | The infrastructure service's 54 tools, their fields, outputs, provider mappings and error codes (generated) |
 | [docs/PROVIDER-INTERFACE.md](docs/PROVIDER-INTERFACE.md) | The `CloudProvider` interface, the Google adapter's mapping, and how to add a provider |
 | [docs/DELIVERY-SPEC.md](docs/DELIVERY-SPEC.md) | The delivery service: who trusts whom, the release contract, the four targets, a release's life, boundaries |
-| [docs/DELIVERY-CATALOG.md](docs/DELIVERY-CATALOG.md) | The delivery service's 11 tools and error codes (generated) |
+| [docs/DELIVERY-CATALOG.md](docs/DELIVERY-CATALOG.md) | The delivery service's 14 tools and error codes (generated) |
 | [docs/DELIVERY-SPIKE.md](docs/DELIVERY-SPIKE.md) | What each real run on Google Cloud proved and found, machines to Cloud Run |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Conventions: layout, tests, boundary tests, the generated catalogs, lock files, versions, releases |
 | [docs/CHANGES.md](docs/CHANGES.md) | What each version changed |
@@ -100,7 +103,8 @@ The MCP endpoint is `/mcp`; `GET /healthz` is public; `GET /catalog` lists the t
 curl -s -X POST "http://127.0.0.1:8100/infrastructure?wait_seconds=45" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" --data @request.json
 ```
 
-Its image: `docker build -f Dockerfile.cloudinfra -t cloudinfra .`
+Its image is built only in the trusted project, by Cloud Build from `cloudbuild.yaml` with the delivery service's
+(docs/SETUP.md section 3); a local `docker build -f Dockerfile.cloudinfra .` is for development and is never deployed.
 
 ## Run the delivery service
 
@@ -113,7 +117,13 @@ cp appdelivery.example.yaml appdelivery.local.yaml
 ```
 
 Each environment names its service account, the variable holding its `cloudinfra` token, the registries images may come
-from, and whether releases need an attestation or an approval. Teams name the environment's service account at `admin`
+from, its build account, and whether releases need an attestation or an approval. `sources` names the repositories the
+platform team linked to Cloud Build. A team asks for a build of a commit, then releases the digest it reports:
+
+```bash
+curl -s -X POST "http://127.0.0.1:8200/builds?wait_seconds=45" -H "Authorization: Bearer $TEAM_TOKEN" -H "Content-Type: application/json" --data-binary @build.json
+```
+ Teams name the environment's service account at `admin`
 in their request's `access` list; that grant is their consent.
 
 ```bash
@@ -124,7 +134,8 @@ app-delivery plan examples/release.yaml --config appdelivery.local.yaml --as sho
 APPDELIVERY_CONFIG=appdelivery.local.yaml uvicorn appdelivery.server:create_app --factory --host 127.0.0.1 --port 8200
 ```
 
-Its image, with the gcloud CLI and Cosign pinned and checked: `docker build -f Dockerfile.appdelivery -t appdelivery .`
+Its image, with the gcloud CLI and Cosign pinned and checked, is built with the infrastructure service's by
+`cloudbuild.yaml`, in the trusted project.
 
 ## Connect Claude
 

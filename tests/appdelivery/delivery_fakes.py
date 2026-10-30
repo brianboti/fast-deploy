@@ -15,6 +15,11 @@ IMAGE = f"us-central1-docker.pkg.dev/acme-apps/shop/web@sha256:{DIGEST}"
 PROD_SA = "appdelivery-prod@infra-project.iam.gserviceaccount.com"
 DEV_SA = "appdelivery-dev@infra-project.iam.gserviceaccount.com"
 TEAM_TOKEN = "team-token"
+DEV_BUILD_SA = "build-dev@infra-project.iam.gserviceaccount.com"
+PROD_BUILD_SA = "build-prod@infra-project.iam.gserviceaccount.com"
+SOURCE_REPOSITORY = "projects/infra-project/locations/us-central1/connections/github/repositories/acme-shop"
+TEAM_REGISTRY = "us-central1-docker.pkg.dev/infra-project/shop-images"
+COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 
 def config_dict(**overrides):
@@ -23,13 +28,20 @@ def config_dict(**overrides):
         "cloudinfra": {"url": "https://infra.example.com"},
         "gcp": {"project_id": "infra-project"},
         "environments": {
-            "dev": {"token_env": "APPDELIVERY_DEV_INFRA_TOKEN", "service_account": DEV_SA, "allowed_registries": ["us-central1-docker.pkg.dev/acme-apps"]},
-            "prod": {"token_env": "APPDELIVERY_PROD_INFRA_TOKEN", "service_account": PROD_SA, "allowed_registries": ["us-central1-docker.pkg.dev/acme-apps"],
-                     "require_attestation": True, "trusted_signers": ["/etc/appdelivery/keys/prod.pub"], "require_approval": True},
+            "dev": {"token_env": "APPDELIVERY_DEV_INFRA_TOKEN", "service_account": DEV_SA, "allowed_registries": ["us-central1-docker.pkg.dev/acme-apps", TEAM_REGISTRY],
+                    "build": {"service_account": DEV_BUILD_SA}},
+            "prod": {"token_env": "APPDELIVERY_PROD_INFRA_TOKEN", "service_account": PROD_SA, "allowed_registries": ["us-central1-docker.pkg.dev/acme-apps", TEAM_REGISTRY],
+                     "require_attestation": True, "trusted_signers": ["/etc/appdelivery/keys/prod.pub"], "require_approval": True,
+                     "build": {"service_account": PROD_BUILD_SA, "machine_type": "E2_HIGHCPU_8", "timeout_seconds": 1800}},
+        },
+        "sources": {
+            "shop-web": {"repository": SOURCE_REPOSITORY, "infra_owner": "shop-team", "registry": TEAM_REGISTRY},
+            "other-app": {"repository": "projects/infra-project/locations/us-central1/connections/github/repositories/other", "infra_owner": "other-team",
+                          "registry": "us-central1-docker.pkg.dev/infra-project/other-images"},
         },
         "principals": [
             {"name": "shop-team", "token_sha256": hashlib.sha256(TEAM_TOKEN.encode()).hexdigest(), "infra_owner": "shop-team", "environments": ["dev", "prod"],
-             "can_deploy": True},
+             "can_deploy": True, "can_build": True},
             {"name": "shop-oncall", "token_sha256": "1" * 64, "infra_owner": "shop-team", "environments": ["prod"], "can_approve": True},
         ],
     }
@@ -48,6 +60,12 @@ def principal(config, name="shop-team"):
 def release_dict(**overrides):
     data = {"environment": "prod", "request_id": REQUEST_ID, "target": {"group": "web"}, "image": IMAGE, "port": 8080, "health": {"path": "/healthz"},
             "env": {"LOG_LEVEL": {"value": "info"}, "DB_HOST": {"endpoint": "database_host"}, "DB_PASSWORD": {"secret": "db-password"}}}
+    data.update(overrides)
+    return data
+
+
+def build_dict(**overrides):
+    data = {"environment": "dev", "source": "shop-web", "revision": COMMIT, "image": "web"}
     data.update(overrides)
     return data
 

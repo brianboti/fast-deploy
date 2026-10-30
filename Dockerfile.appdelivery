@@ -10,8 +10,10 @@
 #     file read 591.0.0; the versioned archive's own SHA-256 is pinned. Repeat that check when moving the version.
 #   - Cosign from its GitHub release, by the SHA-256 that both its checksums file and GitHub's asset digest publish:
 #       gh release view vX.Y.Z -R sigstore/cosign --json assets --jq '.assets[] | select(.name|test("^cosign-linux-")) | .name + " " + .digest'
-# Build:  docker build -f Dockerfile.appdelivery -t appdelivery .     (--platform linux/amd64 for Google Cloud)
-#   A builder without BuildKit (Cloud Build's docker step) does not set TARGETARCH: pass --build-arg TARGETARCH=amd64.
+# Built for deployment only in the trusted project, by Cloud Build from cloudbuild.yaml (docs/SETUP.md section 3), whose
+#   docker step has no BuildKit and so passes --build-arg TARGETARCH=amd64. A local
+#   docker build -f Dockerfile.appdelivery -t appdelivery .
+# is for development; such an image is never pushed to the platform's repository.
 FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 # set by the builder from --platform; no default, so an image is never built with another architecture's binaries
 ARG TARGETARCH

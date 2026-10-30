@@ -42,8 +42,8 @@ access:                                           # who may be granted access to
   allowed_domains: [example.com]                  # members must be in these domains or be a principal's identity
   # grant_requester: true                         # grant the requesting principal's identity as admin on what it creates
   # max_members: 10                               # members per request, the requester included
-  # workload_identity_pools:                      # CI jobs named in access by their own identity (principal://, principalSet://), granted on registries only
-  #   - iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/github
+  # registry_writers:                             # the only members a registry lets push: the accounts that build images in this project
+  #   - serviceAccount:build-dev@your-infrastructure-project.iam.gserviceaccount.com   # named by a request at admin; granted on registries only
 providers:
   gcp:
     project_id: your-infrastructure-project

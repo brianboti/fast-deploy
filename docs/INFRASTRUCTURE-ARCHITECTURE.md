@@ -164,12 +164,10 @@ policy for one thing only: a cluster's node account (below).
 - **Members.** `access` on a request lists people, groups or service accounts (`user:`, `group:`, `serviceAccount:` and an
   email address) with a level, `use` or `admin`. The requester is added as `admin` when the operator maps its principal to
   an `identity` (`access.grant_requester`, on by default). A member must be a principal's identity or be in one of the
-  operator's `access.allowed_domains`; `access.max_members` caps the list. A team's CI job may also be named by its own
-  federated identity, without a key or a service account: `principal://POOL/subject/S`, or `principalSet://POOL/group/G`
-  or `principalSet://POOL/attribute.A/V` (on Google Cloud POOL is `iam.googleapis.com/projects/NUMBER/locations/global/
-  workloadIdentityPools/POOL`), in a pool the operator lists in `access.workload_identity_pools`; never a whole pool.
-  Such a member is granted on registries only, and is kept and compared exactly as written, since its values are
-  case-sensitive. A database's password goes only to its secret
+  operator's `access.allowed_domains`; `access.max_members` caps the list. The operator's `access.registry_writers`, the
+  service accounts that build images in the trusted project, may also be named; they are granted on registries and
+  nothing else. A CI job's federated identity (`principal://`, `principalSet://`) is not a member: since 2026-10-30
+  images are built only in the trusted project, so nothing outside pushes. A database's password goes only to its secret
   unless the operator sets `return_database_password`, so a database is refused when the operator's settings let the
   service grant access to no one at all.
   Email addresses compare without regard to case, as Google's do, and are kept in lowercase.
@@ -181,7 +179,7 @@ policy for one thing only: a cluster's node account (below).
   | secret (the database password and cache AUTH string among them) | `roles/secretmanager.secretAccessor` | the same and `roles/secretmanager.secretVersionAdder` |
   | storage (a bucket) | `roles/storage.objectUser` | `roles/storage.objectAdmin` |
   | queue | `roles/pubsub.publisher` on the topic, `roles/pubsub.subscriber` on the subscription | the same |
-  | registry | `roles/artifactregistry.reader` on the repository: pull | `roles/artifactregistry.writer`: push and pull |
+  | registry | `roles/artifactregistry.reader` on the repository: pull | for a registry writer, `roles/artifactregistry.writer`: push and pull, never delete; for anyone else, reader, as at `use` |
   | cluster | a RoleBinding to the built-in ClusterRole `view` in the request's namespace | a RoleBinding to `edit` there |
   | service (Cloud Run) | `roles/run.invoker` on the service (call it) | the same, `roles/run.developer` on the service, and `roles/iam.serviceAccountUser` on its runtime account (deploy revisions) |
   | job (Cloud Run) | `roles/run.invoker` on the job (run it) | the same, `roles/run.developer` on the job, and `roles/iam.serviceAccountUser` on its runtime account |
@@ -212,29 +210,30 @@ policy for one thing only: a cluster's node account (below).
   those is the narrowest way to give them. For clusters it needs to create namespaces and RoleBindings in the clusters
   it made, which the Kubernetes Engine role it creates them with already allows.
 
-### A team's image registry and its CI
+### A team's image registry
 
-A team's images live in a registry its own request owns, so that pushing them needs nobody's hand:
+Images are built only in the trusted project (decided 2026-10-30): no developer, CI job or local machine builds an image
+and pushes it in. The delivery service orders each build from Cloud Build, which pushes as the environment's build
+account, and releases only the digests those builds report ([DELIVERY-SPEC.md](DELIVERY-SPEC.md) section 3). A team's
+images live in a registry its own request owns, and that build account is its only writer:
 
 ```yaml
 registry: {name: images}                     # → us-central1-docker.pkg.dev/PROJECT/<name>-images
 access:
-  - {member: "principalSet://iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/github/attribute.repository/acme/shop", level: admin}
-  - {member: "group:shop-devs@acme.com", level: use}
+  - {member: "serviceAccount:build-dev@PROJECT.iam.gserviceaccount.com", level: admin}   # one of access.registry_writers
+  - {member: "group:shop-devs@acme.com", level: admin}                                   # admin on machines; on the registry, pull
 ```
 
-The job pushes as itself (`admin`: `roles/artifactregistry.writer` on that repository only); people and clusters pull
-(`use`: reader). A service account may stand in for the federated identity, as `serviceAccount:` in an allowed domain.
-The address is in `endpoints.registry_addresses` and in the resource; its connect block gives the login, push, digest
-and pull commands. Deleting the registry deletes its images. Releases name images by digest, so `appdelivery`'s
-`allowed_registries` for an environment can be exactly the team's registry.
+A registry writer at `admin` gets `roles/artifactregistry.writer` on that repository, which pushes and tags and never
+deletes, and is granted nothing else in the request. Every other member of the registry, the requester and people at
+`admin` included, gets `roles/artifactregistry.reader`. A federated CI identity is refused as a member, and the plan
+says who pushes. The address is in `endpoints.registry_addresses` and in the resource; its connect block gives the
+login, digest and pull commands, and no push. Deleting the registry deletes its images.
 
-The platform team's part, once: a workload identity pool and a provider for the company's CI (GitHub Actions or GitLab,
-with an attribute condition on the company's organization), its address in `access.workload_identity_pools`, and the
-Artifact Registry API enabled; the service's own identity needs `artifactregistry.repositories.create`, `get`, `delete`,
-`getIamPolicy` and `setIamPolicy`. A CI job then signs in with the pool's provider (GitHub:
-`google-github-actions/auth` with `workload_identity_provider`) and no stored key. Not yet: a cluster pulling from a
-registry of its own request needs the operator to list it in `providers.gcp.registries`.
+The platform team's part, once: each environment's build account in `access.registry_writers`, and the Artifact
+Registry API enabled; the service's own identity needs `artifactregistry.repositories.create`, `get`, `delete`,
+`getIamPolicy` and `setIamPolicy`. Not yet: a cluster pulling from a registry of its own request needs the operator to
+list it in `providers.gcp.registries`.
 
 ### A cluster's nodes
 

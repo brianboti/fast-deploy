@@ -80,13 +80,11 @@ def info(resource, resources: list, project: str, drivers: bool = False) -> Conn
         return ConnectInfo(commands=commands, notes=[] if resource.access else [NOT_GRANTED])
     if kind == "registry":
         host = resource.address.split("/", 1)[0]
-        return ConnectInfo(commands={"login": f"gcloud auth configure-docker {host}", "push": f"docker push {resource.address}/IMAGE:TAG",
+        return ConnectInfo(commands={"login": f"gcloud auth configure-docker {host}",
                                      "digest": f"gcloud artifacts docker images describe {resource.address}/IMAGE:TAG --format 'value(image_summary.digest)'",
                                      "pull": f"docker pull {resource.address}/IMAGE@sha256:DIGEST"},
-                           notes=["admin pushes and pulls; use pulls only",
-                                  "A CI job pushes as its own identity, named in access at admin: a service account, or a principal:// or principalSet:// "
-                                  "identity of a workload identity pool, which needs no key (GitHub Actions: google-github-actions/auth with the pool's "
-                                  "workload_identity_provider)",
+                           notes=["Images are built only in the trusted project and pushed only by the operator's registry writers (access.registry_writers), "
+                                  "named at admin; every other member pulls, whatever its level. Nothing outside pushes here",
                                   "A release names an image here by digest, never by tag",
                                   "Deleting the registry deletes every image it holds"] + ([] if resource.access else [NOT_GRANTED]))
     if kind == "cluster":

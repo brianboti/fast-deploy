@@ -1,0 +1,10 @@
+# A build (docs/DELIVERY-SPEC.md, section 3): one commit of a source the operator linked, built by Cloud Build in the
+# trusted project and pushed to the source's registry. Send it to POST /builds (or the build_image tool); release the
+# digest the build reports in `built`, as examples/release.yaml does. No step, command or argument is accepted.
+environment: dev
+source: shop-web
+revision: 0123456789abcdef0123456789abcdef01234567
+image: web
+dockerfile: Dockerfile
+context: .
+note: first build of the web tier

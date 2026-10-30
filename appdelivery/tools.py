@@ -4,7 +4,7 @@ from typing import Annotated, Any
 import pydantic
 
 from .catalog import BY_NAME
-from .models import ReleaseRequest
+from .models import BuildRequest, ReleaseRequest
 
 Result = dict[str, Any]
 Wait = Annotated[int, pydantic.Field(ge=0, le=45, description=BY_NAME["deploy_release"].describe("wait_seconds"))]
@@ -15,6 +15,18 @@ def field(tool: str, name: str):
 
 
 def register(mcp, delivery, wrap, identity, version: str) -> None:
+    def build_image(build: Annotated[BuildRequest, field("build_image", "build")], wait_seconds: Wait = 0) -> Result:
+        return delivery.build(build, identity(), wait_seconds)
+
+    def get_build(build_id: Annotated[str, field("get_build", "build_id")]) -> Result:
+        return delivery.get_build(build_id, identity())
+
+    def list_builds(environment: Annotated[str | None, field("list_builds", "environment")] = None,
+                    source: Annotated[str | None, field("list_builds", "source")] = None,
+                    limit: Annotated[int, pydantic.Field(ge=1, le=200, description=BY_NAME["list_builds"].describe("limit"))] = 50) -> Result:
+        builds = delivery.list_builds(identity(), environment, source, limit)
+        return {"count": len(builds), "builds": [item.model_dump(mode="json") for item in builds]}
+
     def plan_release(release: Annotated[ReleaseRequest, field("plan_release", "release")]) -> Result:
         return delivery.plan(release, identity())
 
@@ -51,7 +63,8 @@ def register(mcp, delivery, wrap, identity, version: str) -> None:
     def get_service_status() -> Result:
         return delivery.service_status(version)
 
-    for fn in (plan_release, deploy_release, approve_release, get_release, list_releases, get_running, rollback_release, remove_release, run_release, get_release_run,
+    for fn in (build_image, get_build, list_builds,
+               plan_release, deploy_release, approve_release, get_release, list_releases, get_running, rollback_release, remove_release, run_release, get_release_run,
                get_service_status):
         spec = BY_NAME[fn.__name__]
         mcp.tool(name=spec.name, title=spec.title, description=spec.model_description, annotations=spec.annotations, structured_output=True)(wrap(fn))

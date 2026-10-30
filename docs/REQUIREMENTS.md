@@ -26,7 +26,8 @@ Direct dependencies, pinned exactly in `pyproject.toml` and hash-locked in `requ
 | `httpx` | 0.28.1 | Every call to Google's APIs, to a cluster's API, and from `appdelivery` to `cloudinfra` |
 | `pydantic` | 2.14.1 | The strict contracts (requests, releases, configuration), unknown fields refused |
 | `PyYAML` | 6.0.3 | Configuration files, request and release files |
-| `PyJWT[crypto]` | 2.15.1 | Tokens of the Claude chat sign-in (with `cryptography` 50.0.2) |
+| `PyJWT[crypto]` | 2.15.1 | Tokens of the Claude chat sign-in |
+| `cryptography` | 50.0.2 | PyJWT's signatures, and the delivery service's check of Google's signature on Cloud Build provenance; declared directly since 2026-10-30, at the version PyJWT already brought |
 | `uvicorn` | 0.54.0 | The ASGI server both images run |
 
 Transitive packages, as `requirements.lock` resolves them (each with its hashes there): annotated-doc 0.0.5,
@@ -91,7 +92,10 @@ on a builder without BuildKit (Cloud Build's docker step). The delivery image se
 | Dependabot | | `.github/dependabot.yml` | weekly, the workflow's actions only, releases at least 7 days old |
 | pre-commit (optional) | ruff-pre-commit v0.17.0, zizmor-pre-commit v1.30.1 | `.pre-commit-config.yaml` | the same two lints locally |
 
-Docker is needed only to build the images; Docker Desktop built both for amd64 and arm64 on 2026-10-29.
+Docker is needed only for a local development build of the images (Docker Desktop built both for amd64 and arm64 on
+2026-10-29). Images that are deployed are built only in the trusted project by Cloud Build from `cloudbuild.yaml`, whose
+docker step is pinned by digest (`gcr.io/cloud-builders/docker@sha256:f772ab45…`, the delivery service's default
+`builder` too; a test ties them).
 
 ## 5. What a host needs to run each service
 
@@ -148,6 +152,8 @@ endpoints):
 | Cloud Scheduler `cloudscheduler.googleapis.com` | a job's schedule |
 | Cloud Monitoring `monitoring.googleapis.com` | usage reads and idle detection |
 | IAM Credentials `iamcredentials.googleapis.com` | the delivery service's per-environment tokens |
+| Cloud Build `cloudbuild.googleapis.com` | builds of a linked source in the trusted project; 2nd-gen repository connections |
+| Container Analysis `containeranalysis.googleapis.com` | the signed SLSA provenance Cloud Build records for each image it pushes |
 | OS Login and IAP TCP forwarding | SSH to machines as a service account (`gcloud compute ssh`) |
 
 **The infrastructure service's identity.** A keyless, single-purpose service account with roles on the project it
@@ -183,7 +189,26 @@ Backstops the positioning review recommends as organisation policies on that pro
 | a custom role with `compute.projects.get` and `compute.instances.get` (so gcloud finds a machine) | the project |
 | `roles/container.clusterViewer` (cluster targets: to fetch credentials) | the project |
 | `roles/artifactregistry.reader` on each repository in `allowed_registries` (service and job targets: Cloud Run checks that the deployer can read the image, found 2026-10-30) | each repository |
+| `roles/cloudbuild.builds.editor` (builds: create and read) | the project |
+| `roles/containeranalysis.occurrences.viewer` (environments with `require_provenance`: read an image's provenance) | the project that holds the images |
+| `roles/iam.serviceAccountUser` on the environment's build account (to start builds as it) | the build account |
 | everything else: OS Login admin and the IAP tunnel on machines, secret access, `edit` in a cluster's namespace, `run.developer` and Service Account User on a service or job | granted by `cloudinfra` when the team names the account at `admin` in the request's `access` |
+
+**The build accounts.** One user-managed service account per environment, never the environment's own, that Cloud Build
+runs builds as (a build always names it; the default build accounts are never used):
+
+| What | Where |
+|---|---|
+| `roles/logging.logWriter` (builds log to Cloud Logging only) | the project |
+| `roles/artifactregistry.writer`: push and tag, never delete | each source's registry: for one a `cloudinfra` request made, the account is listed in `cloudinfra`'s `access.registry_writers` and named at `admin` by the team, and is granted nothing else |
+
+**Sources.** A Cloud Build 2nd-gen connection to the company's Git host in the trusted project (GitHub: the Cloud Build
+GitHub App installed on the organisation), one linked repository per source; the host's token is a secret in Secret
+Manager there, read by the Cloud Build service agent `service-NUMBER@gcp-sa-cloudbuild.iam.gserviceaccount.com` with
+`roles/secretmanager.admin` on the project, to create that secret and set its policy (found on 2026-10-30: the
+documentation names only `secretAccessor`, and creating the connection fails with it). Linking needs `roles/cloudbuild.connectionAdmin` once. The project must belong to
+an organisation (a user-specified build account needs it), and `iam.disableCrossProjectServiceAccountUsage` stays
+enforced: build account, Cloud Build and registries are in one project.
 
 The `cloudinfra` operator also defines the profile the delivery service needs for machine targets:
 `container-host`, image `projects/cos-cloud/global/images/family/cos-133-lts`, `accelerator: none`.
@@ -280,6 +305,7 @@ client; the sign-in page and Claude's client send one.
 | Locked packages and hashes | `requirements.lock`, `requirements-dev.lock`, `audit.lock` | `uv pip compile --generate-hashes pyproject.toml -o requirements.lock`, the same with `--extra dev -o requirements-dev.lock`, and `uv pip compile --generate-hashes audit.in -o audit.lock`; then `python -m pytest -q` and `python -m pip_audit --require-hashes -r …` |
 | The Python image digest | both Dockerfiles (must match; a test checks) | `docker buildx imagetools inspect python:3.12-slim`, after review |
 | gcloud and Cosign versions and sums | `Dockerfile.appdelivery` | as its header describes; a test checks the shape of every pin |
+| Google's key for Cloud Build provenance | `appdelivery/provenance.py` (`GOOGLE_KEYS`, read 2026-10-30) | `gcloud kms keys versions get-public-key VERSION --location global --keyring attestor --key google-hosted-worker --project verified-builder` when a release is refused naming a key id it does not trust |
 | CI tools and action commits | `.github/workflows/ci.yml`, `.pre-commit-config.yaml` | Dependabot for the actions; the rest by hand |
 | Resource kinds, fields, tools, error codes | `cloudinfra/mcp/catalog.py` and `cloudinfra/models/` → `docs/MCP-CATALOG.md`; `appdelivery/catalog.py` → `docs/DELIVERY-CATALOG.md` | `python -m cloudinfra.cli catalog --write docs/MCP-CATALOG.md`; `app-delivery catalog --write docs/DELIVERY-CATALOG.md`; a test fails while either is stale |
 | Limits and defaults | `cloudinfra/config.py`, `cloudinfra/models/request.py`, `appdelivery/config.py`, `appdelivery/models.py` | with the code |

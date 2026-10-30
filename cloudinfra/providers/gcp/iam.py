@@ -1,7 +1,6 @@
 """Grants on the resources this service created, through each resource's own IAM policy. Never project IAM: what a member
 needs at project level (a role with compute.projects.get for gcloud, cloudsql.client for the Cloud SQL Auth Proxy,
 container.clusterViewer for cluster credentials) is the platform team's one-time setup, named in each connect block.
-A registry takes a CI job's federated identity (principal://, principalSet://) as well as an account; nothing else does.
 
 Each change reads the policy, changes only this service's roles for one member, and writes it back with the etag it read,
 retrying a conflicting write. A machine's IAP tunnel grant is bound to the machine's numeric id, so a later machine with
@@ -29,10 +28,7 @@ ATTEMPTS = 3
 
 
 def same(one: str, other: str) -> bool:
-    """Members compare without regard to case: Google does not tell case apart in account and group email addresses. A
-    federated identity's subject and attribute values are case-sensitive, so those compare exactly."""
-    if one.startswith(("principal://", "principalSet://")) or other.startswith(("principal://", "principalSet://")):
-        return one == other
+    """Members compare without regard to case: Google does not tell case apart in account and group email addresses."""
     return one.lower() == other.lower()
 
 
