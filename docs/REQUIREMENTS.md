@@ -148,6 +148,8 @@ endpoints):
 | Cloud Scheduler `cloudscheduler.googleapis.com` | a job's schedule |
 | Cloud Monitoring `monitoring.googleapis.com` | usage reads and idle detection |
 | IAM Credentials `iamcredentials.googleapis.com` | the delivery service's per-environment tokens |
+| Cloud Build `cloudbuild.googleapis.com` | builds of a linked source in the trusted project; 2nd-gen repository connections |
+| Container Analysis `containeranalysis.googleapis.com` | the signed SLSA provenance Cloud Build records for each image it pushes |
 | OS Login and IAP TCP forwarding | SSH to machines as a service account (`gcloud compute ssh`) |
 
 **The infrastructure service's identity.** A keyless, single-purpose service account with roles on the project it
@@ -183,7 +185,24 @@ Backstops the positioning review recommends as organisation policies on that pro
 | a custom role with `compute.projects.get` and `compute.instances.get` (so gcloud finds a machine) | the project |
 | `roles/container.clusterViewer` (cluster targets: to fetch credentials) | the project |
 | `roles/artifactregistry.reader` on each repository in `allowed_registries` (service and job targets: Cloud Run checks that the deployer can read the image, found 2026-10-30) | each repository |
+| `roles/cloudbuild.builds.editor` (builds: create and read) | the project |
+| `roles/iam.serviceAccountUser` on the environment's build account (to start builds as it) | the build account |
 | everything else: OS Login admin and the IAP tunnel on machines, secret access, `edit` in a cluster's namespace, `run.developer` and Service Account User on a service or job | granted by `cloudinfra` when the team names the account at `admin` in the request's `access` |
+
+**The build accounts.** One user-managed service account per environment, never the environment's own, that Cloud Build
+runs builds as (a build always names it; the default build accounts are never used):
+
+| What | Where |
+|---|---|
+| `roles/logging.logWriter` (builds log to Cloud Logging only) | the project |
+| `roles/artifactregistry.writer`: push and tag, never delete | each source's registry |
+
+**Sources.** A Cloud Build 2nd-gen connection to the company's Git host in the trusted project (GitHub: the Cloud Build
+GitHub App installed on the organisation), one linked repository per source; the host's token is a secret in Secret
+Manager there, read by the Cloud Build service agent `service-NUMBER@gcp-sa-cloudbuild.iam.gserviceaccount.com` with
+`roles/secretmanager.secretAccessor`. Linking needs `roles/cloudbuild.connectionAdmin` once. The project must belong to
+an organisation (a user-specified build account needs it), and `iam.disableCrossProjectServiceAccountUsage` stays
+enforced: build account, Cloud Build and registries are in one project.
 
 The `cloudinfra` operator also defines the profile the delivery service needs for machine targets:
 `container-host`, image `projects/cos-cloud/global/images/family/cos-133-lts`, `accelerator: none`.

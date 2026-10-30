@@ -9,6 +9,7 @@ the code when it was written. They are kept as the reasons behind the design, in
 | [RESEARCH-2026-10-28-infrastructure-layer.md](RESEARCH-2026-10-28-infrastructure-layer.md) | Is the infrastructure layer built the way the MCP specification, industry practice and the research say it should be; which kinds of infrastructure to add, in which order | cloudinfra 1.36.0 |
 | [RESEARCH-2026-10-28-positioning.md](RESEARCH-2026-10-28-positioning.md) | Where the layer stands among the tools companies use, and what makes it practical: the three releases A, B and C, the service's identity and backstops | cloudinfra 1.36.1 |
 | [RESEARCH-2026-10-29-delivery-layer.md](RESEARCH-2026-10-29-delivery-layer.md) | Whether a small separate delivery service above the infrastructure layer is the right shape, checked against Cloud Deploy, the CNCF platform papers, OpenGitOps, AWS and Score | cloudinfra 1.37.1 |
+| [RESEARCH-2026-10-30-trusted-build.md](RESEARCH-2026-10-30-trusted-build.md) | How images are built only inside the trusted Google Cloud project: Cloud Build from a connected repository, one writer per registry, Cloud Build provenance as the release gate; what the first change must build and the real run must check | cloudinfra 1.37.1, appdelivery phase 4 |
 
 What these documents say about the earlier Fast Deploy workflow (`labdeploy`) describes code that was removed from the
 repository on 2026-10-30; git history keeps it. Release A of the positioning review shipped as 1.37.0 and 1.37.1; the

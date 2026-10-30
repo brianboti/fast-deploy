@@ -22,11 +22,20 @@ environments:
     # identity serviceAccount:<service_account below>. Its token goes in this variable.
     token_env: APPDELIVERY_DEV_INFRA_TOKEN
     service_account: appdelivery-dev@your-infrastructure-project.iam.gserviceaccount.com
-    allowed_registries: [us-central1-docker.pkg.dev/your-apps-project]
+    allowed_registries: [us-central1-docker.pkg.dev/your-infrastructure-project/shop-images]
+    # Builds in the trusted project (docs/DELIVERY-SPEC.md section 3): Cloud Build runs them as this account, which may
+    # push to the teams' registries and write logs, and nothing else. A release names only a digest built here.
+    build:
+      service_account: build-dev@your-infrastructure-project.iam.gserviceaccount.com
+      # machine_type: E2_STANDARD_2                # E2_MEDIUM, E2_STANDARD_2, E2_HIGHCPU_8, E2_HIGHCPU_32
+      # timeout_seconds: 1200
+      # builder: gcr.io/cloud-builders/docker      # the docker build step's image; pin it by digest
   prod:
     token_env: APPDELIVERY_PROD_INFRA_TOKEN
     service_account: appdelivery-prod@your-infrastructure-project.iam.gserviceaccount.com
-    allowed_registries: [us-central1-docker.pkg.dev/your-apps-project/release]
+    allowed_registries: [us-central1-docker.pkg.dev/your-infrastructure-project/shop-images]
+    build:
+      service_account: build-prod@your-infrastructure-project.iam.gserviceaccount.com
     require_attestation: true
     # attestation_type: slsaprovenance1
     trusted_signers:
@@ -34,12 +43,18 @@ environments:
       # - /etc/appdelivery/keys/prod.pub
       # - {identity: release@your-ci-project.iam.gserviceaccount.com, issuer: https://accounts.google.com}
     require_approval: true
+sources:                                         # repositories the platform team linked to Cloud Build (2nd gen), in this project
+  shop-web:
+    repository: projects/your-infrastructure-project/locations/us-central1/connections/github/repositories/acme-shop
+    infra_owner: shop-team                       # the team whose principals may build it
+    registry: us-central1-docker.pkg.dev/your-infrastructure-project/shop-images   # where its images are pushed
 principals:                                      # application teams; tokens from: app-delivery token
   - name: shop-team
     token_sha256: "REPLACE_WITH_THE_HASH_FROM_app-delivery_token"
     infra_owner: shop-team                       # the cloudinfra principal whose requests this team may deploy onto
     environments: [dev, prod]
     can_deploy: true
+    can_build: true                              # asks for builds; images are never built anywhere else
   - name: shop-oncall
     token_sha256: "REPLACE_WITH_ANOTHER_HASH"
     infra_owner: shop-team

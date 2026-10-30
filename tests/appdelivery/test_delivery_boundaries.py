@@ -2,7 +2,7 @@
 import ast
 from pathlib import Path
 
-from appdelivery.models import Binding, Health, ReleaseRequest, Target
+from appdelivery.models import Binding, BuildRequest, Health, ReleaseRequest, Target
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = ROOT / "appdelivery"
@@ -70,3 +70,22 @@ def test_the_old_workflow_is_gone_and_stays_gone():
     """The Fast Deploy workflow (labdeploy) was removed on 2026-10-30; nothing may bring its name or its directory back."""
     assert not (ROOT / "labdeploy").exists()
     assert "labdeploy" not in (ROOT / "pyproject.toml").read_text()
+
+
+def test_the_build_contract_carries_paths_and_a_name_and_nothing_that_runs():
+    """Images are built only in the trusted project, and only as this service composes the build: a caller names a linked
+    source, a commit, two paths in it and an image name. No step, command, argument, secret, account or registry."""
+    words = {"steps", "step", "command", "cmd", "args", "entrypoint", "script", "shell", "build_args", "substitutions", "secrets", "secret", "env",
+             "service_account", "serviceAccount", "registry", "repository", "url", "pool", "machine_type", "options", "images", "volumes"}
+    assert not set(BuildRequest.model_fields) & words, set(BuildRequest.model_fields) & words
+    assert BuildRequest.model_config.get("extra") == "forbid"
+
+
+def test_the_package_builds_nothing_itself():
+    """A build runs in Cloud Build; this package only sends it requests, from one module. remote.py runs gcloud and cosign
+    only, so no docker, buildah or kaniko can run here."""
+    from appdelivery import remote
+    assert remote.COMMANDS == ("gcloud", "cosign")
+    for path in modules(PACKAGE):
+        if "cloudbuild.googleapis.com" in path.read_text():
+            assert path.name == "cloudbuild.py", f"{path.relative_to(ROOT)} calls Cloud Build"

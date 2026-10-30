@@ -1,6 +1,11 @@
-"""The release contract. Strict, unknown fields refused: a release names an image by digest, a request, a group of its
-machines, a port, a health path and where each environment value comes from. Nothing in it can carry source, a build,
-a command, an entrypoint, a volume or a privilege, and a test holds that."""
+"""The release and build contracts. Strict, unknown fields refused.
+
+A release names an image by digest, a request, a group of its machines, a port, a health path and where each environment
+value comes from. Nothing in it can carry source, a build, a command, an entrypoint, a volume or a privilege.
+
+A build request names a source the operator linked, a full commit, a Dockerfile and a context in it, and an image name in
+the team's registry. Nothing in it can carry a build step, a command, a build argument, a secret or an account: the
+service composes the one docker build step itself. Tests hold both."""
 import re
 from typing import Literal
 
@@ -23,6 +28,12 @@ ENDPOINTS = ("database_host", "database_port", "cache_host", "cache_port", "load
 # A literal under a name with one of these words (or pairs of words) is a credential in plain text: it belongs in a secret.
 CREDENTIAL_WORDS = frozenset({"PASSWORD", "PASSWD", "PWD", "SECRET", "TOKEN", "APIKEY", "CREDENTIAL", "CREDENTIALS", "AUTH"})
 CREDENTIAL_PAIRS = frozenset({("PRIVATE", "KEY"), ("API", "KEY"), ("ACCESS", "KEY"), ("SIGNING", "KEY")})
+COMMIT = re.compile(r"^[a-f0-9]{40}$")
+# A path inside the source: relative, no .. part, never starting with - (docker would read it as a flag).
+SOURCE_PATH = re.compile(r"^(?!.*(?:^|/)\.\.(?:/|$))(?!.*//)[A-Za-z0-9._][A-Za-z0-9._/-]{0,199}$")
+# A name under the team's registry, up to three parts; the first has no dot, so it never reads as another registry's host.
+IMAGE_NAME = re.compile(r"^[a-z0-9]+(?:[_-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*){0,2}$")
+BUILD_ID = re.compile(r"^bld-[a-f0-9]{12}$")
 MAX_ENV = 64
 MAX_VALUE = 4096
 
@@ -215,6 +226,66 @@ class ReleaseRequest(StrictModel):
         return f"{found.group('host')}/{found.group('path')}"
 
 
+class BuildRequest(StrictModel):
+    """Build an image in the trusted project from a commit of a linked source. The image is pushed to the source's registry
+    as <registry>/<image>:<build id> and released by the digest the build returns."""
+    environment: str = Field(pattern=r"^[a-z][a-z0-9-]{1,20}$", description="Picks the build account and its rules.")
+    source: str = Field(description="A source the operator linked, by its name in the configuration.")
+    revision: str = Field(description="The full commit SHA (40 hexadecimal characters) to build.")
+    image: str = Field(description="The image's name under the team's registry, such as web or shop/web.")
+    dockerfile: str = Field(default="Dockerfile", description="The Dockerfile's path in the source.")
+    context: str = Field(default=".", description="The build context's path in the source.")
+    note: str | None = Field(default=None, max_length=300)
+
+    @field_validator("source")
+    @classmethod
+    def _source(cls, value):
+        if not re.match(r"^[a-z][a-z0-9-]{1,40}$", value):
+            raise DeliveryError(ErrorCode.INVALID_BUILD, f"{value!r} is not a source name: lowercase letters, digits and dashes")
+        return value
+
+    @field_validator("revision")
+    @classmethod
+    def _revision(cls, value):
+        if not COMMIT.match(value):
+            raise DeliveryError(ErrorCode.INVALID_BUILD, "revision is a full commit SHA, 40 lowercase hexadecimal characters: a branch or a tag can move after the build")
+        return value
+
+    @field_validator("image")
+    @classmethod
+    def _image(cls, value):
+        if len(value) > 128 or not IMAGE_NAME.match(value):
+            raise DeliveryError(ErrorCode.INVALID_BUILD, f"{value!r} is not an image name: lowercase letters and digits, parts joined by . _ - or /")
+        return value
+
+    @field_validator("dockerfile", "context")
+    @classmethod
+    def _path(cls, value, info):
+        if not SOURCE_PATH.match(value):
+            raise DeliveryError(ErrorCode.INVALID_BUILD, f"{info.field_name} {value!r}: a path inside the source, relative, without .. or a leading -")
+        return value
+
+
+class BuildResponse(BaseModel):
+    """A build as recorded now. image is what was pushed by tag; built is the same image by digest, the one to release."""
+    build_id: str
+    status: Literal["QUEUED", "WORKING", "SUCCEEDED", "FAILED"]
+    environment: str
+    source: str
+    revision: str
+    dockerfile: str
+    context: str
+    image: str = Field(description="<registry>/<name>:<build id>, as Cloud Build pushes it.")
+    built: str | None = Field(default=None, description="<registry>/<name>@sha256:…, once the build succeeded: what a release names.")
+    requested_by: str
+    note: str | None = None
+    cloud_build_id: str | None = None
+    log_url: str | None = Field(default=None, description="Cloud Build's console page with the build's log.")
+    error: dict | None = None
+    created_at: str
+    updated_at: str
+
+
 class PlannedMachine(BaseModel):
     resource: str
     name: str
@@ -240,6 +311,7 @@ class PlanResponse(BaseModel):
     replicas: int | None = None
     url: str | None = Field(default=None, description="On a cluster with expose: where the workload is reached from outside.")
     replaces: str | None = Field(default=None, description="The release running on this target now, which this one would replace.")
+    build_id: str | None = Field(default=None, description="The build of this service that produced the image.")
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -263,6 +335,7 @@ class ReleaseResponse(BaseModel):
     group: str
     image: str
     previous: str | None = Field(default=None, description="The release this one replaced; what a rollback restores.")
+    build_id: str | None = Field(default=None, description="The build of this service that produced the image.")
     can_roll_back: bool = False
     requested_by: str
     approved_by: str | None = None

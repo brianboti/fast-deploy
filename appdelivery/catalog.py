@@ -9,6 +9,7 @@ from .errors import ErrorCode
 
 MEANINGS = {
     ErrorCode.INVALID_RELEASE: "The release does not fit the contract: a tag instead of a digest, an unknown field, a bad path, port 22.",
+    ErrorCode.INVALID_BUILD: "The build request does not fit the contract (not a full commit, a path outside the source, an unknown field), or the environment builds nothing.",
     ErrorCode.INVALID_BINDING: "An environment value with no source or two, a credential given as a literal, or a binding the request does not have.",
     ErrorCode.UNKNOWN_ENVIRONMENT: "No environment of that name in the service's configuration.",
     ErrorCode.PERMISSION_DENIED: "The caller may not do this (can_deploy, can_approve, the environment), or did not authenticate.",
@@ -19,6 +20,9 @@ MEANINGS = {
     ErrorCode.UNREACHABLE_TARGET: "A machine this service cannot reach (no SSH through IAP) or that cannot pull (no public address for a registry on the internet).",
     ErrorCode.REGISTRY_NOT_ALLOWED: "The image is not under the registries the environment allows.",
     ErrorCode.ATTESTATION_FAILED: "No trusted signer of the environment has an attestation for this image digest.",
+    ErrorCode.NOT_BUILT_HERE: "The image digest is not one a build of this service produced for the team: images are built only in the trusted project.",
+    ErrorCode.BUILD_UNAVAILABLE: "Cloud Build could not be reached, or refused the environment's service account (builds.editor, and serviceAccountUser on the build account).",
+    ErrorCode.BUILD_FAILED: "Cloud Build refused the build or ended it without success (failure, timeout, cancelled); its log says why.",
     ErrorCode.INFRA_UNAVAILABLE: "The infrastructure layer could not be reached or answered something unexpected; retry later.",
     ErrorCode.INFRA_AUTH_FAILED: "The infrastructure layer refused this service's token for the environment.",
     ErrorCode.GOOGLE_AUTH_FAILED: "This service's host could not get a token, or may not act as the environment's service account.",
@@ -41,9 +45,10 @@ HINTS = {
     "read_only": ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     "changes": ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
     "destructive": ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False),
+    "builds": ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
 }
 HINT_WORDS = {"read_only": "Read-only; runs and changes nothing.", "changes": "Changes what runs on machines.",
-              "destructive": "Stops and deletes what runs on machines."}
+              "destructive": "Stops and deletes what runs on machines.", "builds": "Builds and pushes an image in the trusted project; runs nothing on machines."}
 
 
 @dataclass(frozen=True)
@@ -79,7 +84,8 @@ class ToolSpec:
         return HINTS[self.hint]
 
 
-RELEASE = Input("release", "The release: environment, request_id (the infrastructure layer's request), target ({group} for every machine of a compute group, or "
+RELEASE = Input("release", "The release of an image this service built (build_image): environment, request_id (the infrastructure layer's request), "
+                           "target ({group} for every machine of a compute group, or "
                            "{cluster: NAME, workload, replicas, expose: {hostname, path}} for a workload on one of the request's clusters, cluster: true for its only one, "
                            "expose to reach it through the cluster's front door; {service: NAME} for a managed container service, {job: NAME} for a managed job, "
                            "each true for the "
@@ -90,18 +96,39 @@ RELEASE_ID = Input("release_id", "The release id this service issued (rel-<12 he
 WAIT = Input("wait_seconds", "Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the work running.")
 RELEASE_OUT = ("ReleaseResponse: release_id, status, environment, request_id, group, image, previous, can_roll_back, requested_by, approved_by, env (each name and "
                "its source, never a value), warnings, targets (each machine with its status, times, error and the failed container's scrubbed log), error.")
+BUILD = Input("build", "The build: environment, source (a repository the operator linked, by its name), revision (the full 40-character commit SHA), "
+                       "image (its name under the team's registry, such as web), dockerfile (path in the source, default Dockerfile), context (path in the "
+                       "source, default .), note. No build step, command, argument, secret or account is accepted: the service composes the build itself.", True)
+BUILD_ID_IN = Input("build_id", "The build id this service issued (bld-<12 hex>).", True)
+BUILD_OUT = ("BuildResponse: build_id, status (QUEUED, WORKING, SUCCEEDED, FAILED), environment, source, revision, dockerfile, context, image (pushed by tag), "
+             "built (the same image by digest, once it succeeded: what a release names), requested_by, cloud_build_id, log_url, error.")
 RUN_OUT = "RunResponse: release_id, execution, status (RUNNING, SUCCEEDED, FAILED, CANCELLED), tasks, succeeded, failed, running, started_at, finished_at, log_url."
 FOLLOW = "It answers at once with the work running, or waits up to wait_seconds; follow it with get_release until the status is RUNNING, FAILED, ROLLED_BACK or REMOVED."
 PLAN_ERRORS = ("INVALID_RELEASE", "INVALID_BINDING", "UNKNOWN_ENVIRONMENT", "PERMISSION_DENIED", "NOT_FOUND", "INVALID_STATE", "NOT_GRANTED", "UNSUPPORTED_TARGET",
-               "UNREACHABLE_TARGET", "REGISTRY_NOT_ALLOWED", "INFRA_UNAVAILABLE", "INFRA_AUTH_FAILED")
+               "UNREACHABLE_TARGET", "REGISTRY_NOT_ALLOWED", "NOT_BUILT_HERE", "INFRA_UNAVAILABLE", "INFRA_AUTH_FAILED")
 RUN_ERRORS = ("ATTESTATION_FAILED", "SECRET_UNAVAILABLE", "GOOGLE_AUTH_FAILED", "MACHINE_UNREACHABLE", "MACHINE_ERROR", "CLUSTER_UNREACHABLE", "CLUSTER_ERROR", "SERVICE_UNREACHABLE", "SERVICE_ERROR",
               "PULL_FAILED", "UNHEALTHY", "ROLLOUT_FAILED")
 
 CATALOG = (
+    ToolSpec("build_image", "Build an image",
+             "Build an image in the trusted Google Cloud project from one commit of a source the operator linked: Cloud Build fetches the source itself, runs "
+             "docker build with the given Dockerfile and context as the environment's build account, pushes the image to the team's registry and records "
+             "signed provenance for it. Images are never built or uploaded anywhere else: a release names only the digest a build reports here.",
+             (BUILD, WAIT), BUILD_OUT, ("INVALID_BUILD", "UNKNOWN_ENVIRONMENT", "PERMISSION_DENIED", "NOT_FOUND", "REGISTRY_NOT_ALLOWED", "GOOGLE_AUTH_FAILED",
+                                       "BUILD_UNAVAILABLE", "BUILD_FAILED"),
+             "Needs can_build in the environment, and a source of the caller's own team.", "builds",
+             "It answers once Cloud Build has the build, or waits up to wait_seconds; follow it with get_build until the status is SUCCEEDED or FAILED, then "
+             "release the image named in built."),
+    ToolSpec("get_build", "Get a build", "A build as Cloud Build reports it now, with the digest to release once it succeeded.", (BUILD_ID_IN,), BUILD_OUT,
+             ("NOT_FOUND", "PERMISSION_DENIED"), "Any principal of the team that asked for it.", "read_only"),
+    ToolSpec("list_builds", "List builds", "The team's builds, newest first, optionally of one environment or source.",
+             (Input("environment", "Only builds in this environment."), Input("source", "Only builds of this source."),
+              Input("limit", "At most this many builds (1 to 200, default 50).")),
+             "{count, builds: [BuildResponse]}.", ("PERMISSION_DENIED",), "Any principal; it sees its own team's builds only.", "read_only"),
     ToolSpec("plan_release", "Plan a release",
              "Check a release against the infrastructure layer's request as it is now and say what deploying it would do: the machines, where each environment "
              "value comes from, whether an attestation and an approval are needed, and which running release it would replace.",
-             (RELEASE,), "PlanResponse: status PLANNED, machines, env sources, attestation_required, approval_required, replaces, warnings.", PLAN_ERRORS,
+             (RELEASE,), "PlanResponse: status PLANNED, machines, env sources, attestation_required, approval_required, replaces, build_id, warnings.", PLAN_ERRORS,
              "Needs can_deploy in the release's environment. Every problem is reported at once, each with a code.", "read_only"),
     ToolSpec("deploy_release", "Deploy a release",
              "Record a release and roll it out. On machines: one at a time (pull, start, health check); the first machine that fails stops the rollout and "
@@ -142,7 +169,7 @@ CATALOG = (
              (RELEASE_ID, WAIT), RELEASE_OUT, ("NOT_FOUND", "PERMISSION_DENIED", "INVALID_STATE", "MACHINE_UNREACHABLE", "MACHINE_ERROR", "REMOVE_FAILED"),
              "Needs can_deploy in the release's environment.", "destructive", FOLLOW),
     ToolSpec("get_service_status", "Get the service status", "The service's version, the infrastructure layer it reads, and its environments with their rules.",
-             (), "{status, version, cloudinfra, environments: {name: {service_account, allowed_registries, require_attestation, require_approval}}, moving}.", (),
+             (), "{status, version, cloudinfra, environments: {name: {service_account, allowed_registries, require_attestation, require_approval, build}}, moving, building}.", (),
              "Any principal.", "read_only"),
 )
 BY_NAME = {spec.name: spec for spec in CATALOG}
@@ -154,7 +181,7 @@ def render_markdown(catalog=CATALOG) -> str:
              "Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DELIVERY-CATALOG.md`; a test keeps this file and the registered tools "
              f"equal to the records. {len(catalog)} tools, served at `/mcp` and as REST routes. Every result is a JSON object with `status`; a failed one is "
              '`{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Release ids are `rel-` plus 12 hex characters. Authentication: '
-             "a bearer token of a configured principal. See [DELIVERY-SPEC.md](DELIVERY-SPEC.md).", "",
+             "a bearer token of a configured principal. Build ids are `bld-` plus 12 hex characters. See [DELIVERY-SPEC.md](DELIVERY-SPEC.md).", "",
              "## At a glance", "", "| Tool | Purpose | Safety hint |", "|---|---|---|"]
     lines += [f"| `{spec.name}` | {spec.title} | {spec.hint.replace('_', ' ')} |" for spec in catalog]
     lines += ["", "## Error codes", "", "| Code | Meaning |", "|---|---|"]

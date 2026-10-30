@@ -3,6 +3,7 @@ who may call this service. No token or key lives here: a `cloudinfra` token is n
 holds it, and Google credentials come from the host (see google.py)."""
 import re
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
 
 import yaml
@@ -14,6 +15,15 @@ REGISTRY_PREFIX = re.compile(r"^[a-z0-9.-]+(?::[0-9]{1,5})?(?:/[a-z0-9._-]+)*$")
 SIGNER_KEY = re.compile(r"^(?:gcpkms://projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/keyRings/[A-Za-z0-9_-]+/cryptoKeys/[A-Za-z0-9_-]+(?:/cryptoKeyVersions/[0-9]+)?"
                         r"|/[A-Za-z0-9._/-]+\.pub)$")  # a Cloud KMS key, or the path of a public key file on this host
 ENVIRONMENT = r"^[a-z][a-z0-9-]{1,20}$"
+# A Cloud Build 2nd-gen repository: a GitHub (or GitLab, Bitbucket) repository the platform team linked to a connection in
+# the trusted project. Cloud Build fetches the source through it; no team or CI job holds a credential for it.
+CONNECTED_REPOSITORY = re.compile(r"^projects/(?P<project>[a-z][a-z0-9-]{4,28}[a-z0-9])/locations/(?P<region>[a-z]+-[a-z]+[0-9]+)/connections/[A-Za-z0-9_-]{1,63}"
+                                  r"/repositories/[A-Za-z0-9._-]{1,100}$")
+# An Artifact Registry Docker repository, LOCATION-docker.pkg.dev/PROJECT/REPOSITORY: where a build pushes.
+DOCKER_REPOSITORY = re.compile(r"^(?P<location>[a-z0-9-]+)-docker\.pkg\.dev/(?P<project>[a-z][a-z0-9-]{4,28}[a-z0-9])/[a-z0-9][a-z0-9._-]{0,62}$")
+# The image of the one build step: a registry path with a tag or a digest (a digest is the reviewed way).
+BUILDER_IMAGE = re.compile(r"^[a-z0-9.-]+(?:/[a-z0-9._-]+)+(?::[A-Za-z0-9_.-]{1,128})?(?:@sha256:[a-f0-9]{64})?$")
+SOURCE_NAME = r"^[a-z][a-z0-9-]{1,40}$"
 
 
 class StrictModel(BaseModel):
@@ -37,6 +47,32 @@ class GcpSettings(StrictModel):
     container_profile: str = Field(default="container-host", description="The infrastructure layer's profile for Container-Optimized OS, named in refusals.")
 
 
+class BuildSettings(StrictModel):
+    """Building in this environment: Cloud Build in the trusted project, as a build account of its own that may push to the
+    team's registry and write logs, and nothing else (docs/research/RESEARCH-2026-10-30-trusted-build.md)."""
+    service_account: str = Field(pattern=SERVICE_ACCOUNT.pattern, description="The user-managed account every build of this environment runs as.")
+    machine_type: Literal["E2_MEDIUM", "E2_STANDARD_2", "E2_HIGHCPU_8", "E2_HIGHCPU_32"] = "E2_STANDARD_2"
+    timeout_seconds: int = Field(default=1200, ge=120, le=14400, description="Cloud Build stops a build after this long (TIMEOUT).")
+    builder: str = Field(default="gcr.io/cloud-builders/docker", pattern=BUILDER_IMAGE.pattern,
+                         description="The image of the one docker build step; pin it by digest.")
+
+
+class BuildSource(StrictModel):
+    """A source repository a team may build from, linked by the platform team to Cloud Build once."""
+    repository: str = Field(pattern=CONNECTED_REPOSITORY.pattern, description="projects/P/locations/R/connections/C/repositories/NAME, in the trusted project.")
+    infra_owner: str = Field(pattern=r"^[a-z][a-z0-9-]{1,30}$", description="The team (cloudinfra owner) whose principals may build from it.")
+    registry: str = Field(pattern=DOCKER_REPOSITORY.pattern, description="The team's Artifact Registry repository its images are pushed to.")
+
+    @property
+    def project(self) -> str:
+        return CONNECTED_REPOSITORY.match(self.repository).group("project")
+
+    @property
+    def region(self) -> str:
+        """Cloud Build runs a 2nd-gen repository's build in the repository's own region (global is refused)."""
+        return CONNECTED_REPOSITORY.match(self.repository).group("region")
+
+
 class Environment(StrictModel):
     token_env: str = Field(pattern=r"^[A-Z][A-Z0-9_]{2,63}$", description="The environment variable that holds this environment's cloudinfra token.")
     service_account: str = Field(pattern=SERVICE_ACCOUNT.pattern, description="The identity this environment acts as on machines and secrets.")
@@ -45,6 +81,7 @@ class Environment(StrictModel):
     attestation_type: str = Field(default="slsaprovenance1", pattern=r"^[a-z0-9]{3,40}$")
     trusted_signers: list[str | KeylessSigner] = Field(default_factory=list)
     require_approval: bool = False
+    build: BuildSettings | None = Field(default=None, description="Building images in this environment; none when it has no block.")
 
     @field_validator("allowed_registries")
     @classmethod
@@ -66,7 +103,13 @@ class Environment(StrictModel):
     def _attestation(self):
         if self.require_attestation and not self.trusted_signers:
             raise ValueError("require_attestation needs at least one trusted_signers entry")
+        if self.build is not None and self.build.service_account == self.service_account:
+            raise ValueError("build.service_account must differ from service_account: the account that runs releases only reads images")
         return self
+
+    def allows(self, repository: str) -> bool:
+        """host/path is under one of allowed_registries, whole path parts only."""
+        return any(repository == prefix or repository.startswith(prefix.rstrip("/") + "/") for prefix in self.allowed_registries)
 
 
 class Principal(StrictModel):
@@ -77,6 +120,7 @@ class Principal(StrictModel):
     environments: list[str] = Field(min_length=1)
     can_deploy: bool = False
     can_approve: bool = False
+    can_build: bool = False
 
 
 CLAUDE_CALLBACKS = ("https://claude.ai/api/mcp/auth_callback", "https://claude.com/api/mcp/auth_callback")
@@ -123,6 +167,7 @@ class Config(StrictModel):
     cloudinfra: InfraSettings
     gcp: GcpSettings
     environments: dict[str, Environment] = Field(min_length=1)
+    sources: dict[str, BuildSource] = Field(default_factory=dict, description="Repositories teams may build from, by a name the build request uses.")
     principals: list[Principal]
 
     @field_validator("environments")
@@ -145,6 +190,13 @@ class Config(StrictModel):
         accounts = [environment.service_account for environment in self.environments.values()]
         if len(set(accounts)) != len(accounts):
             raise ValueError("each environment needs its own service_account")
+        for name, source in self.sources.items():
+            if not re.match(SOURCE_NAME, name):
+                raise ValueError(f"source name {name!r}: lowercase letters, digits and dashes")
+            if source.project != self.gcp.project_id:
+                raise ValueError(f"source {name}: its repository is in {source.project}; builds run only in the trusted project {self.gcp.project_id}")
+            if DOCKER_REPOSITORY.match(source.registry).group("project") != self.gcp.project_id:
+                raise ValueError(f"source {name}: its registry must be in the trusted project {self.gcp.project_id}")
         if self.sign_in and not host_allowed(urlparse(self.sign_in.url).netloc, self.allowed_hosts):
             raise ValueError(f"sign_in.url's host {urlparse(self.sign_in.url).netloc} must be in allowed_hosts, or Claude's calls to /mcp are refused")
         return self

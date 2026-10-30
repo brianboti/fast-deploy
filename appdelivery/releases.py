@@ -1,5 +1,7 @@
 """Releases: what a team asked to run, where it runs, and the one before it (docs/DELIVERY-SPEC.md section 5).
 
+A release names only an image this service built: its digest must be one a build of the same team recorded (building.py).
+
 A deploy is planned and recorded at once and rolled out by a background worker, one machine at a time. The first machine
 that does not come up healthy stops the rollout: the host script has already put that machine back on its previous
 container, and the machines done before it are rolled back (or emptied, for a group's first release), so a group never
@@ -13,13 +15,15 @@ import time
 import httpx
 
 from . import attest, bindings, planner, remote
+from .building import Builder
+from .cloudbuild import CloudBuildClient
 from .errors import DeliveryError, ErrorCode
 from .events import bound, event
 from .google import HostToken, ServiceAccountTokens
 from .infra import InfraClient, InfraRequest
 from .kube import ClusterDeployer, ClusterTarget
 from .machine import Machine, MachineSession
-from .models import ReleaseRequest, ReleaseResponse, RunResponse, TargetView
+from .models import BuildRequest, BuildResponse, ReleaseRequest, ReleaseResponse, RunResponse, TargetView
 from .run import JobDeployer, JobTarget, RunDeployer, ServiceTarget
 from .state import MOVING, StateManager, new_release_id
 
@@ -50,7 +54,7 @@ def scrub(text: str | None, values: list[str]) -> str | None:
 
 class Delivery:
     def __init__(self, config, state: StateManager, infra=None, machines=None, tokens=None, http=None, runner=remote.run, executor=None, sleep=time.sleep,
-                 clock=time.monotonic, clusters=None, services=None, jobs=None):
+                 clock=time.monotonic, clusters=None, services=None, jobs=None, builds=None, build_executor=None):
         self.config, self.state = config, state
         self.infra = infra or (lambda environment: InfraClient.for_environment(config, environment))
         self.machines = machines or (lambda environment: MachineSession(config.gcp.project_id, config.environments[environment].service_account))
@@ -64,6 +68,9 @@ class Delivery:
         self.sleep, self.clock = sleep, clock
         self._locks: dict[tuple[str, str], threading.RLock] = {}
         self._guard = threading.Lock()
+        # Cloud Build is called as the environment's own service account
+        builds = builds or (lambda environment: CloudBuildClient(lambda: self.tokens(config.environments[environment].service_account), self.http))
+        self.builder = Builder(config, state, builds, build_executor, sleep, clock)
 
     # ---- helpers
     def lock(self, request_id: str, group: str) -> threading.RLock:
@@ -117,13 +124,33 @@ class Delivery:
 
     def view(self, record: dict) -> ReleaseResponse:
         return ReleaseResponse(release_id=record["release_id"], status=record["status"], environment=record["environment"], request_id=record["request_id"],
-                               group=record["group"], image=record["image"], previous=record["previous"], can_roll_back=record["can_roll_back"],
+                               group=record["group"], image=record["image"], previous=record["previous"], build_id=record["plan"].get("build_id"),
+                               can_roll_back=record["can_roll_back"],
                                requested_by=record["requested_by"], approved_by=record["approved_by"], note=record["request"].get("note"),
                                env=record["plan"].get("env", {}), warnings=record["plan"].get("warnings", []),
                                targets=[TargetView(resource=item["resource_id"], name=item["name"], zone=item["zone"], status=item["status"],
                                                    started_at=item["started_at"], finished_at=item["finished_at"], error=item["error"], log=item["log"])
                                         for item in record["targets"]],
                                error=record["error"], created_at=record["created_at"], updated_at=record["updated_at"])
+
+    # ---- builds
+    def build(self, request: BuildRequest, principal, wait_seconds: int = 0) -> BuildResponse:
+        return self.builder.build(request, principal, wait_seconds)
+
+    def get_build(self, build_id: str, principal) -> BuildResponse:
+        return self.builder.get(build_id, principal)
+
+    def list_builds(self, principal, environment: str | None = None, source: str | None = None, limit: int = 50) -> list[BuildResponse]:
+        return self.builder.list_builds(principal, environment, source, limit)
+
+    def built_here(self, release: ReleaseRequest, principal) -> str:
+        """The build of this service, for the same team, that produced exactly this digest; else no release. An image made
+        or pushed anywhere else, even into the team's own registry, has no such build."""
+        found = self.state.built(principal.infra_owner, release.image)
+        if found is None:
+            raise DeliveryError(ErrorCode.NOT_BUILT_HERE, f"{release.image} was not built by this service for {principal.infra_owner}: images are built only in the "
+                                "trusted project. Ask for one with build_image and release the digest it reports (built)", {"image": release.image})
+        return found["build_id"]
 
     # ---- plan and deploy
     def plan(self, release: ReleaseRequest, principal):
@@ -132,11 +159,13 @@ class Delivery:
     def _plan(self, release: ReleaseRequest, principal):
         """(the release with its cluster named, its plan)."""
         planner.authorize(release, principal, self.config)
+        build_id = self.built_here(release, principal)
         infra = self.infra(release.environment).get_request(release.request_id)
         release = planner.resolve(release, infra)
         planned = planner.plan(release, principal, self.config, infra)
         running = self.state.running_release(release.request_id, release.target.key())
         planned.replaces = running["release_id"] if running else None
+        planned.build_id = build_id
         return release, planned
 
     def deploy(self, release: ReleaseRequest, principal, wait_seconds: int = 0) -> ReleaseResponse:
@@ -150,7 +179,7 @@ class Delivery:
             release_id = new_release_id()
             status = "AWAITING_APPROVAL" if planned.approval_required else "ROLLING_OUT"
             self.state.create_release(release_id, release.request_id, group, release.environment, principal.infra_owner, principal.name, status, release.image,
-                                      planned.replaces, release.model_dump(mode="json"), {"env": planned.env, "warnings": planned.warnings},
+                                      planned.replaces, release.model_dump(mode="json"), {"env": planned.env, "warnings": planned.warnings, "build_id": planned.build_id},
                                       [item.model_dump() for item in planned.machines])
         with bound(release_id, principal.name):
             event("release_received", request_id=release.request_id, group=group, environment=release.environment, image=release.image, status=status,
@@ -181,6 +210,8 @@ class Delivery:
         """Everything checked again as it is now (time may have passed since the plan, or the approval), and the machines
         or the cluster still the ones recorded. Returns (infra request, machine session or cluster deployer)."""
         principal = self._principal(record["requested_by"])
+        if record["status"] == "ROLLING_OUT":  # what was built here stays built here; checked again for a release approved later
+            self.built_here(release, principal)
         infra = self.infra(release.environment).get_request(release.request_id)
         planned = planner.plan(release, principal, self.config, infra)
         if {item.resource for item in planned.machines} != {item["resource_id"] for item in record["targets"]}:
@@ -561,9 +592,11 @@ class Delivery:
 
     def service_status(self, version: str) -> dict:
         environments = {name: {"service_account": item.service_account, "allowed_registries": item.allowed_registries, "require_attestation": item.require_attestation,
-                               "require_approval": item.require_approval} for name, item in self.config.environments.items()}
+                               "require_approval": item.require_approval,
+                               "build": {"service_account": item.build.service_account, "machine_type": item.build.machine_type} if item.build else None}
+                        for name, item in self.config.environments.items()}
         return {"status": "OK", "version": version, "cloudinfra": self.config.cloudinfra.url, "environments": environments,
-                "moving": len(self.state.releases_in(MOVING))}
+                "moving": len(self.state.releases_in(MOVING)), "building": len(self.state.builds_in(("QUEUED", "WORKING")))}
 
     # ---- restarts
     def recover(self) -> list[dict]:

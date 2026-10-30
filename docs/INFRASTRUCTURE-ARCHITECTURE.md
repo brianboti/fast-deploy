@@ -214,6 +214,11 @@ policy for one thing only: a cluster's node account (below).
 
 ### A team's image registry and its CI
 
+**Being replaced.** Since 2026-10-30 images are built only in the trusted project: the delivery service orders the
+build from Cloud Build and releases only the digests those builds report ([DELIVERY-SPEC.md](DELIVERY-SPEC.md) section
+3). The CI push path below is the next thing to go: the registry's only writer will be the environment's build account.
+Until then it is documented as it is.
+
 A team's images live in a registry its own request owns, so that pushing them needs nobody's hand:
 
 ```yaml

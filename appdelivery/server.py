@@ -19,21 +19,23 @@ from .auth import Authenticate, as_tool_error, audited, client_address, identity
 from .catalog import CATALOG, render_markdown
 from .config import load_config
 from .errors import DeliveryError, ErrorCode, problems_from
-from .models import ReleaseRequest
+from .models import BuildRequest, ReleaseRequest
 from .oauth import SignIn
 from .releases import Delivery
 from .state import ProcessLock, StateManager
 
 INSTRUCTIONS = (
-    "Application delivery: runs an image that already exists on machines or a Kubernetes cluster the Cloud Infrastructure service already created. You name "
-    "the image by digest (host/path@sha256:…), the infrastructure request and a group of its machines or its cluster with a workload name and replicas, the "
-    "port, the health path, and where each environment value comes from "
-    "(a literal, an endpoint of the request, or a secret of the request). It takes no source, Dockerfile, build or command. The request must name this "
+    "Application delivery: builds an image in the trusted Google Cloud project from a commit of a linked source (build_image; images are never built or "
+    "uploaded anywhere else), then runs it on machines, a Kubernetes cluster, a Cloud Run service or a job the Cloud Infrastructure service already "
+    "created. You name the image by the digest a build reported (host/path@sha256:…; any other is refused), the infrastructure request and a group "
+    "of its machines or its cluster with a workload name and replicas, the port, the health path, and where each environment value comes from "
+    "(a literal, an endpoint of the request, or a secret of the request). A release takes no source, Dockerfile, build or command. The request must name this "
     "environment's service account in its access list as admin. Start with plan_release; deploy_release rolls out one machine at a time, or through "
     "Kubernetes on a cluster, and puts the previous release back if it fails; get_release follows it; rollback_release and remove_release act on the "
     "release running on a target. Every result carries status; a FAILED one carries error.code and error.message."
 )
-HTTP_STATUS = {"NOT_FOUND": 404, "PERMISSION_DENIED": 403, "INVALID_STATE": 409, "NOT_GRANTED": 409, "INFRA_UNAVAILABLE": 502, "INFRA_AUTH_FAILED": 502,
+HTTP_STATUS = {"NOT_FOUND": 404, "PERMISSION_DENIED": 403, "INVALID_STATE": 409, "NOT_GRANTED": 409, "NOT_BUILT_HERE": 409,
+               "BUILD_UNAVAILABLE": 502, "INFRA_UNAVAILABLE": 502, "INFRA_AUTH_FAILED": 502,
                "GOOGLE_AUTH_FAILED": 502, "SECRET_UNAVAILABLE": 502, "MACHINE_UNREACHABLE": 502, "CLUSTER_UNREACHABLE": 502, "SERVICE_UNREACHABLE": 502, "INTERNAL_ERROR": 500}
 
 
@@ -83,7 +85,8 @@ class StrictMCP(FastMCP):
         except ToolError as exc:
             if not isinstance(exc.__cause__, pydantic.ValidationError):
                 raise
-            problems = problems_from(exc.__cause__)
+            kind = "build" if name == "build_image" else "release"
+            problems = problems_from(exc.__cause__, kind)
             first = problems[0] if problems else None
             error = DeliveryError(first.code if first else ErrorCode.INVALID_RELEASE, first.message if first else "Invalid arguments",
                                   {"tool": name, "problems": [item.model_dump(mode="json") for item in problems]})
@@ -91,11 +94,11 @@ class StrictMCP(FastMCP):
             return as_tool_error(error.to_dict())
 
 
-def read_body(raw: bytes) -> dict:
+def read_body(raw: bytes, code: ErrorCode = ErrorCode.INVALID_RELEASE) -> dict:
     try:
         data = json.loads(raw)
     except ValueError:
-        raise DeliveryError(ErrorCode.INVALID_RELEASE, "The body is not JSON: send one JSON object", {"field": "body"}) from None
+        raise DeliveryError(code, "The body is not JSON: send one JSON object", {"field": "body"}) from None
     return data if isinstance(data, dict) else {"_": data}
 
 
@@ -118,11 +121,14 @@ def build_app(config, delivery: Delivery | None = None, state: StateManager | No
             process_lock.acquire()  # one process per state file, or a second would recover the first's work as interrupted
         try:
             delivery.recover()
+            delivery.builder.resume()
             try:
                 async with mcp.session_manager.run():
                     yield
             finally:
-                # work under way finishes before the lock goes; work not yet started is dropped and recovered at the next start
+                # work under way finishes before the lock goes; work not yet started is dropped and recovered at the next start.
+                # Builds go on in Cloud Build: their followers stop at once and resume at the next start
+                delivery.builder.stop()
                 delivery.executor.shutdown(wait=True, cancel_futures=True)
         finally:
             if process_lock is not None:
@@ -162,6 +168,22 @@ def build_app(config, delivery: Delivery | None = None, state: StateManager | No
         return {"tools": [{"name": spec.name, "title": spec.title, "purpose": spec.purpose, "hint": spec.hint, "errors": list(spec.errors),
                            "inputs": [{"name": item.name, "required": item.required, "description": item.description} for item in spec.inputs]} for spec in CATALOG],
                 "markdown": render_markdown()}
+
+    @app.post("/builds")
+    async def build(request: Request, wait_seconds: int = 0):
+        raw = await request.body()
+        return await in_worker("build", lambda: delivery.build(BuildRequest.model_validate(read_body(raw, ErrorCode.INVALID_BUILD)), identity.get(), wait_seconds))
+
+    @app.get("/builds")
+    def list_builds(environment: str | None = None, source: str | None = None, limit: int = 50):
+        def run():
+            builds = delivery.list_builds(identity.get(), environment, source, limit)
+            return {"count": len(builds), "builds": [item.model_dump(mode="json") for item in builds]}
+        return rest("list_builds", run)
+
+    @app.get("/builds/{build_id}")
+    async def get_build(build_id: str):
+        return await in_worker("get_build", lambda: delivery.get_build(build_id, identity.get()), build_id)
 
     @app.post("/releases/plan")
     async def plan(request: Request):

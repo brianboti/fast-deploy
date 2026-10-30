@@ -169,6 +169,46 @@ The last one is per repository in the environment's `allowed_registries`: Cloud 
 a revision can read the image. Everything else the account may do on a request comes from the team naming it at
 `admin` in the request's `access`.
 
+**Builds.** Images are built only here, by Cloud Build, never on a laptop or in a CI job. Enable the Cloud Build and
+Container Analysis APIs, then, once, connect the company's Git host and link each repository a team builds from
+(GitHub: the command prints a link to authorise and install the Cloud Build GitHub App; wait for `installationState:
+COMPLETE` in `gcloud builds connections describe`):
+
+```bash
+gcloud services enable cloudbuild.googleapis.com containeranalysis.googleapis.com --project $PROJECT
+```
+
+```bash
+gcloud builds connections create github github --region $REGION --project $PROJECT
+```
+
+```bash
+gcloud builds repositories create acme-shop --remote-uri https://github.com/acme/shop.git --connection github --region $REGION --project $PROJECT
+```
+
+For each environment a build account that may write logs and push to each source's registry, and the environment's
+own account allowed to start builds as it:
+
+```bash
+gcloud iam service-accounts create build-dev --project $PROJECT --display-name "appdelivery dev builds"
+```
+
+```bash
+gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:build-dev@$PROJECT.iam.gserviceaccount.com --role roles/logging.logWriter
+```
+
+```bash
+gcloud artifacts repositories add-iam-policy-binding shop-images --location $REGION --project $PROJECT --member serviceAccount:build-dev@$PROJECT.iam.gserviceaccount.com --role roles/artifactregistry.writer
+```
+
+```bash
+gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:appdelivery-dev@$PROJECT.iam.gserviceaccount.com --role roles/cloudbuild.builds.editor
+```
+
+```bash
+gcloud iam service-accounts add-iam-policy-binding build-dev@$PROJECT.iam.gserviceaccount.com --project $PROJECT --member serviceAccount:appdelivery-dev@$PROJECT.iam.gserviceaccount.com --role roles/iam.serviceAccountUser
+```
+
 In `cloudinfra`'s configuration the environment is a read-only principal (section 3 above); its token goes into the
 variable the environment names. Then:
 
@@ -187,16 +227,23 @@ environments:
   dev:
     token_env: APPDELIVERY_DEV_INFRA_TOKEN
     service_account: appdelivery-dev@your-infrastructure-project.iam.gserviceaccount.com
-    allowed_registries: [us-central1-docker.pkg.dev/your-infrastructure-project]
+    allowed_registries: [us-central1-docker.pkg.dev/your-infrastructure-project/shop-images]
+    build: {service_account: build-dev@your-infrastructure-project.iam.gserviceaccount.com}
   prod:
     token_env: APPDELIVERY_PROD_INFRA_TOKEN
     service_account: appdelivery-prod@your-infrastructure-project.iam.gserviceaccount.com
-    allowed_registries: [us-central1-docker.pkg.dev/your-infrastructure-project/release]
+    allowed_registries: [us-central1-docker.pkg.dev/your-infrastructure-project/shop-images]
+    build: {service_account: build-prod@your-infrastructure-project.iam.gserviceaccount.com}
     require_attestation: true
     trusted_signers: ["gcpkms://projects/your-security-project/locations/global/keyRings/release/cryptoKeys/attestor"]
     require_approval: true
+sources:
+  shop-web:
+    repository: projects/your-infrastructure-project/locations/us-central1/connections/github/repositories/acme-shop
+    infra_owner: shop-team
+    registry: us-central1-docker.pkg.dev/your-infrastructure-project/shop-images
 principals:
-  - {name: shop-team, token_sha256: "<hash>", infra_owner: shop-team, environments: [dev, prod], can_deploy: true}
+  - {name: shop-team, token_sha256: "<hash>", infra_owner: shop-team, environments: [dev, prod], can_deploy: true, can_build: true}
   - {name: shop-oncall, token_sha256: "<hash>", infra_owner: shop-team, environments: [prod], can_approve: true}
 ```
 
@@ -212,8 +259,15 @@ On the platform machine, build `Dockerfile.appdelivery` the same way, mount the 
 `/config/appdelivery.yaml` and a volume at `/data`, pass the token variables, and run it as the machine's service
 account (which holds Token Creator on each environment's account and reads the image's repository).
 
-The first release, as the team, onto the request made in section 3 (put its id and the image's digest in a copy of
-`examples/release.yaml`):
+The first build, as the team (a copy of `examples/build.yaml` with a real commit, as JSON); `built` in the answer is
+the digest to release, once `status` is `SUCCEEDED` (`GET /builds/{id}` follows it):
+
+```bash
+curl -s -X POST "http://127.0.0.1:8200/builds?wait_seconds=45" -H "Authorization: Bearer $TEAM_TOKEN" -H "Content-Type: application/json" --data-binary @build.json
+```
+
+The first release, as the team, onto the request made in section 3 (put its id and the built digest in a copy of
+`examples/release.yaml`; any digest this service did not build is refused with `NOT_BUILT_HERE`):
 
 ```bash
 app-delivery plan release.yaml --config appdelivery.local.yaml --as shop-team

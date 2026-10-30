@@ -1,3 +1,26 @@
+# Unreleased: images are built only in the trusted project
+
+Decided 2026-10-30, for security: no developer, CI job, local machine or other outside system builds a container image
+and uploads it into the trusted Google Cloud project. A team asks for a build; the project fetches the source and builds
+it ([research/RESEARCH-2026-10-30-trusted-build.md](research/RESEARCH-2026-10-30-trusted-build.md)).
+
+- **`appdelivery`: builds.** `build_image` (`POST /builds`), `get_build`, `list_builds`: one commit (a full SHA) of a
+  source the operator linked to Cloud Build (2nd gen), a Dockerfile and a context in it, and an image name. The service
+  composes the build itself (one `docker build` step; the image pushed by Cloud Build with `requestedVerifyOption:
+  VERIFIED`; the environment's build account; Cloud Logging only) and follows it in a pool of its own, resumed after a
+  restart. The build request takes no step, command, argument, secret, account or registry. Fourteen tools.
+- **`appdelivery`: only built images run.** A release whose digest is not the `built` digest of a succeeded build of
+  the same team is refused with `NOT_BUILT_HERE` before anything else is read; plans and releases name their
+  `build_id`. New codes `INVALID_BUILD`, `NOT_BUILT_HERE`, `BUILD_UNAVAILABLE`, `BUILD_FAILED`.
+- **Configuration.** `environments.<name>.build` (`service_account`, never the environment's own; `machine_type`,
+  `timeout_seconds`, `builder`), `sources` (`repository`, `infra_owner`, `registry`, all in the trusted project), and
+  `can_build` on a principal.
+
+Upgrading: a release of an image that was built elsewhere is now refused. Link each source, create the build accounts
+(docs/SETUP.md section 4), add `build`, `sources` and `can_build`, and build the images to release. Not yet in this
+change: `cloudinfra`'s registries still let a team's CI push (next), the release gate does not yet verify Cloud Build's
+signed provenance, and no build has run on Google Cloud.
+
 # Unreleased: the repository is the two services, and the documents say so
 
 The Fast Deploy workflow (`labdeploy`), retired on 2026-10-29, is removed with everything that existed only for it: the
