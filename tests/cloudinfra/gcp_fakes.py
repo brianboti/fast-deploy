@@ -43,17 +43,26 @@ class FakeGcpApi(GcpApi):
     """Google's REST surface, in memory. `fail_on` holds (method, url fragment) pairs that raise a provider error once reached."""
 
     def __init__(self, project=PROJECT):
-        super().__init__(project, token=lambda: "fake-token", sleep=lambda seconds: None)
+        self.now = 0.0  # the fake's own clock: a sleep moves it on, so a wait that never ends runs out instead of hanging a test
+        super().__init__(project, token=lambda: "fake-token", sleep=self._sleep, clock=lambda: self.now)
         self.calls = []
         self.fail_on = []
         self.instances, self.disks, self.networks, self.subnets, self.firewalls, self.addresses, self.sql, self.buckets, self.sql_users, self.sql_databases = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
         self.topics, self.subscriptions, self.secrets, self.secret_versions, self.clusters, self.redis, self.instance_groups, self.regional = {}, {}, {}, {}, {}, {}, {}, {}
-        for collection in ("healthChecks", "backendServices", "urlMaps", "targetHttpProxies", "forwardingRules"):
+        for collection in ("healthChecks", "backendServices", "urlMaps", "targetHttpProxies", "forwardingRules", "sslCertificates"):
             setattr(self, collection, {})
         self.bucket_objects = set()
         self.peerings = set()
         self.namespaces: dict[str, set[str]] = {}  # cluster endpoint -> namespaces
         self.role_bindings: dict[tuple[str, str, str], dict] = {}  # (endpoint, namespace, name) -> {"role", "member"}
+        self.namespace_labels: dict[tuple[str, str], dict] = {}  # (endpoint, namespace) -> its labels
+        self.cluster_objects: dict[tuple[str, str], dict] = {}  # (endpoint, path) -> other objects the adapter put in a cluster
+        self.order: list[tuple[str, str]] = []  # deletes, in the order they reached the fake
+        self.gateway_kinds_missing = 0  # how many more Gateway API writes find no such kind yet, as just after a cluster runs
+        self.service_accounts: dict[str, dict] = {}  # email -> the account
+        self.repositories = {"us-central1-docker.pkg.dev/test-project/apps", "us-central1-docker.pkg.dev/test-project/shared"}
+        self.account_unknown_to_gke_for = 0  # how many more cluster creates GKE refuses because it does not know the new node account yet
+        self.unknown_for = 0  # how many more grants naming a new service account IAM refuses as unknown, as it does for seconds after a create
         self.kube_fail = None  # an InfrastructureError the fake Kubernetes API raises once, when set
         self.policies = {}  # IAM policies by resource: ("instance", zone, name), ("tunnel", zone, id), ("secret", name), ("bucket", name), ("topics" | "subscriptions", name)
         self.started_at = "2026-10-28T10:00:00Z"  # what lastStartTimestamp says after a create or a start
@@ -71,6 +80,9 @@ class FakeGcpApi(GcpApi):
             return {"name": f"operations/sn-{self.counter}", "done": True}
         return {"name": f"op-{self.counter}", "status": "DONE", "selfLink": f"https://compute.googleapis.com/compute/v1/projects/{self.project}/global/operations/op-{self.counter}"}
 
+    def _sleep(self, seconds):
+        self.now += seconds
+
     def request(self, method, url, json=None, params=None):
         self.calls.append((method, url, json))
         for fail_method, fragment in self.fail_on:
@@ -79,6 +91,11 @@ class FakeGcpApi(GcpApi):
         host, path = url.split("://", 1)[1].split("/", 1)
         path = "/" + path.split("?", 1)[0]
         handlers = (
+            (r"^/v1/projects/[^/]+/serviceAccounts$", self._service_accounts) if host.startswith("iam") else (r"^$", None),
+            (r"^/v1/projects/[^/]+/serviceAccounts/([^/]+)$", self._service_account) if host.startswith("iam") else (r"^$", None),
+            (r"^/v1/projects/([^/:]+):(getIamPolicy|setIamPolicy)$", self._project_policy) if host.startswith("cloudresourcemanager") else (r"^$", None),
+            (r"^/v1/projects/([^/]+)/locations/([^/]+)/repositories/([^/:]+):(getIamPolicy|setIamPolicy)$", self._repository_policy)
+            if host.startswith("artifactregistry") else (r"^$", None),
             (r"^/v1/projects/([^/]+)/iap_tunnel/zones/([^/]+)/instances/([^/:]+):(getIamPolicy|setIamPolicy)$", self._tunnel_policy) if host.startswith("iap") else (r"^$", None),
             (r"^/v1/projects/[^/]+/(topics|subscriptions)/([^/:]+):(getIamPolicy|setIamPolicy)$", self._pubsub_policy) if host.startswith("pubsub") else (r"^$", None),
             (r"^/v1/projects/[^/]+/(topics|subscriptions)/([^/]+)$", self._pubsub) if host.startswith("pubsub") else (r"^$", None),
@@ -102,8 +119,10 @@ class FakeGcpApi(GcpApi):
             (r"^/compute/v1/projects/[^/]+/aggregated/instances$", self._aggregated),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/disks$", self._disks),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/disks/([^/]+)$", self._disk),
-            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses|healthChecks|backendServices|urlMaps|targetHttpProxies|forwardingRules)$", self._global_collection),
-            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses|healthChecks|backendServices|urlMaps|targetHttpProxies|forwardingRules)/([^/]+)$", self._global_item),
+            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses|healthChecks|backendServices|urlMaps|targetHttpProxies|forwardingRules|sslCertificates)$",
+             self._global_collection),
+            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses|healthChecks|backendServices|urlMaps|targetHttpProxies|forwardingRules|sslCertificates)/([^/]+)$",
+             self._global_item),
             (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/subnetworks$", self._subnets),
             (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/subnetworks/([^/]+)$", self._subnet),
             (r"^/compute/v1/projects/[^/]+/regions/([^/]+)$", self._region),
@@ -176,6 +195,46 @@ class FakeGcpApi(GcpApi):
             instance.setdefault("disks", []).append({"source": body["source"], "deviceName": body["deviceName"], "autoDelete": body["autoDelete"]})
         return self._op()
 
+    # ---- service accounts, and the project's and repositories' policies
+    def _service_accounts(self, found, method, body, params):
+        email = f"{body['accountId']}@{self.project}.iam.gserviceaccount.com"
+        assert 6 <= len(body["accountId"]) <= 30, "IAM takes an account id of 6 to 30 characters"
+        if email in self.service_accounts:
+            raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, "Google Cloud refused the request: already exists", {"http_status": 409})
+        self.service_accounts[email] = {"email": email, **body["serviceAccount"]}
+        return self.service_accounts[email]
+
+    def _service_account(self, found, method, body, params):
+        if found.group(1) not in self.service_accounts:
+            raise self._not_found(found.group(1))
+        if method == "DELETE":
+            return self.service_accounts.pop(found.group(1)) and {}
+        return self.service_accounts[found.group(1)]
+
+    def _known(self, policy):
+        for binding in policy.get("bindings", []):
+            for member in binding.get("members", []):
+                if member.startswith("serviceAccount:") and member.endswith(".iam.gserviceaccount.com") and member[15:].startswith("node-"):
+                    if member[15:] not in self.service_accounts or self.unknown_for > 0:
+                        self.unknown_for = max(0, self.unknown_for - 1)
+                        raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"Google Cloud refused the request: Service account {member[15:]} does not exist.",
+                                                  {"http_status": 400})
+
+    def _project_policy(self, found, method, body, params):
+        writing = found.group(2) == "setIamPolicy"
+        if writing:
+            self._known(body["policy"])
+        return self._policy(("project",), writing, body.get("policy"))
+
+    def _repository_policy(self, found, method, body, params):
+        registry = f"{found.group(2)}-docker.pkg.dev/{found.group(1)}/{found.group(3)}"
+        if registry not in self.repositories:
+            raise self._not_found(registry)
+        writing = found.group(4) == "setIamPolicy"
+        if writing:
+            self._known(body["policy"])
+        return self._policy(("repository", registry), writing, body.get("policy"))
+
     def _policy(self, key, writing, body):
         if writing:
             policy = copy.deepcopy(body)
@@ -236,6 +295,13 @@ class FakeGcpApi(GcpApi):
 
     def _global_collection(self, found, method, body, params):
         store = getattr(self, found.group(1))
+        if method == "GET":  # a list, by IPAddress when filtered so
+            wanted = re.fullmatch(r'IPAddress="([^"]+)"', params.get("filter", "")) if params.get("filter") else None
+            return {"items": [item for item in store.values() if wanted is None or item.get("IPAddress") == wanted.group(1)]}
+        if body["name"] in store:
+            raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, "Google Cloud refused the request: already exists", {"http_status": 409})
+        if found.group(1) == "sslCertificates":
+            body = {**body, "managed": {**body["managed"], "status": "PROVISIONING"}}
         store[body["name"]] = {**body, "selfLink": f"https://compute.googleapis.com/compute/v1/projects/{self.project}/global/{found.group(1)}/{body['name']}"}
         if found.group(1) == "addresses" and body.get("purpose") != "VPC_PEERING":
             store[body["name"]]["address"] = f"34.120.0.{len(store)}"
@@ -315,6 +381,12 @@ class FakeGcpApi(GcpApi):
 
     def _clusters(self, found, method, body, params):
         cluster = body["cluster"]
+        account = cluster["nodePools"][0]["config"].get("serviceAccount")
+        assert account is None or account in self.service_accounts, "a node pool runs as an account that exists"
+        if account and self.account_unknown_to_gke_for > 0:
+            self.account_unknown_to_gke_for -= 1
+            raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f'Google Cloud refused the request: Failed precondition: failed to check status for "{account}"; '
+                                      "Verify if principal exists and is valid.", {"http_status": 400})
         for field in ("network", "subnetwork"):
             if "/" in (cluster.get(field) or ""):  # as GKE does: these fields take a name only
                 raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f'Google Cloud refused the request: Malformed value for {field} field: "{cluster[field]}".',
@@ -330,6 +402,7 @@ class FakeGcpApi(GcpApi):
         if key not in self.clusters:
             raise self._not_found(key[1])
         if method == "DELETE":
+            self.order.append(("cluster DELETE", key[1]))
             del self.clusters[key]
             return {"name": "operation-delete", "status": "DONE", "selfLink": f"https://container.googleapis.com/v1/projects/{self.project}/locations/{key[0]}/operations/op"}
         return self.clusters[key]
@@ -457,6 +530,25 @@ class FakeKubeApi:
     def ensure_namespace(self, name, labels):
         self._maybe_fail()
         self.fake.namespaces.setdefault(self.endpoint, set()).add(name)
+        self.fake.namespace_labels.setdefault((self.endpoint, name), dict(labels))
+
+    def put(self, collection, body):
+        self._maybe_fail()
+        if "gateway.networking.k8s.io" in collection and self.fake.gateway_kinds_missing > 0:
+            self.fake.gateway_kinds_missing -= 1
+            raise InfrastructureError(ErrorCode.NOT_FOUND, "The cluster's API answered 404", {"http_status": 404})
+        self.fake.cluster_objects[(self.endpoint, f"{collection}/{body['metadata']['name']}")] = body
+        if body["kind"] == "Gateway":  # GKE's controller makes the load balancer: a forwarding rule per listener on the named address
+            address = self.fake.addresses[body["spec"]["addresses"][0]["value"]]["address"]
+            for listener in body["spec"]["listeners"]:
+                name = f"gkegw-{listener['name']}-{address}"
+                self.fake.forwardingRules[name] = {"name": name, "IPAddress": address, "portRange": str(listener["port"]), "gateway": True}
+
+    def delete(self, path):
+        self._maybe_fail()
+        self.fake.order.append(("kubernetes DELETE", path))
+        if self.fake.cluster_objects.pop((self.endpoint, path), None) and path.endswith("/gateways/public"):
+            self.fake.forwardingRules = {name: rule for name, rule in self.fake.forwardingRules.items() if not rule.get("gateway")}  # as GKE's controller does
 
     def put_role_binding(self, namespace, name, cluster_role, member, labels):
         self._maybe_fail()

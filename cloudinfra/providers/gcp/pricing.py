@@ -94,6 +94,10 @@ def line(planned: PlannedResource) -> CostLine:
         nodes = machine_month(spec["machine_type"]) * spec["node_count"] + spec["node_count"] * spec.get("node_disk_gb", 0) * PRICING["disk_gb_month"]["pd-balanced"]
         monthly = PRICING["cluster_management_hour"] * HOURS_PER_MONTH + nodes
         basis = f"the cluster fee (one zonal cluster per account is free) plus {spec['node_count']} {spec['machine_type']} nodes with {spec.get('node_disk_gb', 0)} GB disks"
+        if spec.get("public") is not None:  # GKE's load balancer for the Gateway: a forwarding rule per listener
+            rules = 2 if spec["public"].get("hostnames") else 1
+            monthly += rules * PRICING["forwarding_rule_hour"] * HOURS_PER_MONTH
+            basis += f", and the front door's {rules} forwarding rule{'s' if rules > 1 else ''} (data processed is billed by the GB on top)"
     elif planned.kind == "load_balancer":
         monthly = PRICING["forwarding_rule_hour"] * HOURS_PER_MONTH
         basis = "one forwarding rule; data processed is billed by the GB on top"
@@ -123,7 +127,8 @@ def as_planned(resource) -> PlannedResource:
     elif kind == "cache":
         spec = {"tier": resource.tier, "memory_gb": resource.memory_gb}
     elif kind == "cluster":
-        spec = {"machine_type": resource.machine_type, "node_count": resource.node_count, "node_disk_gb": resource.node_disk_gb or 0}
+        spec = {"machine_type": resource.machine_type, "node_count": resource.node_count, "node_disk_gb": resource.node_disk_gb or 0,
+                "public": {"hostnames": resource.public.hostnames} if resource.public else None}
     elif kind == "secret":
         spec = {"versions": resource.versions}
     return PlannedResource(kind=kind, name=resource.name, provider_mapping="existing", spec=spec)

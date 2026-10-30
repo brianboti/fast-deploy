@@ -81,7 +81,8 @@ database: {engine: postgresql, version: "16", size: small, storage_gb: 10, high_
 cache:    {engine: redis, memory_gb: 2, high_availability: false}
 queue:    [{name: events}, {name: jobs, subscription: false}]
 secret:   [{name: api-key, generate_value: true}, {name: token}]
-cluster:  {node_count: 2, node_cpu: 2, node_memory_gb: 8}   # one cluster, or a list of named ones (name: blue)
+cluster:  {node_count: 2, node_cpu: 2, node_memory_gb: 8,   # one cluster, or a list of named ones (name: blue)
+           registries: [us-central1-docker.pkg.dev/apps/shop], public: {hostnames: [shop.example.com]}}
 load_balancer: {type: http, port: 8080, backend_group: web, health_check_path: /healthz}
 lifetime: {hours: 168, on_expiry: stop}       # optional; none unless asked or set by the operator
 access:   [{member: "group:data-team@example.com", level: use}]
@@ -153,8 +154,8 @@ composite; primitives compose through `network_id` (machines and databases join 
 ## Access to what is created
 
 Whoever asked for a machine needs to log in to it; whoever runs an application needs its database password. The service
-grants access on the resources a request created, through each resource's own IAM policy, and never changes the project's
-policy.
+grants access on the resources a request created, through each resource's own IAM policy, and changes the project's
+policy for one thing only: a cluster's node account (below).
 
 - **Members.** `access` on a request lists people, groups or service accounts (`user:`, `group:`, `serviceAccount:` and an
   email address) with a level, `use` or `admin`. The requester is added as `admin` when the operator maps its principal to
@@ -177,7 +178,10 @@ policy.
   named after the request, when it is created, and its grants are Kubernetes RoleBindings in that namespace only: IAM's
   Kubernetes roles cannot be limited to one cluster. A `user:` or `serviceAccount:` member is bound as a `User` named by
   its email, a `group:` member as a `Group` (which needs Google Groups for RBAC); `edit` changes workloads, services,
-  config maps and secrets, never RBAC or the namespace. The service makes these calls to the cluster's own API with its
+  config maps and secrets, never RBAC or the namespace. `edit` would also let a namespace make a public Google load
+  balancer (a Service of type `LoadBalancer`, an Ingress or a Gateway), so every cluster gets a ValidatingAdmissionPolicy,
+  `cloudinfra-no-public-entry`, bound to the namespaces made for requests (labelled `cloudinfra-tenant: "true"`, which
+  `edit` cannot change), that refuses all three there: a public address is this service's to make. The service makes these calls to the cluster's own API with its
   Google token, checking the server against the cluster's CA certificate. The tunnel grant names the machine's numeric
   id, so a later machine with the same name never inherits it.
 - **Project-level prerequisites** are the platform team's, once: a role with `compute.projects.get` and
@@ -195,6 +199,44 @@ policy.
   Engine instances, IAP tunnel instances, secrets, buckets, topics and subscriptions); a custom role that lists exactly
   those is the narrowest way to give them. For clusters it needs to create namespaces and RoleBindings in the clusters
   it made, which the Kubernetes Engine role it creates them with already allows.
+
+### A cluster's nodes
+
+A cluster's nodes run as a service account made for that cluster (`node-<request id>-<cluster name>`), never the Compute
+Engine default account, which in a new project has no rights at all and in an old one often has too many. Google
+recommends exactly this ([GKE service accounts](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/service-accounts)).
+The account holds `roles/container.defaultNodeServiceAccount` on the project, the minimum the nodes need to write logs
+and metrics, and `roles/artifactregistry.reader` on each Artifact Registry repository the request names in
+`cluster.registries`, on nothing else; nodes pull images as this account. A request may name only repositories the
+operator lists in `providers.gcp.registries`. The account, its project role and its repository roles are removed after
+the cluster is deleted, or at once when Google refuses the cluster. `providers.gcp.cluster_node_accounts: false` keeps
+the old behaviour (the default account, no registries).
+
+The service's own identity then needs, once, from the platform team:
+
+| What | Role | Limit it to |
+|---|---|---|
+| make and delete the node accounts | `roles/iam.serviceAccountCreator`, `roles/iam.serviceAccountDeleter` | the project |
+| run a node pool as them | `roles/iam.serviceAccountUser` | the project: it can then act as any service account there, so run the service in a project of its own, with no other accounts worth taking |
+| give a node account its project role | `roles/resourcemanager.projectIamAdmin` | an IAM condition, so it can grant that one role and no other: `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])` ([limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)) |
+| let a node account read a repository | `roles/artifactregistry.admin` | each repository listed in `providers.gcp.registries`, granted on the repository |
+
+### A cluster's front door
+
+`cluster.public: {hostnames: [shop.example.com]}` asks for a public address for the request's workloads, made and owned
+by this service (a team's namespace may not make one; see the admission policy above). The cluster is made with Gateway
+API on; the service reserves a global address (`<cluster>-door`), makes a Google-managed certificate for the hostnames,
+and puts one Gateway, `cloudinfra-gateway/public`, of class `gke-l7-global-external-managed` on that address: HTTPS on 443
+taking routes from the request's namespace only (matched by its name), and plain HTTP on 80 redirecting to HTTPS. Without
+hostnames it serves plain HTTP on the address. A hostname must be in one of the operator's `providers.gcp.public_domains`.
+The cluster reports `public.address`, the hostnames and the certificate's state; the operator points DNS at the address,
+and the certificate becomes ACTIVE after that. A namespace with `edit` may write HTTPRoutes and GKE's HealthCheckPolicies (a
+ClusterRole aggregated into `edit`) and attach them to that Gateway; Gateways stay out of `edit`.
+
+GKE makes the Gateway's load balancer and deletes it with the Gateway, so the service deletes the Gateway first, waits
+until no forwarding rule uses the address (ten minutes at most), then deletes the cluster, the certificate and the
+address. It also needs, beyond the roles above, Compute Engine's `globalAddresses` and `sslCertificates` insert, get and
+delete, and `forwardingRules` list. A forwarding rule per listener is priced in the estimate.
 
 ## Time: stop, start, idle stop and expiry
 

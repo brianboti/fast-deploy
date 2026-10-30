@@ -49,6 +49,10 @@ providers:
     # impersonate_service_account: cloudinfra@your-infrastructure-project.iam.gserviceaccount.com
     # quota_project: your-infrastructure-project   # on a laptop with a person's sign-in: the project Google counts the calls against
     # zones: {europe-west10: [a, b, c]}           # regions the adapter's own table does not know
+    # cluster_node_accounts: true                 # each cluster's nodes run as an account made for it (see docs/INFRASTRUCTURE-ARCHITECTURE.md)
+    # registries:                                 # Artifact Registry repositories a request may let its clusters pull from
+    #   - us-central1-docker.pkg.dev/your-apps-project/shop
+    # public_domains: [apps.example.com]          # DNS domains a cluster's front door may serve over HTTPS
     # profiles:                                   # software images the platform team approves; a request names one as compute.profile
     #   gpu-signed:                               # built with Google's cuda_installer.pyz build_image: signed drivers, Secure Boot stays on
     #     image: projects/your-images-project/global/images/family/gpu-signed-cu129

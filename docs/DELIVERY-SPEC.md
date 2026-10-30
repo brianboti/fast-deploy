@@ -296,14 +296,26 @@ The design:
 
 Steps, each its own pull request:
 
-1. **`cloudinfra`: several clusters per request.**
-2. **`appdelivery`: a cluster target names its cluster.**
-3. **`cloudinfra`: each cluster's own node account and the registries it may pull from.**
-4. **`cloudinfra`: no public load balancer from a team namespace.**
-5. **`cloudinfra`: the front door.**
-6. **`appdelivery`: exposing a workload.**
+1. **`cloudinfra`: several clusters per request.** Built 2026-10-29 (#206).
+2. **`appdelivery`: a cluster target names its cluster.** Built 2026-10-29. `InfraRequest.cluster(name)` finds a cluster
+   by the name its block gave it (`<request>-<name>` in cloudinfra); `cluster: true` with several clusters is refused
+   with their names, and with one it is named before the release is kept, so asking by `true` or by name is one target.
+3. **`cloudinfra`: each cluster's own node account and the registries it may pull from.** Built 2026-10-29; the
+   operator chose one account per cluster over one shared account, accepting the extra rights the service needs
+   (docs/INFRASTRUCTURE-ARCHITECTURE.md, "A cluster's nodes").
+4. **`cloudinfra`: no public load balancer from a team namespace.** Built 2026-10-29. An Ingress is refused too: on
+   GKE it also makes a public load balancer.
+5. **`cloudinfra`: the front door.** Built 2026-10-29. Without hostnames it serves plain HTTP on the address; hostnames
+   must be in the operator's `public_domains`. The Gateway is deleted first, and the cluster waits for GKE's forwarding
+   rules to go, so no load balancer outlives it.
+6. **`appdelivery`: exposing a workload.** Built 2026-10-29. The route moves only once a release is healthy, so a
+   failed release leaves it on the previous one; a release without `expose` takes the workload off the door, and a
+   rollback puts the previous release's route back. GKE's Gateway load balancer checks `/` and does not read the
+   readiness probe, so a health path other than `/` also gets a HealthCheckPolicy (which `edit` may now write).
 7. **A real run on Google Cloud:** the delivery service from its image, an image from a private repository, two
-   clusters, and the workload reached over HTTPS from the internet; then everything deleted.
+   clusters, and the workload reached over HTTPS from the internet; then everything deleted. Done 2026-10-29 over plain
+   HTTP (docs/DELIVERY-SPIKE.md section 12): everything held; it found one defect, fixed (GKE learns a new node account
+   later than IAM). HTTPS on a real domain is still to be run.
 
 ### Not planned: Cloud Run
 

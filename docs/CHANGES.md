@@ -1,3 +1,46 @@
+# Unreleased: a cluster's front door
+
+Phase 3, step 5 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECTURE.md, "A cluster's front door"):
+
+- **`cluster.public`** with `hostnames`: the cluster gets Gateway API, a reserved global address, a Google-managed
+  certificate for the hostnames and one Gateway, `cloudinfra-gateway/public` (`gke-l7-global-external-managed`), serving
+  HTTPS and redirecting HTTP, taking routes from the request's namespace only. Without hostnames, plain HTTP on the
+  address. Hostnames must be in the operator's `providers.gcp.public_domains`. Also `create_cluster`'s `public` and
+  `hostnames`.
+- **Routes for `edit`.** Every new cluster gets a ClusterRole aggregated into `edit` that writes HTTPRoutes and GKE's
+  HealthCheckPolicies, so a request's namespace attaches its workloads with the health check they need; Gateways stay
+  out of `edit`.
+- **Reported:** `ClusterResource.public` with the address, the hostnames, the Gateway and the certificate's state.
+- **Delete in order.** The Gateway first; the cluster waits until GKE's forwarding rules on the address are gone, then
+  goes, then the certificate and the address. A front door that failed half way is closed the same way.
+- **Priced:** a forwarding rule per listener. The plan says DNS must point at the address before the certificate is
+  ACTIVE.
+
+# Unreleased: a request's namespace cannot open a public address of its own
+
+Phase 3, step 4 (docs/DELIVERY-SPEC.md, section 4). `edit` lets a namespace make a Service of type `LoadBalancer`, an
+Ingress or a Gateway, each a public Google load balancer the platform team never sees. Every new cluster now gets a
+ValidatingAdmissionPolicy and its binding, `cloudinfra-no-public-entry` (built into Kubernetes since 1.30), that refuse
+all three in the namespaces made for requests, which carry the label `cloudinfra-tenant: "true"`; `edit` cannot change a
+namespace's labels. The policy is put in before the namespace exists; a cluster that will not take it fails the request
+and is deleted. Clusters made before keep no such policy.
+
+# Unreleased: each cluster's nodes run as their own account, and may pull from private registries
+
+Phase 3, step 3 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECTURE.md, "A cluster's nodes"):
+
+- **A node account per cluster.** `node-<request id>-<cluster name>`, with `roles/container.defaultNodeServiceAccount`
+  on the project and nothing else there; set as the node pool's service account; removed with the cluster, or at once
+  when Google refuses the cluster or a grant fails. A grant that IAM refuses because the new account is not known yet
+  is tried again for up to a minute.
+- **`cluster.registries`.** Artifact Registry repositories (`LOCATION-docker.pkg.dev/PROJECT/REPO`, at most 10) the
+  nodes may pull from: the node account gets `roles/artifactregistry.reader` on each. Only repositories the operator
+  lists in `providers.gcp.registries`. Also a `create_cluster` parameter.
+- **Operator setup.** The service's identity needs new roles, one of them limited by an IAM condition to granting the
+  node role only; the table in the architecture document lists them. `providers.gcp.cluster_node_accounts: false`
+  keeps the Compute Engine default account and refuses registries.
+- `ClusterResource` reports `node_service_account` and `registries`.
+
 # Unreleased: a request may carry several clusters
 
 Phase 3, step 1 of the delivery service (docs/DELIVERY-SPEC.md, section 4). `cluster` takes one cluster or a list, as

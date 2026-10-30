@@ -5,6 +5,7 @@ provider-specific structure, so a request can describe "one Ubuntu machine with 
 application. Strict models: no unknown field, no type coercion. Nine kinds: network, storage, compute (one group or
 several), database, cache, queue, secret, cluster and load_balancer.
 """
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -30,6 +31,8 @@ RESOURCE_KINDS = ("network", "storage", "compute", "database", "cache", "queue",
 MAX_QUEUES = 8
 MAX_SECRETS = 16
 MAX_CLUSTERS = 4
+HOSTNAME = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
+REGISTRY = re.compile(r"^[a-z0-9-]+-docker\.pkg\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/[a-z0-9][a-z0-9._-]{0,62}$")  # an Artifact Registry repository
 
 
 class StrictModel(BaseModel):
@@ -169,6 +172,24 @@ class SecretRequest(StrictModel):
     generate_value: bool = Field(default=False, description="Write a generated random value as the first version; the value is never returned or logged.")
 
 
+class PublicRequest(StrictModel):
+    """A front door for the cluster's workloads, made and owned by this service: a reserved public address and one
+    Gateway in front of it that accepts routes from the request's namespace only. With hostnames it serves HTTPS with a
+    Google-managed certificate for them and redirects HTTP; without, plain HTTP on the address."""
+    hostnames: list[str] = Field(default_factory=list, max_length=5, description="DNS names the operator points at the address, in domains the operator allows; "
+                                                                                "the certificate covers them. Lowercase, no wildcard.")
+
+    @field_validator("hostnames")
+    @classmethod
+    def _hostnames(cls, value):
+        for hostname in value:
+            if not HOSTNAME.fullmatch(hostname):
+                raise ValueError(f"cluster.public.hostnames: {hostname!r} is not a lowercase DNS name (no wildcard)")
+        if len(set(value)) != len(value):
+            raise ValueError("cluster.public.hostnames: each name once")
+        return value
+
+
 class ClusterRequest(StrictModel):
     """A managed Kubernetes cluster with one node pool of identical nodes, and one namespace named after the request where
     the request's members are granted access (use: view, admin: edit). Fetching credentials needs the provider's
@@ -184,11 +205,24 @@ class ClusterRequest(StrictModel):
                                            description="A version the provider offers (1.31); the provider's default channel when omitted.")
     private_nodes: bool = Field(default=False, description="Nodes without public addresses (the Application Layer then needs the provider's NAT for egress).")
     network_id: str | None = Field(default=None, description="A network this service created earlier (net-…); the operator's default network when omitted.")
+    public: PublicRequest | None = Field(default=None, description="A front door: a public address and a Gateway for the request's workloads.")
+    registries: list[str] = Field(default_factory=list, max_length=10, description="Artifact Registry repositories (LOCATION-docker.pkg.dev/PROJECT/REPO) the nodes "
+                                                                                 "may pull images from; the operator lists the ones a request may name.")
 
     @field_validator("network_id")
     @classmethod
     def _network_id(cls, value):
         return None if value is None else validation.check_identifier(value, "cluster.network_id")
+
+    @field_validator("registries")
+    @classmethod
+    def _registries(cls, value):
+        for registry in value:
+            if not REGISTRY.fullmatch(registry):
+                raise ValueError(f"cluster.registries: {registry!r} is not LOCATION-docker.pkg.dev/PROJECT/REPO")
+        if len(set(value)) != len(value):
+            raise ValueError("cluster.registries: each repository once")
+        return value
 
     @property
     def cluster_name(self) -> str:
