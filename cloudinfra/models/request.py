@@ -3,7 +3,7 @@
 Every field is a size, a count, a name, a version or a switch. There is no repository, image, command, script, key or
 provider-specific structure, so a request can describe "one Ubuntu machine with 4 CPUs and 16 GB" and nothing about any
 application. Strict models: no unknown field, no type coercion. Sixteen kinds: identity, network, storage, compute (one
-group or several), database, cache, queue, warehouse, nosql, secret, cluster, service, job, load_balancer, dns, monitor and budget.
+group or several), database, cache, queue, warehouse, nosql, secret, cluster, service, job, load_balancer, dns, monitor, budget and log_export.
 """
 import re
 from typing import Literal
@@ -27,7 +27,8 @@ RESERVED_SECRETS = {"db-password": "database", "cache-auth": "cache"}  # secrets
 LoadBalancerType = Literal["http", "tcp"]
 GROUP = r"^[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?$"  # a group's, queue's or secret's short name: up to 12 characters, part of resource names
 # The kinds, in the order they are created; destruction is the reverse. Every top-level block of a request is one of these.
-RESOURCE_KINDS = ("identity", "network", "storage", "compute", "database", "cache", "queue", "warehouse", "nosql", "secret", "cluster", "service", "job", "load_balancer", "dns", "monitor", "budget")
+RESOURCE_KINDS = ("identity", "network", "storage", "compute", "database", "cache", "queue", "warehouse", "nosql", "secret", "cluster", "service", "job", "load_balancer", "dns", "monitor", "budget",
+                  "log_export")
 MAX_QUEUES = 8
 MAX_SECRETS = 16
 MAX_CLUSTERS = 4
@@ -480,6 +481,13 @@ class BudgetRequest(StrictModel):
         return None if value is None else validation.check_request_id(value)
 
 
+class LogExportRequest(StrictModel):
+    """The logs of the request's machines, clusters, services, jobs and databases, routed to its own bucket or dataset."""
+    to: str = Field(pattern=r"^(storage|warehouse(:[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?)?)$",
+                    description="storage: the request's bucket; warehouse[:NAME]: one of its datasets.")
+    min_severity: Literal["DEBUG", "INFO", "NOTICE", "WARNING", "ERROR", "CRITICAL"] | None = Field(default=None, description="Only entries this severe or more; all when omitted.")
+
+
 class LoadBalancerRequest(StrictModel):
     """A public load balancer in front of one compute group."""
     type: LoadBalancerType = Field(default="http", description="http: an application load balancer with a health check on a path; tcp: a passthrough network load balancer.")
@@ -561,6 +569,7 @@ class InfrastructureRequest(StrictModel):
     dns: DnsRequest | None = Field(default=None, description="A public DNS zone and its records, made after everything they point to.")
     monitor: MonitorRequest | None = Field(default=None, description="Uptime checks on the request's public endpoints, and alerts when one fails.")
     budget: BudgetRequest | None = Field(default=None, description="A monthly spending budget for what the request costs, with email alerts.")
+    log_export: LogExportRequest | None = Field(default=None, description="The logs of what the request runs, routed to its own bucket or dataset.")
     lifetime: LifetimeRequest | None = Field(default=None, description="How long the request lives; the operator's default applies when omitted, and there is none unless the operator sets one.")
     access: list[AccessRequest] = Field(default_factory=list, max_length=20, description="People, groups or service accounts to grant access to what is created; "
                                                                                           "the requester is added when the operator maps it to an identity.")
@@ -634,6 +643,16 @@ class InfrastructureRequest(StrictModel):
                 if cluster is None or cluster.public is None:
                     raise ValueError(f"dns.records {record.name}: to {record.to}, but the request has no such cluster with a front door"
                                      + (" (name it: cluster:NAME)" if name is None and len(self.clusters()) > 1 else ""))
+        if self.log_export is not None:
+            kind, _, name = self.log_export.to.partition(":")
+            if kind == "storage" and not (self.storage and self.storage.type == "object"):
+                raise ValueError("log_export: to storage, but the request has no bucket (storage.type object)")
+            if kind == "warehouse" and not [item for item in self.warehouses() if not name or item.warehouse_name == name]:
+                raise ValueError(f"log_export: to {self.log_export.to}, but the request has no such warehouse")
+            if kind == "warehouse" and not name and len(self.warehouses()) > 1:
+                raise ValueError("log_export: the request has several warehouses; name one (warehouse:NAME)")
+            if not (self.compute or self.cluster or self.service or self.job or self.database):
+                raise ValueError("log_export: the request runs nothing that writes logs (compute, cluster, service, job or database)")
         for check in (self.monitor.uptime if self.monitor else []):
             kind, _, name = check.to.partition(":")
             if kind == "load_balancer" and not (self.load_balancer and self.load_balancer.type == "http"):

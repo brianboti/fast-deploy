@@ -25,6 +25,7 @@ class ResourceKind(StrEnum):
     dns = "dns"
     monitor = "monitor"
     budget = "budget"
+    log_export = "log_export"
 
 
 class ResourceStatus(StrEnum):
@@ -285,6 +286,17 @@ class BudgetResource(Resource):
     channels: list[str] = Field(default_factory=list, description="The notification channels made (provider names).")
 
 
+class LogExportResource(Resource):
+    """A log sink: what it selects, where it writes, and the identity it writes as."""
+    kind: Literal[ResourceKind.log_export] = ResourceKind.log_export
+    to: str
+    destination: str | None = Field(default=None, description="Where the provider writes, in its own form.")
+    destination_name: str | None = Field(default=None, description="The bucket's or dataset's name.")
+    filter: str | None = Field(default=None, description="The log filter that selects the request's entries.")
+    min_severity: str | None = None
+    writer_identity: str | None = Field(default=None, description="The identity the provider writes as, granted on the destination only.")
+
+
 class LoadBalancerResource(Resource):
     kind: Literal[ResourceKind.load_balancer] = ResourceKind.load_balancer
     type: Literal["http", "tcp"]
@@ -300,17 +312,17 @@ class LoadBalancerResource(Resource):
 
 AnyResource = Annotated[IdentityResource | ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | WarehouseResource | NoSqlResource
                        | SecretResource | ClusterResource | ServiceResource
-                       | JobResource | LoadBalancerResource | DnsResource | MonitorResource | BudgetResource, Field(discriminator="kind")]
+                       | JobResource | LoadBalancerResource | DnsResource | MonitorResource | BudgetResource | LogExportResource, Field(discriminator="kind")]
 RESOURCE_TYPES = {ResourceKind.identity: IdentityResource, ResourceKind.compute: ComputeResource, ResourceKind.storage: StorageResource,
                   ResourceKind.network: NetworkResource, ResourceKind.database: DatabaseResource,
                   ResourceKind.cache: CacheResource, ResourceKind.queue: QueueResource, ResourceKind.warehouse: WarehouseResource, ResourceKind.nosql: NoSqlResource,
                   ResourceKind.secret: SecretResource, ResourceKind.cluster: ClusterResource,
                   ResourceKind.service: ServiceResource, ResourceKind.job: JobResource, ResourceKind.load_balancer: LoadBalancerResource,
-                  ResourceKind.dns: DnsResource, ResourceKind.monitor: MonitorResource, ResourceKind.budget: BudgetResource}
+                  ResourceKind.dns: DnsResource, ResourceKind.monitor: MonitorResource, ResourceKind.budget: BudgetResource, ResourceKind.log_export: LogExportResource}
 ID_PREFIX = {ResourceKind.identity: "idn", ResourceKind.compute: "cmp", ResourceKind.storage: "sto", ResourceKind.network: "net", ResourceKind.database: "db", ResourceKind.cache: "cac",
              ResourceKind.queue: "que", ResourceKind.warehouse: "whs", ResourceKind.nosql: "nsq", ResourceKind.secret: "sec", ResourceKind.cluster: "clu", ResourceKind.service: "svc",
              ResourceKind.job: "job",
-             ResourceKind.load_balancer: "lb", ResourceKind.dns: "dns", ResourceKind.monitor: "mon", ResourceKind.budget: "bud"}
+             ResourceKind.load_balancer: "lb", ResourceKind.dns: "dns", ResourceKind.monitor: "mon", ResourceKind.budget: "bud", ResourceKind.log_export: "log"}
 
 
 def load_resource(data: dict):

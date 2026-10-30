@@ -325,6 +325,12 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Cloud Monitoring: uptimeCheckConfigs.get."),
     ToolSpec("delete_monitor", "Monitor", "Delete monitoring", "Delete the alert policies, the checks and the channels.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
              "Needs can_destroy.", "Cloud Monitoring: alertPolicies, uptimeCheckConfigs and notificationChannels delete."),
+    # ---- log export
+    ToolSpec("get_log_export", "Logs", "Get a log export", "The export's filter, its destination and the identity it writes as. A log export is made by a full "
+             "request's log_export block, beside the bucket or dataset it writes to and what it reads.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only.",
+             "Cloud Logging: sinks.get."),
+    ToolSpec("delete_log_export", "Logs", "Delete a log export", "Delete the sink and remove its writer's grant on the destination; the logs already written stay.",
+             (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS, "Needs can_destroy.", "Cloud Logging: sinks.delete; the destination's IAM policy or access list."),
     # ---- budget
     ToolSpec("create_budget", "Budget", "Create a budget", "Create a monthly spending budget on an earlier request's costs, with an email to the given addresses as "
              "spending crosses each threshold and when the month's forecast passes the amount. It alerts and stops nothing; a full request may carry its own budget block.",
@@ -486,7 +492,7 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Read-only; no secret is included.", "None."),
 )
 BY_NAME = {spec.name: spec for spec in CATALOG}
-GROUPS = ("Identity", "Compute", "Storage", "Network", "Database", "Cache", "Queue", "Warehouse", "NoSQL", "Secret", "Cluster", "Service", "Job", "Load balancer", "DNS", "Monitor", "Budget",
+GROUPS = ("Identity", "Compute", "Storage", "Network", "Database", "Cache", "Queue", "Warehouse", "NoSQL", "Secret", "Cluster", "Service", "Job", "Load balancer", "DNS", "Monitor", "Logs", "Budget",
     "Infrastructure", "Operations")
 
 

@@ -223,6 +223,18 @@ The service's own identity then needs, once, from the platform team:
 | give a node account its project role | `roles/resourcemanager.projectIamAdmin` | an IAM condition, so it can grant that one role and no other: `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])` ([limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)) |
 | let a node account read a repository | `roles/artifactregistry.admin` | each repository listed in `providers.gcp.registries`, granted on the repository |
 
+### Log export
+
+`log_export: {to, min_severity}` makes a Cloud Logging sink that routes, as they arrive, the entries of the request's
+machines, clusters, services, jobs and databases (selected by their own names, so nothing of another request) to the
+request's own bucket (`to: storage`) or one of its datasets (`to: warehouse[:NAME]`, in partitioned tables), optionally
+only from `min_severity` up ([sinks](https://docs.cloud.google.com/logging/docs/export/configure_export_v2)). The sink
+writes as an identity Google makes for it, which is granted on that destination only (`roles/storage.objectCreator` on
+the bucket, WRITER on the dataset) and loses the grant when the sink is deleted. A bucket holding logs is deleted only
+when empty, as any bucket is. Routing is free; the destination bills what it stores. It is made by a full request's
+block, after what it reads and where it writes, so there is no `create_log_export` tool. The service's identity needs
+`roles/logging.configWriter`. This finishes the log sinks the monitor section left out.
+
 ### A spending budget
 
 `budget: {monthly_amount, notify, thresholds, forecast}` makes a Cloud Billing budget for the month on the costs that
@@ -488,7 +500,7 @@ python -m pytest tests/cloudinfra -q                # the boundary tests, no clo
 CLOUDINFRA_INTEGRATION=1 CLOUDINFRA_PROJECT=my-project python -m pytest tests/integration/cloudinfra -q   # one real machine, then destroyed
 ```
 
-The catalog has 69 tools: create, get and delete for each of the seventeen kinds (plus list, resize, attach and firewall
+The catalog has 71 tools: create, get and delete for each of the eighteen kinds (get and delete only for a log export) (plus list, resize, attach and firewall
 configuration where they apply), the lifecycle tools (stop, start, extend and keep awake among them), access, and the
 operations tools. The MCP endpoint is `/mcp`; the REST endpoints are `POST /infrastructure/validate`,
 `POST /infrastructure/plan`, `POST /infrastructure`, `GET /infrastructure` (with `status` and `expiring_within_hours`),

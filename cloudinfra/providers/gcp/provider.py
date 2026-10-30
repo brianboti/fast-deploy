@@ -16,6 +16,7 @@ from .dns import GcpDns
 from .iam import GcpIam
 from .identity import GcpIdentity
 from .loadbalancer import GcpLoadBalancer
+from .logs import GcpLogExport
 from .monitor import GcpMonitor
 from .monitoring import GcpMonitoring
 from .network import GcpNetwork
@@ -58,6 +59,7 @@ class GCPProvider(CloudProvider):
         self.load_balancer = GcpLoadBalancer(self.api, settings, self.network)
         self.monitoring = GcpMonitoring(self.api)
         self.iam = GcpIam(self.api)
+        self.log_export = GcpLogExport(self.api, settings, self.iam, self.warehouse)
 
     # ---- knowledge
     def regions(self) -> list[str]:
@@ -230,6 +232,9 @@ class GCPProvider(CloudProvider):
             planned.append(PlannedResource(kind="monitor", name=f"{prefix}-monitor", provider_mapping="monitoring.notificationChannels.create, "
                                            "monitoring.uptimeCheckConfigs.create, monitoring.alertPolicies.create",
                                            spec={"checks": len(request.monitor.uptime), "notify": len(request.monitor.notify)}))
+        if request.log_export is not None:  # after what it reads and where it writes
+            planned.append(PlannedResource(kind="log_export", name=f"{prefix}-logs", provider_mapping="logging.sinks.create, and a grant on the destination",
+                                           spec={"to": request.log_export.to, "min_severity": request.log_export.min_severity}))
         if request.dns is not None:  # last: its records may point at what the request made
             planned.append(PlannedResource(kind="dns", name=f"{prefix}-zone", provider_mapping="dns.managedZones.create, dns.changes.create",
                                            spec={"zone": request.dns.zone, "records": len(request.dns.records)}))
@@ -373,6 +378,15 @@ class GCPProvider(CloudProvider):
 
     def delete_monitor(self, resource, ctx):
         self.monitor.delete(resource, ctx)
+
+    def create_log_export(self, spec, planned, ctx, created):
+        return self.log_export.create(spec, planned, ctx, created)
+
+    def get_log_export(self, resource):
+        return self.log_export.get(resource)
+
+    def delete_log_export(self, resource, ctx):
+        self.log_export.delete(resource, ctx)
 
     def create_budget(self, spec, planned, ctx):
         return self.budget.create(spec, planned, ctx)

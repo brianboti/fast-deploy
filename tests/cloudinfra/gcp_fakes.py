@@ -67,6 +67,7 @@ class FakeGcpApi(GcpApi):
         self.datasets: dict[str, dict] = {}  # BigQuery datasets by id, with "tables" a test may set
         self.firestore: dict[str, dict] = {}  # Firestore databases by id
         self.budgets: dict[str, dict] = {}  # Cloud Billing budgets by full name
+        self.sinks: dict[str, dict] = {}  # Cloud Logging sinks by full name
         self.billing_info = {"billingEnabled": True, "billingAccountName": "billingAccounts/01ABCD-234567-89EFAB"}
         self.snapshots: dict[str, dict] = {}  # disk snapshots by name, as a schedule takes them (take_snapshot)
         self.schedules: dict[str, dict] = {}  # Cloud Scheduler jobs by full name
@@ -111,6 +112,8 @@ class FakeGcpApi(GcpApi):
             (r"^/v1/projects/[^/]+/databases$", self._firestore_collection) if host.startswith("firestore") else (r"^$", None),
             (r"^/v1/projects/[^/]+/databases/([^/]+)$", self._firestore_item) if host.startswith("firestore") else (r"^$", None),
             (r"^/v3/projects/[^/]+/(notificationChannels|uptimeCheckConfigs|alertPolicies)$", self._monitoring_collection) if host.startswith("monitoring") else (r"^$", None),
+            (r"^/v2/projects/[^/]+/sinks$", self._sinks) if host.startswith("logging") else (r"^$", None),
+            (r"^/v2/(projects/[^/]+/sinks/[^/]+)$", self._sink) if host.startswith("logging") else (r"^$", None),
             (r"^/v1/projects/[^/]+/billingInfo$", lambda m, *a: dict(self.billing_info)) if host.startswith("cloudbilling") else (r"^$", None),
             (r"^/v1/(billingAccounts/[^/]+)/budgets$", self._budgets) if host.startswith("billingbudgets") else (r"^$", None),
             (r"^/v1/(billingAccounts/[^/]+/budgets/[^/]+)$", self._budget) if host.startswith("billingbudgets") else (r"^$", None),
@@ -381,6 +384,22 @@ class FakeGcpApi(GcpApi):
             del self.monitoring[name]
             return {}
         return self.monitoring[name]
+
+    # ---- Cloud Logging sinks
+    def _sinks(self, found, method, body, params):
+        assert params.get("uniqueWriterIdentity") == "true", "a sink writes as an identity of its own"
+        name = f"projects/{self.project}/sinks/{body['name']}"
+        self.sinks[name] = {**body, "writerIdentity": "serviceAccount:service-123456789@gcp-sa-logging.iam.gserviceaccount.com"}
+        return self.sinks[name]
+
+    def _sink(self, found, method, body, params):
+        name = found.group(1)
+        if name not in self.sinks:
+            raise self._not_found(name)
+        if method == "DELETE":
+            del self.sinks[name]
+            return {}
+        return self.sinks[name]
 
     # ---- Cloud Billing budgets
     def _budgets(self, found, method, body, params):
