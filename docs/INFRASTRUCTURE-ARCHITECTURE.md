@@ -173,6 +173,8 @@ policy for one thing only: a cluster's node account (below).
   | storage (a bucket) | `roles/storage.objectUser` | `roles/storage.objectAdmin` |
   | queue | `roles/pubsub.publisher` on the topic, `roles/pubsub.subscriber` on the subscription | the same |
   | cluster | a RoleBinding to the built-in ClusterRole `view` in the request's namespace | a RoleBinding to `edit` there |
+  | service (Cloud Run) | `roles/run.invoker` on the service (call it) | the same, `roles/run.developer` on the service, and `roles/iam.serviceAccountUser` on its runtime account (deploy revisions) |
+  | job (Cloud Run) | `roles/run.invoker` on the job (run it) | the same, `roles/run.developer` on the job, and `roles/iam.serviceAccountUser` on its runtime account |
 
   A database and a cache are reached through their secrets and the request's network. A cluster gets one namespace,
   named after the request, when it is created, and its grants are Kubernetes RoleBindings in that namespace only: IAM's
@@ -220,6 +222,32 @@ The service's own identity then needs, once, from the platform team:
 | run a node pool as them | `roles/iam.serviceAccountUser` | the project: it can then act as any service account there, so run the service in a project of its own, with no other accounts worth taking |
 | give a node account its project role | `roles/resourcemanager.projectIamAdmin` | an IAM condition, so it can grant that one role and no other: `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])` ([limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)) |
 | let a node account read a repository | `roles/artifactregistry.admin` | each repository listed in `providers.gcp.registries`, granted on the repository |
+
+### A managed container service
+
+`service: {cpu, memory_mb, min_instances, max_instances, concurrency, timeout_seconds, ingress, public, network_id, egress}`
+makes a Cloud Run service, empty: Google's sample image stands in until the delivery layer puts a release on it. It runs
+as an account made for it (`run-<request id>-<name>`) that may read the request's secrets and nothing else, and both go
+when the request is destroyed. `ingress` says where requests may come from (`all`, `internal`, or
+`internal_and_load_balancer`); every caller needs the invoker role, which `use` grants, unless `public` turns Cloud Run's
+invoker check off, which the operator must allow (`providers.gcp.allow_public_services`, off by default). With a network
+(the request's own or `network_id`) the service sends private traffic through it (Direct VPC egress). CPU and memory are
+checked against Cloud Run's pairs. Idle cost is warm instances only (`min_instances`); requests are billed by use.
+
+The service's own identity also needs, for services: `roles/run.admin` (create, delete, and the policy that turns the
+invoker check off and holds grants), and `roles/iam.serviceAccountAdmin` limited by the same practice as node accounts
+(it grants Service Account User on a runtime account to the request's `admin` members); its `secretmanager.admin`
+already covers the secrets' policies.
+
+### A managed job
+
+`job: {cpu, memory_mb, tasks, parallelism, max_retries, task_timeout_seconds, network_id, egress, schedule}` makes a Cloud
+Run job that runs to completion, empty: Google's sample job image stands in until the delivery layer puts a release on
+it. Its tasks run as an account made for it (`run-<request id>-<name>`) that reads the request's secrets and nothing else.
+With `schedule: {cron, time_zone}` the service also makes a Cloud Scheduler job that calls the job's run endpoint as a
+second account (`sch-<request id>-<name>`), which holds `roles/run.invoker` on this job only. On destroy the schedule goes
+first, so nothing starts the job while it is deleted, then the job, then both accounts. A job costs only while it runs.
+The service's identity also needs `roles/cloudscheduler.admin`, and the project the Cloud Scheduler API.
 
 ### A cluster's front door
 
@@ -367,7 +395,7 @@ python -m pytest tests/cloudinfra -q                # the boundary tests, no clo
 CLOUDINFRA_INTEGRATION=1 CLOUDINFRA_PROJECT=my-project python -m pytest tests/integration/cloudinfra -q   # one real machine, then destroyed
 ```
 
-The catalog has 45 tools: create, get and delete for each of the nine kinds (plus list, resize, attach and firewall
+The catalog has 51 tools: create, get and delete for each of the eleven kinds (plus list, resize, attach and firewall
 configuration where they apply), the lifecycle tools (stop, start, extend and keep awake among them), access, and the
 operations tools. The MCP endpoint is `/mcp`; the REST endpoints are `POST /infrastructure/validate`,
 `POST /infrastructure/plan`, `POST /infrastructure`, `GET /infrastructure` (with `status` and `expiring_within_hours`),

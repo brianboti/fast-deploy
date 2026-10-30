@@ -1,3 +1,34 @@
+# Unreleased: a managed job, Cloud Run jobs, with its schedule
+
+Phase 4, step 3 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECTURE.md, "A managed job"):
+
+- **An eleventh kind, `job`.** One or a list (named): CPU and memory (Cloud Run's pairs), tasks, parallelism, retries,
+  task timeout, and Direct VPC egress. Made empty with Google's sample job image.
+- **Its own runtime account**, which reads the request's secrets and nothing else.
+- **`schedule: {cron, time_zone}`** makes a Cloud Scheduler job calling the job's run endpoint as a second account that
+  may run this job only. The operator decided a schedule is infrastructure.
+- **Grants** as for services: `use` → `run.invoker` (run it); `admin` → also `run.developer` and Service Account User
+  on its runtime account.
+- **Destroy** takes the schedule away first, then the job, then both accounts; a schedule Google refuses leaves nothing.
+- **Tools**: `create_job`, `get_job`, `delete_job` (51 tools).
+
+# Unreleased: a managed container service (Cloud Run)
+
+Phase 4, step 1 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECTURE.md, "A managed container service"):
+
+- **A tenth kind, `service`.** One or a list (named, as clusters): CPU (1, 2, 4, 8), memory (checked against Cloud Run's
+  pairs), minimum and maximum instances, concurrency, request timeout, ingress (`all`, `internal`,
+  `internal_and_load_balancer`), `public`, and Direct VPC egress through the request's network. Made empty with Google's
+  sample image; the delivery layer puts releases on it.
+- **Its own runtime account**, `run-<request id>-<name>`, which reads the request's secrets and nothing else; deleted
+  after the service, or at once when Google refuses the service.
+- **Public only with the operator's leave**: `providers.gcp.allow_public_services` (off by default) turns Cloud Run's
+  invoker check off for a request that asks.
+- **Grants**: `use` → `run.invoker`; `admin` → also `run.developer` on the service and Service Account User on its
+  runtime account, which deploying a revision needs.
+- **Tools**: `create_service`, `get_service`, `delete_service` (48 tools). Priced as warm instances at the idle rate.
+- `list_resource_kinds` now marks clusters as several per request too, which phase 3 had left out.
+
 # Unreleased: Claude chat can sign in to cloudinfra and appdelivery
 
 claude.ai adds an MCP server only with OAuth; it cannot send the fixed bearer token both services take. The OAuth

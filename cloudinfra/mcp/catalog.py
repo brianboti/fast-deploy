@@ -21,6 +21,7 @@ MEANINGS = {
     ErrorCode.INVALID_DATABASE_CONFIGURATION: "An engine version the provider does not run, or a private database without a network.",
     ErrorCode.INVALID_CACHE_CONFIGURATION: "A cache version the provider does not run, or a cache without a network.",
     ErrorCode.INVALID_CLUSTER_CONFIGURATION: "A node shape the provider has no type for.",
+    ErrorCode.INVALID_SERVICE_CONFIGURATION: "CPU and memory the provider does not pair, or a public service the operator does not allow.",
     ErrorCode.INVALID_LOAD_BALANCER_CONFIGURATION: "No machines behind it, or machines in different zones or regions.",
     ErrorCode.INVALID_ACCESS: "A member outside the operator's allowed domains, a malformed member, a duplicate, or more members than allowed.",
     ErrorCode.UNSUPPORTED_RESOURCE_KIND: "A request block of a kind the contract or the chosen adapter does not provide; details name the nearest kind.",
@@ -271,6 +272,42 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Kubernetes Engine: container.projects.locations.clusters.get."),
     ToolSpec("delete_cluster", "Cluster", "Delete a cluster", "Delete the cluster and its nodes; workloads and their disks go with it.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
              "Needs can_destroy.", "Kubernetes Engine: container.projects.locations.clusters.delete."),
+    # ---- service
+    ToolSpec("create_service", "Service", "Create a managed container service", "Create an empty managed container service (Cloud Run): its identity, limits, "
+             "scaling and who may reach it. It serves a stand-in until the delivery layer puts a release on it; this service never runs application code.",
+             (REGION, PROVIDER, Input("cpu", "Virtual CPUs per instance: 1, 2, 4 or 8 (default 1)."), Input("memory_mb", "Memory per instance in MiB (default 512)."),
+              Input("min_instances", "Instances kept warm (default 0)."), Input("max_instances", "At most this many instances (default 10)."),
+              Input("concurrency", "Requests one instance serves at once (default 80)."), Input("timeout_seconds", "How long a request may take (default 300)."),
+              Input("ingress", "all (default), internal, or internal_and_load_balancer."),
+              Input("public", "Callable without signing in; only when the operator allows public services (default false)."), NETWORK_ID,
+              Input("egress", "With a network: private_ranges (default) or all."), NAME, LABELS, WAIT),
+             RESPONSE, ("INVALID_SERVICE_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
+             "Needs can_provision. It runs as a service account made for it, which reads the request's secrets and nothing else, deleted with it. use grants the "
+             f"invoker role on it; admin also the developer role and acting as its runtime account, which deploying a revision needs. {OWNERSHIP}",
+             "Cloud Run: run.services.create, and setIamPolicy for a public service (invoker check off) and for grants; IAM: serviceAccounts.create, delete and "
+             "setIamPolicy; Secret Manager: the request's secrets' setIamPolicy."),
+    ToolSpec("get_service", "Service", "Get a service", "Address, limits, state and the revision serving now of one managed container service.", (RESOURCE_ID,), RESOURCE,
+             READ_ERRORS, "Read-only.", "Cloud Run: run.services.get."),
+    ToolSpec("delete_service", "Service", "Delete a service", "Delete the service, every revision and its runtime account.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
+             "Needs can_destroy.", "Cloud Run: run.services.delete; IAM: serviceAccounts.delete."),
+    # ---- job
+    ToolSpec("create_job", "Job", "Create a managed job", "Create an empty managed job that runs to completion (Cloud Run jobs): its identity, limits, tasks, "
+             "retries, and optionally when it runs by itself. It runs a stand-in until the delivery layer puts a release on it; this service never runs it.",
+             (REGION, PROVIDER, Input("cpu", "Virtual CPUs per task: 1, 2, 4 or 8 (default 1)."), Input("memory_mb", "Memory per task in MiB (default 512)."),
+              Input("tasks", "Tasks one run starts (default 1)."), Input("parallelism", "Tasks running at once; 0 lets the provider choose (default 0)."),
+              Input("max_retries", "Retries of a failed task (default 3)."), Input("task_timeout_seconds", "How long one task may run (default 600)."), NETWORK_ID,
+              Input("egress", "With a network: private_ranges (default) or all."),
+              Input("schedule", "Five unix-cron fields, such as '0 2 * * *'; it runs only when asked without one."),
+              Input("time_zone", "The schedule's IANA time zone (default UTC)."), NAME, LABELS, WAIT),
+             RESPONSE, ("INVALID_SERVICE_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
+             "Needs can_provision. Its tasks run as a service account made for it, which reads the request's secrets and nothing else; a schedule runs it as a "
+             f"second account that may run this job only. Both go with it. use grants the invoker role (run it); admin also the developer role and acting as "
+             f"its runtime account. {OWNERSHIP}",
+             "Cloud Run: run.jobs.create and setIamPolicy; Cloud Scheduler: jobs.create and delete; IAM: serviceAccounts.create, delete and setIamPolicy; "
+             "Secret Manager: the request's secrets' setIamPolicy."),
+    ToolSpec("get_job", "Job", "Get a job", "Limits, schedule and state of one managed job.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only.", "Cloud Run: run.jobs.get."),
+    ToolSpec("delete_job", "Job", "Delete a job", "Delete its schedule, the job with its runs, and its accounts.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
+             "Needs can_destroy.", "Cloud Scheduler: jobs.delete; Cloud Run: run.jobs.delete; IAM: serviceAccounts.delete."),
     # ---- load balancer
     ToolSpec("create_load_balancer", "Load balancer", "Create a load balancer", "Put a public load balancer in front of machines this service created: http (an application load "
              "balancer with a health check on a path) or tcp (a passthrough network load balancer). Health checkers are allowed through the firewall on the backend port.",
@@ -374,7 +411,7 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Read-only; no secret is included.", "None."),
 )
 BY_NAME = {spec.name: spec for spec in CATALOG}
-GROUPS = ("Compute", "Storage", "Network", "Database", "Cache", "Queue", "Secret", "Cluster", "Load balancer", "Infrastructure", "Operations")
+GROUPS = ("Compute", "Storage", "Network", "Database", "Cache", "Queue", "Secret", "Cluster", "Service", "Job", "Load balancer", "Infrastructure", "Operations")
 
 
 def render_markdown(catalog=CATALOG) -> str:

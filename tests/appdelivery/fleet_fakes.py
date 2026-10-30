@@ -3,8 +3,9 @@
 import base64
 
 import httpx
-from delivery_fakes import DEV_SA, PROD_SA, Runner, cluster_response, infra_response, make_config, principal, release_dict
+from delivery_fakes import DEV_SA, PROD_SA, Runner, cluster_response, infra_response, job_response, make_config, principal, release_dict, service_response
 from kube_fakes import FakeKube
+from run_fakes import FakeRun, FakeRunJob
 
 from appdelivery.errors import DeliveryError, ErrorCode
 from appdelivery.infra import InfraRequest
@@ -13,6 +14,7 @@ from appdelivery.machine import HostReport
 from appdelivery.models import ReleaseRequest
 from appdelivery.releases import Delivery, InlineExecutor
 from appdelivery.remote import Completed
+from appdelivery.run import JobDeployer, RunDeployer
 from appdelivery.state import StateManager
 
 SECRET_VALUE = "s3cr3t-Value-Never-Kept"
@@ -79,8 +81,8 @@ class FakeSession:
 
 
 class FakeInfra:
-    def __init__(self, cluster=False):
-        self.answers = {"dev": dev_answer(cluster), "prod": cluster_response() if cluster else infra_response()}
+    def __init__(self, cluster=False, service=False, job=False):
+        self.answers = {"dev": dev_answer(cluster, service, job), "prod": answer(cluster, service, job)}
         self.reads = 0
 
     def __call__(self, environment):
@@ -93,36 +95,49 @@ class FakeInfra:
         return Client()
 
 
-def dev_answer(cluster=False):
-    answer = cluster_response() if cluster else infra_response()
+def answer(cluster=False, service=False, job=False):
+    return cluster_response() if cluster else service_response() if service else job_response() if job else infra_response()
+
+
+def dev_answer(cluster=False, service=False, job=False):
+    answer = globals()["answer"](cluster, service, job)
     answer["access"][0]["member"] = f"serviceAccount:{DEV_SA}"
     return answer
 
 
 def secret_manager():
     def handle(request):
-        return httpx.Response(200, json={"payload": {"data": base64.b64encode(SECRET_VALUE.encode()).decode()}})
+        return httpx.Response(200, json={"name": request.url.path.removeprefix("/v1/").replace("/versions/latest:access", "/versions/7"),
+                                          "payload": {"data": base64.b64encode(SECRET_VALUE.encode()).decode()}})
     return httpx.Client(transport=httpx.MockTransport(handle))
 
 
 class World:
     """A Delivery, its state, its fake fleet and cloudinfra, and the principals of the fake configuration."""
 
-    def __init__(self, database=":memory:", cosign=None, cluster=False):
+    def __init__(self, database=":memory:", cosign=None, cluster=False, service=False, job=False):
         self.config = make_config(database=database)
         self.state = StateManager(database)
-        self.fleet, self.infra, self.kube = FakeFleet(), FakeInfra(cluster), FakeKube()
+        self.fleet, self.infra, self.kube, self.run, self.run_job = FakeFleet(), FakeInfra(cluster, service, job), FakeKube(), FakeRun(), FakeRunJob()
         self.cosign = cosign or Runner(Completed(0, "[]", ""))
         self.tokens = []
         self.cluster_tokens = []
         self.delivery = Delivery(self.config, self.state, infra=self.infra, machines=self.fleet.session, tokens=self.token, http=secret_manager(), runner=self.cosign,
-                                 executor=InlineExecutor(), clusters=self.deployer)
+                                 executor=InlineExecutor(), clusters=self.deployer, services=self.run_deployer, jobs=self.job_deployer)
         self.team, self.oncall = principal(self.config, "shop-team"), principal(self.config, "shop-oncall")
 
     def deployer(self, environment):
         service_account = self.config.environments[environment].service_account
         self.cluster_tokens.append(service_account)
         return ClusterDeployer(lambda: self.token(service_account), kube=lambda target: self.kube, sleep=lambda seconds: None)
+
+    def run_deployer(self, environment):
+        service_account = self.config.environments[environment].service_account
+        return RunDeployer(lambda: self.token(service_account), run=self.run, sleep=lambda seconds: None)
+
+    def job_deployer(self, environment):
+        service_account = self.config.environments[environment].service_account
+        return JobDeployer(lambda: self.token(service_account), run=self.run_job, sleep=lambda seconds: None)
 
     def token(self, service_account):
         self.tokens.append(service_account)

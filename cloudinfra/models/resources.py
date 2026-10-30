@@ -16,6 +16,8 @@ class ResourceKind(StrEnum):
     queue = "queue"
     secret = "secret"  # noqa: S105 - the kind's name, not a credential
     cluster = "cluster"
+    service = "service"
+    job = "job"
     load_balancer = "load_balancer"
 
 
@@ -187,6 +189,39 @@ class ClusterResource(Resource):
     public: FrontDoor | None = Field(default=None, description="The front door, when the request asked for one.")
 
 
+class ServiceResource(Resource):
+    """A managed container service: the shell this service made, and what serves on it now."""
+    kind: Literal[ResourceKind.service] = ResourceKind.service
+    url: str | None = Field(default=None, description="The service's address.")
+    runtime_service_account: str | None = Field(default=None, description="The account its instances run as, made for it.")
+    cpu: int
+    memory_mb: int
+    min_instances: int = 0
+    max_instances: int
+    ingress: str
+    public: bool = False
+    network: str | None = None
+    secrets: list[str] = Field(default_factory=list, description="The request's secrets its runtime account may read (provider names).")
+    revision: str | None = Field(default=None, description="The revision serving all traffic now, when one does.")
+
+
+class JobResource(Resource):
+    """A managed job: the shell this service made, and when it runs by itself."""
+    kind: Literal[ResourceKind.job] = ResourceKind.job
+    runtime_service_account: str | None = Field(default=None, description="The account its tasks run as, made for it.")
+    cpu: int
+    memory_mb: int
+    tasks: int = 1
+    parallelism: int = 0
+    max_retries: int = 3
+    task_timeout_seconds: int = 600
+    network: str | None = None
+    secrets: list[str] = Field(default_factory=list, description="The request's secrets its runtime account may read (provider names).")
+    schedule: dict[str, str] | None = Field(default=None, description="cron and time_zone, when it runs by itself.")
+    scheduler: str | None = Field(default=None, description="The scheduler job that runs it (provider name).")
+    scheduler_service_account: str | None = Field(default=None, description="The account the scheduler runs it as, allowed to run this job only.")
+
+
 class LoadBalancerResource(Resource):
     kind: Literal[ResourceKind.load_balancer] = ResourceKind.load_balancer
     type: Literal["http", "tcp"]
@@ -198,13 +233,14 @@ class LoadBalancerResource(Resource):
     components: list[dict[str, Any]] = Field(default_factory=list, description="The provider pieces in creation order (kind, name, url), for teardown in reverse.")
 
 
-AnyResource = Annotated[ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | SecretResource | ClusterResource | LoadBalancerResource,
-                        Field(discriminator="kind")]
+AnyResource = Annotated[ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | SecretResource | ClusterResource | ServiceResource
+                       | JobResource | LoadBalancerResource, Field(discriminator="kind")]
 RESOURCE_TYPES = {ResourceKind.compute: ComputeResource, ResourceKind.storage: StorageResource, ResourceKind.network: NetworkResource, ResourceKind.database: DatabaseResource,
                   ResourceKind.cache: CacheResource, ResourceKind.queue: QueueResource, ResourceKind.secret: SecretResource, ResourceKind.cluster: ClusterResource,
-                  ResourceKind.load_balancer: LoadBalancerResource}
+                  ResourceKind.service: ServiceResource, ResourceKind.job: JobResource, ResourceKind.load_balancer: LoadBalancerResource}
 ID_PREFIX = {ResourceKind.compute: "cmp", ResourceKind.storage: "sto", ResourceKind.network: "net", ResourceKind.database: "db", ResourceKind.cache: "cac",
-             ResourceKind.queue: "que", ResourceKind.secret: "sec", ResourceKind.cluster: "clu", ResourceKind.load_balancer: "lb"}
+             ResourceKind.queue: "que", ResourceKind.secret: "sec", ResourceKind.cluster: "clu", ResourceKind.service: "svc", ResourceKind.job: "job",
+             ResourceKind.load_balancer: "lb"}
 
 
 def load_resource(data: dict):

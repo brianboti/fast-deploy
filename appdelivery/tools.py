@@ -42,9 +42,16 @@ def register(mcp, delivery, wrap, identity, version: str) -> None:
     def remove_release(release_id: Annotated[str, field("remove_release", "release_id")], wait_seconds: Wait = 0) -> Result:
         return delivery.remove(release_id, identity(), wait_seconds)
 
+    def run_release(release_id: Annotated[str, field("run_release", "release_id")], wait_seconds: Wait = 0) -> Result:
+        return delivery.start_run(release_id, identity(), wait_seconds)
+
+    def get_release_run(release_id: Annotated[str, field("get_release_run", "release_id")], execution: Annotated[str, field("get_release_run", "execution")]) -> Result:
+        return delivery.get_run(release_id, execution, identity())
+
     def get_service_status() -> Result:
         return delivery.service_status(version)
 
-    for fn in (plan_release, deploy_release, approve_release, get_release, list_releases, get_running, rollback_release, remove_release, get_service_status):
+    for fn in (plan_release, deploy_release, approve_release, get_release, list_releases, get_running, rollback_release, remove_release, run_release, get_release_run,
+               get_service_status):
         spec = BY_NAME[fn.__name__]
         mcp.tool(name=spec.name, title=spec.title, description=spec.model_description, annotations=spec.annotations, structured_output=True)(wrap(fn))

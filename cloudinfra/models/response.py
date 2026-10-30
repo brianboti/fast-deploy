@@ -6,7 +6,19 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .errors import ErrorDetail
 from .request import InfrastructureRequest
-from .resources import CacheResource, ClusterResource, ComputeResource, DatabaseResource, LoadBalancerResource, NetworkResource, QueueResource, SecretResource, StorageResource
+from .resources import (
+    CacheResource,
+    ClusterResource,
+    ComputeResource,
+    DatabaseResource,
+    JobResource,
+    LoadBalancerResource,
+    NetworkResource,
+    QueueResource,
+    SecretResource,
+    ServiceResource,
+    StorageResource,
+)
 
 
 class RequestStatus(StrEnum):
@@ -69,6 +81,8 @@ class Resources(Model):
     queue: list[QueueResource] = Field(default_factory=list)
     secret: list[SecretResource] = Field(default_factory=list)
     cluster: list[ClusterResource] = Field(default_factory=list)
+    service: list[ServiceResource] = Field(default_factory=list)
+    job: list[JobResource] = Field(default_factory=list)
     load_balancer: list[LoadBalancerResource] = Field(default_factory=list)
 
     def all(self) -> list:
@@ -199,8 +213,8 @@ class ResourceResponse(Model):
     """One resource after a primitive call: its state now, and the operation that changes it when one is still running."""
     status: str
     request_id: str
-    resource: ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | SecretResource | ClusterResource | LoadBalancerResource = Field(
-        discriminator="kind")
+    resource: (ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | SecretResource | ClusterResource | ServiceResource
+               | JobResource | LoadBalancerResource) = Field(discriminator="kind")
     operation: OperationRecord | None = None
 
 

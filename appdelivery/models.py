@@ -83,10 +83,15 @@ class Expose(StrictModel):
 
 
 class Target(StrictModel):
-    """Where a release runs: every machine of one compute group, or one workload on one of the request's clusters."""
+    """Where a release runs: every machine of one compute group, one workload on one of the request's clusters, one of the
+    request's managed container services, or one of its managed jobs."""
     group: str | None = Field(default=None, description="A compute group of the request; every machine in it is a target.")
     cluster: bool | str = Field(default=False, description="A cluster of the request by the name its cluster block gave it (cluster when it gave none), or true for "
                                                             "the request's only cluster; the release runs in the namespace the infrastructure layer made there.")
+    service: bool | str = Field(default=False, description="A managed container service of the request by the name its service block gave it (service when it "
+                                                            "gave none), or true for the request's only one; each release is a revision of it.")
+    job: bool | str = Field(default=False, description="A managed job of the request by the name its job block gave it (job when it gave none), or true for "
+                                                        "the request's only one; a release becomes what the job runs, and run_release starts it.")
     workload: str | None = Field(default=None, description="On a cluster: the Deployment and Service name (lowercase letters, digits, dashes).")
     replicas: int = Field(default=1, ge=1, le=20, description="On a cluster: how many copies run.")
     expose: Expose | None = Field(default=None, description="On a cluster: reach the workload from outside through the cluster's front door.")
@@ -98,11 +103,12 @@ class Target(StrictModel):
             raise DeliveryError(ErrorCode.INVALID_RELEASE, f"{value!r} is not a group name: lowercase, up to 12 characters")
         return value
 
-    @field_validator("cluster")
+    @field_validator("cluster", "service", "job")
     @classmethod
-    def _cluster(cls, value):
+    def _named(cls, value, info):
         if isinstance(value, str) and not GROUP.match(value):
-            raise DeliveryError(ErrorCode.INVALID_RELEASE, f"{value!r} is not a cluster name: lowercase, up to 12 characters, as the request's cluster block names it")
+            raise DeliveryError(ErrorCode.INVALID_RELEASE, f"{value!r} is not a {info.field_name} name: lowercase, up to 12 characters, as the request's "
+                                f"{info.field_name} block names it")
         return value
 
     @field_validator("workload")
@@ -114,17 +120,28 @@ class Target(StrictModel):
 
     @model_validator(mode="after")
     def _one_kind(self):
-        if (self.group is None) == (not self.cluster):
-            raise DeliveryError(ErrorCode.INVALID_RELEASE, "target names either a group of machines or a cluster, not both and not neither")
+        if [self.group is not None, bool(self.cluster), bool(self.service), bool(self.job)].count(True) != 1:
+            raise DeliveryError(ErrorCode.INVALID_RELEASE, "target names one of a group of machines, a cluster, a service or a job")
+        if (self.service or self.job) and (self.workload is not None or self.replicas != 1 or self.expose is not None):
+            raise DeliveryError(ErrorCode.INVALID_RELEASE, "workload, replicas and expose belong to a cluster target; a service or a job scales itself")
         if self.cluster and self.workload is None:
             raise DeliveryError(ErrorCode.INVALID_RELEASE, "a cluster target names its workload")
         if self.group is not None and (self.workload is not None or self.replicas != 1 or self.expose is not None):  # a stored release carries the defaults back
             raise DeliveryError(ErrorCode.INVALID_RELEASE, "workload, replicas and expose belong to a cluster target; a group runs one container per machine")
         return self
 
+    @property
+    def single(self) -> bool:
+        """One target for the whole release (a workload on a cluster, or a service), not a group of machines."""
+        return bool(self.cluster) or bool(self.service) or bool(self.job)
+
     def key(self) -> str:
         """What one release at a time is kept for: a group of machines, or a workload on one cluster. The unnamed cluster
         keeps the key releases had before clusters had names; true is resolved to a name before a release is kept."""
+        if self.service:
+            return f"service:{'service' if self.service is True else self.service}"
+        if self.job:
+            return f"job:{'job' if self.job is True else self.job}"
         if not self.cluster:
             return self.group
         name = "cluster" if self.cluster is True else self.cluster
@@ -217,7 +234,7 @@ class PlanResponse(BaseModel):
     env: dict[str, str] = Field(description="Each name and where its value comes from; never a secret's value.")
     attestation_required: bool
     approval_required: bool
-    target: Literal["machines", "cluster"] = "machines"
+    target: Literal["machines", "cluster", "service", "job"] = "machines"
     namespace: str | None = Field(default=None, description="On a cluster: the request's namespace.")
     workload: str | None = None
     replicas: int | None = None
@@ -256,3 +273,17 @@ class ReleaseResponse(BaseModel):
     error: dict | None = None
     created_at: str
     updated_at: str
+
+
+class RunResponse(BaseModel):
+    """One run of a job: its tasks' counts as the provider reports them, and where its log is."""
+    release_id: str
+    execution: str = Field(description="The run's name at the provider.")
+    status: Literal["RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
+    tasks: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    running: int = 0
+    started_at: str | None = None
+    finished_at: str | None = None
+    log_url: str | None = Field(default=None, description="The provider's console page with the run's log.")

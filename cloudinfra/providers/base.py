@@ -15,10 +15,12 @@ from ..models.request import (
     ComputeRequest,
     DatabaseRequest,
     InfrastructureRequest,
+    JobRequest,
     LoadBalancerRequest,
     NetworkRequest,
     QueueRequest,
     SecretRequest,
+    ServiceRequest,
     StorageRequest,
 )
 from ..models.resources import (
@@ -28,11 +30,13 @@ from ..models.resources import (
     ConnectInfo,
     DatabaseResource,
     FirewallRule,
+    JobResource,
     LoadBalancerResource,
     NetworkResource,
     QueueResource,
     ResourceStatus,
     SecretResource,
+    ServiceResource,
     StorageResource,
 )
 from ..models.response import CostEstimate, Health, PlannedResource, Usage
@@ -200,6 +204,28 @@ class CloudProvider(ABC):
 
     @abstractmethod
     def delete_cluster(self, resource: ClusterResource, ctx: ProvisionContext) -> None: ...
+
+    # ---- service (a managed container service)
+    @abstractmethod
+    def create_service(self, spec: ServiceRequest, planned: PlannedResource, ctx: ProvisionContext, network: NetworkResource | None,
+                       secrets: list[SecretResource]) -> ServiceResource: ...
+
+    @abstractmethod
+    def get_service(self, resource: ServiceResource) -> ServiceResource: ...
+
+    @abstractmethod
+    def delete_service(self, resource: ServiceResource, ctx: ProvisionContext) -> None: ...
+
+    # ---- job (a managed job that runs to completion)
+    @abstractmethod
+    def create_job(self, spec: JobRequest, planned: PlannedResource, ctx: ProvisionContext, network: NetworkResource | None,
+                   secrets: list[SecretResource]) -> JobResource: ...
+
+    @abstractmethod
+    def get_job(self, resource: JobResource) -> JobResource: ...
+
+    @abstractmethod
+    def delete_job(self, resource: JobResource, ctx: ProvisionContext) -> None: ...
 
     # ---- load balancer
     @abstractmethod

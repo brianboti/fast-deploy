@@ -34,7 +34,7 @@ INSTRUCTIONS = (
     "release running on a target. Every result carries status; a FAILED one carries error.code and error.message."
 )
 HTTP_STATUS = {"NOT_FOUND": 404, "PERMISSION_DENIED": 403, "INVALID_STATE": 409, "NOT_GRANTED": 409, "INFRA_UNAVAILABLE": 502, "INFRA_AUTH_FAILED": 502,
-               "GOOGLE_AUTH_FAILED": 502, "SECRET_UNAVAILABLE": 502, "MACHINE_UNREACHABLE": 502, "CLUSTER_UNREACHABLE": 502, "INTERNAL_ERROR": 500}
+               "GOOGLE_AUTH_FAILED": 502, "SECRET_UNAVAILABLE": 502, "MACHINE_UNREACHABLE": 502, "CLUSTER_UNREACHABLE": 502, "SERVICE_UNREACHABLE": 502, "INTERNAL_ERROR": 500}
 
 
 def unknown_arguments(tool, valid, arguments):
@@ -191,6 +191,14 @@ def build_app(config, delivery: Delivery | None = None, state: StateManager | No
     @app.post("/releases/{release_id}/rollback")
     async def rollback(release_id: str, wait_seconds: int = 0):
         return await in_worker("rollback", lambda: delivery.rollback(release_id, identity.get(), wait_seconds), release_id)
+
+    @app.post("/releases/{release_id}/runs")
+    async def start_run(release_id: str, wait_seconds: int = 0):
+        return await in_worker("start_run", lambda: delivery.start_run(release_id, identity.get(), wait_seconds), release_id)
+
+    @app.get("/releases/{release_id}/runs/{execution}")
+    async def get_run(release_id: str, execution: str):
+        return await in_worker("get_run", lambda: delivery.get_run(release_id, execution, identity.get()), release_id)
 
     @app.delete("/releases/{release_id}")
     async def remove(release_id: str, wait_seconds: int = 0):

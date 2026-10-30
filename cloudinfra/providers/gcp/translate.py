@@ -2,7 +2,7 @@
 import re
 
 from ...models.errors import ErrorCode
-from ...models.request import AcceleratorRequest, CacheRequest, ClusterRequest, ComputeRequest, DatabaseRequest
+from ...models.request import AcceleratorRequest, CacheRequest, ClusterRequest, ComputeRequest, DatabaseRequest, ServiceRequest
 from ..base import Problem
 
 IMAGES = {
@@ -148,6 +148,20 @@ def cluster_problems(spec: ClusterRequest) -> list[Problem]:
     if machine_type(spec.node_cpu, spec.node_memory_gb) is None:
         return [Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, f"Nodes with {spec.node_cpu} CPUs and {spec.node_memory_gb} GB have no E2 shape: an even number of CPUs "
                         "from 2 to 32 with 0.5 to 8 GB per CPU, or 1 CPU with 1, 2 or 4 GB", "cluster")]
+    return []
+
+
+# Cloud Run's memory range for each CPU count, in MiB (https://docs.cloud.google.com/run/docs/configuring/services/cpu)
+RUN_MEMORY = {1: (128, 4096), 2: (128, 8192), 4: (2048, 16384), 8: (4096, 32768)}
+
+
+def service_problems(spec: ServiceRequest, kind: str = "service") -> list[Problem]:
+    """A service's or a job's CPU and memory against Cloud Run's pairs."""
+    low, high = RUN_MEMORY[spec.cpu]
+    name = spec.service_name if kind == "service" else spec.job_name
+    if not low <= spec.memory_mb <= high:
+        return [Problem(ErrorCode.INVALID_SERVICE_CONFIGURATION, f"{kind} {name}: {spec.cpu} CPU takes {low} to {high} MiB of memory; "
+                        f"{spec.memory_mb} asked", f"{kind}.memory_mb")]
     return []
 
 
