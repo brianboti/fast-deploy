@@ -1,6 +1,6 @@
 # MCP service catalog
 
-Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 48 tools in 12 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, `cac-`, `que-`, `sec-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
+Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 51 tools in 13 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, `cac-`, `que-`, `sec-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
 
 ## At a glance
 
@@ -37,6 +37,9 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | Service | `create_service` | Create a managed container service | changes cloud |
 | Service | `get_service` | Get a service | read only |
 | Service | `delete_service` | Delete a service | destructive |
+| Job | `create_job` | Create a managed job | changes cloud |
+| Job | `get_job` | Get a job | read only |
+| Job | `delete_job` | Delete a job | destructive |
 | Load balancer | `create_load_balancer` | Create a load balancer | changes cloud |
 | Load balancer | `get_load_balancer` | Get a load balancer | read only |
 | Load balancer | `delete_load_balancer` | Delete a load balancer | destructive |
@@ -871,6 +874,86 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 **Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy.
 
 **Provider mapping (Google Cloud).** Cloud Run: run.services.delete; IAM: serviceAccounts.delete.
+
+## Job
+
+### `create_job`
+
+**Purpose.** Create an empty managed job that runs to completion (Cloud Run jobs): its identity, limits, tasks, retries, and optionally when it runs by itself. It runs a stand-in until the delivery layer puts a release on it; this service never runs it.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
+| `provider` | no | The cloud provider adapter; gcp (default) is the one implemented. |
+| `cpu` | no | Virtual CPUs per task: 1, 2, 4 or 8 (default 1). |
+| `memory_mb` | no | Memory per task in MiB (default 512). |
+| `tasks` | no | Tasks one run starts (default 1). |
+| `parallelism` | no | Tasks running at once; 0 lets the provider choose (default 0). |
+| `max_retries` | no | Retries of a failed task (default 3). |
+| `task_timeout_seconds` | no | How long one task may run (default 600). |
+| `network_id` | no | A network this service created earlier (net-…), to join instead of the operator's default network. |
+| `egress` | no | With a network: private_ranges (default) or all. |
+| `schedule` | no | Five unix-cron fields, such as '0 2 * * *'; it runs only when asked without one. |
+| `time_zone` | no | The schedule's IANA time zone (default UTC). |
+| `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
+| `labels` | no | Labels for every resource, next to the service's ownership labels. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `region`.
+**Optional fields.** `provider`, `cpu`, `memory_mb`, `tasks`, `parallelism`, `max_retries`, `task_timeout_seconds`, `network_id`, `egress`, `schedule`, `time_zone`, `name`, `labels`, `wait_seconds`.
+
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
+
+**Possible errors.** `INVALID_SERVICE_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
+
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Its tasks run as a service account made for it, which reads the request's secrets and nothing else; a schedule runs it as a second account that may run this job only. Both go with it. use grants the invoker role (run it); admin also the developer role and acting as its runtime account. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+
+**Provider mapping (Google Cloud).** Cloud Run: run.jobs.create and setIamPolicy; Cloud Scheduler: jobs.create and delete; IAM: serviceAccounts.create, delete and setIamPolicy; Secret Manager: the request's secrets' setIamPolicy.
+
+### `get_job`
+
+**Purpose.** Limits, schedule and state of one managed job.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** none.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`.
+
+**Security.** Read-only; creates and changes nothing. Read-only.
+
+**Provider mapping (Google Cloud).** Cloud Run: run.jobs.get.
+
+### `delete_job`
+
+**Purpose.** Delete its schedule, the job with its runs, and its accounts.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** `wait_seconds`.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `DESTROY_FAILED`.
+
+**Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy.
+
+**Provider mapping (Google Cloud).** Cloud Scheduler: jobs.delete; Cloud Run: run.jobs.delete; IAM: serviceAccounts.delete.
 
 ## Load balancer
 

@@ -155,11 +155,13 @@ def cluster_problems(spec: ClusterRequest) -> list[Problem]:
 RUN_MEMORY = {1: (128, 4096), 2: (128, 8192), 4: (2048, 16384), 8: (4096, 32768)}
 
 
-def service_problems(spec: ServiceRequest) -> list[Problem]:
+def service_problems(spec: ServiceRequest, kind: str = "service") -> list[Problem]:
+    """A service's or a job's CPU and memory against Cloud Run's pairs."""
     low, high = RUN_MEMORY[spec.cpu]
+    name = spec.service_name if kind == "service" else spec.job_name
     if not low <= spec.memory_mb <= high:
-        return [Problem(ErrorCode.INVALID_SERVICE_CONFIGURATION, f"service {spec.service_name}: {spec.cpu} CPU takes {low} to {high} MiB of memory; "
-                        f"{spec.memory_mb} asked", "service.memory_mb")]
+        return [Problem(ErrorCode.INVALID_SERVICE_CONFIGURATION, f"{kind} {name}: {spec.cpu} CPU takes {low} to {high} MiB of memory; "
+                        f"{spec.memory_mb} asked", f"{kind}.memory_mb")]
     return []
 
 

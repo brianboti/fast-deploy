@@ -15,6 +15,7 @@ from ..models.request import (
     ComputeRequest,
     DatabaseRequest,
     InfrastructureRequest,
+    JobRequest,
     LoadBalancerRequest,
     NetworkRequest,
     QueueRequest,
@@ -29,6 +30,7 @@ from ..models.resources import (
     ConnectInfo,
     DatabaseResource,
     FirewallRule,
+    JobResource,
     LoadBalancerResource,
     NetworkResource,
     QueueResource,
@@ -213,6 +215,17 @@ class CloudProvider(ABC):
 
     @abstractmethod
     def delete_service(self, resource: ServiceResource, ctx: ProvisionContext) -> None: ...
+
+    # ---- job (a managed job that runs to completion)
+    @abstractmethod
+    def create_job(self, spec: JobRequest, planned: PlannedResource, ctx: ProvisionContext, network: NetworkResource | None,
+                   secrets: list[SecretResource]) -> JobResource: ...
+
+    @abstractmethod
+    def get_job(self, resource: JobResource) -> JobResource: ...
+
+    @abstractmethod
+    def delete_job(self, resource: JobResource, ctx: ProvisionContext) -> None: ...
 
     # ---- load balancer
     @abstractmethod
