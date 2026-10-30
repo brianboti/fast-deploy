@@ -39,6 +39,8 @@ Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DE
 | `MACHINE_ERROR` | The host script on a machine stopped or ended without a report. |
 | `CLUSTER_UNREACHABLE` | The cluster's API could not be reached, or refused this environment's service account (its namespace grant, or container.clusterViewer). |
 | `CLUSTER_ERROR` | The cluster's API refused a change to the workload; details carry its answer. |
+| `SERVICE_UNREACHABLE` | Cloud Run could not be reached, or refused this environment's service account (its admin grant on the service). |
+| `SERVICE_ERROR` | Cloud Run refused a change to the service, or did not finish it in time; details carry its answer. |
 | `PULL_FAILED` | A machine could not log in to the registry or pull the image; nothing changed there. |
 | `UNHEALTHY` | The container did not answer 2xx on the health path in time; the machine runs its previous container again. |
 | `ROLLOUT_FAILED` | The rollout stopped at a machine; the machines done before it were put back, the rest skipped. |
@@ -54,7 +56,7 @@ Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DE
 
 | Field | Required | Description |
 |---|---|---|
-| `release` | yes | The release: environment, request_id (the infrastructure layer's request), target ({group} for every machine of a compute group, or {cluster: NAME, workload, replicas, expose: {hostname, path}} for a workload on one of the request's clusters, cluster: true for its only one, expose to reach it through the cluster's front door), image (host/path@sha256:digest; a tag is refused), port, health {path, timeout_seconds}, env (NAME: {value} or {endpoint} or {secret}), note. No source, command or mount is accepted. |
+| `release` | yes | The release: environment, request_id (the infrastructure layer's request), target ({group} for every machine of a compute group, or {cluster: NAME, workload, replicas, expose: {hostname, path}} for a workload on one of the request's clusters, cluster: true for its only one, expose to reach it through the cluster's front door; {service: NAME} for a managed container service, true for the request's only one), image (host/path@sha256:digest; a tag is refused), port, health {path, timeout_seconds}, env (NAME: {value} or {endpoint} or {secret}), note. No source, command or mount is accepted. |
 
 **Output.** PlanResponse: status PLANNED, machines, env sources, attestation_required, approval_required, replaces, warnings.
 
@@ -70,12 +72,12 @@ Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DE
 
 | Field | Required | Description |
 |---|---|---|
-| `release` | yes | The release: environment, request_id (the infrastructure layer's request), target ({group} for every machine of a compute group, or {cluster: NAME, workload, replicas, expose: {hostname, path}} for a workload on one of the request's clusters, cluster: true for its only one, expose to reach it through the cluster's front door), image (host/path@sha256:digest; a tag is refused), port, health {path, timeout_seconds}, env (NAME: {value} or {endpoint} or {secret}), note. No source, command or mount is accepted. |
+| `release` | yes | The release: environment, request_id (the infrastructure layer's request), target ({group} for every machine of a compute group, or {cluster: NAME, workload, replicas, expose: {hostname, path}} for a workload on one of the request's clusters, cluster: true for its only one, expose to reach it through the cluster's front door; {service: NAME} for a managed container service, true for the request's only one), image (host/path@sha256:digest; a tag is refused), port, health {path, timeout_seconds}, env (NAME: {value} or {endpoint} or {secret}), note. No source, command or mount is accepted. |
 | `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the work running. |
 
 **Output.** ReleaseResponse: release_id, status, environment, request_id, group, image, previous, can_roll_back, requested_by, approved_by, env (each name and its source, never a value), warnings, targets (each machine with its status, times, error and the failed container's scrubbed log), error.
 
-**Possible errors.** `INVALID_RELEASE`, `INVALID_BINDING`, `UNKNOWN_ENVIRONMENT`, `PERMISSION_DENIED`, `NOT_FOUND`, `INVALID_STATE`, `NOT_GRANTED`, `UNSUPPORTED_TARGET`, `UNREACHABLE_TARGET`, `REGISTRY_NOT_ALLOWED`, `INFRA_UNAVAILABLE`, `INFRA_AUTH_FAILED`, `ATTESTATION_FAILED`, `SECRET_UNAVAILABLE`, `GOOGLE_AUTH_FAILED`, `MACHINE_UNREACHABLE`, `MACHINE_ERROR`, `CLUSTER_UNREACHABLE`, `CLUSTER_ERROR`, `PULL_FAILED`, `UNHEALTHY`, `ROLLOUT_FAILED`.
+**Possible errors.** `INVALID_RELEASE`, `INVALID_BINDING`, `UNKNOWN_ENVIRONMENT`, `PERMISSION_DENIED`, `NOT_FOUND`, `INVALID_STATE`, `NOT_GRANTED`, `UNSUPPORTED_TARGET`, `UNREACHABLE_TARGET`, `REGISTRY_NOT_ALLOWED`, `INFRA_UNAVAILABLE`, `INFRA_AUTH_FAILED`, `ATTESTATION_FAILED`, `SECRET_UNAVAILABLE`, `GOOGLE_AUTH_FAILED`, `MACHINE_UNREACHABLE`, `MACHINE_ERROR`, `CLUSTER_UNREACHABLE`, `CLUSTER_ERROR`, `SERVICE_UNREACHABLE`, `SERVICE_ERROR`, `PULL_FAILED`, `UNHEALTHY`, `ROLLOUT_FAILED`.
 
 **Security.** Changes what runs on machines. Needs can_deploy in the release's environment.
 
@@ -94,7 +96,7 @@ Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DE
 
 **Output.** ReleaseResponse: release_id, status, environment, request_id, group, image, previous, can_roll_back, requested_by, approved_by, env (each name and its source, never a value), warnings, targets (each machine with its status, times, error and the failed container's scrubbed log), error.
 
-**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `ATTESTATION_FAILED`, `SECRET_UNAVAILABLE`, `GOOGLE_AUTH_FAILED`, `MACHINE_UNREACHABLE`, `MACHINE_ERROR`, `CLUSTER_UNREACHABLE`, `CLUSTER_ERROR`, `PULL_FAILED`, `UNHEALTHY`, `ROLLOUT_FAILED`.
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `ATTESTATION_FAILED`, `SECRET_UNAVAILABLE`, `GOOGLE_AUTH_FAILED`, `MACHINE_UNREACHABLE`, `MACHINE_ERROR`, `CLUSTER_UNREACHABLE`, `CLUSTER_ERROR`, `SERVICE_UNREACHABLE`, `SERVICE_ERROR`, `PULL_FAILED`, `UNHEALTHY`, `ROLLOUT_FAILED`.
 
 **Security.** Changes what runs on machines. Needs can_approve in the environment, as a principal of the same team other than the one that asked.
 
@@ -147,7 +149,7 @@ Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DE
 
 **Output.** {request_id, groups: [{group, release_id, image, environment, machines: [{resource, name, status, running, image, matches}]}]}.
 
-**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `MACHINE_UNREACHABLE`, `CLUSTER_UNREACHABLE`.
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `MACHINE_UNREACHABLE`, `CLUSTER_UNREACHABLE`, `SERVICE_UNREACHABLE`.
 
 **Security.** Read-only; runs and changes nothing. Any principal of the team that owns the request.
 
