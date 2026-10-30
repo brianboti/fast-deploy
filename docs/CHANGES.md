@@ -3,14 +3,83 @@
 The first of the kinds the coverage research ranks highest (docs/RESEARCH-2026-10-28-infrastructure-layer.md section 7;
 docs/INFRASTRUCTURE-ARCHITECTURE.md, "A workload identity"):
 
-- **A twelfth kind, `identity`.** One or a list (named): an account for the request's workloads, `id-<request id>-<name>`,
+- **A thirteenth kind, `identity`.** One or a list (named): an account for the request's workloads, `id-<request id>-<name>`,
   with no key, ever. It holds the request's grants at its `level` (`use` or `admin`) as any access member does, and
   nothing outside the request. Made first, deleted last.
 - **Machines run as it**: `compute.identity` names an identity of the same request; a group that names none still runs as
   no account.
 - **Pods act as it with no key**: with clusters in the request, the Kubernetes service account of its name in the
   request's namespace gets Workload Identity on it.
-- **Tools**: `create_identity`, `get_identity`, `delete_identity` (54 tools).
+- **Tools**: `create_identity`, `get_identity`, `delete_identity` (57 tools).
+
+# Unreleased: images are built only in the trusted project
+
+Decided 2026-10-30, for security: no developer, CI job, local machine or other outside system builds a container image
+and uploads it into the trusted Google Cloud project. A team asks for a build; the project fetches the source and builds
+it ([research/RESEARCH-2026-10-30-trusted-build.md](research/RESEARCH-2026-10-30-trusted-build.md)).
+
+- **`appdelivery`: builds.** `build_image` (`POST /builds`), `get_build`, `list_builds`: one commit (a full SHA) of a
+  source the operator linked to Cloud Build (2nd gen), a Dockerfile and a context in it, and an image name. The service
+  composes the build itself (one `docker build` step; the image pushed by Cloud Build with `requestedVerifyOption:
+  VERIFIED`; the environment's build account; Cloud Logging only) and follows it in a pool of its own, resumed after a
+  restart. The build request takes no step, command, argument, secret, account or registry. Fourteen tools.
+- **`appdelivery`: only built images run.** A release whose digest is not the `built` digest of a succeeded build of
+  the same team is refused with `NOT_BUILT_HERE` before anything else is read; plans and releases name their
+  `build_id`. New codes `INVALID_BUILD`, `NOT_BUILT_HERE`, `BUILD_UNAVAILABLE`, `BUILD_FAILED`.
+- **`cloudinfra`: a registry has one kind of writer.** `access.registry_writers` lists the service accounts that build
+  images in the trusted project. Named in a request at `admin`, they push (`roles/artifactregistry.writer`, which never
+  deletes) and are granted on registries only; every other member of a registry pulls, whatever its level. A CI job's
+  federated identity (`principal://`, `principalSet://`) is no longer a member, and `access.workload_identity_pools` is
+  refused with a message naming its replacement. The registry's connect block has no push command; the plan warns who
+  pushes.
+- **Configuration.** `environments.<name>.build` (`service_account`, never the environment's own; `machine_type`,
+  `timeout_seconds`, `builder`), `sources` (`repository`, `infra_owner`, `registry`, all in the trusted project), and
+  `can_build` on a principal.
+
+Upgrading: a release of an image that was built elsewhere is now refused. Link each source, create the build accounts
+(docs/SETUP.md section 4), add `build`, `sources` and `can_build`, and build the images to release. In `cloudinfra`,
+replace `access.workload_identity_pools` with `access.registry_writers` and revoke any federated member before
+upgrading, since a stored one no longer validates.
+
+Run on Google Cloud on 2026-10-30 (docs/DELIVERY-SPIKE.md section 14): a build by commit succeeded with signed SLSA
+provenance naming the GitHub source, and a digest pushed by hand was refused. Making the connection needs the Cloud
+Build service agent to hold Secret Manager Admin (docs/SETUP.md). After the run, the release gate verifies provenance too:
+
+- **`require_provenance`** per environment: at rollout the image's Cloud Build provenance is read from Container
+  Analysis and must be signed by Google's key for Cloud Build's hosted workers (pinned), with the signed SLSA v1
+  statement naming the digest, the builder, the recorded Cloud Build build and its commit. Otherwise
+  `PROVENANCE_FAILED`, and no target is touched. Plans say `provenance_required`. The environment's account needs
+  `roles/containeranalysis.occurrences.viewer`. Tested against the real answer from the run, kept as a fixture.
+- **The platform's own images** are built the same way: `cloudbuild.yaml` builds `Dockerfile.cloudinfra` and
+  `Dockerfile.appdelivery` in the trusted project, pushed by Cloud Build with provenance, as a platform build account,
+  from the platform's linked repository at a commit (docs/SETUP.md section 3); `.gcloudignore` keeps a local submit to
+  the files the Dockerfiles copy. The docker builder is pinned by digest there and as the delivery service's default
+  `builder`. A local `docker build` is for development only. Run in the sandbox (docs/DELIVERY-SPIKE.md section 15).
+
+# Unreleased: the repository is the two services, and the documents say so
+
+The Fast Deploy workflow (`labdeploy`), retired on 2026-10-29, is removed with everything that existed only for it: the
+package, its tests, Terraform, workflow templates, eleven GitHub workflows, scripts, the operator skill, the schema,
+contracts, examples and twenty-four documents. Git history keeps them. The repository is now `cloudinfra` and
+`appdelivery`, and is named `infrastructure-layer` in `pyproject.toml`, with the console scripts `cloud-infra` and
+`app-delivery`.
+
+- **A twelfth kind, `registry`** (from the `registry-kind` branch, merged here with phase 4): a Docker repository in
+  Artifact Registry, made and deleted with its request; `use` pulls, `admin` pushes (narrowed the same day to the
+  operator's registry writers, above; the federated CI members first offered here are gone). Tools `create_registry`, `get_registry`,
+  `delete_registry`: 54 tools, twelve kinds, `reg-` ids, `endpoints.registry_addresses`.
+- **Images.** `Dockerfile` is now `Dockerfile.cloudinfra` and runs the infrastructure service (port 8100,
+  `CLOUDINFRA_CONFIG=/config/cloudinfra.yaml`, state under `/data`); `Dockerfile.appdelivery` is unchanged.
+- **Documents.** `docs/REQUIREMENTS.md` lists every requirement with its version and where it is set; `docs/SETUP.md`
+  is the operator's guide for both services; `docs/DEVELOPMENT.md` the conventions; the research records moved to
+  `docs/research/`; `README.md`, `SECURITY.md`, the architecture document and the delivery specification describe the
+  two services as they are. `docs/CHANGES.md` keeps 1.35.0 and later.
+- **Checks.** CI lints Python, the workflow and both Dockerfiles, audits the two lock files, runs the tests and
+  validates `examples/infrastructure-request.yaml` offline; `python-hcl2` left the development extras. The boundary
+  test now guards that the old package does not come back.
+
+Upgrading: nothing changes for a caller of either service. An operator who built the old `Dockerfile` builds
+`Dockerfile.cloudinfra` instead; its state path and port are new.
 
 # Unreleased: a managed job, Cloud Run jobs, with its schedule
 
@@ -237,7 +306,7 @@ that covers it), and a shape the family cannot offer is refused before the machi
 
 # 1.37.0: release A, so that a developer can use what the service creates
 
-`docs/RESEARCH-2026-10-28-positioning.md` (added in this release) placed the service against the infrastructure products
+`docs/research/RESEARCH-2026-10-28-positioning.md` (added in this release) placed the service against the infrastructure products
 companies use and ordered the work into three releases. Release A closes the gaps between "the machine exists" and "a
 developer is working on it": who can reach it, how, with what software, and for how long. Nothing here stops or expires
 on its own unless a request or the operator asks for it.
@@ -310,7 +379,7 @@ the service identity's custom role (the `getIamPolicy` and `setIamPolicy` permis
 
 # 1.36.1: the first corrections from the review of 2026-10-28
 
-`docs/RESEARCH-2026-10-28-infrastructure-layer.md` reviewed the infrastructure layer against the MCP specification, industry
+`docs/research/RESEARCH-2026-10-28-infrastructure-layer.md` reviewed the infrastructure layer against the MCP specification, industry
 patterns, the literature and Google's documentation. This release fixes what it found wrong today; the larger changes it
 ranks (idempotency keys, live prices, a two-step destroy, drift detection, the next kinds) follow in their own releases.
 
@@ -378,7 +447,7 @@ network, a managed database) in a provider-neutral request, and the service vali
 a provider adapter and reports resource ids, addresses, endpoints and status. It takes no repository, image, script, command
 or key, holds no GitHub credential, and decides nothing about an application. `labdeploy` (Fast Deploy) is unchanged in
 behaviour and becomes the optional application delivery workflow: repositories, builds, tests, images, releases and the
-Cloud Run specifics. The analysis behind the split is `docs/REFACTOR-2026-10-28.md`.
+Cloud Run specifics. The analysis behind the split is `docs/research/REFACTOR-2026-10-28.md`.
 
 - A typed contract (`cloudinfra/models`): `InfrastructureRequest` with `ComputeRequest`, `StorageRequest`, `NetworkRequest`
   and `DatabaseRequest`; `InfrastructureResponse` with resources by kind, endpoints, operations, a cost estimate and a
@@ -414,66 +483,5 @@ Upgrade: nothing to do for Fast Deploy installations; `labdeploy.cloud.GoogleTok
 service, copy `cloudinfra.example.yaml`, add a principal from `cloud-infra token`, and start
 `uvicorn cloudinfra.mcp.server:create_app --factory` with `CLOUDINFRA_CONFIG` pointing at the file.
 
-# 1.34.0: a premium finish, a dark theme and pages for the long lists
-
-A second pass over the design system of 1.33.0, after reading what the best product interfaces share: hierarchy from weight
-and spacing rather than decoration, colour held back for meaning, structure from faint borders with shadows only where
-something floats, one scale of spacing, and a hover, pressed, focused and disabled state on everything a person can touch.
-
-- Tokens: cool-tinted neutrals, a deeper accent kept for the primary action, links, focus and the live state; cards and
-  tiles carry a faint border and no resting shadow; the primary button is a subtle gradient with an inner highlight; inputs
-  and switches are tighter; the sidebar's current page is a quiet filled row, not a block of colour.
-- A dark theme, designed rather than inverted: surfaces step up in lightness, accents and status colours desaturated, never
-  pure black. It follows the system setting (`prefers-color-scheme`). The charts colour themselves from the theme's tokens,
-  so every chart, the deployment page and the sign-in page read in both.
-- The long lists have pages: releases (25 a page), events (50, or 200 with `more`) and the deployments list (20), with a pager
-  that says where you are and links to every page. Events are counted and read a page at a time from the database
-  (`Store.find_events` takes an offset; `Store.count_events` is new).
-- Smaller: empty states are drawn as an inset panel, the sign-in card sits on a soft glow, scrollbars are thin.
-
-Routes, forms, class names and the strict headers are unchanged (no script outside the deployment page, no web font, no
-image, no `url(`).
-
-# 1.33.0: one design system for every page
-
-The pages the controller serves (Monitor, Configure, the deployment page, the setup steps, sign-in and the OAuth consent page)
-shared no look: three palettes, three kinds of card, sidebar labels that changed from page to page. This release draws them
-all with one design system, `labdeploy/theme.py`, built on Apple's Human Interface Guidelines as they apply to a web page: the
-system typeface with tabular numbers and a small type scale, semantic colours used for one meaning each, a grouped light
-canvas with white surfaces and hairline separators, 8-point spacing, 44-point targets on a phone, and brief motion that is
-off when a person asks for reduced motion.
-
-- The sidebar is a translucent material with one vocabulary everywhere (Monitor: Overview, Deployments, Health, Releases,
-  Cost, Activity; Configure: Connections, Applications, Platform, People, Production, Advanced), the current page in the
-  accent colour and the signed-in identity as a small card. On a phone it becomes a bar that stays at the top.
-- Cards, settings rows, fields, switches, segmented controls, chips, callouts, tables and the sign-in card share one set of
-  tokens, and the charts use the same palette.
-- Motion: a page rises in as it loads, cards lift under the pointer, the switch slides, the live dot ripples and the Monitor
-  toolbar stays at the top of the screen while the page scrolls; `prefers-reduced-motion` turns every animation off.
-- The deployment page keeps its board, track, spotlight and journey, now in the same colours and type as the rest, with its
-  tools drawn as buttons.
-- The OAuth consent page is the same sign-in card as the settings page.
-
-Nothing a page does changed: the same routes, forms, class names and strict headers (no script outside the deployment page,
-no web font, no image, no `url(`), and the same tests pass.
-
-# 1.32.0: company readiness, phases 0 and 2
-
-This release implements phases 0 and 2 of the October 23 readiness plan. Codex started the work and Claude finished it. Phase 1
-(company identity) is not part of this release.
-
-Phase 0 adds a control catalog with a dependency map, and verified secrets now block every release path whatever the
-code's review status. A contract check in CI runs for every pull request, and a written production-gate specification
-describes a future gate without enforcing it.
-
-Phase 2 adds:
-
-- an operation ledger, with intents written off-host before any dispatch;
-- a scheduler whose safety work cannot be starved;
-- dependency resolution in isolated workers;
-- a job broker that reserves quota before a job starts;
-- an opt-in supervisor that recovers an interrupted production release through GitHub.
-
-An independent review found fifteen issues, and thirteen are fixed with tests (docs/READINESS-IMPLEMENTATION.md). Every
-new part is off until configured. `resolver_local_fallback: true` keeps lockfile generation on the controller until the
-worker project exists. Nothing here has been exercised live; docs/READINESS-ROLLOUT.md lists the drills.
+Earlier versions (Fast Deploy 0.1.0 to 1.34.0, the release controller this repository began as) are in git history: the
+workflow was removed on 2026-10-30, and its changelog went with it.

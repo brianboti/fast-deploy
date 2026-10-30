@@ -33,7 +33,7 @@ def test_catalog_document_is_current():
 def test_registered_tools_match_the_catalog(tmp_path):
     app = built(tmp_path)
     tools = {tool.name: tool for tool in app.state.mcp._tool_manager.list_tools()}
-    assert sorted(tools) == sorted(spec.name for spec in CATALOG) and len(CATALOG) == 54
+    assert sorted(tools) == sorted(spec.name for spec in CATALOG) and len(CATALOG) == 57
     for spec in CATALOG:
         tool = tools[spec.name]
         assert set(tool.parameters.get("properties", {})) == {item.name for item in spec.inputs}, spec.name
@@ -83,11 +83,11 @@ def test_google_cloud_is_named_only_inside_its_adapter():
 
 
 def test_version_is_shared_with_the_repository():
+    """The repository's version is the infrastructure service's; the delivery service keeps its own (appdelivery.__version__)."""
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
-    assert project["version"] == cloudinfra.__version__ and "cloudinfra*" in project.get("optional-dependencies", {}).get("_", []) or True
-    assert project["scripts"]["cloud-infra"] == "cloudinfra.cli:main"
-    import labdeploy
-    assert labdeploy.__version__ == cloudinfra.__version__
+    assert project["version"] == cloudinfra.__version__
+    assert project["scripts"] == {"cloud-infra": "cloudinfra.cli:main", "app-delivery": "appdelivery.cli:main"}
+    assert sorted(tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["setuptools"]["packages"]["find"]["include"]) == ["appdelivery*", "cloudinfra*"]
 
 
 def test_cli_offline_validate_and_plan(tmp_path, capsys):

@@ -1,41 +1,47 @@
-# Application delivery service: specification (draft)
+# Application delivery service: specification
 
-Draft of 2026-10-29. Nothing here is built yet. The decision it follows: deploying a container onto what the
-infrastructure layer built is the job of a **small separate service**, a new package beside `cloudinfra`
-([RESEARCH-2026-10-29-delivery-layer.md](RESEARCH-2026-10-29-delivery-layer.md)). It neither uses nor depends on
-`labdeploy`: that package will not be used and is to be removed, so nothing here may rely on it, borrow its code, or
-assume it exists.
-The working name is `appdelivery` (CLI `app-delivery`); the name is not a decision.
+Written 2026-10-29 as the specification to build from, and kept current with what was built: phases 1 to 4 (machines,
+clusters, several clusters with a front door, Cloud Run services and jobs) are in `main` and each ran on a real
+project ([DELIVERY-SPIKE.md](DELIVERY-SPIKE.md)). The decision it follows: deploying a container onto what the
+infrastructure layer built is the job of a **small separate service**, a package beside `cloudinfra`
+([research/RESEARCH-2026-10-29-delivery-layer.md](research/RESEARCH-2026-10-29-delivery-layer.md)). It neither uses nor
+depends on the Fast Deploy workflow that preceded it, which was removed from the repository on 2026-10-30.
+The name is `appdelivery` (CLI `app-delivery`).
 
 ## 1. What it is
 
-The service takes **an image that already exists** and runs it on **resources a `cloudinfra` request already created**,
-checks that it is healthy, and can put the previous version back. It is the middle band of three:
+The service has the image built **in the trusted Google Cloud project**, from a commit of a source the operator
+linked, and runs that image on **resources a `cloudinfra` request already created**, checks that it is healthy, and can
+put the previous version back. Since 2026-10-30 no developer, CI job, local machine or other outside system builds an
+image and uploads it: a team asks for a build, and a release may name only a digest a build of this service reported
+(section 3, "Build request"; [research/RESEARCH-2026-10-30-trusted-build.md](research/RESEARCH-2026-10-30-trusted-build.md)).
+It is the middle band of three:
 
 ```
-Application teams      code · CI · build · image in a registry               (their own tools)
-        │  image@sha256:… + request_id + port + env bindings
+Application teams      code · a build request (source, commit, Dockerfile) · a release request (the built digest)
+        │
         ▼
-appdelivery            verify image · resolve bindings · run · health · roll back · record   (this spec)
+appdelivery            order the build in Cloud Build · record its digest · verify · bind · run · health · roll back   (this spec)
         │  reads the request over cloudinfra's REST API; acts on the machines with the IAM grants the request gave it
         ▼
-cloudinfra             machines · networks · databases · secrets · clusters, with access grants   (unchanged)
+cloudinfra             machines · networks · databases · secrets · clusters · registries, with access grants
 ```
 
 | It owns | It does not own |
 |---|---|
-| Running a given image on a given request's machines (later: clusters) | Building, testing or signing images |
+| Ordering a build of a linked source at one commit from Cloud Build in the trusted project, and recording the digest | Running the build itself (Cloud Build does), testing images, the application's CI |
+| Running an image it built on a given request's machines, clusters, managed container services and jobs | Images built or pushed anywhere else: they are refused |
 | Turning bindings into environment values at run time | Creating, resizing or deleting infrastructure |
 | The health check that decides a rollout, and the rollback | Firewall rules, load balancers, machine sizes |
-| Which release runs where, who asked, and the one before it | Cloud Run services (not offered; section 4) |
+| Which release runs where, who asked, and the one before it | Creating the Cloud Run services and jobs it releases onto (the infrastructure layer's) |
 | Approval of a release in an environment that asks for one | The application's own logs, metrics and alerts beyond the rollout |
 
 ### A correction to the research note
 
-The research note put Cloud Run first among targets, on the grounds that existing code already did it. That reason is
-gone (`labdeploy` is not used), and the target was wrong for this service anyway: `cloudinfra` has no Cloud Run kind, so a
-Cloud Run target would not run on "our resources" at all. The targets are therefore **machines first, clusters second**;
-Cloud Run is not planned (section 4).
+The research note put Cloud Run first among targets, on the grounds that the earlier workflow already did it. That
+reason went with the workflow, and the target was wrong for this service at the time anyway: `cloudinfra` had no Cloud
+Run kind, so a Cloud Run target would not have run on "our resources". The targets were therefore built **machines
+first, clusters second**, and Cloud Run came back in phase 4 as a `cloudinfra` kind plus a target here (section 4).
 
 ## 2. Who trusts whom
 
@@ -60,18 +66,68 @@ Three identities, and a release needs all three to agree:
    `secretAccessor` on the request's secrets, and nowhere else. `admin` is needed because running containers on the
    machine needs root; the grant is the team's explicit consent to that.
 
+A fourth identity builds: **a build account per environment**, user-managed, that Cloud Build runs the environment's
+builds as. It may push to the teams' registries (`roles/artifactregistry.writer`, which cannot delete) and write logs,
+and nothing else; it is never the environment's own account, which only reads images. The environment's account starts
+builds as it (`roles/cloudbuild.builds.editor` on the project, `roles/iam.serviceAccountUser` on the build account).
+The source reaches Cloud Build through a repository connection whose host credential lives in Secret Manager in the
+trusted project, read only by Cloud Build's service agent: no team or CI job holds one for this.
+
 Before every action `appdelivery` checks, from `cloudinfra`'s answer: the request's `owner` is the caller's
 `infra_owner`; its status is `READY`; its `access` list holds this environment's service account with status `GRANTED`
 and level `admin`. Any "no" is a refusal with a code, before anything touches a machine.
 
 ## 3. The contract
 
+### Build request
+
+```yaml
+environment: dev                      # picks the build account, machine type and timeout
+source: shop-web                      # a repository the operator linked to Cloud Build, by its name in the configuration
+revision: 0123456789abcdef0123456789abcdef01234567   # the full commit SHA; a branch or a tag is refused
+image: web                            # its name under the source's registry
+dockerfile: services/web/Dockerfile   # optional, a path in the source; default Dockerfile
+context: services/web                 # optional, a path in the source; default .
+note: "fix checkout rounding"         # optional, recorded with the build, never sent to Cloud Build
+```
+
+Rules, all checked before Cloud Build is called:
+
+- No field for a build step, a command, an argument, a build argument, a substitution, a secret, an account, a pool or
+  a registry. Unknown fields are refused. The service composes the build: the source as the linked repository at that
+  commit; one step, `docker build --build-arg TARGETARCH=amd64 -t <registry>/<image>:<build id> -f <dockerfile>
+  <context>`; the image pushed by Cloud Build through `images`, the only push for which it records provenance;
+  `serviceAccount` the environment's build account; `logging: CLOUD_LOGGING_ONLY`; `requestedVerifyOption: VERIFIED`,
+  so a build without signed SLSA provenance fails; the environment's machine type and timeout.
+- Paths are relative, inside the source, with no `..` part and no leading `-` (which docker would read as a flag).
+- The caller needs `can_build` in the environment; the source must be its own team's (another team's is not found);
+  the environment must have build settings; the source's registry must be under the environment's
+  `allowed_registries`.
+- The tag is the build id, so it never moves; with immutable tags on the repository it stays on this digest for good.
+
+### Build response
+
+```yaml
+build_id: bld-3e0c5a9d1f72
+status: SUCCEEDED                     # QUEUED, WORKING, SUCCEEDED or FAILED
+image: us-central1-docker.pkg.dev/infra-project/shop-images/web:bld-3e0c5a9d1f72
+built: us-central1-docker.pkg.dev/infra-project/shop-images/web@sha256:9b2f…   # what a release names
+cloud_build_id: 6f1d…
+log_url: https://console.cloud.google.com/cloud-build/builds;region=us-central1/6f1d…
+error: null                           # BUILD_FAILED with Cloud Build's status and detail on failure
+```
+
+`build_image` answers once Cloud Build has the build; a follower polls it to its end in a pool of its own, so a long
+build never holds a rollout's worker, and `get_build` asks Cloud Build again whenever a build is not finished. A build
+goes on in Cloud Build while this service restarts; at start the service follows every unfinished build again. A
+success counts only with a digest for exactly the image the build was asked to push.
+
 ### Release request
 
 ```yaml
 environment: prod                     # one of the operator's environments; picks the identity and the policy
 request_id: 3f6c…e2a1                 # the cloudinfra request that holds the target
-target: {group: web}                  # a compute group of that request: every machine in it (later: {cluster: clu-…})
+target: {group: web}                  # a compute group of that request; or {cluster: NAME, workload, replicas}, {service: NAME}, {job: NAME}
 image: us-central1-docker.pkg.dev/acme-apps/shop/web@sha256:9b2f…   # a digest is required; a tag is refused
 port: 8080                            # the container's port, published on the same port of the machine
 health: {path: /healthz, timeout_seconds: 60}
@@ -89,6 +145,17 @@ Rules, all checked before anything runs:
 - No field for source, a repository, a Dockerfile, a build, a command, an entrypoint, arguments, volumes, privileges or
   host mounts. Unknown fields are refused (strict models, like `cloudinfra`). The image runs as its author built it.
 - `image` must carry `@sha256:`; its registry must be in the operator's `allowed_registries`.
+- `image` must be exactly the `built` digest of a succeeded build of this service for the same team, in any
+  environment (an image is built once and released to dev, then prod). Anything else is `NOT_BUILT_HERE`, before the
+  infrastructure layer is read: an image built on a laptop or in a CI job, or pushed into the team's own registry by
+  anyone, has no such build. Checked again when a release waiting for approval starts.
+- In an environment with `require_provenance`, the rollout also reads the image's Cloud Build provenance from
+  Container Analysis and accepts it only if Google's own key (`google-hosted-worker`, pinned in
+  `appdelivery/provenance.py`) signed it over DSSE's encoding, and the signed SLSA v1 statement names this digest in
+  this repository, Cloud Build's hosted worker as the builder, the recorded Cloud Build build as its invocation, and the
+  recorded commit as its source. The occurrence's unsigned copy is never read. Anything else is `PROVENANCE_FAILED` and
+  no target is touched. This holds even if this service's own records were changed: only Cloud Build can make what
+  Google signs.
 - `env` values are a literal, an endpoint of this request, or a secret of this request; never a secret of another
   request. A literal that looks like a credential (by the same key list `cloudinfra`'s redaction uses) is refused: put it
   in a secret.
@@ -388,7 +455,7 @@ deploy ──► AWAITING_APPROVAL ──approve──► ROLLING_OUT ──► 
 ```
 
 - `plan_release` checks everything in sections 2 and 3, resolves the bindings to names (never values), lists the
-  machines and names the release it would replace (`replaces`). Pure: nothing on a machine, nothing recorded.
+  machines, names the release it would replace (`replaces`) and the build that produced the image (`build_id`). Pure: nothing on a machine, nothing recorded.
 - `deploy_release` records the release and, without approval, starts the rollout in a background worker; in an
   environment with `require_approval` it waits for `approve_release` by a principal with `can_approve`, of the same
   team, other than the one that asked. One release per request and group moves or waits at a time.
@@ -422,6 +489,9 @@ and a small REST API, bearer token per principal stored as a SHA-256 hash, rate 
 
 | MCP tool | REST | Needs |
 |---|---|---|
+| `build_image` | `POST /builds` | `can_build` |
+| `get_build` | `GET /builds/{id}` | read |
+| `list_builds` | `GET /builds?environment=&source=` | read |
 | `plan_release` | `POST /releases/plan` | `can_deploy` |
 | `deploy_release` | `POST /releases` | `can_deploy` |
 | `approve_release` | `POST /releases/{id}/approve` | `can_approve`, another principal |
@@ -447,8 +517,9 @@ Claude acts as that principal (`appdelivery/oauth.py`, the same shape as `cloudi
 One SQLite file, its own, never `cloudinfra`'s, in WAL mode, written by one process (a lock file next to it):
 `releases` (request, group, environment, team, who asked and who approved, status, image digest, previous,
 `can_roll_back`, the request as sent with bindings by name, the plan's binding sources and warnings, the last error),
-`targets` (release, position, resource id, name, zone, status, times, last error, the container's scrubbed log), and
-`events` (audit). JSON log lines on the `appdelivery` logger carry the release id and identity. No secret
+`targets` (release, position, resource id, name, zone, status, times, last error, the container's scrubbed log),
+`builds` (environment, team, who asked, source, commit, the pushed tag, status, Cloud Build's id and log address, the
+built digest, the request as sent, the last error), and `events` (audit). JSON log lines on the `appdelivery` logger carry the release id and identity. No secret
 value is ever stored, logged or returned; a test reads the database and the log after a release with a secret binding
 and finds no trace of the value, as `cloudinfra`'s does for the database password.
 
@@ -465,16 +536,24 @@ environments:
   dev:
     token_env: APPDELIVERY_DEV_INFRA_TOKEN          # cloudinfra token of this environment's read-only principal
     service_account: appdelivery-dev@infra-project.iam.gserviceaccount.com
-    allowed_registries: [us-central1-docker.pkg.dev/acme-apps]
+    allowed_registries: [us-central1-docker.pkg.dev/infra-project/shop-images]
+    build: {service_account: build-dev@infra-project.iam.gserviceaccount.com}   # machine_type, timeout_seconds, builder optional
   prod:
     token_env: APPDELIVERY_PROD_INFRA_TOKEN
     service_account: appdelivery-prod@infra-project.iam.gserviceaccount.com
-    allowed_registries: [us-central1-docker.pkg.dev/acme-apps-release]
+    allowed_registries: [us-central1-docker.pkg.dev/infra-project/shop-images]
+    build: {service_account: build-prod@infra-project.iam.gserviceaccount.com, machine_type: E2_HIGHCPU_8}
+    require_provenance: true
     require_attestation: true
     trusted_signers: ["gcpkms://projects/acme-sec/locations/global/keyRings/release/cryptoKeys/attestor"]
     require_approval: true
+sources:                                 # repositories linked to Cloud Build, and where each team's images go
+  shop-web:
+    repository: projects/infra-project/locations/us-central1/connections/github/repositories/acme-shop
+    infra_owner: shop-team
+    registry: us-central1-docker.pkg.dev/infra-project/shop-images
 principals:
-  - {name: shop-team, token_sha256: "…", infra_owner: shop-team, environments: [dev, prod], can_deploy: true}
+  - {name: shop-team, token_sha256: "…", infra_owner: shop-team, environments: [dev, prod], can_deploy: true, can_build: true}
   - {name: shop-oncall, token_sha256: "…", infra_owner: shop-team, environments: [prod], can_approve: true}
 ```
 
@@ -512,16 +591,19 @@ own secrets and pull its own images; then `appdelivery` would pass secret names 
 
 As `tests/cloudinfra/test_infra_catalog.py` does for `cloudinfra`:
 
-- `appdelivery` imports neither `cloudinfra` nor `labdeploy`; it speaks to `cloudinfra` only over HTTP, and `cloudinfra`
-  never imports `appdelivery`. No source, test, configuration or document of `appdelivery` names `labdeploy`, and its
-  tests pass with the `labdeploy` directory deleted: they live in `tests/appdelivery/` and use none of the shared test
-  helpers under `tests/` (the root `tests/conftest.py` belongs to the old tests).
-- It has its own console script and container image; it does not ride in the image that runs `labdeploy` today. It
-  needs no Python dependency beyond those `cloudinfra` already pins (mcp, fastapi, httpx, pydantic, PyYAML, uvicorn). Its
-  image adds two pinned binaries: the gcloud CLI and Cosign 3.1.x.
+- `appdelivery` imports neither `cloudinfra` nor the removed Fast Deploy workflow, whose name may not come back; it
+  speaks to `cloudinfra` only over HTTP, and `cloudinfra` never imports `appdelivery`. Its tests live in
+  `tests/appdelivery/` with their own fakes and no `conftest.py`, and use no helper from elsewhere.
+- It has its own console script and container image (`Dockerfile.appdelivery`). It needs no Python dependency beyond
+  those `cloudinfra` already pins (mcp, fastapi, httpx, pydantic, PyYAML, PyJWT, cryptography, uvicorn). Its image adds two pinned
+  binaries: the gcloud CLI and Cosign 3.1.x.
 - It copies nothing from `cloudinfra` by import. The bearer-token gate, rate limiter and audit wrapper are small and are
   written again in `appdelivery`; a shared library can come later if a third service needs them.
-- The release models have no field that could carry source, a build, a command or a mount (section 3).
+- The release models have no field that could carry source, a build, a command or a mount (section 3). The build
+  request has only its seven fields: no step, command, argument, secret, account or registry.
+- The package builds nothing itself: only `cloudbuild.py` calls Cloud Build, and the one module that runs commands runs
+  gcloud and Cosign only.
+- A release of a digest no build of this service reported for the team is refused, and nothing reaches a machine.
 - A command runs only in one module, with a fixed argument list (`gcloud compute ssh … --tunnel-through-iap`, `cosign
   verify-attestation`); the host script is a file in the package, checked against its hash before it is sent.
 - An image without a digest is refused; a secret value never reaches the database, a log line or a response.
@@ -530,19 +612,30 @@ As `tests/cloudinfra/test_infra_catalog.py` does for `cloudinfra`:
 ## 11. Phases and what "done" means
 
 1. **Phase 1, machines.** Plan, deploy, health, rollback, remove on one machine and on a group; attestation and
-   approval per environment; the boundary tests. Done when one real run on the company's project takes an image by
-   digest onto a `container-host` machine of a `cloudinfra` request, answers on its health path, rolls back on a broken
-   image, and leaves no secret value in the state or the log.
-2. **Phase 2, clusters,** once section 9's cluster choice is made.
-3. **Phase 3, convenience:** a Score file as an alternative input; `cloudinfra`'s `scope: granted`.
+   approval per environment; the boundary tests. Done 2026-10-29: a real run took an image by digest onto
+   `container-host` machines of a `cloudinfra` request, rolled a broken image back, and left no secret value in the
+   state or the log (section 14; [DELIVERY-SPIKE.md](DELIVERY-SPIKE.md) sections 9 and 10).
+2. **Phase 2, clusters.** Done 2026-10-29 (section 4; spike section 11).
+3. **Phase 3, several clusters, private images, a front door.** Done 2026-10-29 over plain HTTP (section 4; spike
+   section 12); HTTPS on a real domain is still to be run.
+4. **Phase 4, Cloud Run services and jobs.** Done 2026-10-30 (section 4; spike section 13).
+5. **Builds in the trusted project.** Done 2026-10-30 (section 3;
+   [research/RESEARCH-2026-10-30-trusted-build.md](research/RESEARCH-2026-10-30-trusted-build.md) section 8):
+   `build_image`, `get_build`, `list_builds`, and the rule that a release names only a digest built here;
+   `cloudinfra`'s registries pushed to only by the operator's build accounts, with no federated CI identity a member;
+   with `require_provenance`, Cloud Build's provenance verified by Google's signature; and the platform's own images
+   built the same way by `cloudbuild.yaml`. Run on Google Cloud (spike sections 14 and 15).
+6. **Later, convenience:** a Score file as an alternative input; `cloudinfra`'s `scope: granted`; an internal front
+   door; a machine service account chosen by the request.
 
 ## 12. Decisions that are yours
 
-1. The name (`appdelivery` is a placeholder).
-2. Whether attestation is required in every environment or only in production.
+1. The name: `appdelivery` stayed.
+2. Whether attestation is required in every environment or only in production: per environment, `require_attestation`.
 3. Phase 2's cluster choice (section 9): decided 2026-10-29, a namespace per cluster with RBAC grants.
-4. Whether a release on a group may run on several machines at once (faster) or always one at a time (safer; the draft).
-5. Whether Cloud Run comes back later, as a `cloudinfra` kind plus a target here (section 4), or stays out.
+4. Whether a release on a group may run on several machines at once (faster) or always one at a time (safer): one at a
+   time, as built.
+5. Whether Cloud Run comes back: decided 2026-10-29, as a `cloudinfra` kind plus a target here (section 4, phase 4).
 
 ## 13. Checked before building (2026-10-29)
 
@@ -590,10 +683,9 @@ On a new branch from `main`, in this order; each step ends green on `python -m p
    `cli.py` (`token`, `check-config`, and `plan FILE --config --as PRINCIPAL`, which reads the request from `cloudinfra`
    and runs every check; the tool catalog moves to step 8 with the server), the `app-delivery` script in
    `pyproject.toml`, `appdelivery.example.yaml`, and `tests/appdelivery/test_delivery_boundaries.py`: no import of
-   `cloudinfra` or `labdeploy` in the package and none of `appdelivery` in either of them, `labdeploy` named nowhere in
-   the package or its tests, no shared test helper and no `conftest.py`, commands only in `remote.py`, no field in the
-   contract that could run or build something, and the whole directory run again in a fresh interpreter where
-   importing `labdeploy` fails.
+   `cloudinfra` or the old workflow in the package and none of `appdelivery` in `cloudinfra`, the old workflow named
+   nowhere in the package or its tests, no shared test helper and no `conftest.py`, commands only in `remote.py`, and no
+   field in the contract that could run or build something.
 2. **Contract.** Built. `models.py` and `errors.py`: digest required, the three binding sources, credential-looking
    names refused as literals (by whole words, so `AUTHOR_NAME` passes and `API_KEY` does not), plain health paths only,
    port 22 refused. Every refusal of section 3 has a test.

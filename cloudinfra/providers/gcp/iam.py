@@ -6,7 +6,7 @@ Each change reads the policy, changes only this service's roles for one member, 
 retrying a conflicting write. A machine's IAP tunnel grant is bound to the machine's numeric id, so a later machine with
 the same name never inherits it."""
 from ...models.errors import ErrorCode, InfrastructureError
-from .api import COMPUTE, IAM, PUBSUB, RUN, SECRETS, STORAGE
+from .api import ARTIFACT_REGISTRY, COMPUTE, IAM, PUBSUB, RUN, SECRETS, STORAGE
 
 IAP = "https://iap.googleapis.com/v1"
 IAP_TUNNEL = "roles/iap.tunnelResourceAccessor"
@@ -17,6 +17,7 @@ ROLES = {
     "topic": {"use": ("roles/pubsub.publisher",), "admin": ("roles/pubsub.publisher",)},
     "subscription": {"use": ("roles/pubsub.subscriber",), "admin": ("roles/pubsub.subscriber",)},
     "tunnel": {"use": (IAP_TUNNEL,), "admin": (IAP_TUNNEL,)},
+    "registry": {"use": ("roles/artifactregistry.reader",), "admin": ("roles/artifactregistry.writer",)},
     # A Cloud Run service: use calls it; admin also deploys revisions, which needs acting as its runtime account
     "service": {"use": ("roles/run.invoker",), "admin": ("roles/run.invoker", "roles/run.developer")},
     "runtime": {"use": (), "admin": ("roles/iam.serviceAccountUser",)},
@@ -109,6 +110,11 @@ class GcpIam:
         return (lambda: self.api.get(f"{PUBSUB}/{name}:getIamPolicy"),
                 lambda policy: self.api.post(f"{PUBSUB}/{name}:setIamPolicy", json={"policy": policy}))
 
+    def _repository(self, resource):
+        base = f"{ARTIFACT_REGISTRY}/{resource.repository}"
+        return (lambda: self.api.get(f"{base}:getIamPolicy", **{"options.requestedPolicyVersion": 3}),
+                lambda policy: self.api.post(f"{base}:setIamPolicy", json={"policy": policy}))
+
     def targets(self, resource) -> list[tuple]:
         """(endpoint, role table) pairs for a resource; empty for one that takes no grants (a disk, a network)."""
         kind = resource.kind.value
@@ -118,6 +124,8 @@ class GcpIam:
             return [(self._secret(resource), "secret")]
         if kind == "storage" and resource.type == "object":
             return [(self._bucket(resource), "bucket")]
+        if kind == "registry":
+            return [(self._repository(resource), "registry")]
         if kind in ("service", "job"):  # a job's roles are the service's: run.invoker runs it, run.developer changes it
             found = [(self._run(resource), "service")]
             if resource.runtime_service_account:

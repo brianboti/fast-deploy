@@ -77,7 +77,7 @@ def test_validation_helpers():
 def test_response_model_round_trips_as_json():
     response = InfrastructureResponse(request_id="a" * 32, name="x", provider="gcp", region="us-central1", status=RequestStatus.READY, created_at="t", updated_at="t")
     data = response.model_dump(mode="json")
-    kinds = ("identity", "network", "storage", "compute", "database", "cache", "queue", "secret", "cluster", "service", "job", "load_balancer")
+    kinds = ("identity", "network", "storage", "compute", "database", "cache", "queue", "secret", "registry", "cluster", "service", "job", "load_balancer")
     assert data["status"] == "READY" and data["resources"] == {kind: [] for kind in kinds}
     assert data["credentials"] is None
     assert InfrastructureResponse.model_validate(data) == response

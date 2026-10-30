@@ -1,12 +1,13 @@
 .git
+.github
 .venv
 .env
 *.pem
 *.db*
-gha-creds-*.json
-config.local.yaml
+*.local.yaml
+docs
 tests
 examples
 .pytest_cache
+.ruff_cache
 __pycache__
-

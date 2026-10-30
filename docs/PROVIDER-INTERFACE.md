@@ -32,6 +32,7 @@ cleanup on failure and the destroy in reverse, so an adapter gets all of that wi
 | `create_cache(spec, planned, ctx, network)` / `get_cache` / `delete_cache` | provisioning, status, destroy | A private in-memory cache on the network; no credential returned. |
 | `create_queue(spec, planned, ctx)` / `get_queue` / `delete_queue` | provisioning, status, destroy | A topic and, when asked, one pull subscription. |
 | `create_secret(spec, planned, ctx)` / `get_secret` / `delete_secret` | provisioning, status, destroy | A secret container; a generated first version is written straight to the provider. |
+| `create_registry(spec, planned, ctx)` / `get_registry` / `delete_registry` | provisioning, status, destroy | A container image repository in the region; deleting it deletes its images. |
 | `create_cluster(spec, planned, ctx, network)` / `get_cluster` / `delete_cluster` | provisioning, status, destroy | A managed Kubernetes cluster with one node pool; no credential returned. |
 | `create_load_balancer(spec, planned, ctx, backends, network)` / `get_load_balancer` / `delete_load_balancer` | provisioning, status, destroy | A public load balancer over the given machines; its pieces recorded on the resource for teardown in reverse. |
 | `supported_kinds` | validation, `list_resource_kinds` | The kinds the adapter implements; a request for another is `UNSUPPORTED_RESOURCE_KIND` before any call. |
@@ -77,7 +78,7 @@ Google API; a test fails if any other module of the core does.
 
 | Module | Holds |
 |---|---|
-| `auth.py` | `GoogleToken`: a token from the metadata server on a Google Cloud machine, else from gcloud (impersonating a configured service account when asked). Moved here from `labdeploy/cloud.py`, which re-exports it. |
+| `auth.py` | `GoogleToken`: a token from the metadata server on a Google Cloud machine, else from gcloud (impersonating a configured service account when asked). |
 | `api.py` | `GcpApi`: one REST client with the bearer token, HTTP error → `InfrastructureError` translation (401 auth, 403 permission or quota, 404, 409/412 conflict, 429 and 5xx unavailable), and the operation waits for Compute Engine (`operations.wait`), Cloud SQL (poll) and Service Networking (poll). The single seam the unit tests replace with a fake. |
 | `translate.py` | Generic → Google shapes: `machine_type(cpu, memory_gb)` (E2 predefined when the ratio matches, E2 custom within 0.5 to 8 GB per vCPU, shared-core for one CPU), image families, disk types, database versions and tiers, the IAP range, zone table, labels and descriptions. |
 | `pricing.py` | Approximate list prices for us-central1 and the estimate; `verified` is null until someone checks them. |
@@ -85,6 +86,7 @@ Google API; a test fails if any other module of the core does.
 | `cache.py` | Memorystore for Redis: direct peering on the network, AUTH on, TLS, basic or standard-HA tier; the server certificate, and the AUTH string read once (`instances.getAuthString`) to be copied into the request's secret. |
 | `queue.py` | Pub/Sub: topic and pull subscription. |
 | `secret.py` | Secret Manager: container with automatic replication, optional generated first version, and `addVersion` for a value the service writes. |
+| `registry.py` | Artifact Registry: a Docker repository in the region, created and deleted through long-running operations. |
 | `iam.py` | Grants on the resources a request created: the policy of a machine, of its IAP tunnel (by numeric id), of a secret, a bucket, a topic and a subscription. Read, change one member's roles from a fixed list, write back with the etag read, retry a conflicting write. Never project IAM. |
 | `connect.py` | The connect block of each kind: gcloud ssh and port forwarding through the IAP tunnel, psql or mysql with the password secret's read command, redis-cli with TLS and the AUTH secret, bucket and queue commands, cluster credentials; prerequisites the platform team grants once. |
 | `cluster.py` | Kubernetes Engine: zonal cluster, one node pool, VPC-native, shielded nodes, workload identity, regular channel. |
@@ -106,6 +108,7 @@ Google API; a test fails if any other module of the core does.
 | `cache` | Memorystore `redis.instances.create`: `BASIC` or `STANDARD_HA`, `REDIS_7_2` by default, `DIRECT_PEERING` on the network, AUTH and `SERVER_AUTHENTICATION` TLS |
 | `queue` | `projects/<p>/topics/<name>-<queue>` and a pull subscription of the same name with the retention asked |
 | `secret` | `projects/<p>/secrets/<name>-<secret>`, automatic replication; `generate_value` adds version 1 |
+| `registry` | Artifact Registry `repositories.create` in the region, `format: DOCKER`, `dockerConfig.immutableTags` as asked; address `<region>-docker.pkg.dev/<p>/<name>-<registry>` |
 | `cluster` | `container.clusters.create` in the zone: node pool `default-pool` with an E2 machine type, `pd-balanced` disks, release channel `REGULAR`, workload pool `<p>.svc.id.goog` |
 | `load_balancer: http` | unmanaged instance group with a named port, firewall from 130.211.0.0/22 and 35.191.0.0/16, HTTP health check, `EXTERNAL_MANAGED` backend service, URL map, target HTTP proxy, global address, global forwarding rule |
 | `load_balancer: tcp` | the same instance group and firewall, regional TCP health check, `EXTERNAL` regional backend service, regional address and forwarding rule |
@@ -114,7 +117,7 @@ Google API; a test fails if any other module of the core does.
 | `compute.accelerator` boot disk | 50 GB unless asked; at least 40 GB, Google's minimum for drivers and a toolkit |
 | `compute.max_run_hours` | `scheduling.maxRunDuration` with `instanceTerminationAction: STOP` |
 | stop and start | `instances.stop` and `instances.start` (`instances.resume` for a suspended instance); Cloud SQL `instances.patch` with `settings.activationPolicy` `NEVER` or `ALWAYS` |
-| `access` | `getIamPolicy` and `setIamPolicy` on the instance (`roles/compute.osLogin` or `osAdminLogin`), on `projects/<number>/iap_tunnel/zones/<zone>/instances/<id>` (`roles/iap.tunnelResourceAccessor`), on the secret, the bucket (`storage.buckets.getIamPolicy`/`setIamPolicy`), the topic and the subscription |
+| `access` | `getIamPolicy` and `setIamPolicy` on the instance (`roles/compute.osLogin` or `osAdminLogin`), on `projects/<number>/iap_tunnel/zones/<zone>/instances/<id>` (`roles/iap.tunnelResourceAccessor`), on the secret, the bucket (`storage.buckets.getIamPolicy`/`setIamPolicy`), the topic and the subscription, the repository (`roles/artifactregistry.reader` or `writer`, the only place a `principal://` or `principalSet://` member is granted) |
 | credentials | Secret Manager secrets `<name>-db-password-<6 hex>` and `<name>-cache-auth-<6 hex>`, written with `addVersion` |
 | `compute.public_ip` | one `ONE_TO_ONE_NAT` access config |
 | `storage.type: persistent`, `performance` | `pd-standard`, `pd-balanced`, `pd-ssd` disk in the machine's zone; `attachDisk` with `autoDelete: false` |

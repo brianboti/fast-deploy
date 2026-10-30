@@ -20,6 +20,7 @@ from ..models.request import (
     LoadBalancerRequest,
     NetworkRequest,
     QueueRequest,
+    RegistryRequest,
     SecretRequest,
     ServiceRequest,
     StorageRequest,
@@ -36,6 +37,7 @@ from ..models.resources import (
     LoadBalancerResource,
     NetworkResource,
     QueueResource,
+    RegistryResource,
     ResourceStatus,
     SecretResource,
     ServiceResource,
@@ -196,6 +198,16 @@ class CloudProvider(ABC):
 
     @abstractmethod
     def delete_secret(self, resource: SecretResource, ctx: ProvisionContext) -> None: ...
+
+    # ---- registry
+    @abstractmethod
+    def create_registry(self, spec: RegistryRequest, planned: PlannedResource, ctx: ProvisionContext) -> RegistryResource: ...
+
+    @abstractmethod
+    def get_registry(self, resource: RegistryResource) -> RegistryResource: ...
+
+    @abstractmethod
+    def delete_registry(self, resource: RegistryResource, ctx: ProvisionContext) -> None: ...
 
     # ---- cluster
     @abstractmethod

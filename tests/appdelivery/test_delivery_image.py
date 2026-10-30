@@ -16,7 +16,7 @@ def arg(name):
 def test_the_base_image_is_the_repositorys_python_pinned_by_digest():
     base = next(line for line in INSTRUCTIONS if line.startswith("FROM "))
     assert re.fullmatch(r"FROM python:3\.12-slim@sha256:[a-f0-9]{64}", base)
-    other = next(line for line in (ROOT / "Dockerfile").read_text().splitlines() if line.startswith("FROM "))
+    other = next(line for line in (ROOT / "Dockerfile.cloudinfra").read_text().splitlines() if line.startswith("FROM "))
     assert base == other, "both images start from the same reviewed Python"
 
 

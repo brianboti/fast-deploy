@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from delivery_fakes import IMAGE, TEAM_TOKEN, release_dict
+from delivery_fakes import IMAGE, TEAM_TOKEN, build_dict, release_dict
 from fastapi.testclient import TestClient
 from fleet_fakes import V1, V2, World
 
@@ -168,3 +168,33 @@ def test_the_catalog_document_is_current_and_explains_every_code():
 def test_the_catalog_command(capsys, tmp_path):
     assert cli.main(["catalog"]) == 0 and capsys.readouterr().out.startswith("# Delivery service catalog")
     assert cli.main(["catalog", "--write", str(tmp_path / "c.md")]) == 0 and (tmp_path / "c.md").read_text() == render_markdown()
+
+
+def test_a_build_through_mcp_and_rest_then_its_release(served):
+    client, world = served
+    built = call(client, "build_image", {"build": build_dict(), "wait_seconds": 45})["structuredContent"]
+    assert built["status"] == "SUCCEEDED" and built["built"].endswith("@sha256:" + "b" * 64)
+    assert call(client, "get_build", {"build_id": built["build_id"]})["structuredContent"]["built"] == built["built"]
+    assert call(client, "list_builds", {"source": "shop-web"})["structuredContent"]["builds"][0]["build_id"] == built["build_id"]
+    released = call(client, "deploy_release", {"release": dev(built["built"]), "wait_seconds": 45})["structuredContent"]
+    assert released["status"] == "RUNNING" and released["build_id"] == built["build_id"]
+    over_rest = client.post("/builds?wait_seconds=45", headers=auth(), json=build_dict(image="worker"))
+    assert over_rest.status_code == 200 and over_rest.json()["status"] == "SUCCEEDED"
+    assert client.get(f"/builds/{over_rest.json()['build_id']}", headers=auth()).json()["image"].split("/")[-1].startswith("worker:")
+    listed = {item["build_id"] for item in client.get("/builds?source=shop-web", headers=auth()).json()["builds"]}
+    assert {built["build_id"], over_rest.json()["build_id"]} <= listed
+    assert client.get("/builds/bld-000000000fff", headers=auth()).status_code == 404
+
+
+def test_build_refusals_through_mcp_and_rest(served):
+    client, world = served
+    step = call(client, "build_image", {"build": {**build_dict(), "steps": [{"name": "alpine", "args": ["sh", "-c", "id"]}]}})
+    assert step["isError"] and step["structuredContent"]["error"]["code"] == "INVALID_BUILD" and "not a field of a build" in step["structuredContent"]["error"]["message"]
+    branch = client.post("/builds", headers=auth(), json=build_dict(revision="main"))
+    assert branch.status_code == 400 and branch.json()["error"]["code"] == "INVALID_BUILD"
+    assert client.post("/builds", headers=auth(), content=b"no").json()["error"]["code"] == "INVALID_BUILD"
+    assert client.post("/builds", headers=auth(ONCALL_TOKEN), json=build_dict(environment="prod")).status_code == 403
+    pushed = dev("us-central1-docker.pkg.dev/infra-project/shop-images/web@sha256:" + "e" * 64)
+    refused = client.post("/releases", headers=auth(), json=pushed)
+    assert refused.status_code == 409 and refused.json()["error"]["code"] == "NOT_BUILT_HERE"
+    assert world.cloud_build.created == [] and world.fleet.calls == []

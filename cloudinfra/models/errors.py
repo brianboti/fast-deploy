@@ -103,7 +103,9 @@ def nearest_kind(name: str) -> str | None:
     aliases = {"vm": "compute", "vms": "compute", "instance": "compute", "instances": "compute", "server": "compute", "machine": "compute", "machines": "compute",
                "disk": "storage", "disks": "storage", "bucket": "storage", "volume": "storage", "vpc": "network", "subnet": "network", "firewall": "network",
                "db": "database", "postgres": "database", "postgresql": "database", "mysql": "database", "sql": "database", "redis": "cache", "memcache": "cache",
-               "topic": "queue", "topics": "queue", "pubsub": "queue", "messaging": "queue", "secrets": "secret", "kubernetes": "cluster", "k8s": "cluster", "gke": "cluster",
+               "topic": "queue", "topics": "queue", "pubsub": "queue", "messaging": "queue", "secrets": "secret", "repository": "registry",
+               "repositories": "registry", "registries": "registry", "artifact_registry": "registry", "docker": "registry", "images": "registry",
+               "container_registry": "registry", "kubernetes": "cluster", "k8s": "cluster", "gke": "cluster",
                "loadbalancer": "load_balancer", "lb": "load_balancer", "balancer": "load_balancer", "ingress": "load_balancer"}
     lowered = name.lower().replace("-", "_")
     if lowered in aliases:

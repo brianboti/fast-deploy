@@ -1,4 +1,10 @@
-# Delivery service, step 0: the spike
+# Delivery service: the runs on Google Cloud
+
+The record of every run of the delivery service and the infrastructure layer on a real project, in order: the spike
+of step 0 (sections 1 to 7), the machine session (8), the end-to-end run (9), the first run from the image on Google
+Cloud (10), the first cluster (11), several clusters with a front door (12), and Cloud Run services and jobs (13).
+Each run says what held, what it found and what was fixed, and ends with everything deleted. Sections 1 to 6 are the
+spike's procedure as it was written before step 6 was built:
 
 The four facts of [DELIVERY-SPEC.md](DELIVERY-SPEC.md) section 13 that no Google page confirms, proven by hand on a real
 project before step 6 is built. About 30 minutes, one small machine for under an hour (a few cents), everything deleted
@@ -465,4 +471,70 @@ and the tests cover it), and a custom domain or HTTPS beyond Cloud Run's own add
 Everything was deleted afterwards: the requests through `cloudinfra`; then the platform machine, its firewall rule, both
 repositories, the build bucket, the three service accounts and every binding. Cloud Run and Cloud Scheduler APIs stay
 enabled with the others.
+
+## 14. Builds only in the trusted project, on Google Cloud
+
+Run on 2026-10-30 between 18:40 and 19:30 UTC by Claude for the operator, in the same sandbox project, from branch
+`registry-kind` at `e5643a2` ([DELIVERY-SPEC.md](DELIVERY-SPEC.md) section 3;
+[research/RESEARCH-2026-10-30-trusted-build.md](research/RESEARCH-2026-10-30-trusted-build.md)). Both services ran on
+the operator's laptop against the project, `cloudinfra` with `access.registry_writers` naming one build account, the
+delivery service as an environment account it impersonated. The operator granted the Cloud Build service agent its
+Secret Manager role and authorised the Cloud Build GitHub App on `brianboti/fast-deploy`; everything else was done as
+the documents say.
+
+| Step | Result |
+|---|---|
+| `cloudinfra` makes a registry with immutable tags; the build account, the delivery account and the requester all at `admin` | `READY`, and the plan warned who pushes. On the repository's real policy only the build account is `artifactregistry.writer`; the requester and the delivery account are readers |
+| the build account named outside `access.allowed_domains` | accepted, as a registry writer |
+| an image built on the laptop and pushed by hand into the same repository, as the project's Owner | the push went through (a project Owner is above any repository policy); it carries no provenance |
+| plan and deploy of that digest | `NOT_BUILT_HERE`, HTTP 409, before the infrastructure layer was read |
+| a build of a source whose repository was not linked yet | Cloud Build accepted it, held it `QUEUED` for a minute and ended it `INTERNAL_ERROR` with no detail and an empty log; the service recorded `BUILD_FAILED` |
+| `build_image` of `aafd68b`, `Dockerfile.appdelivery`, `E2_MEDIUM` | Cloud Build ran exactly the composed build (the linked repository at that commit, the build account, Cloud Logging only, `VERIFIED`), `SUCCESS` in two minutes; the service recorded `SUCCEEDED` and the digest, by its follower |
+| the image's provenance (`--show-provenance`) | two occurrences, SLSA v0.1 and v1, signed by keys in Google's `verified-builder` project. The v1 statement names the builder `https://cloudbuild.googleapis.com/GoogleHostedWorker`, the build as its `invocationId`, and the source as `git+https://github.com/brianboti/fast-deploy.git` at `gitCommit: aafd68b…`, though the build was started by the API, not a trigger |
+| plan of the built digest | passed the gate; stopped only because the request has no machines (`NOT_FOUND` for the group), as expected here |
+
+Found on the way:
+
+- **The Cloud Build service agent needs `roles/secretmanager.admin`**, not `secretAccessor`, to create a connection:
+  it creates the secret holding the GitHub token and sets its policy (`secretmanager.secrets.create`,
+  `setIamPolicy`). The console offers this grant; with gcloud the operator makes it first. Corrected in
+  [REQUIREMENTS.md](REQUIREMENTS.md), [SETUP.md](SETUP.md) and the research note. It can be removed again once the
+  connection exists.
+- **Cloud Build fails an unlinked source slowly and without a reason.** A check that the repository exists before the
+  build is sent would answer at once; not built yet.
+- **A project Owner can push into any repository**, so a registry's policy alone cannot keep outside images out. The
+  release gate does: it is what refused the pushed image.
+- **The provenance's source is the GitHub URI** for an API build from a connected repository, so `slsa-verifier
+  --source-uri github.com/ORG/REPO` should apply (not run here). The v1 envelope is signed by a key named
+  `google-hosted-worker`, not `provenanceSigner` as the documentation's example has it. The answer is kept as a test
+  fixture, `tests/appdelivery/fixtures/cloudbuild-provenance.json`, for the provenance check still to be built.
+
+Not checked here: a release that runs the built image on a target (phases 1 to 4 ran those paths), and a build of a
+private repository.
+
+Everything was deleted afterwards: the request and its registry with both images through `cloudinfra`; then the linked
+repository, the connection and its secret, the two service accounts, and every binding this run made, the service
+agent's Secret Manager role among them. The Cloud Build GitHub App stays installed on the GitHub account until the
+operator removes it there. The Container Analysis API stays enabled with the others.
+
+## 15. The platform's own images, built by Cloud Build
+
+Run on 2026-10-30 between 19:30 and 19:45 UTC by Claude for the operator, in the same sandbox project, with
+`cloudbuild.yaml` from the working copy of `registry-kind` (not yet pushed, so submitted from the working copy through
+`.gcloudignore`, which uploaded only the two Dockerfiles, `requirements.lock` and the two packages). The build ran as a
+`platform-build` account that could write logs, read its own source bucket and push to a `platform` repository with
+immutable tags, and nothing else.
+
+| Step | Result |
+|---|---|
+| the build | `SUCCESS` in two minutes, as `platform-build`; both images pushed by Cloud Build, tagged with the build's id |
+| provenance | each image has SLSA v0.1 and v1 statements; `appdelivery/provenance.py` verified Google's `google-hosted-worker` signature on both and read `GoogleHostedWorker` and this build as builder and invocation |
+| the images | `cloudinfra` imports its server and reports 1.37.1; `appdelivery` imports its server, has gcloud 591.0.0 and Cosign v3.1.3, and runs as uid 65532 |
+
+Found: a build from uploaded source records the source as the uploaded archive (`gs://…tgz`), not a commit, so
+`provenance.verify` would refuse it against a recorded commit. That is why the documented path builds the platform's
+repository at a commit through its connection (docs/SETUP.md section 3), as the delivery service does for a team.
+
+Everything was deleted afterwards: the repository with both images, the source bucket, the build account and its
+binding, and the local copies.
 

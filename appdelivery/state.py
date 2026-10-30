@@ -1,5 +1,5 @@
-"""The service's own state, in one SQLite file (WAL, one writer, one process): releases, their target machines, and audit
-events. A release keeps its request as sent (bindings by name; a literal is not a credential, the contract refuses
+"""The service's own state, in one SQLite file (WAL, one writer, one process): releases, their target machines, the
+builds this service ordered (the only images a release may name), and audit events. A release keeps its request as sent (bindings by name; a literal is not a credential, the contract refuses
 those) and never a secret's value."""
 import contextlib
 import fcntl
@@ -21,6 +21,10 @@ SCHEMA = (
     "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, release_id TEXT, identity TEXT, client TEXT, kind TEXT NOT NULL, "
     "name TEXT, outcome TEXT, duration_ms INTEGER, detail TEXT)",
     "CREATE INDEX IF NOT EXISTS events_at ON events (at)",
+    "CREATE TABLE IF NOT EXISTS builds (build_id TEXT PRIMARY KEY, environment TEXT NOT NULL, infra_owner TEXT NOT NULL, requested_by TEXT NOT NULL, "
+    "source TEXT NOT NULL, revision TEXT NOT NULL, image TEXT NOT NULL, status TEXT NOT NULL, cloud_build_id TEXT, built TEXT, log_url TEXT, "
+    "request_json TEXT NOT NULL, error_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS builds_built ON builds (built)",
 )
 # A release whose machines a worker is changing: at most one per request and group at a time.
 MOVING = ("ROLLING_OUT", "ROLLING_BACK", "REMOVING")
@@ -29,6 +33,10 @@ PENDING = ("AWAITING_APPROVAL",)
 
 def new_release_id() -> str:
     return f"rel-{secrets.token_hex(6)}"
+
+
+def new_build_id() -> str:
+    return f"bld-{secrets.token_hex(6)}"
 
 
 class ProcessLock:
@@ -164,6 +172,53 @@ class StateManager:
             item.pop("error_json", None)
             item.pop("release_id", None)
         return record
+
+    # ---- builds
+    def create_build(self, build_id, environment, infra_owner, requested_by, source, revision, image, status, cloud_build_id, log_url, request: dict) -> dict:
+        moment = now()
+        with self.connect() as db:
+            db.execute("INSERT INTO builds (build_id, environment, infra_owner, requested_by, source, revision, image, status, cloud_build_id, built, log_url, "
+                       "request_json, error_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, ?, ?)",
+                       (build_id, environment, infra_owner, requested_by, source, revision, image, status, cloud_build_id, log_url, json.dumps(request), moment, moment))
+        return self.get_build(build_id)
+
+    def get_build(self, build_id) -> dict | None:
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM builds WHERE build_id = ?", (build_id,)).fetchone()
+        if row is None:
+            return None
+        record = dict(row)
+        record["request"] = json.loads(record.pop("request_json"))
+        record["error"] = json.loads(record.pop("error_json")) if record.get("error_json") else None
+        return record
+
+    def list_builds(self, infra_owner, environment=None, source=None, limit=50) -> list[dict]:
+        with self.connect() as db:
+            rows = db.execute("SELECT build_id FROM builds WHERE infra_owner = ? AND (? IS NULL OR environment = ?) AND (? IS NULL OR source = ?) "
+                              "ORDER BY created_at DESC, rowid DESC LIMIT ?", (infra_owner, environment, environment, source, source, limit)).fetchall()
+        return [self.get_build(row["build_id"]) for row in rows]
+
+    def builds_in(self, statuses) -> list[dict]:
+        marks = ", ".join("?" for _ in statuses)
+        with self.connect() as db:
+            rows = db.execute(f"SELECT build_id FROM builds WHERE status IN ({marks}) ORDER BY rowid", tuple(statuses)).fetchall()  # noqa: S608 - placeholders only
+        return [self.get_build(row["build_id"]) for row in rows]
+
+    def built(self, infra_owner, image) -> dict | None:
+        """The succeeded build of this team that produced exactly this image@digest, if there is one."""
+        with self.connect() as db:
+            row = db.execute("SELECT build_id FROM builds WHERE built = ? AND infra_owner = ? AND status = 'SUCCEEDED' ORDER BY rowid LIMIT 1",
+                             (image, infra_owner)).fetchone()
+        return self.get_build(row["build_id"]) if row else None
+
+    def update_build(self, build_id, expected: tuple, status: str, built: str | None = None, log_url: str | None = None, error: dict | None = None) -> bool:
+        """Move a build from one of the expected statuses to status; a final status is never left."""
+        marks = ", ".join("?" for _ in expected)
+        with self.connect() as db:
+            done = db.execute(f"UPDATE builds SET status = ?, built = COALESCE(?, built), log_url = COALESCE(?, log_url), error_json = ?, updated_at = ? "  # noqa: S608
+                              f"WHERE build_id = ? AND status IN ({marks})",
+                              (status, built, log_url, json.dumps(error) if error else None, now(), build_id, *expected)).rowcount
+        return done == 1
 
     # ---- audit
     def record_event(self, kind, name=None, release_id=None, identity=None, client=None, outcome=None, duration_ms=None, detail=None) -> None:

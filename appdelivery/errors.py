@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class ErrorCode(StrEnum):
     INVALID_RELEASE = "INVALID_RELEASE"
+    INVALID_BUILD = "INVALID_BUILD"
     INVALID_BINDING = "INVALID_BINDING"
     UNKNOWN_ENVIRONMENT = "UNKNOWN_ENVIRONMENT"
     PERMISSION_DENIED = "PERMISSION_DENIED"
@@ -18,6 +19,10 @@ class ErrorCode(StrEnum):
     UNREACHABLE_TARGET = "UNREACHABLE_TARGET"
     REGISTRY_NOT_ALLOWED = "REGISTRY_NOT_ALLOWED"
     ATTESTATION_FAILED = "ATTESTATION_FAILED"
+    NOT_BUILT_HERE = "NOT_BUILT_HERE"
+    PROVENANCE_FAILED = "PROVENANCE_FAILED"
+    BUILD_UNAVAILABLE = "BUILD_UNAVAILABLE"
+    BUILD_FAILED = "BUILD_FAILED"
     INFRA_UNAVAILABLE = "INFRA_UNAVAILABLE"
     INFRA_AUTH_FAILED = "INFRA_AUTH_FAILED"
     GOOGLE_AUTH_FAILED = "GOOGLE_AUTH_FAILED"
@@ -64,9 +69,10 @@ class DeliveryError(ValueError):
 CODED = re.compile(r"^(?:Value error, )?([A-Z_]+): (.*)$", re.DOTALL)
 
 
-def problems_from(error: Any) -> list[ErrorDetail]:
+def problems_from(error: Any, kind: str = "release") -> list[ErrorDetail]:
     """One ErrorDetail per problem of a pydantic ValidationError: a coded message keeps its code, any other is INVALID_RELEASE
-    naming its field."""
+    (INVALID_BUILD for a build request) naming its field."""
+    invalid = ErrorCode.INVALID_BUILD if kind == "build" else ErrorCode.INVALID_RELEASE
     problems = []
     for item in error.errors():
         location = ".".join(str(part) for part in item.get("loc", ()))
@@ -75,8 +81,8 @@ def problems_from(error: Any) -> list[ErrorDetail]:
         if found and found.group(1) in ErrorCode.__members__:
             code, text = ErrorCode(found.group(1)), found.group(2)
         elif item.get("type") == "extra_forbidden":
-            code, text = ErrorCode.INVALID_RELEASE, f"{location} is not a field of a release"
+            code, text = invalid, f"{location} is not a field of a {kind}"
         else:
-            code, text = ErrorCode.INVALID_RELEASE, f"{location}: {message}" if location else message
+            code, text = invalid, f"{location}: {message}" if location else message
         problems.append(ErrorDetail(code=code, message=text, details={"field": location} if location else {}))
     return problems

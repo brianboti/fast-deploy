@@ -1,4 +1,5 @@
 """GCPProvider: the CloudProvider interface implemented with Google Cloud, composed from the per-kind adapters."""
+
 from ...models.errors import ErrorCode, InfrastructureError
 from ...models.request import RESOURCE_KINDS, ComputeRequest, InfrastructureRequest
 from ...models.response import CostEstimate, Health, PlannedResource, Usage
@@ -16,6 +17,7 @@ from .loadbalancer import GcpLoadBalancer
 from .monitoring import GcpMonitoring
 from .network import GcpNetwork
 from .queue import GcpQueue
+from .registry import GcpRegistry
 from .run import GcpRun, GcpRunJob
 from .secret import GcpSecret
 from .storage import GcpStorage
@@ -31,7 +33,7 @@ class GCPProvider(CloudProvider):
     name = "gcp"
     supported_kinds = RESOURCE_KINDS
     stoppable_kinds = ("compute", "database")
-    grantable_kinds = ("compute", "storage", "secret", "queue", "cluster", "service", "job")
+    grantable_kinds = ("compute", "storage", "secret", "queue", "registry", "cluster", "service", "job")
 
     def __init__(self, settings, api: GcpApi | None = None, token=None, kube=None):
         self.settings = settings
@@ -43,6 +45,7 @@ class GCPProvider(CloudProvider):
         self.cache = GcpCache(self.api, settings)
         self.queue = GcpQueue(self.api, settings)
         self.secret = GcpSecret(self.api, settings)
+        self.registries = GcpRegistry(self.api, settings)
         self.cluster = GcpCluster(self.api, settings, kube)
         self.run = GcpRun(self.api, settings)
         self.job = GcpRunJob(self.api, settings)
@@ -168,6 +171,9 @@ class GCPProvider(CloudProvider):
                 planned.append(PlannedResource(kind="secret", name=f"{prefix}-{secret}-{ctx.request_id[:6]}",
                                                provider_mapping="secretmanager.secrets.create, secretmanager.secrets.addVersion",
                                                spec={"secret": secret, "versions": 1, "purpose": purpose}))
+        for registry in request.registries():
+            planned.append(PlannedResource(kind="registry", name=f"{prefix}-{registry.name}", provider_mapping="artifactregistry.repositories.create",
+                                           spec={"registry": registry.name, "size_gb": registry.size_gb, "immutable_tags": registry.immutable_tags}))
         for cluster in request.clusters():
             mapping = "container.clusters.create" + (", iam.serviceAccounts.create, projects.setIamPolicy (node role)" if self.settings.cluster_node_accounts else "")
             mapping += ", artifactregistry.repositories.setIamPolicy" if cluster.registries else ""
@@ -300,6 +306,15 @@ class GCPProvider(CloudProvider):
 
     def delete_secret(self, resource, ctx):
         self.secret.delete(resource, ctx)
+
+    def create_registry(self, spec, planned, ctx):
+        return self.registries.create(spec, planned, ctx)
+
+    def get_registry(self, resource):
+        return self.registries.get(resource)
+
+    def delete_registry(self, resource, ctx):
+        self.registries.delete(resource, ctx)
 
     def create_cluster(self, spec, planned, ctx, network):
         return self.cluster.create(spec, planned, ctx, network)

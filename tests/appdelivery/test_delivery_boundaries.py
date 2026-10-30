@@ -1,11 +1,8 @@
 """The lines the delivery service must not cross, held by tests (docs/DELIVERY-SPEC.md section 10)."""
 import ast
-import os
-import subprocess
-import sys
 from pathlib import Path
 
-from appdelivery.models import Binding, Health, ReleaseRequest, Target
+from appdelivery.models import Binding, BuildRequest, Health, ReleaseRequest, Target
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = ROOT / "appdelivery"
@@ -33,10 +30,9 @@ def test_the_package_imports_neither_layer_nor_the_old_workflow():
         assert not crossing, f"{path.relative_to(ROOT)} imports {crossing}"
 
 
-def test_neither_cloudinfra_nor_labdeploy_imports_this_package():
-    for directory in (ROOT / "cloudinfra", ROOT / "labdeploy"):
-        for path in modules(directory):
-            assert "appdelivery" not in imported(path), f"{path.relative_to(ROOT)} imports appdelivery"
+def test_cloudinfra_does_not_import_this_package():
+    for path in modules(ROOT / "cloudinfra"):
+        assert "appdelivery" not in imported(path), f"{path.relative_to(ROOT)} imports appdelivery"
 
 
 def test_nothing_of_this_service_names_the_old_workflow():
@@ -50,7 +46,7 @@ def test_the_tests_use_no_shared_helper():
     shared = {path.stem for path in (ROOT / "tests").glob("*.py")} | {"conftest", "gcp_fakes"}
     for path in modules(TESTS):
         assert not imported(path) & shared, f"{path.relative_to(ROOT)} imports a shared test helper"
-    assert not (TESTS / "conftest.py").exists(), "a conftest.py here would shadow the root one the old tests import as conftest"
+    assert not (TESTS / "conftest.py").exists(), "this directory keeps its own fakes, imported by name, and no conftest"
 
 
 def test_only_the_remote_module_runs_commands():
@@ -70,12 +66,26 @@ def test_the_release_contract_has_no_field_that_could_run_something():
         assert model.model_config.get("extra") == "forbid"
 
 
-def test_the_tests_pass_with_the_old_workflow_gone():
-    """Run this directory again in a fresh interpreter where importing labdeploy fails, without the root conftest."""
-    if os.environ.get("APPDELIVERY_WITHOUT_LABDEPLOY"):
-        return  # the inner run
-    code = ("import sys; sys.modules['labdeploy'] = None; import pytest; "
-            f"sys.exit(pytest.main([{str(TESTS)!r}, '--confcutdir', {str(TESTS)!r}, '-q', '-p', 'no:cacheprovider', '--rootdir', {str(TESTS)!r}]))")
-    done = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env={**os.environ, "APPDELIVERY_WITHOUT_LABDEPLOY": "1"}, capture_output=True, text=True,
-                          timeout=300, check=False)
-    assert done.returncode == 0, done.stdout[-3000:] + done.stderr[-2000:]
+def test_the_old_workflow_is_gone_and_stays_gone():
+    """The Fast Deploy workflow (labdeploy) was removed on 2026-10-30; nothing may bring its name or its directory back."""
+    assert not (ROOT / "labdeploy").exists()
+    assert "labdeploy" not in (ROOT / "pyproject.toml").read_text()
+
+
+def test_the_build_contract_carries_paths_and_a_name_and_nothing_that_runs():
+    """Images are built only in the trusted project, and only as this service composes the build: a caller names a linked
+    source, a commit, two paths in it and an image name. No step, command, argument, secret, account or registry."""
+    words = {"steps", "step", "command", "cmd", "args", "entrypoint", "script", "shell", "build_args", "substitutions", "secrets", "secret", "env",
+             "service_account", "serviceAccount", "registry", "repository", "url", "pool", "machine_type", "options", "images", "volumes"}
+    assert not set(BuildRequest.model_fields) & words, set(BuildRequest.model_fields) & words
+    assert BuildRequest.model_config.get("extra") == "forbid"
+
+
+def test_the_package_builds_nothing_itself():
+    """A build runs in Cloud Build; this package only sends it requests, from one module. remote.py runs gcloud and cosign
+    only, so no docker, buildah or kaniko can run here."""
+    from appdelivery import remote
+    assert remote.COMMANDS == ("gcloud", "cosign")
+    for path in modules(PACKAGE):
+        if "cloudbuild.googleapis.com/v" in path.read_text():  # the API; provenance names the builder by its own address
+            assert path.name == "cloudbuild.py", f"{path.relative_to(ROOT)} calls Cloud Build"

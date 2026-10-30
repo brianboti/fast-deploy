@@ -57,6 +57,8 @@ def still_billing(resources) -> list[str]:
             found.append(f"{resource.name}: a {resource.size_gb} GB disk")
         elif resource.kind == ResourceKind.storage:
             found.append(f"{resource.name}: what the bucket holds")
+        elif resource.kind == ResourceKind.registry:
+            found.append(f"{resource.name}: the images it holds")
         elif resource.kind in (ResourceKind.cache, ResourceKind.cluster, ResourceKind.load_balancer, ResourceKind.secret):
             found.append(f"{resource.name}: a {resource.kind.value.replace('_', ' ')} cannot stop")
     return found

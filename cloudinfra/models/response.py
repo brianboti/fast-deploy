@@ -16,6 +16,7 @@ from .resources import (
     LoadBalancerResource,
     NetworkResource,
     QueueResource,
+    RegistryResource,
     SecretResource,
     ServiceResource,
     StorageResource,
@@ -71,6 +72,7 @@ class Endpoints(Model):
     cluster_endpoint: str | None = None
     queue_topics: list[str] = Field(default_factory=list)
     secret_names: list[str] = Field(default_factory=list)
+    registry_addresses: list[str] = Field(default_factory=list, description="Where to push and pull images: LOCATION-docker.pkg.dev/PROJECT/REPOSITORY.")
 
 
 class Resources(Model):
@@ -82,13 +84,14 @@ class Resources(Model):
     cache: list[CacheResource] = Field(default_factory=list)
     queue: list[QueueResource] = Field(default_factory=list)
     secret: list[SecretResource] = Field(default_factory=list)
+    registry: list[RegistryResource] = Field(default_factory=list)
     cluster: list[ClusterResource] = Field(default_factory=list)
     service: list[ServiceResource] = Field(default_factory=list)
     job: list[JobResource] = Field(default_factory=list)
     load_balancer: list[LoadBalancerResource] = Field(default_factory=list)
 
     def all(self) -> list:
-        return [*self.network, *self.storage, *self.compute, *self.database, *self.cache, *self.queue, *self.secret, *self.cluster, *self.load_balancer]
+        return [*self.network, *self.storage, *self.compute, *self.database, *self.cache, *self.queue, *self.secret, *self.registry, *self.cluster, *self.load_balancer]
 
 
 class Credentials(Model):
@@ -215,8 +218,8 @@ class ResourceResponse(Model):
     """One resource after a primitive call: its state now, and the operation that changes it when one is still running."""
     status: str
     request_id: str
-    resource: (IdentityResource | ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | SecretResource | ClusterResource | ServiceResource
-               | JobResource | LoadBalancerResource) = Field(discriminator="kind")
+    resource: (IdentityResource | ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | SecretResource | RegistryResource
+               | ClusterResource | ServiceResource | JobResource | LoadBalancerResource) = Field(discriminator="kind")
     operation: OperationRecord | None = None
 
 

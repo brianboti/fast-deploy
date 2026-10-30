@@ -17,6 +17,7 @@ from .request import (
     NetworkRequest,
     PublicRequest,
     QueueRequest,
+    RegistryRequest,
     ScheduleRequest,
     SecretRequest,
     ServiceRequest,
@@ -35,6 +36,7 @@ from .resources import (
     LoadBalancerResource,
     NetworkResource,
     QueueResource,
+    RegistryResource,
     ResourceKind,
     ResourceStatus,
     SecretResource,
@@ -69,6 +71,6 @@ __all__ = ["RESOURCE_KINDS", "AcceleratorRequest", "AccessGrant", "AccessRequest
            "ErrorDetail", "FirewallRule", "Grant", "Health", "InfrastructureError", "InfrastructureRequest", "InfrastructureResponse", "Lifecycle", "LifetimeRequest",
            "ListResponse", "LoadBalancerRequest", "LoadBalancerResource", "NetworkRequest",
     "PublicRequest", "NetworkResource", "OperationRecord", "OperationStatus", "PlanResponse",
-           "PlannedResource", "ProfileInfo", "QueueRequest", "QueueResource", "RequestStatus", "ResourceKind", "ResourceKindsResponse", "ResourceResponse", "ResourceStatus",
-           "Resources", "IdentityRequest", "IdentityResource", "JobRequest", "JobResource", "ScheduleRequest", "SecretRequest", "ServiceRequest", "ServiceResource", "SecretResource", "StorageRequest",
-           "StorageResource", "Usage", "ValidationResponse"]
+           "PlannedResource", "ProfileInfo", "QueueRequest", "QueueResource", "RegistryRequest", "RegistryResource", "RequestStatus", "ResourceKind", "ResourceKindsResponse",
+           "ResourceResponse", "ResourceStatus", "Resources", "IdentityRequest", "IdentityResource", "JobRequest", "JobResource", "ScheduleRequest", "SecretRequest",
+           "ServiceRequest", "ServiceResource", "SecretResource", "StorageRequest", "StorageResource", "Usage", "ValidationResponse"]

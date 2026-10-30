@@ -103,7 +103,8 @@ def check_labels(labels: dict[str, str]) -> dict[str, str]:
 
 def check_member(value: str, field: str = "access.member") -> str:
     """A member as it is compared and stored: its kind as written, its email address in lowercase, as Google accounts and
-    groups do not tell case apart."""
+    groups do not tell case apart. A CI job's federated identity (principal://, principalSet://) is not a member: images
+    are built only in the trusted project, so nothing outside pushes to a registry (decided 2026-10-30)."""
     if not isinstance(value, str) or not MEMBER.fullmatch(value):
         raise InfrastructureError(ErrorCode.INVALID_ACCESS, f"{value!r} is not a member: write user:, group: or serviceAccount: and an email address",
                                   {"field": field, "value": value})

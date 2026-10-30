@@ -2,8 +2,7 @@
 
 The service holds no key: on a Google Cloud machine it uses the attached service account through the metadata server; on a
 laptop it asks gcloud for a short-lived token, impersonating the configured service account when one is named. The token is
-cached in memory until a minute before it ends and never written anywhere. This class was labdeploy.cloud.GoogleToken; the
-application layer imports it from here now, so the dependency points from that layer to this one.
+cached in memory until a minute before it ends and never written anywhere.
 """
 import subprocess
 import time

@@ -3,7 +3,8 @@
 import base64
 
 import httpx
-from delivery_fakes import DEV_SA, PROD_SA, Runner, cluster_response, infra_response, job_response, make_config, principal, release_dict, service_response
+from build_fakes import FakeCloudBuild
+from delivery_fakes import DEV_SA, IMAGE, PROD_SA, Runner, cluster_response, infra_response, job_response, make_config, principal, release_dict, service_response
 from kube_fakes import FakeKube
 from run_fakes import FakeRun, FakeRunJob
 
@@ -115,16 +116,31 @@ def secret_manager():
 class World:
     """A Delivery, its state, its fake fleet and cloudinfra, and the principals of the fake configuration."""
 
-    def __init__(self, database=":memory:", cosign=None, cluster=False, service=False, job=False):
+    def __init__(self, database=":memory:", cosign=None, cluster=False, service=False, job=False, cloud_build=None):
         self.config = make_config(database=database)
         self.state = StateManager(database)
         self.fleet, self.infra, self.kube, self.run, self.run_job = FakeFleet(), FakeInfra(cluster, service, job), FakeKube(), FakeRun(), FakeRunJob()
         self.cosign = cosign or Runner(Completed(0, "[]", ""))
+        self.cloud_build = cloud_build or FakeCloudBuild()
         self.tokens = []
         self.cluster_tokens = []
         self.delivery = Delivery(self.config, self.state, infra=self.infra, machines=self.fleet.session, tokens=self.token, http=secret_manager(), runner=self.cosign,
-                                 executor=InlineExecutor(), clusters=self.deployer, services=self.run_deployer, jobs=self.job_deployer)
+                                 executor=InlineExecutor(), clusters=self.deployer, services=self.run_deployer, jobs=self.job_deployer,
+                                 builds=self.cloud_build, build_executor=InlineExecutor())
+        self.delivery.builder.sleep = lambda seconds: None  # a build's follower polls Cloud Build every few seconds
         self.team, self.oncall = principal(self.config, "shop-team"), principal(self.config, "shop-oncall")
+        for image in (V1, V2, V3, IMAGE):
+            self.built(image)
+
+    def built(self, image, infra_owner="shop-team", cloud_build_id=None, revision="a" * 40):
+        """Record image@digest as one a build of this service produced, as building.py does when Cloud Build reports success."""
+        self.seeded = getattr(self, "seeded", 0) + 1
+        build_id = f"bld-{self.seeded:012x}"
+        tag = f"{image.split('@')[0]}:{build_id}"
+        self.state.create_build(build_id, "dev", infra_owner, "shop-team", "shop-web", revision, tag, "WORKING", cloud_build_id or "cloud-" + build_id, None,
+                                {"environment": "dev", "source": "shop-web", "revision": revision, "image": "web"})
+        self.state.update_build(build_id, ("WORKING",), "SUCCEEDED", built=image)
+        return build_id
 
     def deployer(self, environment):
         service_account = self.config.environments[environment].service_account

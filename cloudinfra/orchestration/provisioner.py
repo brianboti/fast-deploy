@@ -28,6 +28,7 @@ from ..models.request import (
     NetworkRequest,
     PublicRequest,
     QueueRequest,
+    RegistryRequest,
     ScheduleRequest,
     SecretRequest,
     ServiceRequest,
@@ -44,6 +45,7 @@ from ..models.resources import (
     LoadBalancerResource,
     NetworkResource,
     QueueResource,
+    RegistryResource,
     ResourceKind,
     ResourceStatus,
     SecretResource,
@@ -82,9 +84,9 @@ MAX_WAIT_SECONDS = 45
 POLL_SECONDS = 0.5
 DESTROY_ORDER = tuple(ResourceKind(kind) for kind in reversed(RESOURCE_KINDS))
 KIND_MODELS = {"network": NetworkRequest, "storage": StorageRequest, "compute": ComputeRequest, "database": DatabaseRequest, "cache": CacheRequest, "queue": QueueRequest,
-               "secret": SecretRequest, "cluster": ClusterRequest, "service": ServiceRequest, "job": JobRequest, "identity": IdentityRequest,
+               "secret": SecretRequest, "registry": RegistryRequest, "cluster": ClusterRequest, "service": ServiceRequest, "job": JobRequest, "identity": IdentityRequest,
                "load_balancer": LoadBalancerRequest}
-SEVERAL = ("compute", "queue", "secret", "cluster", "service", "job", "identity")
+SEVERAL = ("compute", "queue", "secret", "registry", "cluster", "service", "job", "identity")
 LIVE = (RequestStatus.PROVISIONING, RequestStatus.READY, RequestStatus.STOPPING, RequestStatus.STOPPED, RequestStatus.STARTING, RequestStatus.FAILED,
         RequestStatus.DESTROYING, RequestStatus.DESTROY_FAILED)
 MOVING = (RequestStatus.PROVISIONING, RequestStatus.DESTROYING, RequestStatus.STOPPING, RequestStatus.STARTING)  # a worker is changing the request
@@ -372,6 +374,8 @@ class Orchestrator:
             return QueueResource(**common, topic=f"pending/{item.name}", retention_hours=spec["retention_hours"])
         if item.kind == "secret":
             return SecretResource(**common, resource_name=f"pending/{item.name}", versions=0, purpose=spec.get("purpose"))
+        if item.kind == "registry":
+            return RegistryResource(**common, repository=f"pending/{item.name}", address="", immutable_tags=spec["immutable_tags"], size_gb=spec["size_gb"])
         if item.kind == "cluster":
             return ClusterResource(**common, zone=spec["location"], location=spec["location"], node_count=spec["node_count"], machine_type=spec["machine_type"])
         if item.kind == "job":
@@ -421,6 +425,8 @@ class Orchestrator:
                         resource = provider.create_queue(next(queue for queue in request.queues() if queue.name == item.spec["queue"]), item, ctx)
                     elif item.kind == "secret":
                         resource = self._create_secret(request, item, ctx, provider, created)
+                    elif item.kind == "registry":
+                        resource = provider.create_registry(next(registry for registry in request.registries() if registry.name == item.spec["registry"]), item, ctx)
                     elif item.kind == "cluster":
                         cluster = request.cluster_named(item.spec.get("cluster"))
                         joined = network or existing.get(cluster.network_id)
@@ -615,7 +621,8 @@ class Orchestrator:
                               bucket_urls=[item.url for item in grouped.storage if item.url], load_balancer_address=balancer.address if balancer else None,
                               cache_host=cache.host if cache else None, cache_port=cache.port if cache and cache.host else None, cluster_endpoint=cluster.endpoint if cluster else None,
                               queue_topics=[item.topic for item in grouped.queue if item.status == ResourceStatus.READY],
-                              secret_names=[item.resource_name for item in grouped.secret if item.status == ResourceStatus.READY])
+                              secret_names=[item.resource_name for item in grouped.secret if item.status == ResourceStatus.READY],
+                              registry_addresses=[item.address for item in grouped.registry if item.status == ResourceStatus.READY])
         return InfrastructureResponse(request_id=record["request_id"], name=record["name"], provider=record["provider"], region=record["region"], zone=record["zone"],
                                       status=record["status"], owner=record["owner"], labels=record["labels"], resources=grouped, endpoints=endpoints,
                                       lifecycle=lifecycle.view(record, resources, now), access=[AccessGrant(**entry) for entry in record["access"]],
@@ -758,8 +765,11 @@ class Orchestrator:
                     continue
                 granted, errors = [], []
                 for target in targets:
+                    level = access_rules.level_on(target.kind.value, entry["member"], entry["level"], self.config)
+                    if level is None:  # a registry writer, on anything but a registry
+                        continue
                     try:
-                        roles = provider.grant(target, entry["member"], entry["level"], ctx)
+                        roles = provider.grant(target, entry["member"], level, ctx)
                     except Exception as exc:
                         cause = self._cause(exc)
                         errors.append(cause.detail().model_dump(mode="json"))
@@ -771,7 +781,7 @@ class Orchestrator:
                     kept = [grant for grant in fresh.access if grant.member != entry["member"]]
                     self.state.save_resource(fresh.model_copy(update={"access": [*kept, *(Grant(member=entry["member"], role=role) for role in roles)]}))
                     granted.append(target.id)
-                    event("access_granted", member=entry["member"], level=entry["level"], resource_id=target.id, roles=roles)
+                    event("access_granted", member=entry["member"], level=level, resource_id=target.id, roles=roles)
                 status, error = access_rules.outcome(granted, errors, waiting)
                 entry.update(status=status, resources=granted, error=error, updated_at=lifecycle.iso(self.wallclock()))
             self.state.set_access(request_id, entries)
@@ -1112,6 +1122,10 @@ class Orchestrator:
     def create_secret(self, principal, *, region, secret_name, provider="gcp", generate_value=False, name=None, labels=None, wait_seconds=0):
         secret = SecretRequest(name=secret_name, generate_value=generate_value)
         return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, secret=secret), principal, wait_seconds)
+
+    def create_registry(self, principal, *, region, registry_name, provider="gcp", immutable_tags=False, size_gb=10, name=None, labels=None, wait_seconds=0):
+        registry = RegistryRequest(name=registry_name, immutable_tags=immutable_tags, size_gb=size_gb)
+        return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, registry=registry), principal, wait_seconds)
 
     def create_cluster(self, principal, *, region, provider="gcp", node_count=1, node_cpu=2, node_memory_gb=8, node_disk_gb=50, kubernetes_version=None, private_nodes=False,
                        network_id=None, registries=None, public=False, hostnames=None, zone=None, name=None, labels=None, wait_seconds=0):

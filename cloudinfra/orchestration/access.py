@@ -1,6 +1,9 @@
 """Who is granted access to what a request creates. The requester comes first when the operator maps its principal to an
 identity; then the request's own access list, each member checked against the operator's allowed domains. Principals' own
-identities may always be named; anyone else must be in one of the allowed domains."""
+identities and the operator's registry writers may always be named; anyone else must be in one of the allowed domains.
+
+Registries are the one kind where the level does not decide alone: only the operator's registry writers push, and only
+there; every other member of a registry pulls (images are built only in the trusted project, decided 2026-10-30)."""
 from ..models.errors import ErrorCode
 from ..providers.base import Problem
 from ..security import validation
@@ -8,7 +11,17 @@ from ..security import validation
 
 def allowed(member: str, config) -> bool:
     identities = {principal.identity for principal in config.principals if principal.identity}
-    return member in identities or validation.member_domain(member) in [domain.lower() for domain in config.access.allowed_domains]
+    return (member in identities or config.access.writes_registries(member)
+            or validation.member_domain(member) in [domain.lower() for domain in config.access.allowed_domains])
+
+
+def level_on(kind: str, member: str, level: str, config) -> str | None:
+    """The level a member is granted on a resource of this kind, or None for no grant there. A registry writer is granted
+    only on registries, and pushes only at admin; any other member of a registry pulls, whatever its level."""
+    writer = config.access.writes_registries(member)
+    if kind == "registry":
+        return level if writer else "use"
+    return None if writer else level
 
 
 def grants_nobody(config) -> bool:
