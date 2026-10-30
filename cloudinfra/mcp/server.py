@@ -27,6 +27,7 @@ from ..orchestration.provisioner import Orchestrator
 from ..orchestration.sweeper import Sweeper
 from ..providers import ProviderRegistry
 from ..security.auth import Authenticate, as_tool_error, audited, client_address, identity, invoke
+from ..security.oauth import SignIn
 from ..state.state_manager import ProcessLock, StateManager
 from .catalog import CATALOG, render_markdown
 from .tools import cache, cluster, compute, database, infrastructure, job, loadbalancer, network, operations, queue, secret, service, storage
@@ -177,7 +178,9 @@ def build_app(config, registry: ProviderRegistry | None = None, state: StateMana
 
     app = FastAPI(title="Cloud Infrastructure MCP", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.mcp, app.state.orchestrator, app.state.state, app.state.sweeper = mcp, orchestrator, state, sweeper
-    app.add_middleware(Authenticate, config=config, state=state)
+    sign_in = SignIn(config, state) if config.sign_in else None
+    app.state.sign_in = sign_in
+    app.add_middleware(Authenticate, config=config, state=state, sign_in=sign_in)
 
     def rest(name, fn, subject=None):
         result = invoke(state, "rest", name, fn, subject)
@@ -256,6 +259,8 @@ def build_app(config, registry: ProviderRegistry | None = None, state: StateMana
             return orchestrator.manage_access(request_id, asked.action, asked.member, identity.get(), asked.level)
         return await rest_in_worker("access", run, request_id)
 
+    if sign_in is not None:
+        app.router.routes.extend(sign_in.routes())  # before the catch-all MCP mount, which would take every path
     app.mount("/", mcp.streamable_http_app())
     return app
 

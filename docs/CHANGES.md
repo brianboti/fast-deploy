@@ -29,6 +29,25 @@ Phase 4, step 1 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECT
 - **Tools**: `create_service`, `get_service`, `delete_service` (48 tools). Priced as warm instances at the idle rate.
 - `list_resource_kinds` now marks clusters as several per request too, which phase 3 had left out.
 
+# Unreleased: Claude chat can sign in to cloudinfra and appdelivery
+
+claude.ai adds an MCP server only with OAuth; it cannot send the fixed bearer token both services take. The OAuth
+sign-in Claude chat used lived in labdeploy, which is retired, so Claude chat had no way in. Each service can now be its
+own small OAuth 2.1 authorization server (`cloudinfra/security/oauth.py`, `appdelivery/oauth.py`, on the MCP SDK's
+OAuth routes):
+
+- **Off unless configured.** A `sign_in` block with `url`, the service's public HTTPS address, whose host must be in
+  `allowed_hosts`. Without it nothing changes: the OAuth paths stay behind the token gate and the 401 says `Bearer`.
+- **The flow.** A 401 names the protected resource metadata; Claude registers itself (only the configured callbacks,
+  Claude's by default), the browser opens the service's own sign-in page, the person pastes their principal's token
+  there, and Claude gets a one-hour access token and a thirty-day refresh token that stand for that principal, with its
+  rights. Calls are audited under the principal's name; `sign_in`, `token_reuse` and `sign_out` are events.
+- **How a sign-in ends.** A refresh token works once; using one twice ends the whole sign-in. A principal removed or
+  given a new token ends its sign-ins at once. Revocation ends them too. Codes last five minutes and work once.
+- **Kept small.** Codes, tokens and pending sign-ins are stored only as SHA-256 hashes in the service's state file; the
+  OAuth paths have a per-address budget and wrong tokens on the page the failed-sign-in budget; the page cannot be
+  framed and is never cached. Static tokens keep working for systems and Claude Code.
+
 # Unreleased: a cluster's front door
 
 Phase 3, step 5 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECTURE.md, "A cluster's front door"):

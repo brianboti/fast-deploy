@@ -7,6 +7,8 @@ database: appdelivery.db
 # allowed_hosts: ["127.0.0.1:*", "localhost:*"]  # Host headers the MCP endpoint answers; add the service's own name behind a proxy
 # rate_limit_per_minute: 120                     # requests per caller identity
 # auth_failures_per_minute: 20                   # failed sign-ins per client address
+# sign_in:                                       # sign-in for Claude chat (docs/INFRASTRUCTURE-ARCHITECTURE.md, "Connect Claude chat")
+#   url: https://delivery.example.com            # the public HTTPS address; add its host to allowed_hosts
 cloudinfra:
   url: https://infra.internal.example.com      # the infrastructure layer, read over its REST API
   # timeout_seconds: 30
