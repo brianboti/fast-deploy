@@ -49,7 +49,7 @@ class FakeGcpApi(GcpApi):
         self.fail_on = []
         self.instances, self.disks, self.networks, self.subnets, self.firewalls, self.addresses, self.sql, self.buckets, self.sql_users, self.sql_databases = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
         self.topics, self.subscriptions, self.secrets, self.secret_versions, self.clusters, self.redis, self.instance_groups, self.regional = {}, {}, {}, {}, {}, {}, {}, {}
-        for collection in ("healthChecks", "backendServices", "urlMaps", "targetHttpProxies", "targetHttpsProxies", "forwardingRules", "sslCertificates"):
+        for collection in ("healthChecks", "backendServices", "urlMaps", "targetHttpProxies", "targetHttpsProxies", "forwardingRules", "sslCertificates", "securityPolicies"):
             setattr(self, collection, {})
         self.bucket_objects = set()
         self.peerings = set()
@@ -165,9 +165,9 @@ class FakeGcpApi(GcpApi):
             (r"^/compute/v1/projects/[^/]+/aggregated/instances$", self._aggregated),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/disks$", self._disks),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/disks/([^/]+)$", self._disk),
-            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses|healthChecks|backendServices|urlMaps|targetHttpProxies|targetHttpsProxies|forwardingRules|sslCertificates)$",
+            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses|healthChecks|backendServices|urlMaps|targetHttpProxies|targetHttpsProxies|forwardingRules|sslCertificates|securityPolicies)$",
              self._global_collection),
-            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses|healthChecks|backendServices|urlMaps|targetHttpProxies|targetHttpsProxies|forwardingRules|sslCertificates)/([^/]+)$",
+            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses|healthChecks|backendServices|urlMaps|targetHttpProxies|targetHttpsProxies|forwardingRules|sslCertificates|securityPolicies)/([^/]+)$",
              self._global_item),
             (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/subnetworks$", self._subnets),
             (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/subnetworks/([^/]+)$", self._subnet),
@@ -762,6 +762,9 @@ class FakeGcpApi(GcpApi):
         if method == "DELETE":
             if found.group(1) == "networks" and any(subnet["network"].endswith("/" + name) for subnet in self.subnets.values()):
                 raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, "network still has subnets", {"http_status": 400})
+            if found.group(1) == "securityPolicies" and any(item.get("securityPolicy", "").endswith("/" + name) for item in self.backendServices.values()):
+                raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"Google Cloud refused the request: The security_policy resource '{name}' is already being used",
+                                          {"http_status": 400})
             del store[name]
             return self._op()
         return store[name]

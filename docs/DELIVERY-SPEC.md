@@ -146,9 +146,9 @@ installing software on it.
   on (the default). A machine in the operator's default network is accepted only when the operator's configuration says
   that network has the rule (`default_network_iap: true`).
 - **Pull.** A request's own subnet has Private Google Access, so Artifact Registry (`*-docker.pkg.dev`) is reachable
-  without a public address. Any other registry needs the internet, which a machine without `public_ip` does not have
-  (`cloudinfra` offers no NAT). So `allowed_registries` defaults to Artifact Registry hosts, and a registry outside them
-  is refused for a machine without a public address.
+  without a public address. Any other registry needs the internet, which a machine without `public_ip` has only when
+  its network has Cloud NAT (`network.nat`). So `allowed_registries` defaults to Artifact Registry hosts, and a registry
+  outside them is refused for a machine with neither a public address nor NAT.
 - **Time.** A target group with `autostop` or `max_run_hours` is one that `cloudinfra` will stop by design; the plan
   warns, since a quiet web service is exactly what idle stop looks for.
 
@@ -556,7 +556,7 @@ What the design rests on, checked on the primary page or in `cloudinfra`'s code:
 | Docker logs in to Artifact Registry with `-u oauth2accesstoken --password-stdin`; the token lasts 60 minutes | [Artifact Registry authentication](https://docs.cloud.google.com/artifact-registry/docs/docker/authentication) | Pull with a fresh token per machine |
 | SSH through IAP needs the tunnel role, a project-level role with `compute.projects.get`, and a rule from 35.235.240.0/20 on port 22; a VM with a service account would also need `serviceAccountUser`, and `cloudinfra`'s machines have none | [Set up OS Login](https://docs.cloud.google.com/compute/docs/oslogin/set-up-oslogin), `cloudinfra/providers/gcp/connect.py`, `compute.py` | The checks in section 4 |
 | OS Login names a service account's user `sa_…`; 2-step verification is not enforced on service accounts | [OS Login](https://docs.cloud.google.com/compute/docs/oslogin), [Set up OS Login](https://docs.cloud.google.com/compute/docs/oslogin/set-up-oslogin) | Non-interactive SSH is possible |
-| A request's subnet has Private Google Access; `cloudinfra` offers no NAT | `cloudinfra/providers/gcp/network.py` | Artifact Registry only, unless the machine has a public address |
+| A request's subnet has Private Google Access, and Cloud NAT only when asked (`network.nat`) | `cloudinfra/providers/gcp/network.py` | Artifact Registry only, unless the machine has a public address or its network NAT |
 | `cloudinfra`'s status answer carries `owner`, `access` (member, level, status), `endpoints`, `lifecycle`, and each machine's zone, numeric id and network | `cloudinfra/models/response.py`, `resources.py` | Every check in section 2 reads one existing endpoint; no `cloudinfra` change for phase 1 |
 | A principal's `identity` may be named in `access` even outside `allowed_domains` | `cloudinfra/orchestration/access.py` | The delivery service account needs no domain exception |
 | Cosign 3.1.x verifies both the old signature format and the new bundle format; v4 is planned and v3 stays supported | [Cosign releases](https://newreleases.io/project/github/sigstore/cosign/release/v3.1.2) | Pin 3.1.x in the image |

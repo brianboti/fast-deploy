@@ -7,6 +7,7 @@ from ...models.errors import ErrorCode, InfrastructureError
 from ...models.resources import LoadBalancerResource, ResourceStatus
 from . import translate
 from .api import COMPUTE
+from .armor import GcpArmor
 
 # Google's health checkers, per load balancer type (docs.cloud.google.com/load-balancing/docs/health-check-concepts, read
 # 2026-10-28): the global external application load balancer probes from 35.191.0.0/16 and its front ends reach backends from
@@ -18,6 +19,7 @@ PORT_NAME = "app"
 class GcpLoadBalancer:
     def __init__(self, api, settings, network_adapter):
         self.api, self.settings, self.network = api, settings, network_adapter
+        self.armor = GcpArmor(api)
 
     def _global(self, collection):
         return f"{COMPUTE}/projects/{self.api.project}/global/{collection}"
@@ -56,9 +58,12 @@ class GcpLoadBalancer:
         if spec.type == "http":
             health = piece("health_check", self._global("healthChecks"), {"name": f"{name}-health", "type": "HTTP", "checkIntervalSec": 10, "timeoutSec": 5,
                                                                           "httpHealthCheck": {"port": spec.port, "requestPath": spec.health_check_path}})
+            protected = {}
+            if spec.waf is not None:  # made before the backend that names it, so deleted after it
+                protected["securityPolicy"] = piece("security_policy", self.armor.url(), self.armor.body(f"{name}-waf", spec.waf, ctx))
             backend = piece("backend_service", self._global("backendServices"), {"name": f"{name}-backend", "protocol": "HTTP", "portName": PORT_NAME, "timeoutSec": 30,
                                                                                  "loadBalancingScheme": "EXTERNAL_MANAGED", "healthChecks": [health],
-                                                                                 "backends": [{"group": group, "balancingMode": "UTILIZATION"}]})
+                                                                                 "backends": [{"group": group, "balancingMode": "UTILIZATION"}], **protected})
             url_map = piece("url_map", self._global("urlMaps"), {"name": f"{name}-map", "defaultService": backend})
             proxy = piece("target_proxy", self._global("targetHttpProxies"), {"name": f"{name}-proxy", "urlMap": url_map})
             address = piece("address", self._global("addresses"), {"name": f"{name}-address", "ipVersion": "IPV4", "networkTier": "PREMIUM"})
@@ -78,7 +83,8 @@ class GcpLoadBalancer:
             piece("forwarding_rule", self._regional(region, "forwardingRules"), {"name": f"{name}-rule", "IPAddress": address, "IPProtocol": "TCP", "ports": [str(spec.port)],
                                                                                  "backendService": backend, "loadBalancingScheme": "EXTERNAL", "networkTier": "PREMIUM"})
         public = self.api.get(address).get("address")
-        found = LoadBalancerResource(**shape, provider_id=components[-1]["url"], address=public, components=components, status=ResourceStatus.READY)
+        policy = next((item["name"] for item in components if item["kind"] == "security_policy"), None)
+        found = LoadBalancerResource(**shape, provider_id=components[-1]["url"], address=public, components=components, status=ResourceStatus.READY, security_policy=policy)
         return self._certificate(found)
 
     def _certificate(self, resource: LoadBalancerResource) -> LoadBalancerResource:

@@ -223,6 +223,24 @@ The service's own identity then needs, once, from the platform team:
 | give a node account its project role | `roles/resourcemanager.projectIamAdmin` | an IAM condition, so it can grant that one role and no other: `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])` ([limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)) |
 | let a node account read a repository | `roles/artifactregistry.admin` | each repository listed in `providers.gcp.registries`, granted on the repository |
 
+### A web application firewall
+
+`load_balancer.waf` (http only) and `cluster.public.waf` take `{owasp, rate_limit_per_minute, deny_sources, preview}`
+and make a Cloud Armor security policy: listed sources refused with 403, each client address limited to a rate a minute
+(429 over it), and Google's preconfigured OWASP rules (SQL injection, cross-site scripting, local and remote file
+inclusion, remote code execution, scanners, protocol attacks, session fixation) at sensitivity 1, the level Google
+recommends to start with for its few false positives ([WAF rules](https://docs.cloud.google.com/armor/docs/waf-rules)).
+With `preview` the rules only log what they would refuse. The last rule allows everything else.
+
+On a load balancer the policy is made before the backend service, which names it, and deleted after it. On a cluster's
+front door the policy is made with the door and its name is reported as `public.security_policy`; GKE's Gateway puts a
+policy on a backend per Service, so the delivery layer writes a `GCPBackendPolicy` naming it for each workload it
+exposes, before the route, and removes it with the route. The `cloudinfra-routes` role lets a namespace with edit
+write those, which also means such a namespace could take the firewall off its own workloads; enforcing it by admission
+is a later step. The door's policy is deleted after the cluster, tried again while a backend GKE is deleting still names
+it. Priced at $5 a month per policy and $1 per rule (Cloud Armor Standard), requests by the million on top. The
+service's identity needs `roles/compute.securityAdmin`.
+
 ### A customer-managed encryption key
 
 `encryption_key: {rotation_days, destroy_after_days}` makes a Cloud KMS key ring `<request>-<8 of its id>` and a key

@@ -196,6 +196,7 @@ class FrontDoor(BaseModel):
     certificate: str | None = Field(default=None, description="The managed certificate's state (PROVISIONING until DNS points at the address, then ACTIVE); none for plain HTTP.")
     address_name: str
     certificate_name: str | None = None
+    security_policy: str | None = Field(default=None, description="The web application firewall's policy, which each exposed workload's backend names.")
 
 
 class ClusterResource(Resource):
@@ -319,6 +320,7 @@ class LoadBalancerResource(Resource):
     hostnames: list[str] = Field(default_factory=list, description="Names served over HTTPS on 443, with a provider-managed certificate.")
     certificate: str | None = Field(default=None, description="The managed certificate's state (PROVISIONING until DNS points at the address, then ACTIVE).")
     components: list[dict[str, Any]] = Field(default_factory=list, description="The provider pieces in creation order (kind, name, url), for teardown in reverse.")
+    security_policy: str | None = Field(default=None, description="The web application firewall's policy on its backend, when it has one.")
 
 
 AnyResource = Annotated[EncryptionKeyResource

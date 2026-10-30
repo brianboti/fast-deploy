@@ -266,6 +266,7 @@ CATALOG: tuple[ToolSpec, ...] = (
               Input("registries", "Artifact Registry repositories (LOCATION-docker.pkg.dev/PROJECT/REPO) the nodes may pull images from; only ones the operator lists."),
               Input("public", "A front door: a reserved public address and a Gateway taking routes from the request's namespace (default false)."),
               Input("hostnames", "The front door's DNS names, in domains the operator allows: HTTPS with a Google-managed certificate; none, plain HTTP."),
+              Input("waf", "A web application firewall on the door's workloads: owasp (default true), rate_limit_per_minute, deny_sources, preview."),
               ZONE, NAME, LABELS, WAIT),
              RESPONSE, ("INVALID_CLUSTER_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
              "Needs can_provision. The nodes run as a service account made for the cluster, with the minimum node role on the project and reader on the named "
@@ -402,6 +403,7 @@ CATALOG: tuple[ToolSpec, ...] = (
              (REGION, Input("backends", "The machines behind it (cmp-…), all in one zone.", True), PROVIDER, Input("type", "http (default) or tcp."),
               Input("port", "The port the machines serve on; the public port is the same (default 80)."), Input("health_check_path", "The path an http health check requests (default /)."),
               Input("hostnames", "With http: names served over HTTPS on 443 with a provider-managed certificate, in domains the operator allows."),
+              Input("waf", "With http: a web application firewall (owasp, default true; rate_limit_per_minute; deny_sources; preview)."),
               NAME, LABELS, WAIT),
              RESPONSE, ("INVALID_LOAD_BALANCER_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
              f"Needs can_provision. HTTP only; TLS termination is a later feature. {OWNERSHIP}",

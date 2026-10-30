@@ -143,6 +143,15 @@ def test_a_registry_on_the_internet_needs_a_public_address():
     assert len(plan(release=release, answer=answer, config=config).machines) == 1
 
 
+def test_a_private_machine_pulls_from_the_internet_through_its_networks_nat():
+    config = make_config()
+    config.environments["prod"].allowed_registries.append("ghcr.io/acme")
+    release = release_dict(image=f"ghcr.io/acme/web@sha256:{DIGEST}")
+    answer = infra_response()
+    answer["resources"]["network"][0]["nat_router"] = "shop-net-router"
+    assert len(plan(release=release, answer=answer, config=config).machines) >= 1
+
+
 def test_bindings_must_exist_in_the_request():
     error = refusal(release=release_dict(env={"REDIS": {"endpoint": "cache_host"}, "AUTH_STRING": {"secret": "cache-auth"}}))
     assert codes(error) == ["INVALID_BINDING", "INVALID_BINDING"] and "db-password" in error.details["problems"][1]["message"]

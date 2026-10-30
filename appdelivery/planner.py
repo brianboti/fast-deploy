@@ -133,9 +133,9 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
                                          "with configure_firewall", resource=machine.id))
             elif not network.opens_beyond_subnet(release.port):
                 warnings.append(f"Port {release.port} is open only inside {network.name}: add a firewall rule or a load balancer to reach it from elsewhere")
-            if not release.registry().endswith(ARTIFACT_REGISTRY_SUFFIX) and machine.public_ip is None:
-                problems.append(_problem(ErrorCode.UNREACHABLE_TARGET, f"{machine.name} has no public address and the infrastructure layer offers no NAT, so it can pull only "
-                                         f"from Artifact Registry (*{ARTIFACT_REGISTRY_SUFFIX})", resource=machine.id, registry=release.registry()))
+            if not release.registry().endswith(ARTIFACT_REGISTRY_SUFFIX) and machine.public_ip is None and not (network and network.nat_router):
+                problems.append(_problem(ErrorCode.UNREACHABLE_TARGET, f"{machine.name} has no public address and its network no NAT, so it can pull only from Artifact "
+                                         f"Registry (*{ARTIFACT_REGISTRY_SUFFIX}); ask the infrastructure layer for network.nat", resource=machine.id, registry=release.registry()))
         if any(machine.autostop_idle_minutes for machine in machines):
             warnings.append(f"Group {release.target.group} stops itself when idle (autostop): a quiet service is idle to it; ask for keep_awake or a group without autostop")
         if any(machine.max_run_hours for machine in machines):

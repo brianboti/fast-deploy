@@ -37,6 +37,7 @@ class ClusterTarget:
     namespace: str
     gateway: str | None = None
     https: bool = False
+    security_policy: str | None = None  # the front door's web application firewall, which each exposed workload's backend names
 
 
 class KubeClient:
@@ -87,7 +88,8 @@ def paths(namespace: str, workload: str) -> dict[str, str]:
     return {"deployments": f"/apis/apps/v1/namespaces/{namespace}/deployments", "services": f"/api/v1/namespaces/{namespace}/services",
             "secrets": f"/api/v1/namespaces/{namespace}/secrets", "pods": f"/api/v1/namespaces/{namespace}/pods",
             "routes": f"/apis/gateway.networking.k8s.io/v1/namespaces/{namespace}/httproutes",
-            "health_checks": f"/apis/networking.gke.io/v1/namespaces/{namespace}/healthcheckpolicies", "workload": workload}
+            "health_checks": f"/apis/networking.gke.io/v1/namespaces/{namespace}/healthcheckpolicies",
+            "backend_policies": f"/apis/networking.gke.io/v1/namespaces/{namespace}/gcpbackendpolicies", "workload": workload}
 
 
 def secret_name(workload: str, release_id: str) -> str:
@@ -143,6 +145,13 @@ def health_check_body(namespace: str, release: ReleaseRequest) -> dict:
     return {"apiVersion": "networking.gke.io/v1", "kind": "HealthCheckPolicy", "metadata": {"name": workload, "namespace": namespace, "labels": {**MANAGED, NAME_LABEL: workload}},
             "spec": {"default": {"config": {"type": "HTTP", "httpHealthCheck": {"port": release.port, "requestPath": release.health.path}}},
                      "targetRef": {"group": "", "kind": "Service", "name": workload}}}
+
+
+def backend_policy_body(namespace: str, workload: str, security_policy: str) -> dict:
+    """The front door's firewall on the workload's backend: GKE's Gateway attaches a Cloud Armor policy per Service
+    (https://docs.cloud.google.com/kubernetes-engine/docs/how-to/configure-gateway-resources)."""
+    return {"apiVersion": "networking.gke.io/v1", "kind": "GCPBackendPolicy", "metadata": {"name": workload, "namespace": namespace, "labels": {**MANAGED, NAME_LABEL: workload}},
+            "spec": {"default": {"securityPolicy": security_policy}, "targetRef": {"group": "", "kind": "Service", "name": workload}}}
 
 
 class ClusterDeployer:
@@ -268,12 +277,17 @@ class ClusterDeployer:
             kube.delete(f"{where['health_checks']}/{where['workload']}")
         else:
             self._apply(kube, where["health_checks"], health_check_body(target.namespace, release))
+        if target.security_policy:  # before the route, so no request reaches the workload unfiltered
+            self._apply(kube, where["backend_policies"], backend_policy_body(target.namespace, where["workload"], target.security_policy))
+        else:
+            kube.delete(f"{where['backend_policies']}/{where['workload']}")
         self._apply(kube, where["routes"], route_body(target.namespace, release, target))
 
     @staticmethod
     def _unexpose(kube, where: dict) -> None:
         kube.delete(f"{where['routes']}/{where['workload']}")
         kube.delete(f"{where['health_checks']}/{where['workload']}")
+        kube.delete(f"{where['backend_policies']}/{where['workload']}")
 
     def status(self, target: ClusterTarget, workload: str) -> HostReport:
         kube, where = self.kube(target), paths(target.namespace, workload)

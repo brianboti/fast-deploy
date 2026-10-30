@@ -5,6 +5,7 @@ from ...models.response import CostEstimate, Health, PlannedResource, Usage
 from ..base import CloudProvider, Problem, ProvisionContext
 from . import connect, pricing, translate
 from .api import COMPUTE, GcpApi
+from .armor import rules as armor_rules
 from .auth import GoogleToken
 from .budget import GcpBudget
 from .cache import GcpCache
@@ -219,7 +220,8 @@ class GCPProvider(CloudProvider):
                                                  "machine_type": translate.machine_type(cluster.node_cpu, cluster.node_memory_gb),
                                                  "node_count": cluster.node_count, "node_disk_gb": cluster.node_disk_gb, "private_nodes": cluster.private_nodes,
                                                  "network": own_network or cluster.network_id or self.settings.default_network,
-                                                 "public": {"hostnames": list(cluster.public.hostnames)} if cluster.public else None}))
+                                                 "public": {"hostnames": list(cluster.public.hostnames),
+                                                            "waf_rules": len(armor_rules(cluster.public.waf)) if cluster.public.waf else 0} if cluster.public else None}))
         for service in request.services():
             mapping = "run.services.create, iam.serviceAccounts.create" + (", run.services.setIamPolicy (invoker check off)" if service.public else "")
             planned.append(PlannedResource(kind="service", name=f"{prefix}-{service.service_name}", provider_mapping=mapping,
@@ -237,7 +239,7 @@ class GCPProvider(CloudProvider):
             planned.append(PlannedResource(kind="load_balancer", name=f"{prefix}-lb", provider_mapping=HTTP_LB_MAPPING if balancer.type == "http" else TCP_LB_MAPPING,
                                            spec={"type": balancer.type, "port": balancer.port, "backend_group": group.group_name if group else "external", "backends": backends,
                                                  "health_check_path": balancer.health_check_path if balancer.type == "http" else None,
-                                                 "hostnames": list(balancer.hostnames)}))
+                                                 "hostnames": list(balancer.hostnames), "waf_rules": len(armor_rules(balancer.waf)) if balancer.waf else 0}))
         if request.monitor is not None:  # after what it watches
             planned.append(PlannedResource(kind="monitor", name=f"{prefix}-monitor", provider_mapping="monitoring.notificationChannels.create, "
                                            "monitoring.uptimeCheckConfigs.create, monitoring.alertPolicies.create",
