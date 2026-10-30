@@ -28,6 +28,9 @@ REVISION, LATEST = "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION", "TRAFFIC_TARGET_AL
 CANDIDATE = "candidate"
 PROBE_PERIOD = 5
 SETTLING = (900, 3)
+# A grant cloudinfra just made reaches a service's revisions minutes after the service itself (found on a real project on
+# 2026-10-30: a PATCH went through while reading the new revision was refused); a 403 is tried again for this long.
+NOT_YET_GRANTED = (300, 15)
 
 
 @dataclass(frozen=True)
@@ -62,14 +65,20 @@ def container(release: ReleaseRequest, values: dict[str, str | SecretRef], resou
 class RunClient:
     """The Cloud Run Admin API calls a release needs, with the environment's Google token; every refusal has a code."""
 
-    def __init__(self, token, client: httpx.Client | None = None):
-        self.token, self.client = token, client or httpx.Client(timeout=60)
+    def __init__(self, token, client: httpx.Client | None = None, sleep=time.sleep, clock=time.monotonic):
+        self.token, self.client, self.sleep, self.clock = token, client or httpx.Client(timeout=60), sleep, clock
 
     def request(self, method: str, path: str, json=None, params=None, missing_ok: bool = False):
-        try:
-            response = self.client.request(method, f"{RUN}/{path}", json=json, params=params, headers={"Authorization": f"Bearer {self.token()}"})
-        except httpx.RequestError as exc:
-            raise DeliveryError(ErrorCode.SERVICE_UNREACHABLE, f"Cloud Run could not be reached ({type(exc).__name__})", {"path": path}) from None
+        started = self.clock()
+        while True:
+            try:
+                response = self.client.request(method, f"{RUN}/{path}", json=json, params=params, headers={"Authorization": f"Bearer {self.token()}"})
+            except httpx.RequestError as exc:
+                raise DeliveryError(ErrorCode.SERVICE_UNREACHABLE, f"Cloud Run could not be reached ({type(exc).__name__})", {"path": path}) from None
+            fresh_grant = response.status_code == 403 and "artifactregistry" not in response.text
+            if not fresh_grant or self.clock() - started + NOT_YET_GRANTED[1] > NOT_YET_GRANTED[0]:
+                break
+            self.sleep(NOT_YET_GRANTED[1])
         if response.status_code == 404 and missing_ok:
             return None
         if response.status_code == 403 and "artifactregistry" in response.text:  # Cloud Run checks the deployer can read the image (found 2026-10-30)
@@ -88,7 +97,7 @@ class RunDeployer:
     """Runs a release's revision on a Cloud Run service as the environment's service account."""
 
     def __init__(self, token, run=None, sleep=time.sleep, clock=time.monotonic):
-        self.run, self.sleep, self.clock = run or RunClient(token), sleep, clock
+        self.run, self.sleep, self.clock = run or RunClient(token, sleep=sleep, clock=clock), sleep, clock
 
     def _settle(self, target: ServiceTarget) -> dict:
         """The service or job once Cloud Run is done with the last change. Right after a write it can still report the
@@ -133,7 +142,14 @@ class RunDeployer:
         return self._settle(target)
 
     def _route(self, target: ServiceTarget, revision: str) -> dict:
-        return self._patch(target, {"traffic": [{"type": REVISION, "revision": revision, "percent": 100}]}, "traffic")
+        """All traffic on the revision, once Cloud Run reports it there: right after the change it may still report the
+        traffic as it was (found on a real project on 2026-10-30, moving back to a revision that had been idle)."""
+        found = self._patch(target, {"traffic": [{"type": REVISION, "revision": revision, "percent": 100}]}, "traffic")
+        started = self.clock()
+        while self._serving(found) != revision and self.clock() - started < SETTLING[0]:  # the service's condition may still speak of a failed
+            self.sleep(SETTLING[1])                                                        # release's revision: only the traffic says where it went
+            found = self.run.request("GET", target.provider_id)
+        return found
 
     def deploy(self, target: ServiceTarget, release_id: str, release: ReleaseRequest, values: dict[str, str | SecretRef],
                previous: tuple[str, ReleaseRequest] | None) -> HostReport:
