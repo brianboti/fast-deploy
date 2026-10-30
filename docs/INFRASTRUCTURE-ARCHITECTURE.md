@@ -223,6 +223,16 @@ The service's own identity then needs, once, from the platform team:
 | give a node account its project role | `roles/resourcemanager.projectIamAdmin` | an IAM condition, so it can grant that one role and no other: `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])` ([limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)) |
 | let a node account read a repository | `roles/artifactregistry.admin` | each repository listed in `providers.gcp.registries`, granted on the repository |
 
+### A DNS zone
+
+`dns: {zone, records}` makes a public Cloud DNS zone for a domain in one the operator allows (the same
+`providers.gcp.public_domains` a front door uses) and writes its record sets in one change. A record has values, or
+`to: load_balancer` or `to: cluster[:NAME]`, an A record to the request's own load balancer or a cluster's front door,
+filled in here: the zone is made last, after everything it can point to. The operator points the domain at the zone's
+name servers once, at the registrar; the connect block names them. `use` grants reading the zone, `admin` changing it.
+Destroy empties the zone, then deletes it, as Cloud DNS deletes only an empty zone. About 0.20 dollars a month per zone.
+The service's identity needs `roles/dns.admin`.
+
 ### A workload identity
 
 `identity: {name, level}` makes an account for the request's own workloads (`id-<request id>-<name>`). No key is ever
@@ -407,7 +417,7 @@ python -m pytest tests/cloudinfra -q                # the boundary tests, no clo
 CLOUDINFRA_INTEGRATION=1 CLOUDINFRA_PROJECT=my-project python -m pytest tests/integration/cloudinfra -q   # one real machine, then destroyed
 ```
 
-The catalog has 54 tools: create, get and delete for each of the twelve kinds (plus list, resize, attach and firewall
+The catalog has 57 tools: create, get and delete for each of the thirteen kinds (plus list, resize, attach and firewall
 configuration where they apply), the lifecycle tools (stop, start, extend and keep awake among them), access, and the
 operations tools. The MCP endpoint is `/mcp`; the REST endpoints are `POST /infrastructure/validate`,
 `POST /infrastructure/plan`, `POST /infrastructure`, `GET /infrastructure` (with `status` and `expiring_within_hours`),

@@ -2,8 +2,8 @@
 
 Every field is a size, a count, a name, a version or a switch. There is no repository, image, command, script, key or
 provider-specific structure, so a request can describe "one Ubuntu machine with 4 CPUs and 16 GB" and nothing about any
-application. Strict models: no unknown field, no type coercion. Twelve kinds: identity, network, storage, compute (one
-group or several), database, cache, queue, secret, cluster, service, job and load_balancer.
+application. Strict models: no unknown field, no type coercion. Thirteen kinds: identity, network, storage, compute (one
+group or several), database, cache, queue, secret, cluster, service, job, load_balancer and dns.
 """
 import re
 from typing import Literal
@@ -27,13 +27,17 @@ RESERVED_SECRETS = {"db-password": "database", "cache-auth": "cache"}  # secrets
 LoadBalancerType = Literal["http", "tcp"]
 GROUP = r"^[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?$"  # a group's, queue's or secret's short name: up to 12 characters, part of resource names
 # The kinds, in the order they are created; destruction is the reverse. Every top-level block of a request is one of these.
-RESOURCE_KINDS = ("identity", "network", "storage", "compute", "database", "cache", "queue", "secret", "cluster", "service", "job", "load_balancer")
+RESOURCE_KINDS = ("identity", "network", "storage", "compute", "database", "cache", "queue", "secret", "cluster", "service", "job", "load_balancer", "dns")
 MAX_QUEUES = 8
 MAX_SECRETS = 16
 MAX_CLUSTERS = 4
 MAX_SERVICES = 8
 MAX_JOBS = 8
 MAX_IDENTITIES = 8
+MAX_RECORDS = 50
+RECORD_NAME = re.compile(r"^(@|\*|(?:\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*)$")
+IPV4 = re.compile(r"^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$")
+TARGET = re.compile(r"^(load_balancer|cluster(?::[a-z][a-z0-9-]{0,11})?)$")
 CRON = re.compile(r"^[0-9A-Za-z*/,-]+( [0-9A-Za-z*/,-]+){4}$")  # five unix-cron fields
 TIME_ZONE = re.compile(r"^[A-Za-z_]+(?:/[A-Za-z0-9_+-]+){0,2}$")
 HOSTNAME = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
@@ -326,6 +330,51 @@ class JobRequest(StrictModel):
         return self.name or "job"
 
 
+class DnsRecordRequest(StrictModel):
+    """One record set in the request's zone: values given, or the address of a resource of the same request."""
+    name: str = Field(description="The name within the zone: @ for the zone itself, www, api.v2, or a wildcard *.apps.")
+    type: Literal["A", "AAAA", "CNAME", "TXT", "MX", "CAA"] = "A"
+    values: list[str] = Field(default_factory=list, max_length=10, description="The record's data; none when `to` names a resource.")
+    to: str | None = Field(default=None, description="An A record to this request's load_balancer, or its cluster's front door (cluster, or cluster:NAME).")
+    ttl: int = Field(default=300, ge=30, le=86400)
+
+    @model_validator(mode="after")
+    def _data(self):
+        if not RECORD_NAME.fullmatch(self.name):
+            raise ValueError(f"dns.records: {self.name!r} is not a name within the zone (@, a label, labels with dots, or a *. wildcard)")
+        if (self.to is None) == (not self.values):
+            raise ValueError(f"dns.records {self.name}: give values or to, one of them")
+        if self.to is not None and (self.type != "A" or not TARGET.fullmatch(self.to)):
+            raise ValueError(f"dns.records {self.name}: to makes an A record to load_balancer, cluster or cluster:NAME")
+        for value in self.values:
+            if any(char in value for char in "\n\r\0") or len(value) > 255:
+                raise ValueError(f"dns.records {self.name}: a value has a line break or is longer than 255 characters")
+            if self.type == "A" and not IPV4.fullmatch(value):
+                raise ValueError(f"dns.records {self.name}: {value!r} is not an IPv4 address")
+        return self
+
+
+class DnsRequest(StrictModel):
+    """A public DNS zone for a domain the operator allows, and its records. The operator points the domain at the zone's
+    name servers once, at the registrar."""
+    zone: str = Field(description="The domain, such as shop.example.com, in one the operator allows.")
+    records: list[DnsRecordRequest] = Field(default_factory=list, max_length=MAX_RECORDS)
+
+    @field_validator("zone")
+    @classmethod
+    def _zone(cls, value):
+        if not HOSTNAME.fullmatch(value):
+            raise ValueError(f"dns.zone: {value!r} is not a lowercase domain name")
+        return value
+
+    @model_validator(mode="after")
+    def _unique(self):
+        keys = [(record.name, record.type) for record in self.records]
+        if len(set(keys)) != len(keys):
+            raise ValueError("dns.records: one record set per name and type")
+        return self
+
+
 class LoadBalancerRequest(StrictModel):
     """A public load balancer in front of one compute group."""
     type: LoadBalancerType = Field(default="http", description="http: an application load balancer with a health check on a path; tcp: a passthrough network load balancer.")
@@ -388,6 +437,7 @@ class InfrastructureRequest(StrictModel):
     service: ServiceRequest | list[ServiceRequest] | None = Field(default=None, description="One managed container service, or a list of them.")
     job: JobRequest | list[JobRequest] | None = Field(default=None, description="One managed job, or a list of them.")
     load_balancer: LoadBalancerRequest | None = None
+    dns: DnsRequest | None = Field(default=None, description="A public DNS zone and its records, made after everything they point to.")
     lifetime: LifetimeRequest | None = Field(default=None, description="How long the request lives; the operator's default applies when omitted, and there is none unless the operator sets one.")
     access: list[AccessRequest] = Field(default_factory=list, max_length=20, description="People, groups or service accounts to grant access to what is created; "
                                                                                           "the requester is added when the operator maps it to an identity.")
@@ -451,6 +501,15 @@ class InfrastructureRequest(StrictModel):
                 raise ValueError(f"{kind}: at most {limit} per request")
             if len(set(names)) != len(names):
                 raise ValueError(f"{kind}: names must be unique")
+        for record in (self.dns.records if self.dns else []):
+            if record.to == "load_balancer" and not self.load_balancer:
+                raise ValueError(f"dns.records {record.name}: to load_balancer, but the request has no load balancer")
+            if record.to and record.to.startswith("cluster"):
+                name = record.to.partition(":")[2] or None
+                cluster = self.cluster_named(name)
+                if cluster is None or cluster.public is None:
+                    raise ValueError(f"dns.records {record.name}: to {record.to}, but the request has no such cluster with a front door"
+                                     + (" (name it: cluster:NAME)" if name is None and len(self.clusters()) > 1 else ""))
         names = {identity.identity_name for identity in self.identities()}
         for group in groups:
             if group.identity is not None and group.identity not in names:

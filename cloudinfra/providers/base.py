@@ -14,6 +14,7 @@ from ..models.request import (
     ClusterRequest,
     ComputeRequest,
     DatabaseRequest,
+    DnsRequest,
     IdentityRequest,
     InfrastructureRequest,
     JobRequest,
@@ -30,6 +31,7 @@ from ..models.resources import (
     ComputeResource,
     ConnectInfo,
     DatabaseResource,
+    DnsResource,
     FirewallRule,
     IdentityResource,
     JobResource,
@@ -217,6 +219,16 @@ class CloudProvider(ABC):
 
     @abstractmethod
     def delete_service(self, resource: ServiceResource, ctx: ProvisionContext) -> None: ...
+
+    # ---- dns (a public zone and its records)
+    @abstractmethod
+    def create_dns(self, spec: DnsRequest, planned: PlannedResource, ctx: ProvisionContext, created: list) -> DnsResource: ...
+
+    @abstractmethod
+    def get_dns(self, resource: DnsResource) -> DnsResource: ...
+
+    @abstractmethod
+    def delete_dns(self, resource: DnsResource, ctx: ProvisionContext) -> None: ...
 
     # ---- identity (a workload identity with no key)
     @abstractmethod

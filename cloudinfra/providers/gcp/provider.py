@@ -10,6 +10,7 @@ from .cache import GcpCache
 from .cluster import GcpCluster
 from .compute import GcpCompute
 from .database import GcpDatabase
+from .dns import GcpDns
 from .iam import GcpIam
 from .identity import GcpIdentity
 from .loadbalancer import GcpLoadBalancer
@@ -31,7 +32,7 @@ class GCPProvider(CloudProvider):
     name = "gcp"
     supported_kinds = RESOURCE_KINDS
     stoppable_kinds = ("compute", "database")
-    grantable_kinds = ("compute", "storage", "secret", "queue", "cluster", "service", "job")
+    grantable_kinds = ("compute", "storage", "secret", "queue", "cluster", "service", "job", "dns")
 
     def __init__(self, settings, api: GcpApi | None = None, token=None, kube=None):
         self.settings = settings
@@ -47,6 +48,7 @@ class GCPProvider(CloudProvider):
         self.run = GcpRun(self.api, settings)
         self.job = GcpRunJob(self.api, settings)
         self.identity = GcpIdentity(self.api, settings)
+        self.dns = GcpDns(self.api, settings)
         self.load_balancer = GcpLoadBalancer(self.api, settings, self.network)
         self.monitoring = GcpMonitoring(self.api)
         self.iam = GcpIam(self.api)
@@ -99,6 +101,9 @@ class GCPProvider(CloudProvider):
                                         "without signing in (providers.gcp.allow_public_services)", "service.public"))
         for job in request.jobs():
             problems.extend(translate.service_problems(job, "job"))
+        if request.dns is not None and not any(request.dns.zone == domain or request.dns.zone.endswith("." + domain) for domain in self.settings.public_domains):
+            problems.append(Problem(ErrorCode.INVALID_DNS_CONFIGURATION, f"Not a domain the operator lets requests use: {request.dns.zone}; allowed: "
+                                    f"{', '.join(self.settings.public_domains) or 'none'}", "dns.zone"))
         return problems
 
     def plan(self, request: InfrastructureRequest, ctx: ProvisionContext) -> list[PlannedResource]:
@@ -196,6 +201,9 @@ class GCPProvider(CloudProvider):
             planned.append(PlannedResource(kind="load_balancer", name=f"{prefix}-lb", provider_mapping=HTTP_LB_MAPPING if balancer.type == "http" else TCP_LB_MAPPING,
                                            spec={"type": balancer.type, "port": balancer.port, "backend_group": group.group_name if group else "external", "backends": backends,
                                                  "health_check_path": balancer.health_check_path if balancer.type == "http" else None}))
+        if request.dns is not None:  # last: its records may point at what the request made
+            planned.append(PlannedResource(kind="dns", name=f"{prefix}-zone", provider_mapping="dns.managedZones.create, dns.changes.create",
+                                           spec={"zone": request.dns.zone, "records": len(request.dns.records)}))
         return planned
 
     def estimate_cost(self, planned: list[PlannedResource]) -> CostEstimate:
@@ -309,6 +317,15 @@ class GCPProvider(CloudProvider):
 
     def delete_cluster(self, resource, ctx):
         self.cluster.delete(resource, ctx)
+
+    def create_dns(self, spec, planned, ctx, created):
+        return self.dns.create(spec, planned, ctx, created)
+
+    def get_dns(self, resource):
+        return self.dns.get(resource)
+
+    def delete_dns(self, resource, ctx):
+        self.dns.delete(resource, ctx)
 
     def create_identity(self, spec, planned, ctx):
         return self.identity.create(spec, planned, ctx)

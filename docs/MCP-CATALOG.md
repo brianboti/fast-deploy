@@ -1,6 +1,6 @@
 # MCP service catalog
 
-Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 54 tools in 14 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, `cac-`, `que-`, `sec-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
+Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 57 tools in 15 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, `cac-`, `que-`, `sec-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
 
 ## At a glance
 
@@ -46,6 +46,9 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | Load balancer | `create_load_balancer` | Create a load balancer | changes cloud |
 | Load balancer | `get_load_balancer` | Get a load balancer | read only |
 | Load balancer | `delete_load_balancer` | Delete a load balancer | destructive |
+| DNS | `create_dns` | Create a DNS zone | changes cloud |
+| DNS | `get_dns` | Get a DNS zone | read only |
+| DNS | `delete_dns` | Delete a DNS zone | destructive |
 | Infrastructure | `list_resource_kinds` | List resource kinds | read only |
 | Infrastructure | `validate_infrastructure_request` | Validate a request | read only |
 | Infrastructure | `plan_infrastructure` | Plan a request | read only |
@@ -76,6 +79,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `INVALID_CACHE_CONFIGURATION` | A cache version the provider does not run, or a cache without a network. |
 | `INVALID_CLUSTER_CONFIGURATION` | A node shape the provider has no type for. |
 | `INVALID_SERVICE_CONFIGURATION` | CPU and memory the provider does not pair, or a public service the operator does not allow. |
+| `INVALID_DNS_CONFIGURATION` | A zone outside the domains the operator lets requests use. |
 | `INVALID_LOAD_BALANCER_CONFIGURATION` | No machines behind it, or machines in different zones or regions. |
 | `UNSUPPORTED_RESOURCE_KIND` | A request block of a kind the contract or the chosen adapter does not provide; details name the nearest kind. |
 | `INVALID_ACCESS` | A member outside the operator's allowed domains, a malformed member, a duplicate, or more members than allowed. |
@@ -1102,6 +1106,78 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 **Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy.
 
 **Provider mapping (Google Cloud).** Compute Engine: the delete of each piece, forwarding rule first.
+
+## DNS
+
+### `create_dns`
+
+**Purpose.** Create a public DNS zone for a domain the operator allows, with record sets written in one change. In a full request, an A record may point at the request's load balancer or a cluster's front door by name instead of an address.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
+| `zone` | yes | The domain, such as shop.example.com, in one the operator allows. |
+| `provider` | no | The cloud provider adapter; gcp (default) is the one implemented. |
+| `records` | no | Record sets: name (@, www, *.apps), type (A, AAAA, CNAME, TXT, MX, CAA), values, ttl. |
+| `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
+| `labels` | no | Labels for every resource, next to the service's ownership labels. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `region`, `zone`.
+**Optional fields.** `provider`, `records`, `name`, `labels`, `wait_seconds`.
+
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
+
+**Possible errors.** `INVALID_DNS_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
+
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. The operator lists the domains (providers.gcp.public_domains). use grants reading the zone, admin changing it. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+
+**Provider mapping (Google Cloud).** Cloud DNS: managedZones.create, delete and setIamPolicy; changes.create.
+
+### `get_dns`
+
+**Purpose.** The zone's domain, name servers and the record sets made.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** none.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`.
+
+**Security.** Read-only; creates and changes nothing. Read-only.
+
+**Provider mapping (Google Cloud).** Cloud DNS: managedZones.get.
+
+### `delete_dns`
+
+**Purpose.** Delete the zone's record sets, then the zone.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** `wait_seconds`.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `DESTROY_FAILED`.
+
+**Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy.
+
+**Provider mapping (Google Cloud).** Cloud DNS: changes.create, managedZones.delete.
 
 ## Infrastructure
 

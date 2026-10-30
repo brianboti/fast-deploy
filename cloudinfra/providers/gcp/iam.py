@@ -6,7 +6,7 @@ Each change reads the policy, changes only this service's roles for one member, 
 retrying a conflicting write. A machine's IAP tunnel grant is bound to the machine's numeric id, so a later machine with
 the same name never inherits it."""
 from ...models.errors import ErrorCode, InfrastructureError
-from .api import COMPUTE, IAM, PUBSUB, RUN, SECRETS, STORAGE
+from .api import COMPUTE, DNS, IAM, PUBSUB, RUN, SECRETS, STORAGE
 
 IAP = "https://iap.googleapis.com/v1"
 IAP_TUNNEL = "roles/iap.tunnelResourceAccessor"
@@ -20,6 +20,7 @@ ROLES = {
     # A Cloud Run service: use calls it; admin also deploys revisions, which needs acting as its runtime account
     "service": {"use": ("roles/run.invoker",), "admin": ("roles/run.invoker", "roles/run.developer")},
     "runtime": {"use": (), "admin": ("roles/iam.serviceAccountUser",)},
+    "zone": {"use": ("roles/dns.reader",), "admin": ("roles/dns.admin",)},
 }
 # The only roles this service ever grants, and so the only ones it ever removes.
 GRANTED_ROLES = frozenset(role for levels in ROLES.values() for roles in levels.values() for role in roles)
@@ -100,6 +101,11 @@ class GcpIam:
         return (lambda: self.api.get(f"{RUN}/{resource.provider_id}:getIamPolicy", **{"options.requestedPolicyVersion": 3}),
                 lambda policy: self.api.post(f"{RUN}/{resource.provider_id}:setIamPolicy", json={"policy": policy}))
 
+    def _zone(self, resource):
+        base = f"{DNS}/projects/{self.api.project}/managedZones/{resource.name}"
+        return (lambda: self.api.post(f"{base}:getIamPolicy", json={"options": {"requestedPolicyVersion": 3}}),
+                lambda policy: self.api.post(f"{base}:setIamPolicy", json={"policy": policy}))
+
     def _account(self, email: str):
         base = f"{IAM}/projects/{self.api.project}/serviceAccounts/{email}"
         return (lambda: self.api.post(f"{base}:getIamPolicy", json={"options": {"requestedPolicyVersion": 3}}),
@@ -118,6 +124,8 @@ class GcpIam:
             return [(self._secret(resource), "secret")]
         if kind == "storage" and resource.type == "object":
             return [(self._bucket(resource), "bucket")]
+        if kind == "dns":
+            return [(self._zone(resource), "zone")]
         if kind in ("service", "job"):  # a job's roles are the service's: run.invoker runs it, run.developer changes it
             found = [(self._run(resource), "service")]
             if resource.runtime_service_account:
