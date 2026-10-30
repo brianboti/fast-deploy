@@ -182,6 +182,8 @@ def test_traffic_reported_late_after_a_rollback_is_waited_for():
     world = World(service=True)
     first = deploy(world)
     second = deploy(world, V2)
+    world.run.bad_images.add(V3)
+    deploy(world, V3)  # a failed release leaves the service's condition failed, as on the real project
     world.run.traffic_late = 2
     rolled = world.delivery.rollback(second.release_id, world.team)
     assert rolled.status == "ROLLED_BACK" and world.run.serving() == revision(first.release_id)
