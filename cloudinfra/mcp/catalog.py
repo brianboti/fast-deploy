@@ -338,6 +338,7 @@ CATALOG: tuple[ToolSpec, ...] = (
              "balancer with a health check on a path) or tcp (a passthrough network load balancer). Health checkers are allowed through the firewall on the backend port.",
              (REGION, Input("backends", "The machines behind it (cmp-…), all in one zone.", True), PROVIDER, Input("type", "http (default) or tcp."),
               Input("port", "The port the machines serve on; the public port is the same (default 80)."), Input("health_check_path", "The path an http health check requests (default /)."),
+              Input("hostnames", "With http: names served over HTTPS on 443 with a provider-managed certificate, in domains the operator allows."),
               NAME, LABELS, WAIT),
              RESPONSE, ("INVALID_LOAD_BALANCER_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
              f"Needs can_provision. HTTP only; TLS termination is a later feature. {OWNERSHIP}",

@@ -1,3 +1,11 @@
+# Unreleased: HTTPS on the load balancer
+
+The TLS half of the operator's DNS and TLS choice (docs/INFRASTRUCTURE-ARCHITECTURE.md, "HTTPS on the load balancer"):
+`load_balancer.hostnames` (http only, names in `public_domains`) adds a Google-managed certificate, a target HTTPS proxy
+and a 443 forwarding rule on the same address. The certificate's state is reported; a DNS zone in the request points the
+names at the address. Also a `create_load_balancer` parameter. The load balancer's connect note no longer says TLS is
+not offered.
+
 # Unreleased: a public DNS zone
 
 Second of the kinds the coverage research ranks highest (docs/INFRASTRUCTURE-ARCHITECTURE.md, "A DNS zone"):

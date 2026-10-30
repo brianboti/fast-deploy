@@ -101,6 +101,11 @@ class GCPProvider(CloudProvider):
                                         "without signing in (providers.gcp.allow_public_services)", "service.public"))
         for job in request.jobs():
             problems.extend(translate.service_problems(job, "job"))
+        outside = [name for name in (request.load_balancer.hostnames if request.load_balancer else [])
+                   if not any(name == domain or name.endswith("." + domain) for domain in self.settings.public_domains)]
+        if outside:
+            problems.append(Problem(ErrorCode.INVALID_LOAD_BALANCER_CONFIGURATION, f"Not in a domain the operator lets requests use: {', '.join(outside)}; allowed: "
+                                    f"{', '.join(self.settings.public_domains) or 'none'}", "load_balancer.hostnames"))
         if request.dns is not None and not any(request.dns.zone == domain or request.dns.zone.endswith("." + domain) for domain in self.settings.public_domains):
             problems.append(Problem(ErrorCode.INVALID_DNS_CONFIGURATION, f"Not a domain the operator lets requests use: {request.dns.zone}; allowed: "
                                     f"{', '.join(self.settings.public_domains) or 'none'}", "dns.zone"))
@@ -200,7 +205,8 @@ class GCPProvider(CloudProvider):
             backends = [f"{prefix}-{group.group_name}-{index}" for index in range(1, group.count + 1)] if group else list(balancer.backends or [])
             planned.append(PlannedResource(kind="load_balancer", name=f"{prefix}-lb", provider_mapping=HTTP_LB_MAPPING if balancer.type == "http" else TCP_LB_MAPPING,
                                            spec={"type": balancer.type, "port": balancer.port, "backend_group": group.group_name if group else "external", "backends": backends,
-                                                 "health_check_path": balancer.health_check_path if balancer.type == "http" else None}))
+                                                 "health_check_path": balancer.health_check_path if balancer.type == "http" else None,
+                                                 "hostnames": list(balancer.hostnames)}))
         if request.dns is not None:  # last: its records may point at what the request made
             planned.append(PlannedResource(kind="dns", name=f"{prefix}-zone", provider_mapping="dns.managedZones.create, dns.changes.create",
                                            spec={"zone": request.dns.zone, "records": len(request.dns.records)}))

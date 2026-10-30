@@ -1,6 +1,8 @@
 """Load balancers behind the generic primitive: an external application load balancer (http) or a passthrough network
 load balancer (tcp) in front of one instance group. Each is several provider pieces; they are recorded in creation order
-on the resource and torn down in reverse."""
+on the resource and torn down in reverse. With hostnames, the http one also serves HTTPS on 443 of the same address, with
+a Google-managed certificate for them, which becomes ACTIVE once their DNS points at the address
+(https://docs.cloud.google.com/load-balancing/docs/ssl-certificates/google-managed-certs)."""
 from ...models.errors import ErrorCode, InfrastructureError
 from ...models.resources import LoadBalancerResource, ResourceStatus
 from . import translate
@@ -31,7 +33,7 @@ class GcpLoadBalancer:
         components = []
         shape = {"id": planned.spec["resource_id"], "name": name, "request_id": ctx.request_id, "provider": "gcp", "region": region, "zone": zone, "type": spec.type,
                  "port": spec.port, "backend_group": planned.spec["backend_group"], "backends": [machine.id for machine in backends],
-                 "health_check_path": spec.health_check_path if spec.type == "http" else None, "labels": translate.labels(ctx)}
+                 "health_check_path": spec.health_check_path if spec.type == "http" else None, "labels": translate.labels(ctx), "hostnames": list(spec.hostnames)}
 
         def taken(kind, component_name, url):
             # each piece is known as soon as Google has taken its create, so a failure further on deletes every one made so far
@@ -62,6 +64,11 @@ class GcpLoadBalancer:
             address = piece("address", self._global("addresses"), {"name": f"{name}-address", "ipVersion": "IPV4", "networkTier": "PREMIUM"})
             piece("forwarding_rule", self._global("forwardingRules"), {"name": f"{name}-rule", "IPAddress": address, "IPProtocol": "TCP", "portRange": str(spec.port), "target": proxy,
                                                                         "loadBalancingScheme": "EXTERNAL_MANAGED", "networkTier": "PREMIUM"})
+            if spec.hostnames:
+                certificate = piece("certificate", self._global("sslCertificates"), {"name": f"{name}-cert", "type": "MANAGED", "managed": {"domains": list(spec.hostnames)}})
+                secure = piece("target_proxy", self._global("targetHttpsProxies"), {"name": f"{name}-https", "urlMap": url_map, "sslCertificates": [certificate]})
+                piece("forwarding_rule", self._global("forwardingRules"), {"name": f"{name}-https-rule", "IPAddress": address, "IPProtocol": "TCP", "portRange": "443",
+                                                                            "target": secure, "loadBalancingScheme": "EXTERNAL_MANAGED", "networkTier": "PREMIUM"})
         else:
             health = piece("health_check", self._regional(region, "healthChecks"), {"name": f"{name}-health", "type": "TCP", "checkIntervalSec": 10, "timeoutSec": 5,
                                                                                     "tcpHealthCheck": {"port": spec.port}})
@@ -71,7 +78,19 @@ class GcpLoadBalancer:
             piece("forwarding_rule", self._regional(region, "forwardingRules"), {"name": f"{name}-rule", "IPAddress": address, "IPProtocol": "TCP", "ports": [str(spec.port)],
                                                                                  "backendService": backend, "loadBalancingScheme": "EXTERNAL", "networkTier": "PREMIUM"})
         public = self.api.get(address).get("address")
-        return LoadBalancerResource(**shape, provider_id=components[-1]["url"], address=public, components=components, status=ResourceStatus.READY)
+        found = LoadBalancerResource(**shape, provider_id=components[-1]["url"], address=public, components=components, status=ResourceStatus.READY)
+        return self._certificate(found)
+
+    def _certificate(self, resource: LoadBalancerResource) -> LoadBalancerResource:
+        url = next((item["url"] for item in resource.components if item["kind"] == "certificate"), None)
+        if url is None:
+            return resource
+        try:
+            return resource.model_copy(update={"certificate": (self.api.get(url).get("managed") or {}).get("status")})
+        except InfrastructureError as exc:
+            if exc.code != ErrorCode.NOT_FOUND:
+                raise
+            return resource
 
     def get(self, resource: LoadBalancerResource) -> LoadBalancerResource:
         try:
@@ -80,7 +99,7 @@ class GcpLoadBalancer:
             if exc.code == ErrorCode.NOT_FOUND:
                 return resource.model_copy(update={"status": ResourceStatus.DELETED, "address": None})
             raise
-        return resource.model_copy(update={"status": ResourceStatus.READY})
+        return self._certificate(resource.model_copy(update={"status": ResourceStatus.READY}))
 
     def delete(self, resource: LoadBalancerResource, ctx) -> None:
         for component in reversed(resource.components):

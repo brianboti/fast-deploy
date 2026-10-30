@@ -1146,8 +1146,9 @@ class Orchestrator:
                          network_id=network_id, egress=egress, schedule=ScheduleRequest(cron=schedule, time_zone=time_zone) if schedule else None)
         return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, job=job), principal, wait_seconds)
 
-    def create_load_balancer(self, principal, *, region, backends, provider="gcp", type="http", port=80, health_check_path="/", name=None, labels=None, wait_seconds=0):
-        balancer = LoadBalancerRequest(type=type, port=port, health_check_path=health_check_path, backends=backends)
+    def create_load_balancer(self, principal, *, region, backends, provider="gcp", type="http", port=80, health_check_path="/", hostnames=None, name=None, labels=None,
+                             wait_seconds=0):
+        balancer = LoadBalancerRequest(type=type, port=port, health_check_path=health_check_path, backends=backends, hostnames=hostnames or [])
         return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, load_balancer=balancer), principal, wait_seconds)
 
     def resource_kinds(self) -> ResourceKindsResponse:

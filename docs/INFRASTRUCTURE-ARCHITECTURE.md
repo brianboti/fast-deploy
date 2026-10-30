@@ -223,6 +223,14 @@ The service's own identity then needs, once, from the platform team:
 | give a node account its project role | `roles/resourcemanager.projectIamAdmin` | an IAM condition, so it can grant that one role and no other: `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])` ([limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)) |
 | let a node account read a repository | `roles/artifactregistry.admin` | each repository listed in `providers.gcp.registries`, granted on the repository |
 
+### HTTPS on the load balancer
+
+`load_balancer.hostnames` (http only) adds HTTPS on 443 of the same address: a Google-managed certificate for the names,
+a target HTTPS proxy on the same URL map, and a forwarding rule; plain HTTP stays on its port. The names must be in the
+operator's `public_domains`. The certificate becomes ACTIVE once their DNS points at the address; a DNS zone in the same
+request does that with `to: load_balancer`. The load balancer reports `hostnames` and the certificate's state; a second
+forwarding rule is priced.
+
 ### A DNS zone
 
 `dns: {zone, records}` makes a public Cloud DNS zone for a domain in one the operator allows (the same

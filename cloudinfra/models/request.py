@@ -382,6 +382,18 @@ class LoadBalancerRequest(StrictModel):
     backend_group: str | None = Field(default=None, pattern=GROUP, description="The compute group behind it; the request's only group when omitted.")
     health_check_path: str = Field(default="/", pattern=r"^/[A-Za-z0-9/_.-]*$", max_length=200, description="The path an http health check requests.")
     backends: list[str] | None = Field(default=None, description="Machines this service created earlier (cmp-…), instead of a compute group of the same request.")
+    hostnames: list[str] = Field(default_factory=list, max_length=5, description="With http: also serve HTTPS on 443, with a provider-managed certificate for "
+                                                                                "these names, in domains the operator allows.")
+
+    @field_validator("hostnames")
+    @classmethod
+    def _hostnames(cls, value):
+        for hostname in value:
+            if not HOSTNAME.fullmatch(hostname):
+                raise ValueError(f"load_balancer.hostnames: {hostname!r} is not a lowercase DNS name (no wildcard)")
+        if len(set(value)) != len(value):
+            raise ValueError("load_balancer.hostnames: each name once")
+        return value
 
     @field_validator("backends")
     @classmethod
@@ -516,6 +528,8 @@ class InfrastructureRequest(StrictModel):
                 raise ValueError(f"compute.identity names {group.identity!r}, which is not an identity of this request")
         if self.storage and self.storage.group and self.storage.group not in {group.group_name for group in groups}:
             raise ValueError(f"storage.group names {self.storage.group!r}, which is not a compute group of this request")
+        if self.load_balancer and self.load_balancer.hostnames and self.load_balancer.type != "http":
+            raise ValueError("load_balancer.hostnames: HTTPS needs type http; a tcp load balancer passes TLS through untouched")
         if self.load_balancer and self.load_balancer.backends:
             if groups or self.load_balancer.backend_group:
                 raise ValueError("load_balancer.backends names existing machines; a compute group in the same request is one or the other")

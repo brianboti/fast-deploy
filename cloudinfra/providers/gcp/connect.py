@@ -114,5 +114,8 @@ def info(resource, resources: list, project: str, drivers: bool = False) -> Conn
     if kind == "load_balancer":
         address = resource.address or "ADDRESS"
         command = f"curl http://{address}:{resource.port}{resource.health_check_path or '/'}" if resource.type == "http" else f"nc -vz {address} {resource.port}"
-        return ConnectInfo(commands={"try": command}, notes=["Plain http or tcp: TLS termination is not offered yet"])
+        if resource.hostnames:
+            return ConnectInfo(commands={"try": command, "https": f"curl https://{resource.hostnames[0]}{resource.health_check_path or '/'}"},
+                               notes=[f"HTTPS for {', '.join(resource.hostnames)} once their DNS points at {address}; the certificate is {resource.certificate or 'not reported'}"])
+        return ConnectInfo(commands={"try": command}, notes=["Plain http or tcp; give the load balancer hostnames for HTTPS"])
     return None
