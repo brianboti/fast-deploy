@@ -51,6 +51,16 @@ def test_a_person_at_admin_only_pulls(tmp_path):
     assert lead in fake.members(REPOSITORY, "roles/artifactregistry.reader") and fake.members(REPOSITORY, "roles/artifactregistry.writer") == []
 
 
+def test_a_workload_identity_at_admin_only_pulls(tmp_path):
+    """The request's own workload identity (the identity kind) is an access member like any other, so the registry rule
+    holds for it too: what runs on the request's machines can read its images and never push one."""
+    _, fake, _, response = setup(tmp_path, access=[{"member": BUILDER, "level": "admin"}], identity={"name": "app", "level": "admin"})
+    [identity] = response.resources.identity
+    assert response.status == "READY", response.error
+    assert f"serviceAccount:{identity.email}" in fake.members(REPOSITORY, "roles/artifactregistry.reader")
+    assert fake.members(REPOSITORY, "roles/artifactregistry.writer") == [BUILDER]
+
+
 def test_the_build_account_is_granted_on_registries_only(tmp_path):
     _, fake, _, response = setup(tmp_path, access=[{"member": BUILDER, "level": "admin"}], compute={"cpu": 2, "memory_gb": 4}, secret={"name": "token"})
     [registry], [machine], [secret] = response.resources.registry, response.resources.compute, response.resources.secret
