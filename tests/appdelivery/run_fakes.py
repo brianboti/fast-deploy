@@ -25,6 +25,8 @@ class FakeRun:
         self.generation = 1
         self.lagging = False  # the first read after a write still shows the state before it, as Cloud Run can
         self.stale_reads = 0
+        self.traffic_late = 0  # reads after a traffic change that still report the traffic as it was
+        self.late_reads, self.traffic_before = 0, []
 
     def _statuses(self):
         found = []
@@ -44,6 +46,9 @@ class FakeRun:
         if self.stale_reads:
             self.stale_reads -= 1
             found.update(self.before, generation=str(self.generation), observedGeneration=str(self.generation - 1))
+        elif self.late_reads:
+            self.late_reads -= 1
+            found["trafficStatuses"] = self.traffic_before
         return found
 
     def serving(self):
@@ -89,6 +94,8 @@ class FakeRun:
             if ready and reached:  # Cloud Run starts only a revision something can reach
                 self.latest_ready = name
         if "traffic" in mask:
+            if self.traffic_late:
+                self.traffic_before, self.late_reads = self._statuses(), self.traffic_late
             for item in json["traffic"]:
                 if item["type"] == REVISION and item["percent"]:
                     assert self.revisions.get(item["revision"], {}).get("ready"), "traffic goes only to a ready revision"

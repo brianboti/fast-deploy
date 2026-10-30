@@ -174,3 +174,43 @@ def test_a_revision_nothing_can_reach_is_not_taken_for_a_ready_one():
     from appdelivery.run import RunDeployer, ServiceTarget
     ready, reason = RunDeployer(lambda: "t", run=world.run, sleep=lambda s: None)._proved(ServiceTarget("svc", "shop-service", world.run._service()["name"]), name, {})
     assert report["conditions"][0]["revisionReason"] == "RETIRED" and not ready and reason == "RETIRED"
+
+
+def test_traffic_reported_late_after_a_rollback_is_waited_for():
+    """Found on a real project on 2026-10-30: moving all traffic back to an idle revision worked, but the first reads still
+    reported it on the newer one, and the rollback was called failed."""
+    world = World(service=True)
+    first = deploy(world)
+    second = deploy(world, V2)
+    world.run.traffic_late = 2
+    rolled = world.delivery.rollback(second.release_id, world.team)
+    assert rolled.status == "ROLLED_BACK" and world.run.serving() == revision(first.release_id)
+
+
+def http_run(answers):
+    import httpx
+
+    from appdelivery.run import RunClient
+    seen, now = [], [0.0]
+
+    def handle(request):
+        seen.append(request)
+        status, text = answers.pop(0) if len(answers) > 1 else answers[0]
+        return httpx.Response(status, text=text)
+    return RunClient(lambda: "env-token", client=httpx.Client(transport=httpx.MockTransport(handle)), sleep=lambda s: now.__setitem__(0, now[0] + s),
+                     clock=lambda: now[0]), seen
+
+
+def test_a_grant_not_yet_reaching_the_revisions_is_waited_for():
+    """Found on a real project on 2026-10-30: two minutes after cloudinfra's grant the service could be changed but its
+    revisions not yet read; five minutes after, both."""
+    client, seen = http_run([(403, "Permission 'run.revisions.get' denied"), (403, "denied"), (200, "{}")])
+    assert client.request("GET", "projects/p/locations/r/services/s/revisions/x") == {} and len(seen) == 3
+    client, seen = http_run([(403, "Permission 'artifactregistry.repositories.downloadArtifacts' denied")])
+    with pytest.raises(DeliveryError) as caught:
+        client.request("PATCH", "projects/p/locations/r/services/s")
+    assert len(seen) == 1 and "Artifact Registry Reader" in caught.value.message, "an image the environment cannot read is not a grant on its way"
+    client, seen = http_run([(403, "denied")])
+    with pytest.raises(DeliveryError):
+        client.request("GET", "projects/p/locations/r/services/s")
+    assert len(seen) == 21, "at 0, 15, ... 300 seconds"
