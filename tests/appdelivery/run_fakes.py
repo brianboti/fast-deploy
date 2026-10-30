@@ -14,7 +14,7 @@ FIRST = "shop-service-00001-abc"
 
 class FakeRun:
     def __init__(self):
-        self.revisions: dict[str, dict] = {FIRST: {"containers": [{"image": STAND_IN}], "ready": True}}
+        self.revisions: dict[str, dict] = {FIRST: {"containers": [{"image": STAND_IN}], "ready": True, "reached": True}}
         self.template = {"serviceAccount": "run-aaaaaaaaaa-service@acme-infra.iam.gserviceaccount.com", "scaling": {"maxInstanceCount": 10},
                          "containers": [{"image": STAND_IN, "resources": {"limits": {"cpu": "1", "memory": "512Mi"}}}]}
         self.traffic = [{"type": LATEST, "percent": 100}]
@@ -60,7 +60,14 @@ class FakeRun:
                 if missing_ok:
                     return None
                 raise DeliveryError(ErrorCode.SERVICE_ERROR, "Cloud Run answered 404", {"path": path})
-            return {"name": name, "containers": copy.deepcopy(self.revisions[name]["containers"])}
+            revision = self.revisions[name]
+            if not revision.get("reached"):
+                ready = {"type": "Ready", "state": "CONDITION_SUCCEEDED", "revisionReason": "RETIRED"}  # never started: nothing could reach it
+            elif revision["ready"]:
+                ready = {"type": "Ready", "state": "CONDITION_SUCCEEDED"}
+            else:
+                ready = {"type": "Ready", "state": "CONDITION_FAILED", "message": f"The user-provided container failed the configured startup probe checks ({name})"}
+            return {"name": name, "containers": copy.deepcopy(revision["containers"]), "conditions": [ready]}
         assert path == SERVICE_NAME and method == "PATCH", f"no fake for {method} {path}"
         mask = params["updateMask"].split(",")
         self.patches.append((params["updateMask"], copy.deepcopy(json)))
@@ -75,13 +82,15 @@ class FakeRun:
             self.counter += 1
             name = template.get("revision") or f"shop-service-{self.counter:05d}-xyz"
             ready = template["containers"][0]["image"] not in self.bad_images
-            self.revisions[name] = {"containers": copy.deepcopy(template["containers"]), "ready": ready}
+            reached = any((item.get("revision") == name and (item.get("tag") or item.get("percent"))) or (item["type"] == LATEST and item.get("percent"))
+                          for item in json.get("traffic", []))
+            self.revisions[name] = {"containers": copy.deepcopy(template["containers"]), "ready": ready, "reached": reached}
             self.template, self.etag = copy.deepcopy(template), f"e{self.counter}"
-            if ready:
+            if ready and reached:  # Cloud Run starts only a revision something can reach
                 self.latest_ready = name
         if "traffic" in mask:
             for item in json["traffic"]:
-                if item["type"] == REVISION:
+                if item["type"] == REVISION and item["percent"]:
                     assert self.revisions.get(item["revision"], {}).get("ready"), "traffic goes only to a ready revision"
             self.traffic = copy.deepcopy(json["traffic"])
         return {"name": "operations/x"}

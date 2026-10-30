@@ -90,7 +90,9 @@ def test_a_release_is_a_revision_named_after_it_that_gets_all_traffic_once_ready
     assert done.status == "RUNNING" and done.targets[0].status == "HEALTHY"
     assert world.run.serving() == revision(done.release_id) and world.run.image() == V1
     first_mask, first = world.run.patches[0]
-    assert first_mask == "template,traffic" and first["traffic"] == [{"type": REVISION, "revision": FIRST, "percent": 100}], "made with the traffic held where it was"
+    assert first_mask == "template,traffic" and first["traffic"] == [{"type": REVISION, "revision": FIRST, "percent": 100},
+                                                                    {"type": REVISION, "revision": revision(done.release_id), "percent": 0, "tag": "candidate"}], \
+        "made with the traffic held where it was, and a tag so Cloud Run starts it"
     container = first["template"]["containers"][0]
     assert container["ports"] == [{"containerPort": 8080}] and container["startupProbe"]["httpGet"] == {"path": "/healthz", "port": 8080}
     assert container["resources"] == {"limits": {"cpu": "1", "memory": "512Mi"}}, "the limits the infrastructure layer set"
@@ -105,8 +107,9 @@ def test_a_revision_that_is_not_ready_gets_no_traffic_and_the_running_release_ke
     world.run.bad_images.add(V3)
     failed = deploy(world, V3)
     assert failed.status == "FAILED" and failed.error["code"] == "ROLLOUT_FAILED" and failed.targets[0].status == "UNHEALTHY"
-    assert "startup probe failed" in failed.targets[0].error["message"] and "previous release runs again" in failed.targets[0].error["message"]
+    assert "startup probe" in failed.targets[0].error["message"] and "previous release runs again" in failed.targets[0].error["message"]
     assert world.run.serving() == revision(second.release_id)
+    assert world.run.patches[-1] == ("traffic", {"traffic": [{"type": REVISION, "revision": revision(second.release_id), "percent": 100}]}), "only the tag goes"
     running = world.delivery.get(second.release_id, world.team)
     assert running.status == "RUNNING" and running.can_roll_back and world.delivery.get(first.release_id, world.team).status == "SUPERSEDED"
 
@@ -158,3 +161,16 @@ def test_a_read_right_after_a_write_that_still_shows_the_state_before_it_is_wait
     world.run.lagging = True
     done = deploy(world)
     assert done.status == "RUNNING" and world.run.serving() == revision(done.release_id)
+
+
+def test_a_revision_nothing_can_reach_is_not_taken_for_a_ready_one():
+    """Found on a real project on 2026-10-30: with no traffic and no tag Cloud Run retired the revision at once, reporting it
+    Ready without ever starting it; a release must prove itself on a revision Cloud Run started."""
+    world = World(service=True)
+    deploy(world)
+    name = world.run.serving()
+    world.run.revisions[name]["reached"] = False
+    report = world.run.request("GET", f"{world.run._service()['name']}/revisions/{name}")
+    from appdelivery.run import RunDeployer, ServiceTarget
+    ready, reason = RunDeployer(lambda: "t", run=world.run, sleep=lambda s: None)._proved(ServiceTarget("svc", "shop-service", world.run._service()["name"]), name, {})
+    assert report["conditions"][0]["revisionReason"] == "RETIRED" and not ready and reason == "RETIRED"

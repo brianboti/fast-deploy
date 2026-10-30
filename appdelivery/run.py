@@ -23,6 +23,9 @@ STAND_IN = "us-docker.pkg.dev/cloudrun/container/hello"
 JOB_STAND_IN = "us-docker.pkg.dev/cloudrun/container/job"
 RELEASE_LABEL = "appdelivery-release"  # on a job's run template: the release the job holds
 REVISION, LATEST = "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION", "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
+# A revision with no traffic and no tag cannot be reached, so Cloud Run retires it at once and never starts it (found on a
+# real project on 2026-10-30): the new one gets this tag until it has proved itself, as Google's no-traffic deploy does.
+CANDIDATE = "candidate"
 PROBE_PERIOD = 5
 SETTLING = (900, 3)
 
@@ -109,6 +112,22 @@ class RunDeployer:
         failed = [item for item in [found.get("terminalCondition") or {}, *found.get("conditions", [])] if item.get("state") == "CONDITION_FAILED"]
         return "; ".join(dict.fromkeys(item.get("message") or item.get("reason") or item.get("type", "") for item in failed)) or "it did not become ready"
 
+    def _proved(self, target: ServiceTarget, revision: str, service: dict) -> tuple[bool, str]:
+        """(ready, why not) for a revision, as the revision itself reports it once Cloud Run is done with it."""
+        started = self.clock()
+        while True:
+            found = self.run.request("GET", f"{target.provider_id}/revisions/{revision}", missing_ok=True)
+            if found is None:
+                return False, self._reason(service)
+            ready = next((item for item in found.get("conditions", []) if item.get("type") == "Ready"), {})
+            if not found.get("reconciling") and ready.get("state") in ("CONDITION_SUCCEEDED", "CONDITION_FAILED"):
+                if ready.get("state") == "CONDITION_SUCCEEDED" and ready.get("revisionReason") != "RETIRED":
+                    return True, ""
+                return False, ready.get("message") or ready.get("revisionReason") or self._reason(service)
+            if self.clock() - started >= SETTLING[0]:
+                return False, f"{revision} did not finish in {SETTLING[0]} seconds"
+            self.sleep(SETTLING[1])
+
     def _patch(self, target: ServiceTarget, body: dict, mask: str) -> dict:
         self.run.request("PATCH", target.provider_id, json=body, params={"updateMask": mask})
         return self._settle(target)
@@ -124,9 +143,12 @@ class RunDeployer:
         template["containers"] = [container(release, values, (template.get("containers") or [{}])[0].get("resources"))]
         template["revision"] = revision
         held = [{"type": REVISION, "revision": serving, "percent": 100}] if serving else [{"type": LATEST, "percent": 100}]
-        after = self._patch(target, {"template": template, "traffic": held, "etag": found.get("etag")}, "template,traffic")
-        if (after.get("latestReadyRevision") or "").rsplit("/", 1)[-1] != revision:  # Cloud Run gives a revision that never became ready no traffic
-            return HostReport("unhealthy", {"restored": "yes" if previous else "none", "reason": self._reason(after)})
+        candidate = {"type": REVISION, "revision": revision, "percent": 0, "tag": CANDIDATE}
+        after = self._patch(target, {"template": template, "traffic": [*held, candidate], "etag": found.get("etag")}, "template,traffic")
+        ready, reason = self._proved(target, revision, after)
+        if not ready:  # it never gets traffic; only the tag goes
+            self._patch(target, {"traffic": held}, "traffic")
+            return HostReport("unhealthy", {"restored": "yes" if previous else "none", "reason": reason})
         routed = self._route(target, revision)
         if self._serving(routed) != revision:
             return HostReport("unhealthy", {"restored": "yes" if previous else "none", "reason": f"traffic did not move to {revision}: {self._reason(routed)}"})
