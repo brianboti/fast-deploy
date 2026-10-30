@@ -8,6 +8,7 @@ from .errors import ErrorDetail
 
 
 class ResourceKind(StrEnum):
+    encryption_key = "encryption_key"
     identity = "identity"
     compute = "compute"
     storage = "storage"
@@ -286,6 +287,16 @@ class BudgetResource(Resource):
     channels: list[str] = Field(default_factory=list, description="The notification channels made (provider names).")
 
 
+class EncryptionKeyResource(Resource):
+    """A customer-managed key, what it encrypts, and the service agents allowed to use it."""
+    kind: Literal[ResourceKind.encryption_key] = ResourceKind.encryption_key
+    key_ring: str
+    rotation_days: int
+    destroy_after_days: int
+    encrypts: list[str] = Field(default_factory=list, description="What the request encrypts with it: storage (disks), bucket, compute (boot disks), database.")
+    agents: list[str] = Field(default_factory=list, description="The provider's service agents allowed to encrypt and decrypt with it.")
+
+
 class LogExportResource(Resource):
     """A log sink: what it selects, where it writes, and the identity it writes as."""
     kind: Literal[ResourceKind.log_export] = ResourceKind.log_export
@@ -310,16 +321,18 @@ class LoadBalancerResource(Resource):
     components: list[dict[str, Any]] = Field(default_factory=list, description="The provider pieces in creation order (kind, name, url), for teardown in reverse.")
 
 
-AnyResource = Annotated[IdentityResource | ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | WarehouseResource | NoSqlResource
+AnyResource = Annotated[EncryptionKeyResource
+                       | IdentityResource | ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | WarehouseResource | NoSqlResource
                        | SecretResource | ClusterResource | ServiceResource
                        | JobResource | LoadBalancerResource | DnsResource | MonitorResource | BudgetResource | LogExportResource, Field(discriminator="kind")]
-RESOURCE_TYPES = {ResourceKind.identity: IdentityResource, ResourceKind.compute: ComputeResource, ResourceKind.storage: StorageResource,
+RESOURCE_TYPES = {ResourceKind.encryption_key: EncryptionKeyResource, ResourceKind.identity: IdentityResource, ResourceKind.compute: ComputeResource, ResourceKind.storage: StorageResource,
                   ResourceKind.network: NetworkResource, ResourceKind.database: DatabaseResource,
                   ResourceKind.cache: CacheResource, ResourceKind.queue: QueueResource, ResourceKind.warehouse: WarehouseResource, ResourceKind.nosql: NoSqlResource,
                   ResourceKind.secret: SecretResource, ResourceKind.cluster: ClusterResource,
                   ResourceKind.service: ServiceResource, ResourceKind.job: JobResource, ResourceKind.load_balancer: LoadBalancerResource,
                   ResourceKind.dns: DnsResource, ResourceKind.monitor: MonitorResource, ResourceKind.budget: BudgetResource, ResourceKind.log_export: LogExportResource}
-ID_PREFIX = {ResourceKind.identity: "idn", ResourceKind.compute: "cmp", ResourceKind.storage: "sto", ResourceKind.network: "net", ResourceKind.database: "db", ResourceKind.cache: "cac",
+ID_PREFIX = {ResourceKind.encryption_key: "key",
+             ResourceKind.identity: "idn", ResourceKind.compute: "cmp", ResourceKind.storage: "sto", ResourceKind.network: "net", ResourceKind.database: "db", ResourceKind.cache: "cac",
              ResourceKind.queue: "que", ResourceKind.warehouse: "whs", ResourceKind.nosql: "nsq", ResourceKind.secret: "sec", ResourceKind.cluster: "clu", ResourceKind.service: "svc",
              ResourceKind.job: "job",
              ResourceKind.load_balancer: "lb", ResourceKind.dns: "dns", ResourceKind.monitor: "mon", ResourceKind.budget: "bud", ResourceKind.log_export: "log"}

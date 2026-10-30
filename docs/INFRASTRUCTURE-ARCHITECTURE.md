@@ -223,6 +223,25 @@ The service's own identity then needs, once, from the platform team:
 | give a node account its project role | `roles/resourcemanager.projectIamAdmin` | an IAM condition, so it can grant that one role and no other: `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])` ([limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)) |
 | let a node account read a repository | `roles/artifactregistry.admin` | each repository listed in `providers.gcp.registries`, granted on the repository |
 
+### A customer-managed encryption key
+
+`encryption_key: {rotation_days, destroy_after_days}` makes a Cloud KMS key ring `<request>-<8 of its id>` and a key
+`data` in the request's region, rotated every `rotation_days` (90 by default; older versions still decrypt). The
+request's persistent disks, its machines' boot disks, its bucket (as the default key) and its database are encrypted
+with it ([CMEK](https://docs.cloud.google.com/kms/docs/cmek)). Each Google service encrypts as a service agent of its own
+(Compute Engine's, Cloud Storage's, Cloud SQL's, which is made if it does not exist yet), and that agent is granted
+`roles/cloudkms.cryptoKeyEncrypterDecrypter` on this key only, before anything is made with it. Other kinds (caches,
+datasets, queues, secrets, clusters) keep Google's own encryption for now; a request whose only blocks are those is
+refused, since the key would encrypt nothing.
+
+The key is made first and destroyed last, after everything it encrypts. Cloud KMS never deletes a key or a ring, by
+design: destroy schedules the destruction of every version after `destroy_after_days` (30 by default, 1 to 120), during
+which the operator can restore them in Cloud KMS, and anything still encrypted with it is unreadable from then on. The
+ring's name holds the request's id, so it is never reused. Priced per active version ($0.06 a month) with operations on
+top. A key is made by a full request's block, so there is no `create_encryption_key` tool. The service's identity needs
+`roles/cloudkms.admin` on the project (or on a folder of rings), `roles/serviceusage.serviceUsageAdmin` to make Cloud
+SQL's agent, and the project the Cloud KMS API.
+
 ### Log export
 
 `log_export: {to, min_severity}` makes a Cloud Logging sink that routes, as they arrive, the entries of the request's
@@ -500,7 +519,7 @@ python -m pytest tests/cloudinfra -q                # the boundary tests, no clo
 CLOUDINFRA_INTEGRATION=1 CLOUDINFRA_PROJECT=my-project python -m pytest tests/integration/cloudinfra -q   # one real machine, then destroyed
 ```
 
-The catalog has 71 tools: create, get and delete for each of the eighteen kinds (get and delete only for a log export) (plus list, resize, attach and firewall
+The catalog has 73 tools: create, get and delete for each of the nineteen kinds (get and delete only for a log export and an encryption key) (plus list, resize, attach and firewall
 configuration where they apply), the lifecycle tools (stop, start, extend and keep awake among them), access, and the
 operations tools. The MCP endpoint is `/mcp`; the REST endpoints are `POST /infrastructure/validate`,
 `POST /infrastructure/plan`, `POST /infrastructure`, `GET /infrastructure` (with `status` and `expiring_within_hours`),

@@ -1,3 +1,14 @@
+# Unreleased: a customer-managed encryption key
+
+Third of the second round (docs/INFRASTRUCTURE-ARCHITECTURE.md, "A customer-managed encryption key"):
+
+- **A nineteenth kind, `encryption_key`.** A Cloud KMS key in the request's region, rotated on a period, encrypting its
+  disks, machines' boot disks, bucket and database.
+- **Least privilege**: each service's agent is granted on this key only, before anything is made with it.
+- **Made first, destroyed last**: destroy schedules the destruction of the key's versions after `destroy_after_days`;
+  Cloud KMS keeps the key and ring by design.
+- **Tools**: `get_encryption_key`, `delete_encryption_key` (73 tools); a full request makes it.
+
 # Unreleased: log export
 
 Second of the second round (docs/INFRASTRUCTURE-ARCHITECTURE.md, "Log export"):

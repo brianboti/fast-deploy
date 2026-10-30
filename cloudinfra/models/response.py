@@ -13,6 +13,7 @@ from .resources import (
     ComputeResource,
     DatabaseResource,
     DnsResource,
+    EncryptionKeyResource,
     IdentityResource,
     JobResource,
     LoadBalancerResource,
@@ -98,6 +99,7 @@ class Resources(Model):
     monitor: list[MonitorResource] = Field(default_factory=list)
     budget: list[BudgetResource] = Field(default_factory=list)
     log_export: list[LogExportResource] = Field(default_factory=list)
+    encryption_key: list[EncryptionKeyResource] = Field(default_factory=list)
 
     def all(self) -> list:
         return [*self.network, *self.storage, *self.compute, *self.database, *self.cache, *self.queue, *self.secret, *self.cluster, *self.load_balancer]
@@ -227,7 +229,8 @@ class ResourceResponse(Model):
     """One resource after a primitive call: its state now, and the operation that changes it when one is still running."""
     status: str
     request_id: str
-    resource: (IdentityResource | ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | WarehouseResource | NoSqlResource | SecretResource
+    resource: (EncryptionKeyResource
+               | IdentityResource | ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | WarehouseResource | NoSqlResource | SecretResource
                | ClusterResource | ServiceResource
                | JobResource | LoadBalancerResource | DnsResource
                | MonitorResource | BudgetResource | LogExportResource) = Field(discriminator="kind")

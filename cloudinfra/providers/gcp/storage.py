@@ -44,6 +44,8 @@ class GcpStorage:
                                        type="persistent", size_gb=spec.size_gb, performance=spec.performance, labels=body["labels"],
                                        provider_id=f"{self._disks(zone)}/{planned.name}", status=ResourceStatus.CREATING,
                                        snapshot_schedule=f"{planned.name}-snapshots" if snapshots else None, snapshot_keep_days=snapshots["keep_days"] if snapshots else None)
+            if planned.spec.get("kms_key"):
+                body["diskEncryptionKey"] = {"kmsKeyName": planned.spec["kms_key"]}
             if snapshots:
                 body["resourcePolicies"] = [self._schedule(resource, snapshots, ctx)]
             operation = self.api.post(self._disks(zone), json=body)
@@ -52,6 +54,8 @@ class GcpStorage:
             return self.get(resource)
         body = {"name": planned.name, "location": ctx.region.upper(), "storageClass": "STANDARD", "labels": translate.labels(ctx),
                 "iamConfiguration": {"uniformBucketLevelAccess": {"enabled": True}, "publicAccessPrevention": "enforced"}}
+        if planned.spec.get("kms_key"):
+            body["encryption"] = {"defaultKmsKeyName": planned.spec["kms_key"]}
         bucket = self.api.post(f"{STORAGE}/b", json=body, project=self.api.project)
         return StorageResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region, type="object",
                                size_gb=spec.size_gb, labels=body["labels"], provider_id=bucket.get("id", planned.name), url=f"gs://{planned.name}",

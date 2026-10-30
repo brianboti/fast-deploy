@@ -2,7 +2,7 @@
 
 Every field is a size, a count, a name, a version or a switch. There is no repository, image, command, script, key or
 provider-specific structure, so a request can describe "one Ubuntu machine with 4 CPUs and 16 GB" and nothing about any
-application. Strict models: no unknown field, no type coercion. Sixteen kinds: identity, network, storage, compute (one
+application. Strict models: no unknown field, no type coercion. Kinds: encryption_key, identity, network, storage, compute (one
 group or several), database, cache, queue, warehouse, nosql, secret, cluster, service, job, load_balancer, dns, monitor, budget and log_export.
 """
 import re
@@ -27,7 +27,8 @@ RESERVED_SECRETS = {"db-password": "database", "cache-auth": "cache"}  # secrets
 LoadBalancerType = Literal["http", "tcp"]
 GROUP = r"^[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?$"  # a group's, queue's or secret's short name: up to 12 characters, part of resource names
 # The kinds, in the order they are created; destruction is the reverse. Every top-level block of a request is one of these.
-RESOURCE_KINDS = ("identity", "network", "storage", "compute", "database", "cache", "queue", "warehouse", "nosql", "secret", "cluster", "service", "job", "load_balancer", "dns", "monitor", "budget",
+RESOURCE_KINDS = ("encryption_key",
+                  "identity", "network", "storage", "compute", "database", "cache", "queue", "warehouse", "nosql", "secret", "cluster", "service", "job", "load_balancer", "dns", "monitor", "budget",
                   "log_export")
 MAX_QUEUES = 8
 MAX_SECRETS = 16
@@ -481,6 +482,14 @@ class BudgetRequest(StrictModel):
         return None if value is None else validation.check_request_id(value)
 
 
+class EncryptionKeyRequest(StrictModel):
+    """A customer-managed key in the request's region, rotated on a period, with which its disks, buckets and databases are
+    encrypted. The provider keeps the key itself forever; destroy schedules the destruction of its versions."""
+    rotation_days: int = Field(default=90, ge=1, le=365, description="A new version of the key is made this often; older ones still decrypt.")
+    destroy_after_days: int = Field(default=30, ge=1, le=120, description="Days between a destroy and the key's versions being destroyed, during which "
+                                                                          "the operator can still restore them.")
+
+
 class LogExportRequest(StrictModel):
     """The logs of the request's machines, clusters, services, jobs and databases, routed to its own bucket or dataset."""
     to: str = Field(pattern=r"^(storage|warehouse(:[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?)?)$",
@@ -569,6 +578,7 @@ class InfrastructureRequest(StrictModel):
     dns: DnsRequest | None = Field(default=None, description="A public DNS zone and its records, made after everything they point to.")
     monitor: MonitorRequest | None = Field(default=None, description="Uptime checks on the request's public endpoints, and alerts when one fails.")
     budget: BudgetRequest | None = Field(default=None, description="A monthly spending budget for what the request costs, with email alerts.")
+    encryption_key: EncryptionKeyRequest | None = Field(default=None, description="A customer-managed key for the request's disks, buckets and databases.")
     log_export: LogExportRequest | None = Field(default=None, description="The logs of what the request runs, routed to its own bucket or dataset.")
     lifetime: LifetimeRequest | None = Field(default=None, description="How long the request lives; the operator's default applies when omitted, and there is none unless the operator sets one.")
     access: list[AccessRequest] = Field(default_factory=list, max_length=20, description="People, groups or service accounts to grant access to what is created; "
@@ -643,6 +653,8 @@ class InfrastructureRequest(StrictModel):
                 if cluster is None or cluster.public is None:
                     raise ValueError(f"dns.records {record.name}: to {record.to}, but the request has no such cluster with a front door"
                                      + (" (name it: cluster:NAME)" if name is None and len(self.clusters()) > 1 else ""))
+        if self.encryption_key is not None and not (self.storage or self.compute or self.database):
+            raise ValueError("encryption_key: the request has nothing it encrypts (storage, compute or database)")
         if self.log_export is not None:
             kind, _, name = self.log_export.to.partition(":")
             if kind == "storage" and not (self.storage and self.storage.type == "object"):

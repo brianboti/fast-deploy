@@ -325,6 +325,14 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Cloud Monitoring: uptimeCheckConfigs.get."),
     ToolSpec("delete_monitor", "Monitor", "Delete monitoring", "Delete the alert policies, the checks and the channels.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
              "Needs can_destroy.", "Cloud Monitoring: alertPolicies, uptimeCheckConfigs and notificationChannels delete."),
+    # ---- encryption key
+    ToolSpec("get_encryption_key", "Encryption", "Get an encryption key", "The key's rotation, what it encrypts and the service agents allowed to use it. A key is "
+             "made by a full request's encryption_key block, before the disks, buckets and databases it encrypts.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only.",
+             "Cloud KMS: cryptoKeys.get."),
+    ToolSpec("delete_encryption_key", "Encryption", "Destroy an encryption key", "Schedule the destruction of every version of the key, after its destroy_after_days; "
+             "the provider keeps the key and its ring by design. What it encrypted becomes unreadable from then, so it goes last.", (RESOURCE_ID, WAIT), RESOURCE,
+             DELETE_ERRORS, "Needs can_destroy. Until the versions are destroyed the operator can restore them in Cloud KMS.",
+             "Cloud KMS: cryptoKeyVersions.list, cryptoKeyVersions.destroy."),
     # ---- log export
     ToolSpec("get_log_export", "Logs", "Get a log export", "The export's filter, its destination and the identity it writes as. A log export is made by a full "
              "request's log_export block, beside the bucket or dataset it writes to and what it reads.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only.",
@@ -492,7 +500,8 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Read-only; no secret is included.", "None."),
 )
 BY_NAME = {spec.name: spec for spec in CATALOG}
-GROUPS = ("Identity", "Compute", "Storage", "Network", "Database", "Cache", "Queue", "Warehouse", "NoSQL", "Secret", "Cluster", "Service", "Job", "Load balancer", "DNS", "Monitor", "Logs", "Budget",
+GROUPS = ("Encryption", "Identity",
+          "Compute", "Storage", "Network", "Database", "Cache", "Queue", "Warehouse", "NoSQL", "Secret", "Cluster", "Service", "Job", "Load balancer", "DNS", "Monitor", "Logs", "Budget",
     "Infrastructure", "Operations")
 
 

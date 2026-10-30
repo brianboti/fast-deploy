@@ -12,6 +12,7 @@ from .request import (
     DatabaseRequest,
     DnsRecordRequest,
     DnsRequest,
+    EncryptionKeyRequest,
     IdentityRequest,
     InfrastructureRequest,
     JobRequest,
@@ -39,6 +40,7 @@ from .resources import (
     ConnectInfo,
     DatabaseResource,
     DnsResource,
+    EncryptionKeyResource,
     FirewallRule,
     Grant,
     IdentityResource,
@@ -80,7 +82,8 @@ from .response import (
 )
 
 __all__ = ["RESOURCE_KINDS", "AcceleratorRequest", "AccessGrant", "AccessRequest", "AutostopRequest",
-           "BudgetRequest", "BudgetResource", "LogExportRequest", "LogExportResource", "CacheRequest", "CacheResource", "ClusterRequest", "ClusterResource",
+           "BudgetRequest", "BudgetResource", "LogExportRequest", "LogExportResource", "EncryptionKeyRequest", "EncryptionKeyResource",
+           "CacheRequest", "CacheResource", "ClusterRequest", "ClusterResource",
            "ComputeRequest", "ComputeResource", "ConnectInfo", "CostEstimate", "CostLine", "Credentials", "DatabaseRequest", "DatabaseResource", "Endpoints", "ErrorCode",
            "ErrorDetail", "FirewallRule", "Grant", "Health", "InfrastructureError", "InfrastructureRequest", "InfrastructureResponse", "Lifecycle", "LifetimeRequest",
            "ListResponse", "LoadBalancerRequest", "LoadBalancerResource", "NetworkRequest",

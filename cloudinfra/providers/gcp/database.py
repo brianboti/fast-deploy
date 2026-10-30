@@ -33,6 +33,8 @@ class GcpDatabase:
                 "ipConfiguration": ip_configuration, "deletionProtectionEnabled": True, "userLabels": translate.labels(ctx),
             },
         }
+        if planned.spec.get("kms_key"):
+            body["diskEncryptionConfiguration"] = {"kmsKeyName": planned.spec["kms_key"]}
         resource = DatabaseResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region,
                                     engine=spec.engine, version=planned.spec["version"], tier=planned.spec["tier"], storage_gb=spec.storage_gb,
                                     high_availability=spec.high_availability, public_access=spec.public_access, port=translate.DB_PORTS[spec.engine],
