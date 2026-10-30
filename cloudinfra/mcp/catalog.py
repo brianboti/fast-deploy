@@ -290,6 +290,24 @@ CATALOG: tuple[ToolSpec, ...] = (
              READ_ERRORS, "Read-only.", "Cloud Run: run.services.get."),
     ToolSpec("delete_service", "Service", "Delete a service", "Delete the service, every revision and its runtime account.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
              "Needs can_destroy.", "Cloud Run: run.services.delete; IAM: serviceAccounts.delete."),
+    # ---- job
+    ToolSpec("create_job", "Job", "Create a managed job", "Create an empty managed job that runs to completion (Cloud Run jobs): its identity, limits, tasks, "
+             "retries, and optionally when it runs by itself. It runs a stand-in until the delivery layer puts a release on it; this service never runs it.",
+             (REGION, PROVIDER, Input("cpu", "Virtual CPUs per task: 1, 2, 4 or 8 (default 1)."), Input("memory_mb", "Memory per task in MiB (default 512)."),
+              Input("tasks", "Tasks one run starts (default 1)."), Input("parallelism", "Tasks running at once; 0 lets the provider choose (default 0)."),
+              Input("max_retries", "Retries of a failed task (default 3)."), Input("task_timeout_seconds", "How long one task may run (default 600)."), NETWORK_ID,
+              Input("egress", "With a network: private_ranges (default) or all."),
+              Input("schedule", "Five unix-cron fields, such as '0 2 * * *'; it runs only when asked without one."),
+              Input("time_zone", "The schedule's IANA time zone (default UTC)."), NAME, LABELS, WAIT),
+             RESPONSE, ("INVALID_SERVICE_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
+             "Needs can_provision. Its tasks run as a service account made for it, which reads the request's secrets and nothing else; a schedule runs it as a "
+             f"second account that may run this job only. Both go with it. use grants the invoker role (run it); admin also the developer role and acting as "
+             f"its runtime account. {OWNERSHIP}",
+             "Cloud Run: run.jobs.create and setIamPolicy; Cloud Scheduler: jobs.create and delete; IAM: serviceAccounts.create, delete and setIamPolicy; "
+             "Secret Manager: the request's secrets' setIamPolicy."),
+    ToolSpec("get_job", "Job", "Get a job", "Limits, schedule and state of one managed job.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only.", "Cloud Run: run.jobs.get."),
+    ToolSpec("delete_job", "Job", "Delete a job", "Delete its schedule, the job with its runs, and its accounts.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
+             "Needs can_destroy.", "Cloud Scheduler: jobs.delete; Cloud Run: run.jobs.delete; IAM: serviceAccounts.delete."),
     # ---- load balancer
     ToolSpec("create_load_balancer", "Load balancer", "Create a load balancer", "Put a public load balancer in front of machines this service created: http (an application load "
              "balancer with a health check on a path) or tcp (a passthrough network load balancer). Health checkers are allowed through the firewall on the backend port.",
@@ -393,7 +411,7 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Read-only; no secret is included.", "None."),
 )
 BY_NAME = {spec.name: spec for spec in CATALOG}
-GROUPS = ("Compute", "Storage", "Network", "Database", "Cache", "Queue", "Secret", "Cluster", "Service", "Load balancer", "Infrastructure", "Operations")
+GROUPS = ("Compute", "Storage", "Network", "Database", "Cache", "Queue", "Secret", "Cluster", "Service", "Job", "Load balancer", "Infrastructure", "Operations")
 
 
 def render_markdown(catalog=CATALOG) -> str:

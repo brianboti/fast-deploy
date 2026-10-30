@@ -118,7 +118,7 @@ class GcpIam:
             return [(self._secret(resource), "secret")]
         if kind == "storage" and resource.type == "object":
             return [(self._bucket(resource), "bucket")]
-        if kind == "service":
+        if kind in ("service", "job"):  # a job's roles are the service's: run.invoker runs it, run.developer changes it
             found = [(self._run(resource), "service")]
             if resource.runtime_service_account:
                 found.append((self._account(resource.runtime_service_account), "runtime"))

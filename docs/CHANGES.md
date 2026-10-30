@@ -1,3 +1,17 @@
+# Unreleased: a managed job, Cloud Run jobs, with its schedule
+
+Phase 4, step 3 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECTURE.md, "A managed job"):
+
+- **An eleventh kind, `job`.** One or a list (named): CPU and memory (Cloud Run's pairs), tasks, parallelism, retries,
+  task timeout, and Direct VPC egress. Made empty with Google's sample job image.
+- **Its own runtime account**, which reads the request's secrets and nothing else.
+- **`schedule: {cron, time_zone}`** makes a Cloud Scheduler job calling the job's run endpoint as a second account that
+  may run this job only. The operator decided a schedule is infrastructure.
+- **Grants** as for services: `use` → `run.invoker` (run it); `admin` → also `run.developer` and Service Account User
+  on its runtime account.
+- **Destroy** takes the schedule away first, then the job, then both accounts; a schedule Google refuses leaves nothing.
+- **Tools**: `create_job`, `get_job`, `delete_job` (51 tools).
+
 # Unreleased: a managed container service (Cloud Run)
 
 Phase 4, step 1 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECTURE.md, "A managed container service"):
