@@ -24,6 +24,7 @@ PRICING = {
     "secret_version_month": 0.06,
     "forwarding_rule_hour": 0.025,
     "dns_zone_month": 0.20,
+    "alert_condition_month": 0.10,
     "run_idle_vcpu_second": 0.0000025,  # Cloud Run, request-based, idle minimum instances, us-central1
     "run_idle_gib_second": 0.0000025,
     "shared_core_hour": {"e2-micro": 0.008376, "e2-small": 0.016751, "e2-medium": 0.033503},
@@ -106,6 +107,9 @@ def line(planned: PlannedResource) -> CostLine:
         monthly = idle
         basis = (f"{spec['min_instances']} warm instance{'s' if spec['min_instances'] != 1 else ''} at the idle rate; requests are billed by use on top"
                  if spec["min_instances"] else "billed by use only: CPU and memory while handling requests, and per million requests")
+    elif planned.kind == "monitor":  # https://cloud.google.com/stackdriver/pricing
+        monthly = spec["checks"] * PRICING["alert_condition_month"]
+        basis = f"{spec['checks']} alert condition{'s' if spec['checks'] != 1 else ''}; uptime checks run within the free allotment at these periods"
     elif planned.kind == "dns":  # https://cloud.google.com/dns/pricing
         monthly, basis = PRICING["dns_zone_month"], "one managed zone; queries are billed by the million on top"
     elif planned.kind == "identity":

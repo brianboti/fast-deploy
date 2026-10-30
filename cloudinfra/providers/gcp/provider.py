@@ -14,6 +14,7 @@ from .dns import GcpDns
 from .iam import GcpIam
 from .identity import GcpIdentity
 from .loadbalancer import GcpLoadBalancer
+from .monitor import GcpMonitor
 from .monitoring import GcpMonitoring
 from .network import GcpNetwork
 from .queue import GcpQueue
@@ -49,6 +50,7 @@ class GCPProvider(CloudProvider):
         self.job = GcpRunJob(self.api, settings)
         self.identity = GcpIdentity(self.api, settings)
         self.dns = GcpDns(self.api, settings)
+        self.monitor = GcpMonitor(self.api, settings)
         self.load_balancer = GcpLoadBalancer(self.api, settings, self.network)
         self.monitoring = GcpMonitoring(self.api)
         self.iam = GcpIam(self.api)
@@ -207,6 +209,10 @@ class GCPProvider(CloudProvider):
                                            spec={"type": balancer.type, "port": balancer.port, "backend_group": group.group_name if group else "external", "backends": backends,
                                                  "health_check_path": balancer.health_check_path if balancer.type == "http" else None,
                                                  "hostnames": list(balancer.hostnames)}))
+        if request.monitor is not None:  # after what it watches
+            planned.append(PlannedResource(kind="monitor", name=f"{prefix}-monitor", provider_mapping="monitoring.notificationChannels.create, "
+                                           "monitoring.uptimeCheckConfigs.create, monitoring.alertPolicies.create",
+                                           spec={"checks": len(request.monitor.uptime), "notify": len(request.monitor.notify)}))
         if request.dns is not None:  # last: its records may point at what the request made
             planned.append(PlannedResource(kind="dns", name=f"{prefix}-zone", provider_mapping="dns.managedZones.create, dns.changes.create",
                                            spec={"zone": request.dns.zone, "records": len(request.dns.records)}))
@@ -323,6 +329,15 @@ class GCPProvider(CloudProvider):
 
     def delete_cluster(self, resource, ctx):
         self.cluster.delete(resource, ctx)
+
+    def create_monitor(self, spec, planned, ctx, created):
+        return self.monitor.create(spec, planned, ctx, created)
+
+    def get_monitor(self, resource):
+        return self.monitor.get(resource)
+
+    def delete_monitor(self, resource, ctx):
+        self.monitor.delete(resource, ctx)
 
     def create_dns(self, spec, planned, ctx, created):
         return self.dns.create(spec, planned, ctx, created)

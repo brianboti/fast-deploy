@@ -291,6 +291,18 @@ CATALOG: tuple[ToolSpec, ...] = (
              READ_ERRORS, "Read-only.", "Cloud Run: run.services.get."),
     ToolSpec("delete_service", "Service", "Delete a service", "Delete the service, every revision and its runtime account.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
              "Needs can_destroy.", "Cloud Run: run.services.delete; IAM: serviceAccounts.delete."),
+    # ---- monitor
+    ToolSpec("create_monitor", "Monitor", "Create monitoring", "Create uptime checks on public endpoints this service made, and an alert to email addresses "
+             "when one fails. In a full request a check names the request's load balancer, a cluster's front door, or a public service.",
+             (REGION, PROVIDER, Input("notify", "Email addresses alerted, in domains the operator allows.", True),
+              Input("uptime", "Checks: to (load_balancer, cluster[:NAME], service:NAME), path, period_seconds (60, 300, 600, 900).", True), NAME, LABELS, WAIT),
+             RESPONSE, ("INVALID_ACCESS", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
+             f"Needs can_provision. Alerts go only to addresses in the operator's allowed domains (access.allowed_domains). {OWNERSHIP}",
+             "Cloud Monitoring: notificationChannels, uptimeCheckConfigs and alertPolicies create and delete."),
+    ToolSpec("get_monitor", "Monitor", "Get monitoring", "The checks, their addresses and the alert policies.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only.",
+             "Cloud Monitoring: uptimeCheckConfigs.get."),
+    ToolSpec("delete_monitor", "Monitor", "Delete monitoring", "Delete the alert policies, the checks and the channels.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
+             "Needs can_destroy.", "Cloud Monitoring: alertPolicies, uptimeCheckConfigs and notificationChannels delete."),
     # ---- dns
     ToolSpec("create_dns", "DNS", "Create a DNS zone", "Create a public DNS zone for a domain the operator allows, with record sets written in one change. "
              "In a full request, an A record may point at the request's load balancer or a cluster's front door by name instead of an address.",
@@ -437,7 +449,7 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Read-only; no secret is included.", "None."),
 )
 BY_NAME = {spec.name: spec for spec in CATALOG}
-GROUPS = ("Identity", "Compute", "Storage", "Network", "Database", "Cache", "Queue", "Secret", "Cluster", "Service", "Job", "Load balancer", "DNS", "Infrastructure", "Operations")
+GROUPS = ("Identity", "Compute", "Storage", "Network", "Database", "Cache", "Queue", "Secret", "Cluster", "Service", "Job", "Load balancer", "DNS", "Monitor", "Infrastructure", "Operations")
 
 
 def render_markdown(catalog=CATALOG) -> str:

@@ -92,6 +92,10 @@ def info(resource, resources: list, project: str, drivers: bool = False) -> Conn
             return ConnectInfo(commands={"call": f"curl {url}"}, notes=["Callable without signing in: the operator allowed it and the request asked for it"])
         return ConnectInfo(commands={"call": f'curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" {url}'},
                            notes=[f"Ingress {resource.ingress}; a caller needs the invoker role, which use grants"] + ([] if resource.access else [NOT_GRANTED]))
+    if kind == "monitor":
+        return ConnectInfo(commands={"policies": f"gcloud monitoring policies list --project {project} --filter='user_labels.cloudinfra-request={resource.request_id}'"},
+                           notes=[f"Checks {item['url']} every {item['period_seconds']} seconds" for item in resource.checks]
+                           + [f"Alerts {', '.join(resource.notify)} when a check fails"])
     if kind == "dns":
         servers = ", ".join(resource.name_servers) or "its name servers"
         return ConnectInfo(commands={"check": f"dig +short NS {resource.dns_name}", "records": f"gcloud dns record-sets list --zone {resource.name} --project {project}"},

@@ -21,6 +21,7 @@ class ResourceKind(StrEnum):
     job = "job"
     load_balancer = "load_balancer"
     dns = "dns"
+    monitor = "monitor"
 
 
 class ResourceStatus(StrEnum):
@@ -241,6 +242,15 @@ class DnsResource(Resource):
     records: list[dict[str, Any]] = Field(default_factory=list, description="name, type, ttl and values of each record set made.")
 
 
+class MonitorResource(Resource):
+    """Uptime checks on the request's public endpoints, an alert for each, and the addresses alerted."""
+    kind: Literal[ResourceKind.monitor] = ResourceKind.monitor
+    notify: list[str] = Field(default_factory=list)
+    channels: list[str] = Field(default_factory=list, description="The notification channels made (provider names).")
+    checks: list[dict[str, Any]] = Field(default_factory=list, description="name, url and period of each uptime check made.")
+    policies: list[str] = Field(default_factory=list, description="The alert policies made (provider names).")
+
+
 class LoadBalancerResource(Resource):
     kind: Literal[ResourceKind.load_balancer] = ResourceKind.load_balancer
     type: Literal["http", "tcp"]
@@ -255,15 +265,15 @@ class LoadBalancerResource(Resource):
 
 
 AnyResource = Annotated[IdentityResource | ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | SecretResource | ClusterResource | ServiceResource
-                       | JobResource | LoadBalancerResource | DnsResource, Field(discriminator="kind")]
+                       | JobResource | LoadBalancerResource | DnsResource | MonitorResource, Field(discriminator="kind")]
 RESOURCE_TYPES = {ResourceKind.identity: IdentityResource, ResourceKind.compute: ComputeResource, ResourceKind.storage: StorageResource,
                   ResourceKind.network: NetworkResource, ResourceKind.database: DatabaseResource,
                   ResourceKind.cache: CacheResource, ResourceKind.queue: QueueResource, ResourceKind.secret: SecretResource, ResourceKind.cluster: ClusterResource,
                   ResourceKind.service: ServiceResource, ResourceKind.job: JobResource, ResourceKind.load_balancer: LoadBalancerResource,
-                  ResourceKind.dns: DnsResource}
+                  ResourceKind.dns: DnsResource, ResourceKind.monitor: MonitorResource}
 ID_PREFIX = {ResourceKind.identity: "idn", ResourceKind.compute: "cmp", ResourceKind.storage: "sto", ResourceKind.network: "net", ResourceKind.database: "db", ResourceKind.cache: "cac",
              ResourceKind.queue: "que", ResourceKind.secret: "sec", ResourceKind.cluster: "clu", ResourceKind.service: "svc", ResourceKind.job: "job",
-             ResourceKind.load_balancer: "lb", ResourceKind.dns: "dns"}
+             ResourceKind.load_balancer: "lb", ResourceKind.dns: "dns", ResourceKind.monitor: "mon"}
 
 
 def load_resource(data: dict):
