@@ -150,3 +150,11 @@ def test_no_secret_value_passes_through_this_service(tmp_path):
     assert SECRET_VALUE not in json.dumps(world.run.patches)
     dump = "\n".join(sqlite3.connect(tmp_path / "delivery.db").iterdump())
     assert SECRET_VALUE not in dump and "dev-token" not in dump
+
+
+def test_a_read_right_after_a_write_that_still_shows_the_state_before_it_is_waited_out():
+    """Found on a real project on 2026-10-30: right after a PATCH Cloud Run still reported the old state, not reconciling."""
+    world = World(service=True)
+    world.run.lagging = True
+    done = deploy(world)
+    assert done.status == "RUNNING" and world.run.serving() == revision(done.release_id)

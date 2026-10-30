@@ -22,6 +22,9 @@ class FakeRun:
         self.bad_images: set[str] = set()
         self.patches: list[tuple[str, dict]] = []
         self.unreachable = False
+        self.generation = 1
+        self.lagging = False  # the first read after a write still shows the state before it, as Cloud Run can
+        self.stale_reads = 0
 
     def _statuses(self):
         found = []
@@ -35,8 +38,13 @@ class FakeRun:
         condition = {"type": "Ready", "state": "CONDITION_SUCCEEDED"}
         if failed and failed[-1] == list(self.revisions)[-1]:
             condition = {"type": "Ready", "state": "CONDITION_FAILED", "message": f"Revision '{failed[-1]}' is not ready: the startup probe failed"}
-        return {"name": SERVICE_NAME, "template": copy.deepcopy(self.template), "traffic": copy.deepcopy(self.traffic), "trafficStatuses": self._statuses(),
-                "latestReadyRevision": f"{SERVICE_NAME}/revisions/{self.latest_ready}", "reconciling": False, "etag": self.etag, "terminalCondition": condition}
+        found = {"name": SERVICE_NAME, "template": copy.deepcopy(self.template), "traffic": copy.deepcopy(self.traffic), "trafficStatuses": self._statuses(),
+                 "latestReadyRevision": f"{SERVICE_NAME}/revisions/{self.latest_ready}", "reconciling": False, "etag": self.etag, "terminalCondition": condition,
+                 "generation": str(self.generation), "observedGeneration": str(self.generation)}
+        if self.stale_reads:
+            self.stale_reads -= 1
+            found.update(self.before, generation=str(self.generation), observedGeneration=str(self.generation - 1))
+        return found
 
     def serving(self):
         return next(item["revision"] for item in self._statuses() if item["percent"] == 100)
@@ -56,6 +64,10 @@ class FakeRun:
         assert path == SERVICE_NAME and method == "PATCH", f"no fake for {method} {path}"
         mask = params["updateMask"].split(",")
         self.patches.append((params["updateMask"], copy.deepcopy(json)))
+        if self.lagging:
+            self.before = {key: value for key, value in self._service().items() if key in ("trafficStatuses", "latestReadyRevision", "terminalCondition")}
+            self.stale_reads = 1
+        self.generation += 1
         if "template" in mask:
             assert json.get("etag") == self.etag, "a template change names the version it read"
             template = json["template"]

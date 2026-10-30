@@ -69,6 +69,9 @@ class RunClient:
             raise DeliveryError(ErrorCode.SERVICE_UNREACHABLE, f"Cloud Run could not be reached ({type(exc).__name__})", {"path": path}) from None
         if response.status_code == 404 and missing_ok:
             return None
+        if response.status_code == 403 and "artifactregistry" in response.text:  # Cloud Run checks the deployer can read the image (found 2026-10-30)
+            raise DeliveryError(ErrorCode.SERVICE_UNREACHABLE, "Cloud Run refused the image: this environment's service account needs Artifact Registry Reader on "
+                                "the image's repository, which the operator grants once with allowed_registries", {"path": path, "status": 403, "said": response.text[:300]})
         if response.status_code in (401, 403):
             raise DeliveryError(ErrorCode.SERVICE_UNREACHABLE, f"Cloud Run refused this environment's service account ({response.status_code}) for {method} {path}: it "
                                 "needs the request's admin grant on the service", {"path": path, "status": response.status_code, "said": response.text[:300]})
@@ -85,10 +88,13 @@ class RunDeployer:
         self.run, self.sleep, self.clock = run or RunClient(token), sleep, clock
 
     def _settle(self, target: ServiceTarget) -> dict:
+        """The service or job once Cloud Run is done with the last change. Right after a write it can still report the
+        state before it, not reconciling, so it is done only once it has seen the generation written (found on a real
+        project on 2026-10-30, as Kubernetes does with Deployments)."""
         started = self.clock()
         while True:
             found = self.run.request("GET", target.provider_id)
-            if not found.get("reconciling"):
+            if not found.get("reconciling") and int(found.get("observedGeneration") or 0) >= int(found.get("generation") or 0):
                 return found
             if self.clock() - started >= SETTLING[0]:
                 raise DeliveryError(ErrorCode.SERVICE_ERROR, f"Cloud Run did not finish with {target.name} in {SETTLING[0]} seconds", {"service": target.name})
