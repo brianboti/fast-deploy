@@ -63,6 +63,7 @@ class FakeGcpApi(GcpApi):
         self.run_services: dict[str, dict] = {}  # Cloud Run services by name
         self.run_jobs: dict[str, dict] = {}  # Cloud Run jobs by name
         self.zones: dict[str, dict] = {}  # Cloud DNS managed zones by name, each with its rrsets
+        self.monitoring: dict[str, dict] = {}  # Cloud Monitoring channels, uptime checks and alert policies by full name
         self.schedules: dict[str, dict] = {}  # Cloud Scheduler jobs by full name
         self.repositories = {"us-central1-docker.pkg.dev/test-project/apps", "us-central1-docker.pkg.dev/test-project/shared"}
         self.account_unknown_to_gke_for = 0  # how many more cluster creates GKE refuses because it does not know the new node account yet
@@ -100,6 +101,8 @@ class FakeGcpApi(GcpApi):
             (r"^/v1/projects/[^/]+/serviceAccounts/([^/]+)$", self._service_account) if host.startswith("iam") else (r"^$", None),
             (r"^/v2/projects/[^/]+/locations/([^/]+)/services$", self._run_services_collection) if host.startswith("run") else (r"^$", None),
             (r"^/dns/v1/projects/[^/]+/managedZones$", self._zones_collection) if host.startswith("dns") else (r"^$", None),
+            (r"^/v3/projects/[^/]+/(notificationChannels|uptimeCheckConfigs|alertPolicies)$", self._monitoring_collection) if host.startswith("monitoring") else (r"^$", None),
+            (r"^/v3/(projects/[^/]+/(?:notificationChannels|uptimeCheckConfigs|alertPolicies)/[^/]+)$", self._monitoring_item) if host.startswith("monitoring") else (r"^$", None),
             (r"^/dns/v1/projects/[^/]+/managedZones/([^/:]+):(getIamPolicy|setIamPolicy)$", self._zone_policy) if host.startswith("dns") else (r"^$", None),
             (r"^/dns/v1/projects/[^/]+/managedZones/([^/:]+)(/changes|/rrsets)?$", self._zone) if host.startswith("dns") else (r"^$", None),
             (r"^/v2/projects/[^/]+/locations/([^/]+)/jobs$", self._run_jobs_collection) if host.startswith("run") else (r"^$", None),
@@ -302,6 +305,30 @@ class FakeGcpApi(GcpApi):
         if method == "DELETE":
             return self.schedules.pop(found.group(1)) and {}
         return self.schedules[found.group(1)]
+
+    # ---- Cloud Monitoring
+    def _monitoring_collection(self, found, method, body, params):
+        kind = found.group(1)
+        if kind == "alertPolicies":
+            for channel in body["notificationChannels"]:
+                assert channel in self.monitoring, "an alert names channels that exist"
+            check = re.search(r'check_id="([^"]+)"', body["conditions"][0]["conditionThreshold"]["filter"]).group(1)
+            assert f"projects/{self.project}/uptimeCheckConfigs/{check}" in self.monitoring, "an alert watches a check that exists"
+        self.counter += 1
+        name = f"projects/{self.project}/{kind}/{kind[:5].lower()}{self.counter}"
+        self.monitoring[name] = {**body, "name": name}
+        return self.monitoring[name]
+
+    def _monitoring_item(self, found, method, body, params):
+        name = found.group(1)
+        if name not in self.monitoring:
+            raise self._not_found(name)
+        if method == "DELETE":
+            if "/notificationChannels/" in name:
+                assert not [item for item in self.monitoring.values() if name in item.get("notificationChannels", [])], "a channel goes after the alerts using it"
+            del self.monitoring[name]
+            return {}
+        return self.monitoring[name]
 
     # ---- Cloud DNS
     def _zones_collection(self, found, method, body, params):

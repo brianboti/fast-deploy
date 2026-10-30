@@ -19,6 +19,7 @@ from ..models.request import (
     InfrastructureRequest,
     JobRequest,
     LoadBalancerRequest,
+    MonitorRequest,
     NetworkRequest,
     QueueRequest,
     SecretRequest,
@@ -36,6 +37,7 @@ from ..models.resources import (
     IdentityResource,
     JobResource,
     LoadBalancerResource,
+    MonitorResource,
     NetworkResource,
     QueueResource,
     ResourceStatus,
@@ -219,6 +221,16 @@ class CloudProvider(ABC):
 
     @abstractmethod
     def delete_service(self, resource: ServiceResource, ctx: ProvisionContext) -> None: ...
+
+    # ---- monitor (uptime checks and alerts on the request's public endpoints)
+    @abstractmethod
+    def create_monitor(self, spec: MonitorRequest, planned: PlannedResource, ctx: ProvisionContext, created: list) -> MonitorResource: ...
+
+    @abstractmethod
+    def get_monitor(self, resource: MonitorResource) -> MonitorResource: ...
+
+    @abstractmethod
+    def delete_monitor(self, resource: MonitorResource, ctx: ProvisionContext) -> None: ...
 
     # ---- dns (a public zone and its records)
     @abstractmethod

@@ -1,3 +1,14 @@
+# Unreleased: monitoring of the request's public endpoints
+
+Third of the kinds the operator chose (docs/INFRASTRUCTURE-ARCHITECTURE.md, "Monitoring"):
+
+- **A fourteenth kind, `monitor`.** Uptime checks on the request's own public endpoints (`to: load_balancer`,
+  `cluster[:NAME]` or `service:NAME`; HTTPS by name when the endpoint has one), and an alert policy per check that emails
+  `notify` when it fails.
+- **Alerts stay in the company**: addresses must be in `access.allowed_domains`.
+- **Nothing left behind**: a failure or destroy deletes policies, then checks, then channels.
+- **Tools**: `create_monitor`, `get_monitor`, `delete_monitor` (60 tools).
+
 # Unreleased: HTTPS on the load balancer
 
 The TLS half of the operator's DNS and TLS choice (docs/INFRASTRUCTURE-ARCHITECTURE.md, "HTTPS on the load balancer"):

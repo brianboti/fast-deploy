@@ -2,8 +2,8 @@
 
 Every field is a size, a count, a name, a version or a switch. There is no repository, image, command, script, key or
 provider-specific structure, so a request can describe "one Ubuntu machine with 4 CPUs and 16 GB" and nothing about any
-application. Strict models: no unknown field, no type coercion. Thirteen kinds: identity, network, storage, compute (one
-group or several), database, cache, queue, secret, cluster, service, job, load_balancer and dns.
+application. Strict models: no unknown field, no type coercion. Fourteen kinds: identity, network, storage, compute (one
+group or several), database, cache, queue, secret, cluster, service, job, load_balancer, dns and monitor.
 """
 import re
 from typing import Literal
@@ -27,7 +27,7 @@ RESERVED_SECRETS = {"db-password": "database", "cache-auth": "cache"}  # secrets
 LoadBalancerType = Literal["http", "tcp"]
 GROUP = r"^[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?$"  # a group's, queue's or secret's short name: up to 12 characters, part of resource names
 # The kinds, in the order they are created; destruction is the reverse. Every top-level block of a request is one of these.
-RESOURCE_KINDS = ("identity", "network", "storage", "compute", "database", "cache", "queue", "secret", "cluster", "service", "job", "load_balancer", "dns")
+RESOURCE_KINDS = ("identity", "network", "storage", "compute", "database", "cache", "queue", "secret", "cluster", "service", "job", "load_balancer", "dns", "monitor")
 MAX_QUEUES = 8
 MAX_SECRETS = 16
 MAX_CLUSTERS = 4
@@ -375,6 +375,42 @@ class DnsRequest(StrictModel):
         return self
 
 
+EMAIL = re.compile(r"^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,63}$")
+WATCHED = re.compile(r"^(load_balancer|cluster(?::[a-z][a-z0-9-]{0,11})?|service:[a-z][a-z0-9-]{0,11})$")
+PERIODS = (60, 300, 600, 900)
+
+
+class UptimeRequest(StrictModel):
+    """A check from several places on the internet that one of the request's public endpoints answers."""
+    to: str = Field(description="load_balancer, cluster or cluster:NAME (its front door), or service:NAME (a public service).")
+    path: str = Field(default="/", pattern=r"^/[A-Za-z0-9._~/-]{0,200}$")
+    period_seconds: int = Field(default=300, description="60, 300, 600 or 900.")
+
+    @model_validator(mode="after")
+    def _check(self):
+        if not WATCHED.fullmatch(self.to):
+            raise ValueError(f"monitor.uptime: {self.to!r} is not load_balancer, cluster[:NAME] or service:NAME")
+        if self.period_seconds not in PERIODS:
+            raise ValueError("monitor.uptime.period_seconds: 60, 300, 600 or 900")
+        return self
+
+
+class MonitorRequest(StrictModel):
+    """Monitoring for the request's public endpoints: uptime checks, and an alert to these addresses when one fails."""
+    notify: list[str] = Field(min_length=1, max_length=10, description="Email addresses alerted, in domains the operator allows.")
+    uptime: list[UptimeRequest] = Field(min_length=1, max_length=10)
+
+    @field_validator("notify")
+    @classmethod
+    def _notify(cls, value):
+        for address in value:
+            if not EMAIL.fullmatch(address):
+                raise ValueError(f"monitor.notify: {address!r} is not a lowercase email address")
+        if len(set(value)) != len(value):
+            raise ValueError("monitor.notify: each address once")
+        return value
+
+
 class LoadBalancerRequest(StrictModel):
     """A public load balancer in front of one compute group."""
     type: LoadBalancerType = Field(default="http", description="http: an application load balancer with a health check on a path; tcp: a passthrough network load balancer.")
@@ -450,6 +486,7 @@ class InfrastructureRequest(StrictModel):
     job: JobRequest | list[JobRequest] | None = Field(default=None, description="One managed job, or a list of them.")
     load_balancer: LoadBalancerRequest | None = None
     dns: DnsRequest | None = Field(default=None, description="A public DNS zone and its records, made after everything they point to.")
+    monitor: MonitorRequest | None = Field(default=None, description="Uptime checks on the request's public endpoints, and alerts when one fails.")
     lifetime: LifetimeRequest | None = Field(default=None, description="How long the request lives; the operator's default applies when omitted, and there is none unless the operator sets one.")
     access: list[AccessRequest] = Field(default_factory=list, max_length=20, description="People, groups or service accounts to grant access to what is created; "
                                                                                           "the requester is added when the operator maps it to an identity.")
@@ -522,6 +559,14 @@ class InfrastructureRequest(StrictModel):
                 if cluster is None or cluster.public is None:
                     raise ValueError(f"dns.records {record.name}: to {record.to}, but the request has no such cluster with a front door"
                                      + (" (name it: cluster:NAME)" if name is None and len(self.clusters()) > 1 else ""))
+        for check in (self.monitor.uptime if self.monitor else []):
+            kind, _, name = check.to.partition(":")
+            if kind == "load_balancer" and not (self.load_balancer and self.load_balancer.type == "http"):
+                raise ValueError("monitor.uptime: to load_balancer, but the request has no http load balancer")
+            if kind == "cluster" and ((cluster := self.cluster_named(name or None)) is None or cluster.public is None):
+                raise ValueError(f"monitor.uptime: to {check.to}, but the request has no such cluster with a front door")
+            if kind == "service" and ((service := self.service_named(name)) is None or not service.public):
+                raise ValueError(f"monitor.uptime: to {check.to}, but the request has no such public service (a check from the internet cannot sign in)")
         names = {identity.identity_name for identity in self.identities()}
         for group in groups:
             if group.identity is not None and group.identity not in names:

@@ -223,6 +223,16 @@ The service's own identity then needs, once, from the platform team:
 | give a node account its project role | `roles/resourcemanager.projectIamAdmin` | an IAM condition, so it can grant that one role and no other: `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])` ([limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)) |
 | let a node account read a repository | `roles/artifactregistry.admin` | each repository listed in `providers.gcp.registries`, granted on the repository |
 
+### Monitoring
+
+`monitor: {notify, uptime}` makes, in Cloud Monitoring, an email notification channel per address, an uptime check per
+public endpoint of the request (its http load balancer, a cluster's front door, or a public service; over HTTPS by name
+when it has one, otherwise by address), and an alert policy per check that fires when the check fails, as Google's
+uptime alert does. Addresses must be in the operator's `access.allowed_domains`, as access members are, so alerts never
+leave the company. A check from the internet cannot sign in, so a private service is refused. Made after what it
+watches; destroy deletes the policies, then the checks, then the channels. Priced per alert condition. The service's
+identity needs `roles/monitoring.editor`. Log sinks are not offered yet.
+
 ### HTTPS on the load balancer
 
 `load_balancer.hostnames` (http only) adds HTTPS on 443 of the same address: a Google-managed certificate for the names,
@@ -425,7 +435,7 @@ python -m pytest tests/cloudinfra -q                # the boundary tests, no clo
 CLOUDINFRA_INTEGRATION=1 CLOUDINFRA_PROJECT=my-project python -m pytest tests/integration/cloudinfra -q   # one real machine, then destroyed
 ```
 
-The catalog has 57 tools: create, get and delete for each of the thirteen kinds (plus list, resize, attach and firewall
+The catalog has 60 tools: create, get and delete for each of the fourteen kinds (plus list, resize, attach and firewall
 configuration where they apply), the lifecycle tools (stop, start, extend and keep awake among them), access, and the
 operations tools. The MCP endpoint is `/mcp`; the REST endpoints are `POST /infrastructure/validate`,
 `POST /infrastructure/plan`, `POST /infrastructure`, `GET /infrastructure` (with `status` and `expiring_within_hours`),
