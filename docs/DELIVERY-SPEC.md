@@ -619,13 +619,12 @@ As `tests/cloudinfra/test_infra_catalog.py` does for `cloudinfra`:
 3. **Phase 3, several clusters, private images, a front door.** Done 2026-10-29 over plain HTTP (section 4; spike
    section 12); HTTPS on a real domain is still to be run.
 4. **Phase 4, Cloud Run services and jobs.** Done 2026-10-30 (section 4; spike section 13).
-5. **Builds in the trusted project.** Built 2026-10-30 (section 3): `build_image`, `get_build`, `list_builds`, and the
-   rule that a release names only a digest built here. `cloudinfra`'s registries let only the operator's registry
-   writers (the build accounts) push, and no federated CI identity is a member. Run on Google Cloud on 2026-10-30
-   ([DELIVERY-SPIKE.md](DELIVERY-SPIKE.md) section 14). With `require_provenance`, the release gate also verifies
-   Cloud Build's signed provenance, written against the real answer from that run. Still to do: the platform's own
-   images built the same way
-   ([research/RESEARCH-2026-10-30-trusted-build.md](research/RESEARCH-2026-10-30-trusted-build.md) section 8).
+5. **Builds in the trusted project.** Done 2026-10-30 (section 3;
+   [research/RESEARCH-2026-10-30-trusted-build.md](research/RESEARCH-2026-10-30-trusted-build.md) section 8):
+   `build_image`, `get_build`, `list_builds`, and the rule that a release names only a digest built here;
+   `cloudinfra`'s registries pushed to only by the operator's build accounts, with no federated CI identity a member;
+   with `require_provenance`, Cloud Build's provenance verified by Google's signature; and the platform's own images
+   built the same way by `cloudbuild.yaml`. Run on Google Cloud (spike sections 14 and 15).
 6. **Later, convenience:** a Score file as an alternative input; `cloudinfra`'s `scope: granted`; an internal front
    door; a machine service account chosen by the request.
 

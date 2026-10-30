@@ -103,7 +103,8 @@ The MCP endpoint is `/mcp`; `GET /healthz` is public; `GET /catalog` lists the t
 curl -s -X POST "http://127.0.0.1:8100/infrastructure?wait_seconds=45" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" --data @request.json
 ```
 
-Its image: `docker build -f Dockerfile.cloudinfra -t cloudinfra .`
+Its image is built only in the trusted project, by Cloud Build from `cloudbuild.yaml` with the delivery service's
+(docs/SETUP.md section 3); a local `docker build -f Dockerfile.cloudinfra .` is for development and is never deployed.
 
 ## Run the delivery service
 
@@ -133,7 +134,8 @@ app-delivery plan examples/release.yaml --config appdelivery.local.yaml --as sho
 APPDELIVERY_CONFIG=appdelivery.local.yaml uvicorn appdelivery.server:create_app --factory --host 127.0.0.1 --port 8200
 ```
 
-Its image, with the gcloud CLI and Cosign pinned and checked: `docker build -f Dockerfile.appdelivery -t appdelivery .`
+Its image, with the gcloud CLI and Cosign pinned and checked, is built with the infrastructure service's by
+`cloudbuild.yaml`, in the trusted project.
 
 ## Connect Claude
 

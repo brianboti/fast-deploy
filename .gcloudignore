@@ -1,0 +1,12 @@
+# What `gcloud builds submit` may upload from a working copy: only what the two Dockerfiles copy. The platform's images
+# are built from the linked repository at a commit (cloudbuild.yaml); this keeps a local submit, should one be needed,
+# from carrying anything else, a local configuration or state file above all.
+*
+!Dockerfile.cloudinfra
+!Dockerfile.appdelivery
+!requirements.lock
+!cloudinfra/
+!cloudinfra/**
+!appdelivery/
+!appdelivery/**
+**/__pycache__/

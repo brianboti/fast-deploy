@@ -113,9 +113,35 @@ Run it:
 CLOUDINFRA_CONFIG=cloudinfra.local.yaml uvicorn cloudinfra.mcp.server:create_app --factory --host 127.0.0.1 --port 8100
 ```
 
-On the platform machine, build `Dockerfile.cloudinfra` (Cloud Build with `--build-arg TARGETARCH=amd64`, or Docker
-with `--platform linux/amd64`), mount the configuration at `/config/cloudinfra.yaml` and a volume at `/data`, and run
-it as the machine's service account; on Container-Optimized OS a container on the host network needs its port opened
+**The platform's images** are built like a team's: only in this project, by Cloud Build, from the platform's own
+repository linked to a connection (section 4 shows the connection), at one commit, as a build account that may write
+logs and push to the platform's repository and nothing else. `cloudbuild.yaml` builds both images, has Cloud Build push
+them with signed provenance, and tags each with the build's id. Once:
+
+```bash
+gcloud iam service-accounts create platform-build --project $PROJECT --display-name "platform images"
+```
+
+```bash
+gcloud artifacts repositories create platform --repository-format docker --location $REGION --immutable-tags --project $PROJECT
+```
+
+```bash
+gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:platform-build@$PROJECT.iam.gserviceaccount.com --role roles/logging.logWriter --condition=None
+```
+
+```bash
+gcloud artifacts repositories add-iam-policy-binding platform --location $REGION --project $PROJECT --member serviceAccount:platform-build@$PROJECT.iam.gserviceaccount.com --role roles/artifactregistry.writer
+```
+
+Then, for each release of the platform, a build of its commit; the answer names both images by digest:
+
+```bash
+gcloud builds submit projects/$PROJECT/locations/$REGION/connections/github/repositories/infrastructure-layer --revision COMMIT_SHA --region $REGION --config cloudbuild.yaml --service-account projects/$PROJECT/serviceAccounts/platform-build@$PROJECT.iam.gserviceaccount.com --substitutions _REGISTRY=$REGION-docker.pkg.dev/$PROJECT/platform
+```
+
+On the platform machine, run the `cloudinfra` image by that digest, mount the configuration at
+`/config/cloudinfra.yaml` and a volume at `/data`, and run it as the machine's service account; on Container-Optimized OS a container on the host network needs its port opened
 in the host firewall (`iptables -A INPUT -p tcp --dport 8100 -j ACCEPT`), a container started with `-p` does not. Reach
 it through IAP or an internal load balancer; the service holds bearer tokens, not TLS.
 
@@ -276,7 +302,7 @@ app-delivery check-config appdelivery.local.yaml
 APPDELIVERY_DEV_INFRA_TOKEN=… APPDELIVERY_CONFIG=appdelivery.local.yaml uvicorn appdelivery.server:create_app --factory --host 127.0.0.1 --port 8200
 ```
 
-On the platform machine, build `Dockerfile.appdelivery` the same way, mount the configuration at
+On the platform machine, run the `appdelivery` image from the same build by its digest, mount the configuration at
 `/config/appdelivery.yaml` and a volume at `/data`, pass the token variables, and run it as the machine's service
 account (which holds Token Creator on each environment's account and reads the image's repository).
 

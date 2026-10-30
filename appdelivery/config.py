@@ -53,8 +53,10 @@ class BuildSettings(StrictModel):
     service_account: str = Field(pattern=SERVICE_ACCOUNT.pattern, description="The user-managed account every build of this environment runs as.")
     machine_type: Literal["E2_MEDIUM", "E2_STANDARD_2", "E2_HIGHCPU_8", "E2_HIGHCPU_32"] = "E2_STANDARD_2"
     timeout_seconds: int = Field(default=1200, ge=120, le=14400, description="Cloud Build stops a build after this long (TIMEOUT).")
-    builder: str = Field(default="gcr.io/cloud-builders/docker", pattern=BUILDER_IMAGE.pattern,
-                         description="The image of the one docker build step; pin it by digest.")
+    # The docker builder by the digest Cloud Build reported in the provenance of the run of 2026-10-30; Google publishes no
+    # versioned tags of it. The same pin as cloudbuild.yaml (a test ties them).
+    builder: str = Field(default="gcr.io/cloud-builders/docker@sha256:f772ab459889c67835bd959c2b9e9351f2c0752c4f989710ecda20c229f0733e", pattern=BUILDER_IMAGE.pattern,
+                         description="The image of the one docker build step, by digest.")
 
 
 class BuildSource(StrictModel):

@@ -92,7 +92,10 @@ on a builder without BuildKit (Cloud Build's docker step). The delivery image se
 | Dependabot | | `.github/dependabot.yml` | weekly, the workflow's actions only, releases at least 7 days old |
 | pre-commit (optional) | ruff-pre-commit v0.17.0, zizmor-pre-commit v1.30.1 | `.pre-commit-config.yaml` | the same two lints locally |
 
-Docker is needed only to build the images; Docker Desktop built both for amd64 and arm64 on 2026-10-29.
+Docker is needed only for a local development build of the images (Docker Desktop built both for amd64 and arm64 on
+2026-10-29). Images that are deployed are built only in the trusted project by Cloud Build from `cloudbuild.yaml`, whose
+docker step is pinned by digest (`gcr.io/cloud-builders/docker@sha256:f772ab45…`, the delivery service's default
+`builder` too; a test ties them).
 
 ## 5. What a host needs to run each service
 

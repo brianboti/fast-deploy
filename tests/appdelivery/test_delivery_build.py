@@ -14,7 +14,7 @@ from fleet_fakes import V1, World
 
 from appdelivery import cloudbuild
 from appdelivery.building import Builder
-from appdelivery.config import Config
+from appdelivery.config import BuildSettings, Config
 from appdelivery.errors import DeliveryError, ErrorCode, problems_from
 from appdelivery.models import BuildRequest
 from appdelivery.releases import InlineExecutor
@@ -102,7 +102,7 @@ def test_the_build_is_one_docker_step_pushed_by_cloud_build_as_the_build_account
     tag = f"{TEAM_REGISTRY}/web:bld-0123456789ab"
     assert body == {
         "source": {"connectedRepository": {"repository": SOURCE_REPOSITORY, "revision": COMMIT}},
-        "steps": [{"name": "gcr.io/cloud-builders/docker", "args": ["build", "--build-arg", "TARGETARCH=amd64", "-t", tag, "-f", "web/Dockerfile", "web"]}],
+        "steps": [{"name": BuildSettings.model_fields["builder"].default, "args": ["build", "--build-arg", "TARGETARCH=amd64", "-t", tag, "-f", "web/Dockerfile", "web"]}],
         "images": [tag],
         "serviceAccount": f"projects/infra-project/serviceAccounts/{DEV_BUILD_SA}",
         "options": {"logging": "CLOUD_LOGGING_ONLY", "requestedVerifyOption": "VERIFIED", "machineType": "E2_STANDARD_2"},

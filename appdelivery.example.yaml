@@ -29,7 +29,7 @@ environments:
       service_account: build-dev@your-infrastructure-project.iam.gserviceaccount.com
       # machine_type: E2_STANDARD_2                # E2_MEDIUM, E2_STANDARD_2, E2_HIGHCPU_8, E2_HIGHCPU_32
       # timeout_seconds: 1200
-      # builder: gcr.io/cloud-builders/docker      # the docker build step's image; pin it by digest
+      # builder: gcr.io/cloud-builders/docker@sha256:…   # the docker build step's image, by digest; the default is pinned
   prod:
     token_env: APPDELIVERY_PROD_INFRA_TOKEN
     service_account: appdelivery-prod@your-infrastructure-project.iam.gserviceaccount.com

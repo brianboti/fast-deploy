@@ -36,6 +36,11 @@ Build service agent to hold Secret Manager Admin (docs/SETUP.md). After the run,
   statement naming the digest, the builder, the recorded Cloud Build build and its commit. Otherwise
   `PROVENANCE_FAILED`, and no target is touched. Plans say `provenance_required`. The environment's account needs
   `roles/containeranalysis.occurrences.viewer`. Tested against the real answer from the run, kept as a fixture.
+- **The platform's own images** are built the same way: `cloudbuild.yaml` builds `Dockerfile.cloudinfra` and
+  `Dockerfile.appdelivery` in the trusted project, pushed by Cloud Build with provenance, as a platform build account,
+  from the platform's linked repository at a commit (docs/SETUP.md section 3); `.gcloudignore` keeps a local submit to
+  the files the Dockerfiles copy. The docker builder is pinned by digest there and as the delivery service's default
+  `builder`. A local `docker build` is for development only. Run in the sandbox (docs/DELIVERY-SPIKE.md section 15).
 
 # Unreleased: the repository is the two services, and the documents say so
 

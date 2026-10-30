@@ -517,3 +517,24 @@ repository, the connection and its secret, the two service accounts, and every b
 agent's Secret Manager role among them. The Cloud Build GitHub App stays installed on the GitHub account until the
 operator removes it there. The Container Analysis API stays enabled with the others.
 
+## 15. The platform's own images, built by Cloud Build
+
+Run on 2026-10-30 between 19:30 and 19:45 UTC by Claude for the operator, in the same sandbox project, with
+`cloudbuild.yaml` from the working copy of `registry-kind` (not yet pushed, so submitted from the working copy through
+`.gcloudignore`, which uploaded only the two Dockerfiles, `requirements.lock` and the two packages). The build ran as a
+`platform-build` account that could write logs, read its own source bucket and push to a `platform` repository with
+immutable tags, and nothing else.
+
+| Step | Result |
+|---|---|
+| the build | `SUCCESS` in two minutes, as `platform-build`; both images pushed by Cloud Build, tagged with the build's id |
+| provenance | each image has SLSA v0.1 and v1 statements; `appdelivery/provenance.py` verified Google's `google-hosted-worker` signature on both and read `GoogleHostedWorker` and this build as builder and invocation |
+| the images | `cloudinfra` imports its server and reports 1.37.1; `appdelivery` imports its server, has gcloud 591.0.0 and Cosign v3.1.3, and runs as uid 65532 |
+
+Found: a build from uploaded source records the source as the uploaded archive (`gs://…tgz`), not a commit, so
+`provenance.verify` would refuse it against a recorded commit. That is why the documented path builds the platform's
+repository at a commit through its connection (docs/SETUP.md section 3), as the delivery service does for a team.
+
+Everything was deleted afterwards: the repository with both images, the source bucket, the build account and its
+binding, and the local copies.
+

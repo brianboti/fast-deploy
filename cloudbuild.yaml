@@ -1,0 +1,33 @@
+# The platform's own images, built only in the trusted project, the same way the delivery service builds a team's
+# (docs/DELIVERY-SPEC.md section 3; docs/SETUP.md section 3): Cloud Build fetches this repository at one commit through
+# the platform's repository connection, builds both Dockerfiles, and pushes the images itself through `images`, the only
+# push for which it records signed SLSA provenance; `requestedVerifyOption: VERIFIED` fails the build without it. Each
+# image is tagged with the build's id, which never moves; release and run them by the digest the build reports.
+#
+# The platform team runs it once per release, as the platform's build account, which may write logs and push to the
+# platform's repository and nothing else (never a default build account):
+#   gcloud builds submit projects/$PROJECT/locations/$REGION/connections/github/repositories/infrastructure-layer \
+#     --revision COMMIT_SHA --region $REGION --config cloudbuild.yaml \
+#     --service-account projects/$PROJECT/serviceAccounts/platform-build@$PROJECT.iam.gserviceaccount.com \
+#     --substitutions _REGISTRY=$REGION-docker.pkg.dev/$PROJECT/platform
+# A test (tests/appdelivery/test_platform_build.py) holds this file to those rules.
+steps:
+  # The docker builder by the digest Cloud Build reported in the provenance of the run of 2026-10-30
+  # (docs/DELIVERY-SPIKE.md section 14); Google publishes no versioned tags of it.
+  - id: cloudinfra
+    name: gcr.io/cloud-builders/docker@sha256:f772ab459889c67835bd959c2b9e9351f2c0752c4f989710ecda20c229f0733e
+    args: [build, -t, "${_REGISTRY}/cloudinfra:${BUILD_ID}", -f, Dockerfile.cloudinfra, .]
+  # No BuildKit in this step, so TARGETARCH is passed; Cloud Build's workers are amd64.
+  - id: appdelivery
+    name: gcr.io/cloud-builders/docker@sha256:f772ab459889c67835bd959c2b9e9351f2c0752c4f989710ecda20c229f0733e
+    args: [build, --build-arg, TARGETARCH=amd64, -t, "${_REGISTRY}/appdelivery:${BUILD_ID}", -f, Dockerfile.appdelivery, .]
+    waitFor: ["-"]
+images:
+  - "${_REGISTRY}/cloudinfra:${BUILD_ID}"
+  - "${_REGISTRY}/appdelivery:${BUILD_ID}"
+options:
+  logging: CLOUD_LOGGING_ONLY
+  requestedVerifyOption: VERIFIED
+  substitutionOption: MUST_MATCH
+  machineType: E2_HIGHCPU_8
+timeout: 1800s
