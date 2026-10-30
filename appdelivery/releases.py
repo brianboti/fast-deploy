@@ -19,8 +19,8 @@ from .google import HostToken, ServiceAccountTokens
 from .infra import InfraClient, InfraRequest
 from .kube import ClusterDeployer, ClusterTarget
 from .machine import Machine, MachineSession
-from .models import ReleaseRequest, ReleaseResponse, TargetView
-from .run import RunDeployer, ServiceTarget
+from .models import ReleaseRequest, ReleaseResponse, RunResponse, TargetView
+from .run import JobDeployer, JobTarget, RunDeployer, ServiceTarget
 from .state import MOVING, StateManager, new_release_id
 
 MAX_WAIT_SECONDS = 45
@@ -50,7 +50,7 @@ def scrub(text: str | None, values: list[str]) -> str | None:
 
 class Delivery:
     def __init__(self, config, state: StateManager, infra=None, machines=None, tokens=None, http=None, runner=remote.run, executor=None, sleep=time.sleep,
-                 clock=time.monotonic, clusters=None, services=None):
+                 clock=time.monotonic, clusters=None, services=None, jobs=None):
         self.config, self.state = config, state
         self.infra = infra or (lambda environment: InfraClient.for_environment(config, environment))
         self.machines = machines or (lambda environment: MachineSession(config.gcp.project_id, config.environments[environment].service_account))
@@ -58,6 +58,7 @@ class Delivery:
         self.tokens = tokens or ServiceAccountTokens(self.http, HostToken(self.http))
         self.clusters = clusters or (lambda environment: ClusterDeployer(lambda: self.tokens(config.environments[environment].service_account)))
         self.services = services or (lambda environment: RunDeployer(lambda: self.tokens(config.environments[environment].service_account)))
+        self.jobs = jobs or (lambda environment: JobDeployer(lambda: self.tokens(config.environments[environment].service_account)))
         self.runner = runner
         self.executor = executor or concurrent.futures.ThreadPoolExecutor(max_workers=config.workers, thread_name_prefix="appdelivery")
         self.sleep, self.clock = sleep, clock
@@ -189,9 +190,14 @@ class Delivery:
 
     def _sessions(self, release: ReleaseRequest):
         """What reaches the release's target: a cluster deployer, a Cloud Run deployer, or a machine session."""
+        if release.target.job:
+            return self.jobs
         return self.clusters if release.target.cluster else self.services if release.target.service else self.machines
 
     def _target(self, infra: InfraRequest, release: ReleaseRequest):
+        if release.target.job:
+            job = infra.job(release.target.job)
+            return JobTarget(job.id, job.name, job.provider_id)
         if release.target.service:
             service = infra.service(release.target.service)
             return ServiceTarget(service.id, service.name, service.provider_id)
@@ -220,7 +226,7 @@ class Delivery:
                     verified = attest.verify(release, environment, self._registry_token(release, environment), self.runner)
                     event("image_verified", **verified)
                 # a service's container reads its secrets itself at start, so only references to them are made here
-                resolve = bindings.references if release.target.service else bindings.resolve
+                resolve = bindings.references if release.target.service or release.target.job else bindings.resolve
                 values = resolve(release, infra, self.http, self.tokens(environment.service_account))
             except DeliveryError as exc:
                 for target in record["targets"]:
@@ -248,7 +254,7 @@ class Delivery:
         needs, so a failure here leaves the running release's rollback as it was."""
         release_id, [target] = record["release_id"], record["targets"]
         secret_values = [value for name, binding in release.env.items() if binding.secret is not None and isinstance(value := values[name], str)]
-        where = "cluster" if release.target.cluster else "service"
+        where = "cluster" if release.target.cluster else "service" if release.target.service else "job"
         workload = release.target.workload or target["name"]
         self.state.set_target(release_id, target["resource_id"], "DEPLOYING", started=True)
         event(f"{where}_deploying", **{where: target["name"]}, workload=workload, replicas=release.target.replicas)
@@ -378,6 +384,37 @@ class Delivery:
             self._wait(release_id, wait_seconds)
         return self.view(self.state.get_release(release_id))
 
+    # ---- running a job
+    def _job_release(self, release_id: str, principal, action: str | None):
+        record = self._record(release_id, principal)
+        if action:
+            self._can_act(record, principal, action)
+        release = ReleaseRequest.model_validate(record["request"])
+        if not release.target.job:
+            raise DeliveryError(ErrorCode.INVALID_STATE, f"Release {release_id} is not on a job; only a job's release runs on request", {"release_id": release_id})
+        if record["status"] != "RUNNING":
+            raise DeliveryError(ErrorCode.INVALID_STATE, f"Release {release_id} is {record['status']}, not the release its job holds", {"status": record["status"]})
+        infra = self.infra(release.environment).get_request(release.request_id)
+        return record, release, self._target(infra, release), self.jobs(release.environment)
+
+    def start_run(self, release_id: str, principal, wait_seconds: int = 0) -> RunResponse:
+        """Run the job now, as it holds this release; with wait_seconds, wait that long for it to finish."""
+        record, release, target, deployer = self._job_release(release_id, principal, "run")
+        with bound(release_id, principal.name):
+            run = deployer.start(target, release_id)
+            event("job_run_started", job=target.name, execution=run.execution)
+        started = self.clock()
+        while run.status == "RUNNING" and self.clock() - started < min(wait_seconds, MAX_WAIT_SECONDS):
+            self.sleep(POLL_SECONDS)
+            run = deployer.execution(target, release_id, run.execution)
+        return run
+
+    def get_run(self, release_id: str, execution: str, principal) -> RunResponse:
+        record, release, target, deployer = self._job_release(release_id, principal, None)
+        if not execution.startswith(f"{target.name}-"):
+            raise DeliveryError(ErrorCode.NOT_FOUND, f"{execution} is not a run of {target.name}", {"execution": execution})
+        return deployer.execution(target, release_id, execution)
+
     def remove(self, release_id: str, principal, wait_seconds: int = 0) -> ReleaseResponse:
         record = self._record(release_id, principal)
         self._can_act(record, principal, "remove")
@@ -414,7 +451,11 @@ class Delivery:
                 [target] = record["targets"]
                 previous_id, previous = self._previous(record)
                 try:
-                    report = session.rollback(self._target(infra, release), release_id, previous_id, previous)
+                    if release.target.job:  # a job keeps no earlier container: the previous release's is made again, its secrets pinned now
+                        values = bindings.references(previous, infra, self.http, self.tokens(self.config.environments[release.environment].service_account))
+                        report = session.rollback(self._target(infra, release), release_id, previous_id, previous, values)
+                    else:
+                        report = session.rollback(self._target(infra, release), release_id, previous_id, previous)
                     problem = None if report.result == "rolled_back" else DeliveryError(ErrorCode.ROLLBACK_FAILED, f"{target['name']} answered {report.result}",
                                                                                          {"target": target["name"], **report.fields})
                 except DeliveryError as exc:

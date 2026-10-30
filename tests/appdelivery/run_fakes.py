@@ -79,3 +79,54 @@ class FakeRun:
 
     def env(self):
         return {item["name"]: item.get("value", item.get("valueSource")) for item in self.revisions[self.serving()]["containers"][0].get("env", [])}
+
+
+class FakeRunJob:
+    """A fake Cloud Run job: replaced whole on update (the etag guards it), and run into executions whose tasks succeed
+    unless the job's image is marked failing."""
+
+    def __init__(self):
+        from delivery_fakes import JOB_NAME
+
+        from appdelivery.run import JOB_STAND_IN
+        self.name, self.etag, self.counter = JOB_NAME, "j1", 1
+        self.job = {"name": JOB_NAME, "labels": {"managed-by": "cloudinfra"}, "template": {"taskCount": 2, "template": {
+            "serviceAccount": "run-aaaaaaaaaa-job@infra-project.iam.gserviceaccount.com", "maxRetries": 3,
+            "containers": [{"image": JOB_STAND_IN, "resources": {"limits": {"cpu": "1", "memory": "512Mi"}}}]}}}
+        self.executions: dict[str, dict] = {}
+        self.failing_images: set[str] = set()
+        self.still_running = False
+        self.writes: list[dict] = []
+
+    def image(self):
+        return self.job["template"]["template"]["containers"][0]["image"]
+
+    def env(self):
+        return {item["name"]: item.get("value", item.get("valueSource")) for item in self.job["template"]["template"]["containers"][0].get("env", [])}
+
+    def request(self, method, path, json=None, params=None, missing_ok=False):
+        if path == self.name and method == "GET":
+            return {**copy.deepcopy(self.job), "etag": self.etag, "reconciling": False, "terminalCondition": {"state": "CONDITION_SUCCEEDED"},
+                    "latestCreatedExecution": {"name": f"{self.name}/executions/shop-job-{self.counter:05d}"} if self.executions else None}
+        if path == self.name and method == "PATCH":
+            assert json.get("etag") == self.etag, "a job is replaced with the version read"
+            task = json["template"]["template"]
+            assert task["serviceAccount"] == self.job["template"]["template"]["serviceAccount"] and json["template"]["taskCount"] == 2, "infrastructure settings untouched"
+            assert json["labels"] == self.job["labels"], "the infrastructure layer's labels untouched"
+            self.writes.append(copy.deepcopy(json))
+            self.job = {key: value for key, value in copy.deepcopy(json).items() if key != "etag"}
+            self.counter += 1
+            self.etag = f"j{self.counter}"
+            return {"name": "operations/x"}
+        if path == f"{self.name}:run" and method == "POST":
+            self.counter += 1
+            name = f"shop-job-{self.counter:05d}"
+            failing = self.image() in self.failing_images
+            self.executions[name] = {"name": name, "taskCount": 2, "startTime": "2026-10-29T10:00:00Z", "logUri": f"https://console.cloud.google.com/logs?{name}",
+                                     **({"runningCount": 2} if self.still_running else {"succeededCount": 0 if failing else 2, "failedCount": 2 if failing else 0,
+                                                                                        "completionTime": "2026-10-29T10:01:00Z"})}
+            return {"name": "operations/run"}
+        if path.startswith(f"{self.name}/executions/") and method == "GET":
+            found = self.executions.get(path.rsplit("/", 1)[-1])
+            return copy.deepcopy(found) if found else None
+        raise AssertionError(f"no fake for {method} {path}")

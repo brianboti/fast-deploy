@@ -1,4 +1,4 @@
-"""Releases on a managed container service, Cloud Run (docs/DELIVERY-SPEC.md, phase 4): each release is a revision named
+"""Releases on a managed container service or job, Cloud Run (docs/DELIVERY-SPEC.md, phase 4). On a service each release is a revision named
 after it, made with the traffic pinned where it was, and given all of it only once Cloud Run says it is ready. A revision
 that fails its startup probe never gets traffic, so a failure needs no restore and leaves the running release's rollback
 as it was. Rollback moves the traffic to the previous release's revision, which Cloud Run keeps; remove puts Google's
@@ -16,10 +16,12 @@ import httpx
 from .bindings import SecretRef
 from .errors import DeliveryError, ErrorCode
 from .machine import HostReport
-from .models import ReleaseRequest
+from .models import ReleaseRequest, RunResponse
 
 RUN = "https://run.googleapis.com/v2"
 STAND_IN = "us-docker.pkg.dev/cloudrun/container/hello"
+JOB_STAND_IN = "us-docker.pkg.dev/cloudrun/container/job"
+RELEASE_LABEL = "appdelivery-release"  # on a job's run template: the release the job holds
 REVISION, LATEST = "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION", "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
 PROBE_PERIOD = 5
 SETTLING = (900, 3)
@@ -155,3 +157,100 @@ class RunDeployer:
         image = ((revision.get("containers") or [{}])[0]).get("image", "")
         release = serving.removeprefix(f"{target.name}-") if serving.startswith(f"{target.name}-rel-") else ""
         return HostReport("status", {"image": image, "release": release, "running": "yes" if release else "no"})
+
+
+@dataclass(frozen=True)
+class JobTarget:
+    """The job as the infrastructure layer reports it: its id, its provider name and its full name at Cloud Run."""
+    resource: str
+    name: str
+    provider_id: str
+
+
+def job_container(release: ReleaseRequest, values: dict[str, str | SecretRef], resources: dict | None) -> dict:
+    """The release's container for a job: its image and environment, within the limits the infrastructure layer set. A job
+    serves nothing, so it has no port or probe; it succeeds when its tasks exit 0."""
+    found = container(release, values, resources)
+    return {key: value for key, value in found.items() if key not in ("ports", "startupProbe")}
+
+
+class JobDeployer(RunDeployer):
+    """A Cloud Run job's container, as the environment's service account: a release replaces it whole (jobs take no
+    update mask; the etag guards the write), rollback puts the previous release's back, remove the stand-in, and run
+    starts an execution."""
+
+    def _job(self, target: JobTarget) -> dict:
+        return self._settle(target)
+
+    def _put(self, target: JobTarget, found: dict, task_container: dict, release_id: str | None) -> dict:
+        job = copy.deepcopy(found)
+        execution = job.setdefault("template", {})
+        task = execution.setdefault("template", {})
+        task["containers"] = [task_container]
+        labels = dict(execution.get("labels") or {})
+        if release_id:
+            labels[RELEASE_LABEL] = release_id
+        else:
+            labels.pop(RELEASE_LABEL, None)
+        execution["labels"] = labels
+        for key in ("reconciling", "terminalCondition", "conditions", "latestCreatedExecution", "executionCount", "observedGeneration", "generation", "uid",
+                    "createTime", "updateTime", "creator", "lastModifier"):
+            job.pop(key, None)
+        self.run.request("PATCH", target.provider_id, json=job)
+        after = self._settle(target)
+        condition = after.get("terminalCondition") or {}
+        if condition.get("state") == "CONDITION_FAILED":
+            raise DeliveryError(ErrorCode.SERVICE_ERROR, f"Cloud Run did not take the job's new container: {condition.get('message', 'no reason given')}",
+                                {"job": target.name})
+        return after
+
+    @staticmethod
+    def _resources(found: dict) -> dict | None:
+        return (((found.get("template") or {}).get("template") or {}).get("containers") or [{}])[0].get("resources")
+
+    def deploy(self, target: JobTarget, release_id: str, release: ReleaseRequest, values: dict[str, str | SecretRef],
+               previous: tuple[str, ReleaseRequest] | None) -> HostReport:
+        found = self._job(target)
+        self._put(target, found, job_container(release, values, self._resources(found)), release_id)
+        return HostReport("healthy", {"image": release.image, "release": release_id, "previous": previous[0] if previous else ""})
+
+    def rollback(self, target: JobTarget, release_id: str, previous_id: str, previous: ReleaseRequest, values: dict[str, str | SecretRef] | None = None) -> HostReport:
+        """The previous release's container again: its image and settings, its secrets pinned to their versions now."""
+        found = self._job(target)
+        self._put(target, found, job_container(previous, values or {}, self._resources(found)), previous_id)
+        return HostReport("rolled_back", {"image": previous.image, "release": previous_id})
+
+    def remove(self, target: JobTarget, workload: str | None = None) -> HostReport:
+        found = self._job(target)
+        resources = self._resources(found)
+        self._put(target, found, {"image": JOB_STAND_IN, **({"resources": resources} if resources else {})}, None)
+        return HostReport("removed")
+
+    def status(self, target: JobTarget, workload: str | None = None) -> HostReport:
+        found = self.run.request("GET", target.provider_id)
+        execution = found.get("template") or {}
+        image = ((execution.get("template") or {}).get("containers") or [{}])[0].get("image", "")
+        release = (execution.get("labels") or {}).get(RELEASE_LABEL, "")
+        return HostReport("status", {"image": image, "release": release, "running": "yes" if release else "no"})
+
+    def start(self, target: JobTarget, release_id: str) -> RunResponse:
+        """Start a run now; the job's latest execution is the one this started."""
+        self.run.request("POST", f"{target.provider_id}:run", json={})
+        found = self.run.request("GET", target.provider_id)
+        latest = (found.get("latestCreatedExecution") or {}).get("name", "")
+        return self.execution(target, release_id, latest.rsplit("/", 1)[-1])
+
+    def execution(self, target: JobTarget, release_id: str, name: str) -> RunResponse:
+        found = self.run.request("GET", f"{target.provider_id}/executions/{name}", missing_ok=True)
+        if found is None:
+            raise DeliveryError(ErrorCode.NOT_FOUND, f"The job {target.name} has no run {name}", {"execution": name})
+        succeeded, failed, cancelled = found.get("succeededCount", 0), found.get("failedCount", 0), found.get("cancelledCount", 0)
+        tasks = found.get("taskCount", 1)
+        if not found.get("completionTime"):
+            status = "RUNNING"
+        elif cancelled:
+            status = "CANCELLED"
+        else:
+            status = "SUCCEEDED" if succeeded >= tasks and not failed else "FAILED"
+        return RunResponse(release_id=release_id, execution=name, status=status, tasks=tasks, succeeded=succeeded, failed=failed, running=found.get("runningCount", 0),
+                           started_at=found.get("startTime"), finished_at=found.get("completionTime"), log_url=found.get("logUri"))
