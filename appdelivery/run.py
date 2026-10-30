@@ -146,10 +146,8 @@ class RunDeployer:
         traffic as it was (found on a real project on 2026-10-30, moving back to a revision that had been idle)."""
         found = self._patch(target, {"traffic": [{"type": REVISION, "revision": revision, "percent": 100}]}, "traffic")
         started = self.clock()
-        while self._serving(found) != revision and self.clock() - started < SETTLING[0]:
-            if (found.get("terminalCondition") or {}).get("state") == "CONDITION_FAILED" and not found.get("reconciling"):
-                break
-            self.sleep(SETTLING[1])
+        while self._serving(found) != revision and self.clock() - started < SETTLING[0]:  # the service's condition may still speak of a failed
+            self.sleep(SETTLING[1])                                                        # release's revision: only the traffic says where it went
             found = self.run.request("GET", target.provider_id)
         return found
 
