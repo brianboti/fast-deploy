@@ -369,7 +369,8 @@ The design:
   above) and becomes the job's current release; `run` starts an execution now and reports its counts and log link;
   rollback puts the previous release's container back; remove puts the stand-in back.
 
-Steps, each its own pull request: 1. `cloudinfra` service kind (built 2026-10-29); 2. delivery to a service; 3.
+Steps, each its own pull request: 1. `cloudinfra` service kind (built 2026-10-29); 2. delivery to a service (built
+2026-10-29); 3.
 `cloudinfra` job kind with its schedule; 4. delivery to a job and running it; 5. a real run.
 
 ## 5. A release's life

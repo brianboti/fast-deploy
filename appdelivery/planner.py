@@ -68,6 +68,27 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
                 problems.append(_problem(ErrorCode.NOT_GRANTED, f"{environment.service_account} was not granted on cluster {cluster.name}", resource=cluster.id))
             if release.target.expose is not None:
                 _check_exposure(release, cluster, problems, warnings)
+    elif release.target.service:
+        service = infra.service(release.target.service)
+        names = sorted(infra.cluster_name(item) for item in infra.services())
+        if service is None and not names:
+            problems.append(_problem(ErrorCode.NOT_FOUND, "The request has no service; ask cloudinfra for one with a service block", field="target.service"))
+        elif service is None and release.target.service is True:
+            problems.append(_problem(ErrorCode.INVALID_RELEASE, f"The request has {len(names)} services ({', '.join(names)}); name one in target.service",
+                                     field="target.service", services=names))
+        elif service is None:
+            problems.append(_problem(ErrorCode.NOT_FOUND, f"The request has no service {release.target.service}; it has {', '.join(names)}", field="target.service",
+                                     services=names))
+        else:
+            if service.status != "READY":
+                problems.append(_problem(ErrorCode.INVALID_STATE, f"Service {service.name} is {service.status}", resource=service.id))
+            if not service.provider_id or not service.runtime_service_account:
+                problems.append(_problem(ErrorCode.UNSUPPORTED_TARGET, f"The infrastructure layer reports no provider name or runtime account for service {service.name}",
+                                         resource=service.id))
+            if grant is not None and grant.resources and service.id not in grant.resources:
+                problems.append(_problem(ErrorCode.NOT_GRANTED, f"{environment.service_account} was not granted on service {service.name}", resource=service.id))
+        if "PORT" in release.env:
+            problems.append(_problem(ErrorCode.INVALID_BINDING, "env.PORT: Cloud Run sets PORT to the release's port itself", field="env.PORT"))
     else:
         machines = infra.group(release.target.group)
         if not machines:
@@ -143,6 +164,8 @@ def url(release: ReleaseRequest, cluster) -> str | None:
 
 def resolve(release: ReleaseRequest, infra: InfraRequest) -> ReleaseRequest:
     """cluster: true named as the request's only cluster is named, so a release is kept under one key however it was asked for."""
+    if release.target.service is True and (service := infra.service(True)) is not None:
+        return release.model_copy(update={"target": release.target.model_copy(update={"service": infra.cluster_name(service)})})
     cluster = infra.cluster(True) if release.target.cluster is True else None
     if cluster is None:
         return release
@@ -164,6 +187,10 @@ def plan(release: ReleaseRequest, principal, config, infra: InfraRequest) -> Pla
         machines = [PlannedMachine(resource=cluster.id, name=cluster.name, zone=cluster.location)]
         extra = {"target": "cluster", "namespace": cluster.namespace, "workload": release.target.workload, "replicas": release.target.replicas,
                  "url": url(release, cluster)}
+    elif release.target.service:
+        service = infra.service(release.target.service)
+        machines = [PlannedMachine(resource=service.id, name=service.name, zone=service.region)]
+        extra = {"target": "service", "url": service.url}
     else:
         machines = [PlannedMachine(resource=machine.id, name=machine.name, zone=machine.zone or "", instance_id=machine.instance_id, internal_ip=machine.internal_ip)
                     for machine in infra.group(release.target.group)]

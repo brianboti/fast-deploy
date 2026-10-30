@@ -82,6 +82,19 @@ class ServiceAccountTokens:
         return token
 
 
+def secret_version(client: httpx.Client, token: str, resource_name: str) -> str:
+    """The number of a secret's latest version, as the identity whose token this is, to pin a reference to it; the value
+    comes back with it, as Secret Manager has no narrower read for this identity, and is never decoded or kept."""
+    try:
+        response = client.get(f"{SECRET_MANAGER}/{resource_name}/versions/latest:access", headers={"Authorization": f"Bearer {token}"})
+    except httpx.HTTPError as exc:
+        raise DeliveryError(ErrorCode.SECRET_UNAVAILABLE, f"Secret Manager did not answer: {type(exc).__name__}", {"secret": resource_name}) from None
+    if response.status_code != 200:
+        raise DeliveryError(ErrorCode.SECRET_UNAVAILABLE, f"{resource_name}'s latest version cannot be read as this environment's service account (HTTP "
+                            f"{response.status_code})", {"secret": resource_name, "status": response.status_code})
+    return response.json()["name"].rsplit("/", 1)[-1]
+
+
 def read_secret(client: httpx.Client, token: str, resource_name: str) -> str:
     """The latest version of a secret, read as the identity whose token this is. The value is returned to the caller only."""
     try:

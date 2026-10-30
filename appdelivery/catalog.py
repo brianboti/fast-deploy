@@ -27,6 +27,8 @@ MEANINGS = {
     ErrorCode.MACHINE_ERROR: "The host script on a machine stopped or ended without a report.",
     ErrorCode.CLUSTER_UNREACHABLE: "The cluster's API could not be reached, or refused this environment's service account (its namespace grant, or container.clusterViewer).",
     ErrorCode.CLUSTER_ERROR: "The cluster's API refused a change to the workload; details carry its answer.",
+    ErrorCode.SERVICE_UNREACHABLE: "Cloud Run could not be reached, or refused this environment's service account (its admin grant on the service).",
+    ErrorCode.SERVICE_ERROR: "Cloud Run refused a change to the service, or did not finish it in time; details carry its answer.",
     ErrorCode.PULL_FAILED: "A machine could not log in to the registry or pull the image; nothing changed there.",
     ErrorCode.UNHEALTHY: "The container did not answer 2xx on the health path in time; the machine runs its previous container again.",
     ErrorCode.ROLLOUT_FAILED: "The rollout stopped at a machine; the machines done before it were put back, the rest skipped.",
@@ -79,7 +81,8 @@ class ToolSpec:
 
 RELEASE = Input("release", "The release: environment, request_id (the infrastructure layer's request), target ({group} for every machine of a compute group, or "
                            "{cluster: NAME, workload, replicas, expose: {hostname, path}} for a workload on one of the request's clusters, cluster: true for its only one, "
-                           "expose to reach it through the cluster's front door), image (host/path@sha256:digest; a tag is refused), "
+                           "expose to reach it through the cluster's front door; {service: NAME} for a managed container service, true for the request's only one), "
+                           "image (host/path@sha256:digest; a tag is refused), "
                            "port, health {path, timeout_seconds}, env (NAME: {value} or {endpoint} or {secret}), note. No source, command or mount is accepted.", True)
 RELEASE_ID = Input("release_id", "The release id this service issued (rel-<12 hex>).", True)
 WAIT = Input("wait_seconds", "Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the work running.")
@@ -88,7 +91,7 @@ RELEASE_OUT = ("ReleaseResponse: release_id, status, environment, request_id, gr
 FOLLOW = "It answers at once with the work running, or waits up to wait_seconds; follow it with get_release until the status is RUNNING, FAILED, ROLLED_BACK or REMOVED."
 PLAN_ERRORS = ("INVALID_RELEASE", "INVALID_BINDING", "UNKNOWN_ENVIRONMENT", "PERMISSION_DENIED", "NOT_FOUND", "INVALID_STATE", "NOT_GRANTED", "UNSUPPORTED_TARGET",
                "UNREACHABLE_TARGET", "REGISTRY_NOT_ALLOWED", "INFRA_UNAVAILABLE", "INFRA_AUTH_FAILED")
-RUN_ERRORS = ("ATTESTATION_FAILED", "SECRET_UNAVAILABLE", "GOOGLE_AUTH_FAILED", "MACHINE_UNREACHABLE", "MACHINE_ERROR", "CLUSTER_UNREACHABLE", "CLUSTER_ERROR",
+RUN_ERRORS = ("ATTESTATION_FAILED", "SECRET_UNAVAILABLE", "GOOGLE_AUTH_FAILED", "MACHINE_UNREACHABLE", "MACHINE_ERROR", "CLUSTER_UNREACHABLE", "CLUSTER_ERROR", "SERVICE_UNREACHABLE", "SERVICE_ERROR",
               "PULL_FAILED", "UNHEALTHY", "ROLLOUT_FAILED")
 
 CATALOG = (
@@ -117,7 +120,7 @@ CATALOG = (
              "the cluster reports running now and whether it matches.",
              (Input("request_id", "The infrastructure request (32 hex characters).", True), Input("live", "Ask each machine what it runs now (slower; reaches every machine).")),
              "{request_id, groups: [{group, release_id, image, environment, machines: [{resource, name, status, running, image, matches}]}]}.",
-             ("NOT_FOUND", "PERMISSION_DENIED", "MACHINE_UNREACHABLE", "CLUSTER_UNREACHABLE"), "Any principal of the team that owns the request.", "read_only"),
+             ("NOT_FOUND", "PERMISSION_DENIED", "MACHINE_UNREACHABLE", "CLUSTER_UNREACHABLE", "SERVICE_UNREACHABLE"), "Any principal of the team that owns the request.", "read_only"),
     ToolSpec("rollback_release", "Roll back a release",
              "Start the previous release again on every machine of the group, or apply it again on the cluster. Offered only for the release running on its "
              "target while the previous one is kept: not for a target's first release, and not for one a rollback restored.",

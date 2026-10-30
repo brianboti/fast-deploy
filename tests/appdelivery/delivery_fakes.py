@@ -156,3 +156,23 @@ def with_door(data, hostnames=("shop.example.com",), certificate="ACTIVE"):
             "address_name": "shop-cluster-door", "certificate_name": "shop-cluster-door" if hostnames else None}
     data["resources"]["cluster"][0]["public"] = door
     return data
+
+
+SERVICE_ID = "svc-555555555555"
+SERVICE_NAME = "projects/acme-infra/locations/us-central1/services/shop-service"
+
+
+def service_resource(rid=SERVICE_ID, name="shop-service", **fields):
+    base = {"url": "https://shop-service-xyz.a.run.app", "runtime_service_account": "run-aaaaaaaaaa-service@acme-infra.iam.gserviceaccount.com", "cpu": 1,
+            "memory_mb": 512, "min_instances": 0, "max_instances": 10, "ingress": "all", "public": False, "secrets": [], "revision": "shop-service-00001-abc",
+            "provider_id": SERVICE_NAME}
+    base.update(fields)
+    return _resource("service", rid, name, **base)
+
+
+def service_response(**overrides):
+    """The same request with a managed container service too, the prod service account granted on it."""
+    data = infra_response(**overrides)
+    data["resources"]["service"] = [service_resource()]
+    data["access"][0]["resources"].append(SERVICE_ID)
+    return data
