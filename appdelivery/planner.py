@@ -89,6 +89,25 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
                 problems.append(_problem(ErrorCode.NOT_GRANTED, f"{environment.service_account} was not granted on service {service.name}", resource=service.id))
         if "PORT" in release.env:
             problems.append(_problem(ErrorCode.INVALID_BINDING, "env.PORT: Cloud Run sets PORT to the release's port itself", field="env.PORT"))
+    elif release.target.job:
+        job = infra.job(release.target.job)
+        names = sorted(infra.cluster_name(item) for item in infra.jobs())
+        if job is None and not names:
+            problems.append(_problem(ErrorCode.NOT_FOUND, "The request has no job; ask cloudinfra for one with a job block", field="target.job"))
+        elif job is None and release.target.job is True:
+            problems.append(_problem(ErrorCode.INVALID_RELEASE, f"The request has {len(names)} jobs ({', '.join(names)}); name one in target.job",
+                                     field="target.job", jobs=names))
+        elif job is None:
+            problems.append(_problem(ErrorCode.NOT_FOUND, f"The request has no job {release.target.job}; it has {', '.join(names)}", field="target.job",
+                                     jobs=names))
+        else:
+            if job.status != "READY":
+                problems.append(_problem(ErrorCode.INVALID_STATE, f"Job {job.name} is {job.status}", resource=job.id))
+            if not job.provider_id or not job.runtime_service_account:
+                problems.append(_problem(ErrorCode.UNSUPPORTED_TARGET, f"The infrastructure layer reports no provider name or runtime account for job {job.name}",
+                                         resource=job.id))
+            if grant is not None and grant.resources and job.id not in grant.resources:
+                problems.append(_problem(ErrorCode.NOT_GRANTED, f"{environment.service_account} was not granted on job {job.name}", resource=job.id))
     else:
         machines = infra.group(release.target.group)
         if not machines:
@@ -166,6 +185,8 @@ def resolve(release: ReleaseRequest, infra: InfraRequest) -> ReleaseRequest:
     """cluster: true named as the request's only cluster is named, so a release is kept under one key however it was asked for."""
     if release.target.service is True and (service := infra.service(True)) is not None:
         return release.model_copy(update={"target": release.target.model_copy(update={"service": infra.cluster_name(service)})})
+    if release.target.job is True and (job := infra.job(True)) is not None:
+        return release.model_copy(update={"target": release.target.model_copy(update={"job": infra.cluster_name(job)})})
     cluster = infra.cluster(True) if release.target.cluster is True else None
     if cluster is None:
         return release
@@ -191,6 +212,10 @@ def plan(release: ReleaseRequest, principal, config, infra: InfraRequest) -> Pla
         service = infra.service(release.target.service)
         machines = [PlannedMachine(resource=service.id, name=service.name, zone=service.region)]
         extra = {"target": "service", "url": service.url}
+    elif release.target.job:
+        job = infra.job(release.target.job)
+        machines = [PlannedMachine(resource=job.id, name=job.name, zone=job.region)]
+        extra = {"target": "job"}
     else:
         machines = [PlannedMachine(resource=machine.id, name=machine.name, zone=machine.zone or "", instance_id=machine.instance_id, internal_ip=machine.internal_ip)
                     for machine in infra.group(release.target.group)]

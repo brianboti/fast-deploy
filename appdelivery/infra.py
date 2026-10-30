@@ -96,12 +96,24 @@ class Service(View):
     revision: str | None = None
 
 
+class Job(View):
+    """A managed job (Cloud Run job): where it is, and the account its tasks run as."""
+    id: str
+    name: str
+    status: str
+    provider_id: str | None = None
+    region: str = ""
+    runtime_service_account: str | None = None
+    schedule: dict[str, str] | None = None
+
+
 class Resources(View):
     network: list[Network] = Field(default_factory=list)
     compute: list[Machine] = Field(default_factory=list)
     secret: list[Secret] = Field(default_factory=list)
     cluster: list[Cluster] = Field(default_factory=list)
     service: list[Service] = Field(default_factory=list)
+    job: list[Job] = Field(default_factory=list)
 
 
 class InfraRequest(View):
@@ -133,6 +145,15 @@ class InfraRequest(View):
         if name is True:
             return found[0] if len(found) == 1 else None
         return next((cluster for cluster in found if self.cluster_name(cluster) == name), None)
+
+    def jobs(self) -> list[Job]:
+        return [job for job in self.resources.job if job.status != "DELETED"]
+
+    def job(self, name: bool | str = True) -> Job | None:
+        found = self.jobs()
+        if name is True:
+            return found[0] if len(found) == 1 else None
+        return next((job for job in found if self.cluster_name(job) == name), None)
 
     def services(self) -> list[Service]:
         return [service for service in self.resources.service if service.status != "DELETED"]

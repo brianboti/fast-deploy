@@ -189,6 +189,14 @@ def build_app(config, delivery: Delivery | None = None, state: StateManager | No
     async def rollback(release_id: str, wait_seconds: int = 0):
         return await in_worker("rollback", lambda: delivery.rollback(release_id, identity.get(), wait_seconds), release_id)
 
+    @app.post("/releases/{release_id}/runs")
+    async def start_run(release_id: str, wait_seconds: int = 0):
+        return await in_worker("start_run", lambda: delivery.start_run(release_id, identity.get(), wait_seconds), release_id)
+
+    @app.get("/releases/{release_id}/runs/{execution}")
+    async def get_run(release_id: str, execution: str):
+        return await in_worker("get_run", lambda: delivery.get_run(release_id, execution, identity.get()), release_id)
+
     @app.delete("/releases/{release_id}")
     async def remove(release_id: str, wait_seconds: int = 0):
         return await in_worker("remove", lambda: delivery.remove(release_id, identity.get(), wait_seconds), release_id)
