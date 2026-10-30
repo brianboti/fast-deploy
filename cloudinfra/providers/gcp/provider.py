@@ -11,6 +11,7 @@ from .cluster import GcpCluster
 from .compute import GcpCompute
 from .database import GcpDatabase
 from .iam import GcpIam
+from .identity import GcpIdentity
 from .loadbalancer import GcpLoadBalancer
 from .monitoring import GcpMonitoring
 from .network import GcpNetwork
@@ -45,6 +46,7 @@ class GCPProvider(CloudProvider):
         self.cluster = GcpCluster(self.api, settings, kube)
         self.run = GcpRun(self.api, settings)
         self.job = GcpRunJob(self.api, settings)
+        self.identity = GcpIdentity(self.api, settings)
         self.load_balancer = GcpLoadBalancer(self.api, settings, self.network)
         self.monitoring = GcpMonitoring(self.api)
         self.iam = GcpIam(self.api)
@@ -101,6 +103,10 @@ class GCPProvider(CloudProvider):
 
     def plan(self, request: InfrastructureRequest, ctx: ProvisionContext) -> list[PlannedResource]:
         prefix, zone, planned = ctx.name, ctx.zone or self.zones(request.region)[0], []
+        for identity in request.identities():  # first: machines run as them, and they are granted on everything after
+            planned.append(PlannedResource(kind="identity", name=f"{prefix}-{identity.identity_name}", provider_mapping="iam.serviceAccounts.create"
+                                           + (", iam.serviceAccounts.setIamPolicy (Workload Identity)" if request.clusters() else ""),
+                                           spec={"identity": identity.identity_name, "level": identity.level, "kubernetes": bool(request.clusters())}))
         groups = request.compute_groups()
         own_network = f"{prefix}-net" if request.network else None
         private_database = request.database is not None and not request.database.public_access
@@ -131,7 +137,8 @@ class GCPProvider(CloudProvider):
                                                      "image": software["image"], "profile": software["profile"], "secure_boot": software["secure_boot"],
                                                      "drivers": software["drivers"],
                                                      "boot_disk_gb": software["boot_disk_gb"], "public_ip": group.public_ip, "accelerator": accelerator,
-                                                     "max_run_hours": group.max_run_hours, "network": own_network or group.network_id or self.settings.default_network}))
+                                                     "max_run_hours": group.max_run_hours, "network": own_network or group.network_id or self.settings.default_network,
+                                                     "identity": group.identity}))
         if request.database:
             label, api_version = translate.database_version(request.database)
             mapping = ("compute.addresses.insert, servicenetworking.connections.create, " if private_database else "") + "sqladmin.instances.insert, sqladmin.databases.insert, sqladmin.users.insert"
@@ -302,6 +309,15 @@ class GCPProvider(CloudProvider):
 
     def delete_cluster(self, resource, ctx):
         self.cluster.delete(resource, ctx)
+
+    def create_identity(self, spec, planned, ctx):
+        return self.identity.create(spec, planned, ctx)
+
+    def get_identity(self, resource):
+        return self.identity.get(resource)
+
+    def delete_identity(self, resource, ctx):
+        self.identity.delete(resource, ctx)
 
     def create_job(self, spec, planned, ctx, network, secrets):
         return self.job.create(spec, planned, ctx, network, secrets)

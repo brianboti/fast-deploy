@@ -290,6 +290,18 @@ CATALOG: tuple[ToolSpec, ...] = (
              READ_ERRORS, "Read-only.", "Cloud Run: run.services.get."),
     ToolSpec("delete_service", "Service", "Delete a service", "Delete the service, every revision and its runtime account.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
              "Needs can_destroy.", "Cloud Run: run.services.delete; IAM: serviceAccounts.delete."),
+    # ---- identity
+    ToolSpec("create_identity", "Identity", "Create a workload identity", "Create an identity for a request's workloads: an account with no key that holds "
+             "the request's grants at its level. In a full request, machines of a group that names it run as it, and pods of the request's clusters using "
+             "the Kubernetes service account of its name act as it.",
+             (REGION, PROVIDER, Input("level", "use (default) or admin: its access on the request's resources."), NAME, LABELS, WAIT),
+             RESPONSE, ("NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
+             f"Needs can_provision. No key is ever made for it, and it is granted on nothing outside its request. {OWNERSHIP}",
+             "IAM: serviceAccounts.create, delete and setIamPolicy (Workload Identity)."),
+    ToolSpec("get_identity", "Identity", "Get an identity", "The identity's account, level and Kubernetes service account.", (RESOURCE_ID,), RESOURCE, READ_ERRORS,
+             "Read-only.", "IAM: serviceAccounts.get."),
+    ToolSpec("delete_identity", "Identity", "Delete an identity", "Delete the identity's account; what it was granted goes with it.", (RESOURCE_ID, WAIT), RESOURCE,
+             DELETE_ERRORS, "Needs can_destroy.", "IAM: serviceAccounts.delete."),
     # ---- job
     ToolSpec("create_job", "Job", "Create a managed job", "Create an empty managed job that runs to completion (Cloud Run jobs): its identity, limits, tasks, "
              "retries, and optionally when it runs by itself. It runs a stand-in until the delivery layer puts a release on it; this service never runs it.",
@@ -411,7 +423,7 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Read-only; no secret is included.", "None."),
 )
 BY_NAME = {spec.name: spec for spec in CATALOG}
-GROUPS = ("Compute", "Storage", "Network", "Database", "Cache", "Queue", "Secret", "Cluster", "Service", "Job", "Load balancer", "Infrastructure", "Operations")
+GROUPS = ("Identity", "Compute", "Storage", "Network", "Database", "Cache", "Queue", "Secret", "Cluster", "Service", "Job", "Load balancer", "Infrastructure", "Operations")
 
 
 def render_markdown(catalog=CATALOG) -> str:

@@ -92,6 +92,15 @@ def info(resource, resources: list, project: str, drivers: bool = False) -> Conn
             return ConnectInfo(commands={"call": f"curl {url}"}, notes=["Callable without signing in: the operator allowed it and the request asked for it"])
         return ConnectInfo(commands={"call": f'curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" {url}'},
                            notes=[f"Ingress {resource.ingress}; a caller needs the invoker role, which use grants"] + ([] if resource.access else [NOT_GRANTED]))
+    if kind == "identity":
+        notes = [f"Holds the request's grants at {resource.level}; it has no key, and none is ever made"]
+        commands = {}
+        if resource.kubernetes_service_account:
+            namespace, name = resource.kubernetes_service_account.split("/", 1)
+            commands["kubernetes"] = (f"kubectl create serviceaccount {name} -n {namespace} && kubectl annotate serviceaccount {name} -n {namespace} "
+                                      f"iam.gke.io/gcp-service-account={resource.email}")
+            notes.append(f"Pods using the Kubernetes service account {resource.kubernetes_service_account} act as it")
+        return ConnectInfo(commands=commands, notes=notes + ["Machines of a group that names it run as it"])
     if kind == "job":
         region = resource.region
         notes = [f"Runs by itself on {resource.schedule['cron']} ({resource.schedule['time_zone']})"] if resource.schedule else ["Runs only when asked"]

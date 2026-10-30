@@ -20,6 +20,7 @@ from ..models.request import (
     ClusterRequest,
     ComputeRequest,
     DatabaseRequest,
+    IdentityRequest,
     InfrastructureRequest,
     JobRequest,
     LifetimeRequest,
@@ -38,6 +39,7 @@ from ..models.resources import (
     ComputeResource,
     DatabaseResource,
     Grant,
+    IdentityResource,
     JobResource,
     LoadBalancerResource,
     NetworkResource,
@@ -80,9 +82,9 @@ MAX_WAIT_SECONDS = 45
 POLL_SECONDS = 0.5
 DESTROY_ORDER = tuple(ResourceKind(kind) for kind in reversed(RESOURCE_KINDS))
 KIND_MODELS = {"network": NetworkRequest, "storage": StorageRequest, "compute": ComputeRequest, "database": DatabaseRequest, "cache": CacheRequest, "queue": QueueRequest,
-               "secret": SecretRequest, "cluster": ClusterRequest, "service": ServiceRequest, "job": JobRequest,
+               "secret": SecretRequest, "cluster": ClusterRequest, "service": ServiceRequest, "job": JobRequest, "identity": IdentityRequest,
                "load_balancer": LoadBalancerRequest}
-SEVERAL = ("compute", "queue", "secret", "cluster", "service", "job")
+SEVERAL = ("compute", "queue", "secret", "cluster", "service", "job", "identity")
 LIVE = (RequestStatus.PROVISIONING, RequestStatus.READY, RequestStatus.STOPPING, RequestStatus.STOPPED, RequestStatus.STARTING, RequestStatus.FAILED,
         RequestStatus.DESTROYING, RequestStatus.DESTROY_FAILED)
 MOVING = (RequestStatus.PROVISIONING, RequestStatus.DESTROYING, RequestStatus.STOPPING, RequestStatus.STARTING)  # a worker is changing the request
@@ -355,6 +357,8 @@ class Orchestrator:
                                    secure_boot=spec.get("secure_boot"), autostop_idle_minutes=spec.get("autostop_idle_minutes"), max_run_hours=spec.get("max_run_hours"))
         if item.kind == "storage":
             return StorageResource(**common, zone=spec.get("zone"), type=spec["type"], size_gb=spec["size_gb"], performance=request.storage.performance)
+        if item.kind == "identity":
+            return IdentityResource(**common, email="", level=spec["level"])
         if item.kind == "network":
             return NetworkResource(**common, subnet=spec["subnet"], cidr=spec["cidr"], public_access=spec["public_access"])
         if item.kind == "database":
@@ -396,7 +400,11 @@ class Orchestrator:
                     current = item
                     pending = self.state.get_resource(item.spec["resource_id"])
                     self.state.save_resource(pending.model_copy(update={"status": ResourceStatus.CREATING}))
-                    if item.kind == "network":
+                    if item.kind == "identity":
+                        identity = request.identity_named(item.spec["identity"])
+                        resource = provider.create_identity(identity, item, ctx)
+                        self._add_member(request_id, f"serviceAccount:{resource.email}", identity.level)  # granted with every member, at the end
+                    elif item.kind == "network":
                         resource = network = provider.create_network(request.network, item, ctx)
                     elif item.kind == "storage":
                         resource = provider.create_storage(request.storage, item, ctx)
@@ -722,6 +730,14 @@ class Orchestrator:
         change in flight left them in. A removal reaches every one; a grant those that are settled (see _apply_grants)."""
         return [item for item in self.state.resources_of(request_id) if provider.takes_grants(item.kind.value, getattr(item, "type", None)) and item.provider_id
                 and item.status not in (ResourceStatus.DELETED, ResourceStatus.PENDING)]
+
+    def _add_member(self, request_id: str, member: str, level: str) -> None:
+        """An identity this service made joins the request's access list, so it is granted on the request's resources as any
+        member is; it is not checked against the operator's domains, being the request's own."""
+        with self.lock(request_id):
+            entries = [entry for entry in self.state.get_request(request_id)["access"] if entry["member"] != member]
+            entries.append({"member": member, "level": level, "status": "PENDING", "resources": [], "error": None, "updated_at": None})
+            self.state.set_access(request_id, entries)
 
     def _apply_grants(self, request_id: str, provider: CloudProvider, ctx: ProvisionContext, only: str | None = None, held=()) -> None:
         """Grant each pending member (or the one named) on every settled resource of the request that takes grants, and on
@@ -1109,6 +1125,10 @@ class Orchestrator:
         service = ServiceRequest(cpu=cpu, memory_mb=memory_mb, min_instances=min_instances, max_instances=max_instances, concurrency=concurrency,
                                  timeout_seconds=timeout_seconds, ingress=ingress, public=public, network_id=network_id, egress=egress)
         return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, service=service), principal, wait_seconds)
+
+    def create_identity(self, principal, *, region, level="use", provider="gcp", name=None, labels=None, wait_seconds=0):
+        return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, identity=IdentityRequest(level=level)), principal,
+                              wait_seconds)
 
     def create_job(self, principal, *, region, provider="gcp", cpu=1, memory_mb=512, tasks=1, parallelism=0, max_retries=3, task_timeout_seconds=600,
                    network_id=None, egress="private_ranges", schedule=None, time_zone="UTC", name=None, labels=None, wait_seconds=0):

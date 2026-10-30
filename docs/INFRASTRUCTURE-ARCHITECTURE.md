@@ -223,6 +223,18 @@ The service's own identity then needs, once, from the platform team:
 | give a node account its project role | `roles/resourcemanager.projectIamAdmin` | an IAM condition, so it can grant that one role and no other: `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])` ([limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)) |
 | let a node account read a repository | `roles/artifactregistry.admin` | each repository listed in `providers.gcp.registries`, granted on the repository |
 
+### A workload identity
+
+`identity: {name, level}` makes an account for the request's own workloads (`id-<request id>-<name>`). No key is ever
+made for it. It joins the request's access list at its level and is granted on the request's resources like any member,
+on nothing outside the request; it is made first and deleted last. A compute group that names it (`compute.identity`)
+runs its machines as it, with the `cloud-platform` scope and IAM deciding the rest; otherwise machines run as no account.
+When the request has clusters, the Kubernetes service account of the identity's name in the request's namespace may act
+as it through Workload Identity Federation for GKE (`roles/iam.workloadIdentityUser` on the account), so pods need no key
+either; the connect block gives the two `kubectl` commands. Ranked first among the missing kinds by the research of
+2026-10-28 and confirmed on 2026-10-30: Datadog's 2025 report found 55% of Google Cloud service accounts with keys older
+than a year. The service's identity needs nothing beyond the node-account roles above.
+
 ### A managed container service
 
 `service: {cpu, memory_mb, min_instances, max_instances, concurrency, timeout_seconds, ingress, public, network_id, egress}`
@@ -395,7 +407,7 @@ python -m pytest tests/cloudinfra -q                # the boundary tests, no clo
 CLOUDINFRA_INTEGRATION=1 CLOUDINFRA_PROJECT=my-project python -m pytest tests/integration/cloudinfra -q   # one real machine, then destroyed
 ```
 
-The catalog has 51 tools: create, get and delete for each of the eleven kinds (plus list, resize, attach and firewall
+The catalog has 54 tools: create, get and delete for each of the twelve kinds (plus list, resize, attach and firewall
 configuration where they apply), the lifecycle tools (stop, start, extend and keep awake among them), access, and the
 operations tools. The MCP endpoint is `/mcp`; the REST endpoints are `POST /infrastructure/validate`,
 `POST /infrastructure/plan`, `POST /infrastructure`, `GET /infrastructure` (with `status` and `expiring_within_hours`),
