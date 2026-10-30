@@ -1,0 +1,192 @@
+{
+ "note": "gcloud artifacts docker images describe IMAGE@DIGEST --show-provenance --format=json, from the trusted-build run on 2026-10-30 (docs/DELIVERY-SPIKE.md section 14): a Cloud Build build of brianboti/fast-deploy at aafd68b, started through the API from a connected repository",
+ "provenance_summary": {
+  "provenance": [
+   {
+    "build": {
+     "intotoStatement": {
+      "_type": "https://in-toto.io/Statement/v0.1",
+      "predicateType": "https://slsa.dev/provenance/v0.1",
+      "slsaProvenance": {
+       "builder": {
+        "id": "https://cloudbuild.googleapis.com/GoogleHostedWorker@v0.3"
+       },
+       "metadata": {
+        "buildFinishedOn": "2026-10-30T19:18:06.412123Z",
+        "buildInvocationId": "afbc5e12-05db-4c1a-95ed-de8c0af87045",
+        "buildStartedOn": "2026-10-30T19:15:55.479262242Z"
+       },
+       "recipe": {
+        "arguments": {
+         "@type": "type.googleapis.com/google.devtools.cloudbuild.v1.Build",
+         "id": "afbc5e12-05db-4c1a-95ed-de8c0af87045",
+         "name": "projects/1071494834779/locations/us-central1/builds/afbc5e12-05db-4c1a-95ed-de8c0af87045",
+         "options": {
+          "logging": "CLOUD_LOGGING_ONLY",
+          "machineType": "E2_MEDIUM",
+          "pool": {},
+          "requestedVerifyOption": "VERIFIED",
+          "workerRelease": "legacy"
+         },
+         "sourceProvenance": {},
+         "steps": [
+          {
+           "args": [
+            "build",
+            "--build-arg",
+            "TARGETARCH=amd64",
+            "-t",
+            "us-central1-docker.pkg.dev/project-3e2167e6-db58-4ab7-a22/spike-images/appdelivery:bld-569b0ea7e103",
+            "-f",
+            "Dockerfile.appdelivery",
+            "."
+           ],
+           "name": "gcr.io/cloud-builders/docker",
+           "pullTiming": {
+            "endTime": "2026-10-30T19:16:01.901243047Z",
+            "startTime": "2026-10-30T19:16:01.894418192Z"
+           },
+           "status": "SUCCESS",
+           "timing": {
+            "endTime": "2026-10-30T19:17:22.736313984Z",
+            "startTime": "2026-10-30T19:16:01.894418192Z"
+           }
+          }
+         ],
+         "tags": [
+          "appdelivery",
+          "shop-team",
+          "dev",
+          "bld-569b0ea7e103"
+         ]
+        },
+        "definedInMaterial": "-1",
+        "type": "https://cloudbuild.googleapis.com/CloudBuildSteps@v0.1"
+       }
+      },
+      "subject": [
+       {
+        "digest": {
+         "sha256": "647ea40708608dba7635801a7d04095e38e2f00bc4c7c3d74a73d6148b42f528"
+        },
+        "name": "https://us-central1-docker.pkg.dev/project-3e2167e6-db58-4ab7-a22/spike-images/appdelivery:bld-569b0ea7e103"
+       }
+      ]
+     }
+    },
+    "createTime": "2026-10-30T19:18:16.861508Z",
+    "envelope": {
+     "payload": "eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjAuMSIsInByZWRpY2F0ZSI6eyJidWlsZGVyIjp7ImlkIjoiaHR0cHM6Ly9jbG91ZGJ1aWxkLmdvb2dsZWFwaXMuY29tL0dvb2dsZUhvc3RlZFdvcmtlckB2MC4zIn0sIm1ldGFkYXRhIjp7ImJ1aWxkRmluaXNoZWRPbiI6IjIwMjYtMTAtMzBUMTk6MTg6MDYuNDEyMTIzWiIsImJ1aWxkSW52b2NhdGlvbklkIjoiYWZiYzVlMTItMDVkYi00YzFhLTk1ZWQtZGU4YzBhZjg3MDQ1IiwiYnVpbGRTdGFydGVkT24iOiIyMDI2LTEwLTMwVDE5OjE1OjU1LjQ3OTI2MjI0MloifSwicmVjaXBlIjp7ImFyZ3VtZW50cyI6eyJAdHlwZSI6InR5cGUuZ29vZ2xlYXBpcy5jb20vZ29vZ2xlLmRldnRvb2xzLmNsb3VkYnVpbGQudjEuQnVpbGQiLCJpZCI6ImFmYmM1ZTEyLTA1ZGItNGMxYS05NWVkLWRlOGMwYWY4NzA0NSIsIm5hbWUiOiJwcm9qZWN0cy8xMDcxNDk0ODM0Nzc5L2xvY2F0aW9ucy91cy1jZW50cmFsMS9idWlsZHMvYWZiYzVlMTItMDVkYi00YzFhLTk1ZWQtZGU4YzBhZjg3MDQ1Iiwib3B0aW9ucyI6eyJsb2dnaW5nIjoiQ0xPVURfTE9HR0lOR19PTkxZIiwibWFjaGluZVR5cGUiOiJFMl9NRURJVU0iLCJwb29sIjp7fSwicmVxdWVzdGVkVmVyaWZ5T3B0aW9uIjoiVkVSSUZJRUQiLCJ3b3JrZXJSZWxlYXNlIjoibGVnYWN5In0sInNvdXJjZVByb3ZlbmFuY2UiOnt9LCJzdGVwcyI6W3siYXJncyI6WyJidWlsZCIsIi0tYnVpbGQtYXJnIiwiVEFSR0VUQVJDSD1hbWQ2NCIsIi10IiwidXMtY2VudHJhbDEtZG9ja2VyLnBrZy5kZXYvcHJvamVjdC0zZTIxNjdlNi1kYjU4LTRhYjctYTIyL3NwaWtlLWltYWdlcy9hcHBkZWxpdmVyeTpibGQtNTY5YjBlYTdlMTAzIiwiLWYiLCJEb2NrZXJmaWxlLmFwcGRlbGl2ZXJ5IiwiLiJdLCJuYW1lIjoiZ2NyLmlvL2Nsb3VkLWJ1aWxkZXJzL2RvY2tlciIsInB1bGxUaW1pbmciOnsiZW5kVGltZSI6IjIwMjYtMTAtMzBUMTk6MTY6MDEuOTAxMjQzMDQ3WiIsInN0YXJ0VGltZSI6IjIwMjYtMTAtMzBUMTk6MTY6MDEuODk0NDE4MTkyWiJ9LCJzdGF0dXMiOiJTVUNDRVNTIiwidGltaW5nIjp7ImVuZFRpbWUiOiIyMDI2LTEwLTMwVDE5OjE3OjIyLjczNjMxMzk4NFoiLCJzdGFydFRpbWUiOiIyMDI2LTEwLTMwVDE5OjE2OjAxLjg5NDQxODE5MloifX1dLCJ0YWdzIjpbImFwcGRlbGl2ZXJ5Iiwic2hvcC10ZWFtIiwiZGV2IiwiYmxkLTU2OWIwZWE3ZTEwMyJdfSwiZGVmaW5lZEluTWF0ZXJpYWwiOiItMSIsInR5cGUiOiJodHRwczovL2Nsb3VkYnVpbGQuZ29vZ2xlYXBpcy5jb20vQ2xvdWRCdWlsZFN0ZXBzQHYwLjEifX0sInByZWRpY2F0ZVR5cGUiOiJodHRwczovL3Nsc2EuZGV2L3Byb3ZlbmFuY2UvdjAuMSIsInNsc2FQcm92ZW5hbmNlIjp7ImJ1aWxkZXIiOnsiaWQiOiJodHRwczovL2Nsb3VkYnVpbGQuZ29vZ2xlYXBpcy5jb20vR29vZ2xlSG9zdGVkV29ya2VyQHYwLjMifSwibWV0YWRhdGEiOnsiYnVpbGRGaW5pc2hlZE9uIjoiMjAyNi0xMC0zMFQxOToxODowNi40MTIxMjNaIiwiYnVpbGRJbnZvY2F0aW9uSWQiOiJhZmJjNWUxMi0wNWRiLTRjMWEtOTVlZC1kZThjMGFmODcwNDUiLCJidWlsZFN0YXJ0ZWRPbiI6IjIwMjYtMTAtMzBUMTk6MTU6NTUuNDc5MjYyMjQyWiJ9LCJyZWNpcGUiOnsiYXJndW1lbnRzIjp7IkB0eXBlIjoidHlwZS5nb29nbGVhcGlzLmNvbS9nb29nbGUuZGV2dG9vbHMuY2xvdWRidWlsZC52MS5CdWlsZCIsImlkIjoiYWZiYzVlMTItMDVkYi00YzFhLTk1ZWQtZGU4YzBhZjg3MDQ1IiwibmFtZSI6InByb2plY3RzLzEwNzE0OTQ4MzQ3NzkvbG9jYXRpb25zL3VzLWNlbnRyYWwxL2J1aWxkcy9hZmJjNWUxMi0wNWRiLTRjMWEtOTVlZC1kZThjMGFmODcwNDUiLCJvcHRpb25zIjp7ImxvZ2dpbmciOiJDTE9VRF9MT0dHSU5HX09OTFkiLCJtYWNoaW5lVHlwZSI6IkUyX01FRElVTSIsInBvb2wiOnt9LCJyZXF1ZXN0ZWRWZXJpZnlPcHRpb24iOiJWRVJJRklFRCIsIndvcmtlclJlbGVhc2UiOiJsZWdhY3kifSwic291cmNlUHJvdmVuYW5jZSI6e30sInN0ZXBzIjpbeyJhcmdzIjpbImJ1aWxkIiwiLS1idWlsZC1hcmciLCJUQVJHRVRBUkNIPWFtZDY0IiwiLXQiLCJ1cy1jZW50cmFsMS1kb2NrZXIucGtnLmRldi9wcm9qZWN0LTNlMjE2N2U2LWRiNTgtNGFiNy1hMjIvc3Bpa2UtaW1hZ2VzL2FwcGRlbGl2ZXJ5OmJsZC01NjliMGVhN2UxMDMiLCItZiIsIkRvY2tlcmZpbGUuYXBwZGVsaXZlcnkiLCIuIl0sIm5hbWUiOiJnY3IuaW8vY2xvdWQtYnVpbGRlcnMvZG9ja2VyIiwicHVsbFRpbWluZyI6eyJlbmRUaW1lIjoiMjAyNi0xMC0zMFQxOToxNjowMS45MDEyNDMwNDdaIiwic3RhcnRUaW1lIjoiMjAyNi0xMC0zMFQxOToxNjowMS44OTQ0MTgxOTJaIn0sInN0YXR1cyI6IlNVQ0NFU1MiLCJ0aW1pbmciOnsiZW5kVGltZSI6IjIwMjYtMTAtMzBUMTk6MTc6MjIuNzM2MzEzOTg0WiIsInN0YXJ0VGltZSI6IjIwMjYtMTAtMzBUMTk6MTY6MDEuODk0NDE4MTkyWiJ9fV0sInRhZ3MiOlsiYXBwZGVsaXZlcnkiLCJzaG9wLXRlYW0iLCJkZXYiLCJibGQtNTY5YjBlYTdlMTAzIl19LCJkZWZpbmVkSW5NYXRlcmlhbCI6Ii0xIiwidHlwZSI6Imh0dHBzOi8vY2xvdWRidWlsZC5nb29nbGVhcGlzLmNvbS9DbG91ZEJ1aWxkU3RlcHNAdjAuMSJ9fSwic3ViamVjdCI6W3siZGlnZXN0Ijp7InNoYTI1NiI6IjY0N2VhNDA3MDg2MDhkYmE3NjM1ODAxYTdkMDQwOTVlMzhlMmYwMGJjNGM3YzNkNzRhNzNkNjE0OGI0MmY1MjgifSwibmFtZSI6Imh0dHBzOi8vdXMtY2VudHJhbDEtZG9ja2VyLnBrZy5kZXYvcHJvamVjdC0zZTIxNjdlNi1kYjU4LTRhYjctYTIyL3NwaWtlLWltYWdlcy9hcHBkZWxpdmVyeTpibGQtNTY5YjBlYTdlMTAzIn1dfQ==",
+     "payloadType": "application/vnd.in-toto+json",
+     "signatures": [
+      {
+       "keyid": "projects/verified-builder/locations/global/keyRings/attestor/cryptoKeys/provenanceSigner/cryptoKeyVersions/1",
+       "sig": "MEQCIDGyyb9iPUu6es6_espAs2QWhJh1-vk6139nptvnkJsiAiALqlEjV76ln5JCWqqTKF0kNd9m_6MORjSYNdCA1j7CjA=="
+      },
+      {
+       "keyid": "projects/verified-builder/locations/global/keyRings/attestor/cryptoKeys/pqcProvenanceSigner/cryptoKeyVersions/1",
+       "sig": "OIgbqsFqegOFFjavyclp1REs5q1cmIqAPpRFYCWpsR1CrFZiY9fLJUSjIZEcFW4kKx4jKugIiwqiwolnyqnme5bxdcHMzga4Ygy0BifXUnP8smyVxjOMk0QvG3Vb-y5Kcm4VA-976bmuJpx7tinZze2kJZnsY1WstAekJCfSjpOxyD_H9RaEEUphB_zBBXCxiGfO0WICgNmkP2sMekqIX5zLkGSQ3Kx27GC87GKf3_AQtXcDA118c75VUou-xsoqpxk7A5OKsyMwor1nCBfQEUBJyr-sD8Mx3klYTXZPJxS96-Vp9YmCt_7D5DlUU8DQcmeDT7pUv3FfigQ2syceicTRFXsjJ7nDB2DNP4ohWzn84AytOqMYOaDeIQdGfhCvaBnJmCI56dAuif0ZzfiK-IJrFG88qwnB27KCsZowqsAYg2QzbWFGQqMewkbbXzk0GWxbQ7ayKTnkXZyajMNtpBVaYTz_V4Mg0ZYpBH_dC9NIw3nRq_BKfAeA0ZzQWflT2rim2RoxJbvmRWVbFWb1iFyLXQPprxDXhk4FyO2ZqCcwNrIK-1BfZ3dvqa1EJubDgspsa41olMfRfKXYv3ROMrT1P_D5Wheaz9Iu02-sgE1gKtSpbIcAJZ77ZcQ-uSGM-wTFUEqBHvWK4a5x4BDCdqdkJsHxiLY0AWP52TlcUD76Z2s6LhvRCM_1OYauUGtuboFhPXJiBmhUx_tAUab8reVRcvNxE-mX_d03p6ujB5PXdYATcaXw0-AHqtVJqgjPFqLfPKSZ3oNS0CRe6bCqeiiZ28ukpfJLcIYYkUdvdPN_T-8Y7fKLDYAvEa6P0MsaQG0kJpWdrOPvLSx9YW6O--S8biB7etXOz4zyNBaAg8yjiB7tJrhWaUkPoKdWRjCaxyiTq7EAC7ObZdRkvBk1EsaPu97F10D3vJ0zZRaFSp_ZlCEDxjgcoiQh2NsibLB4trIYR6aSQ5pXusyoFxjIokncLd7syLhn6XXdAttMCWOn-jKrLxVqQcd09ZldApDOYP3NOMcJDFJHploBZ5q4oWbRwPJtQKRb4aW_4EsrzIOH2kuRRgzY4DPzjWveWFQo6eGxFRgsaWvPxvmV2rvpP7_jk-Gq0PBFrf1njwOfENXyhvgmS4ZcPu_ai8LdZBg8TwtU5LYC_DV81jkE8DWI69mMQe5lqKQC2oi_R7e2PEBBiHJojTeMpPjpyHIZVWJXTsOqM3KgcvtBi5QGuaX_yzxFgxnSvnCSiH8PgmeFBzEauKyeztQAiDVaR2Y3I35B9TC2VGq7-AD1grEawFgSJkWqg2rr65jq2xWAD8U4nw87EPddDW3VKzhdNKdA3adGPaNoeFxhovxJxwP6g6R2bDbbNdpsuogC-_nAsu124OcLbwE8SB4O5AGVu8pA_Es-uyBVkEWiSmWeIgfNBZgQo0jdp4ZKkTwJxk0U7EuTyNXjfbZ8Q3ByA5-Ngbnk_HXfsV8lshWmpdyEDUuKFKw2J0sGO4dTDzTPddj8YR6O562vh5r6UjpQrXAU_TahFPivFbrz1sdjLq_WerVYXXfN2do0pH7JKBuUK5zhOu6XXMEQ0ZnYuV06HTnnimf6sE4ugKrUVVfQscGGYm-eJwLKtcZmM1sIp5bNwtAwiNzeLQql1qkDJmhJnCv1qdMHdOGUa1iVJC9ZyzJ0oKAK6inDaGqd78qkHXV0mgnNR01tv6bpFoQcEUZGJ6j-k_R6Mi7Oz0eIsrxe9jWbcjUNuuvbvu9XM6oc-rmTUXX7TtuMxLBK_ZfRQoq_LBq05kGB9wMwP30QQ8Kehu4kuWnZ9cw2ArqnirOnu5kswHJ58JXxii2OTUxhUAT_2vjp9pmHb665Z9h1WWSvuU_oDLxistCZCLOSRBye2TLYuXxs6eavVT6TA7oMj1P6b5EIH6dkcHaYMZfh3OBoNGMXUdt5rKNa0vLef3BP7hCtP60Bm4_i09GOeqzWC9vy0sh24CObK3CWkhXvMvCE9UKWygjwX2u7mgWvJEUWvJZo6WeDdFDj-CBoFZxAXselJ8n_V5cZylubOiA_j_1D1OJK0ZwHtpojbPOmSabwLaJKr6Ph2YOqbaYdznE0SSa2PtZf5R5ne8Fg6Q6WwstAafivaFpwQMQAHKKgnBo2tkAqQSh_P8do-DshARAIpVodx7Vng2RtorKYg_cDigMzwAru4kLGBxaK5o3A3dkBZaUA1raxOaeo7X55Gi3lZbP59PoK6o9pai1hQ5-1NNs3yqbEbYAZ2IaiKpx5pdjTjay7KgieuT_HnimZPtbubPCSfn8Cu0pX1pqFZw_ylL-Qq8dYwuXh1r9GoBFFz3o7jwkRiTVDtmti_nw5zD8ozBK1BwPnB7Btav4d4QQE-zTZDHtKDsIxWk_fA35uxYCVErbUgW-zJcv8elgrzMdfP64LSxNJZqJgiEenR2alBRLz9e41Rz04jf19LRgSaydiCV72OTZPmQKh4YY4DE7QfTOCHO7CtBkye9tu7ZpWlldNwObC46D_lFIhFM9M86eIDYxzIjyjEgzU3vMHFeR6zwO17Epe2e2-_FFFmPOMZkOr1vdk4RuUDPsmNsW-1mOCln86jtPl-OEqtvQYAAz6sn30StwK7hPzkS58HcbIqLH55b0FA0MAFo0aM8hSprnOqQ9mnZo2ZbJ0tcaUf31wFGdcRAztA-ADTSWuhL9RnIxFgdTlblueijg7Ug3LnT_O3Mvt7HpaWHCBs78zMI4J4XzCDua_tsha1NnMcbPqLNB07URWAXM1Ej8Q06koYahUBdqLeR_YFmSpXD9hIBDsvgAOhyy-jGOEH2Q5SppKrkME73HWidrQqn1YUpXHFjGn7q5-3AddL1vA5EqLYH2x4V8NZg7xAkpEvCdc5WVhhw4MluF7g5T0mXFVDc-Vdhcq6frSYTIXcxSwAmjoTkB971m2FsLg9zJnhixsi5RtD_o1d5j0UeTzA2f1-swlFziJ_xjAClECVjncPr6VIDCGIp65d_YRjMvfvcQU5dorWpCz2If5MlhFtK3FMgGHPmXcPIkyk-y2vkm2bj-70HHdSZpmAct-DTCUvX4yTW5XVPVbbMTtNYq8vJK8suzRjxzrxl18tdj500SF0dpgZYznsK2t3EtfYQSkWuHVLpIQr_jIwc11n20ZgfFvEOj731td4ge1z2Bs9Ne-mYBzDA_NreT_oaYSKKFj9GaSZNURKZPQcTqM85rnc_vo2qkThkqmbkfKhHZKhEeF5U8wpYDeQw6zCpOOqw8x9hnkO-UaBCPQ_r7Lhpxysyi4xVuOMB5IFWffNPvPOf9FvAPaiUMSEl0tT-0rhcB5BF7IgiCyyleDTgatKSNC4Q77RIRyJ2Xu0CYZZdJiFT5kEXM6gzhzRVVvbfDP6-dbfGhwWOevkmcYP1RK9BVIdngU5Rjd7r5uDVxTvQHkEVQ1S26JyjTAHtRnV4mTab-T_JPaakhK7SoGXvNGOEsXqHm_7lp8H4pes_4IyX4bAXdwpsikMQE9kGDoYZSjQxVQVa0nVvCYMV-PuMxILizCYhlP3At6p9iaZOi_vFi_fuHeLRwceJ2UKt7SquPTOicp7B8S4gu8IdF2oaGhVS-wJLTy6-ESmsZyNW1pe35L3mvTiKMc9n_07d5ayzSSwP7-P4Bi1MhQcQDcAfSIAi0yFTw6g3qSiDQzxu3tu38nfp8jGbq76z7IoShHk28iBd2tDQ7D3puQ5jwwMNqAOplMEVj44rEw1rZQ0tGknYp2fLkbfDCXn2rksfvf22b7x5msyZQdoWHgodoaluWqdCTg6tdnWIQyd5SJkuq5Hdk7OS-FTlvAD6yx1MRHrAQsstGTuSQiX56NEAhotsocWE5QHS17-UrX5LhsVV0t2J05Yw6AB5ddHpMsz9TXriCQTJggSbejHqqPkYOJHlfG0gAhzOsivWndoCe50pSwNPinWgbp712WX4JSNLcswDDQzFFLg5arh98GKObqJN-mDvSLGcLTIgr8TIKDeM6zJRITa9z1-NAR7esnK3n2JZt4bgtRDb6D-DtIZauzv44bA6M3fswmoHY9OemDzkKxuNBqndmPWQhwSzD80GqXsNPUHPtOMoyGV2dCGkzhEqsFZtAM4oFitjUaxayizqANjRgBhv91zsLZ8N4TQDm7AZ0stIZYFPk0gpeNfCL8KqgC_6W0PEobmPFbzjmIuymz0tjkKYFvUl8CYN8OII4UFztdoVeF39mTTZ8c8IPjGPTN7kGaTV1kvZh3MFxv4_anKS0PnqPObieJWEN1U4Q65kmIVqWic_L1W0IN9-jIJ37iDPKoIlbRZQU6ud0LIJLLcTqZ5FNGKHwIKC9CR22_1foLIjxYo_s8cn6OvL_a6AYPGKO6MjVxeHyLosDG6QM2U1RehqzH7_kAAAAAAAAACQ8XHCYw"
+      },
+      {
+       "keyid": "projects/verified-builder/locations/us-central1/keyRings/attestor/cryptoKeys/builtByGCB/cryptoKeyVersions/1",
+       "sig": "MEUCIQDicFGHEqh_Et-0boOA7tXxWkj2_cmqsKDGUM3vAPyh7QIgH78tsnjHZJpnidL4YmZiNX-DFXzK_0m6lvEtvga4XGo="
+      }
+     ]
+    },
+    "kind": "BUILD",
+    "name": "projects/project-3e2167e6-db58-4ab7-a22/occurrences/0029ce90-acd9-44e4-9728-cadea9a9cc2c",
+    "noteName": "projects/verified-builder/notes/intoto_afbc5e12-05db-4c1a-95ed-de8c0af87045",
+    "resourceUri": "https://us-central1-docker.pkg.dev/project-3e2167e6-db58-4ab7-a22/spike-images/appdelivery@sha256:647ea40708608dba7635801a7d04095e38e2f00bc4c7c3d74a73d6148b42f528",
+    "updateTime": "2026-10-30T19:18:16.861508Z"
+   },
+   {
+    "build": {
+     "inTotoSlsaProvenanceV1": {
+      "_type": "https://in-toto.io/Statement/v1",
+      "predicate": {
+       "buildDefinition": {
+        "buildType": "https://cloud.google.com/build/gcb-buildtypes/google-worker/v1",
+        "externalParameters": {
+         "buildConfig": "eyJzdGVwcyI6W3sibmFtZSI6Imdjci5pby9jbG91ZC1idWlsZGVycy9kb2NrZXIiLCJhcmdzIjpbImJ1aWxkIiwiLS1idWlsZC1hcmciLCJUQVJHRVRBUkNIPWFtZDY0IiwiLXQiLCJ1cy1jZW50cmFsMS1kb2NrZXIucGtnLmRldi9wcm9qZWN0LTNlMjE2N2U2LWRiNTgtNGFiNy1hMjIvc3Bpa2UtaW1hZ2VzL2FwcGRlbGl2ZXJ5OmJsZC01NjliMGVhN2UxMDMiLCItZiIsIkRvY2tlcmZpbGUuYXBwZGVsaXZlcnkiLCIuIl0sInRpbWluZyI6eyJzdGFydFRpbWUiOiIyMDI2LTEwLTMwVDE5OjE2OjAxLjg5NDQxODE5MloiLCJlbmRUaW1lIjoiMjAyNi0xMC0zMFQxOToxNzoyMi43MzYzMTM5ODRaIn0sInB1bGxUaW1pbmciOnsic3RhcnRUaW1lIjoiMjAyNi0xMC0zMFQxOToxNjowMS44OTQ0MTgxOTJaIiwiZW5kVGltZSI6IjIwMjYtMTAtMzBUMTk6MTY6MDEuOTAxMjQzMDQ3WiJ9LCJzdGF0dXMiOiJTVUNDRVNTIn1dLCJzb3VyY2VQcm92ZW5hbmNlIjp7fSwib3B0aW9ucyI6eyJyZXF1ZXN0ZWRWZXJpZnlPcHRpb24iOiJWRVJJRklFRCIsIm1hY2hpbmVUeXBlIjoiRTJfTUVESVVNIiwicG9vbCI6e30sImxvZ2dpbmciOiJDTE9VRF9MT0dHSU5HX09OTFkiLCJ3b3JrZXJSZWxlYXNlIjoibGVnYWN5In0sInRhZ3MiOlsiYXBwZGVsaXZlcnkiLCJzaG9wLXRlYW0iLCJkZXYiLCJibGQtNTY5YjBlYTdlMTAzIl19",
+         "substitutions": {}
+        },
+        "internalParameters": {
+         "systemSubstitutions": {
+          "BUILD_ID": "afbc5e12-05db-4c1a-95ed-de8c0af87045",
+          "LOCATION": "us-central1",
+          "PROJECT_NUMBER": "1071494834779",
+          "SERVICE_ACCOUNT": "projects/project-3e2167e6-db58-4ab7-a22/serviceAccounts/build-dev@project-3e2167e6-db58-4ab7-a22.iam.gserviceaccount.com",
+          "SERVICE_ACCOUNT_EMAIL": "build-dev@project-3e2167e6-db58-4ab7-a22.iam.gserviceaccount.com"
+         }
+        },
+        "resolvedDependencies": [
+         {
+          "digest": {
+           "gitCommit": "aafd68bc704912b732fffc4a071c7a3db31340ca"
+          },
+          "uri": "git+https://github.com/brianboti/fast-deploy.git"
+         },
+         {
+          "digest": {
+           "sha256": "f772ab459889c67835bd959c2b9e9351f2c0752c4f989710ecda20c229f0733e"
+          },
+          "uri": "gcr.io/cloud-builders/docker@sha256:f772ab459889c67835bd959c2b9e9351f2c0752c4f989710ecda20c229f0733e"
+         }
+        ]
+       },
+       "runDetails": {
+        "builder": {
+         "id": "https://cloudbuild.googleapis.com/GoogleHostedWorker"
+        },
+        "byproducts": [
+         {}
+        ],
+        "metadata": {
+         "finishedOn": "2026-10-30T19:18:06.412123Z",
+         "invocationId": "https://cloudbuild.googleapis.com/v1/projects/project-3e2167e6-db58-4ab7-a22/locations/us-central1/builds/afbc5e12-05db-4c1a-95ed-de8c0af87045",
+         "startedOn": "2026-10-30T19:15:55.479262242Z"
+        }
+       }
+      },
+      "predicateType": "https://slsa.dev/provenance/v1",
+      "subject": [
+       {
+        "digest": {
+         "sha256": "647ea40708608dba7635801a7d04095e38e2f00bc4c7c3d74a73d6148b42f528"
+        },
+        "name": "https://us-central1-docker.pkg.dev/project-3e2167e6-db58-4ab7-a22/spike-images/appdelivery:bld-569b0ea7e103"
+       }
+      ]
+     }
+    },
+    "createTime": "2026-10-30T19:18:17.952957Z",
+    "envelope": {
+     "payload": "eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJzdWJqZWN0IjpbeyJuYW1lIjoiaHR0cHM6Ly91cy1jZW50cmFsMS1kb2NrZXIucGtnLmRldi9wcm9qZWN0LTNlMjE2N2U2LWRiNTgtNGFiNy1hMjIvc3Bpa2UtaW1hZ2VzL2FwcGRlbGl2ZXJ5OmJsZC01NjliMGVhN2UxMDMiLCJkaWdlc3QiOnsic2hhMjU2IjoiNjQ3ZWE0MDcwODYwOGRiYTc2MzU4MDFhN2QwNDA5NWUzOGUyZjAwYmM0YzdjM2Q3NGE3M2Q2MTQ4YjQyZjUyOCJ9fV0sInByZWRpY2F0ZVR5cGUiOiJodHRwczovL3Nsc2EuZGV2L3Byb3ZlbmFuY2UvdjEiLCJwcmVkaWNhdGUiOnsiYnVpbGREZWZpbml0aW9uIjp7ImJ1aWxkVHlwZSI6Imh0dHBzOi8vY2xvdWQuZ29vZ2xlLmNvbS9idWlsZC9nY2ItYnVpbGR0eXBlcy9nb29nbGUtd29ya2VyL3YxIiwiZXh0ZXJuYWxQYXJhbWV0ZXJzIjp7ImJ1aWxkQ29uZmlnIjoiZXlKemRHVndjeUk2VzNzaWJtRnRaU0k2SW1kamNpNXBieTlqYkc5MVpDMWlkV2xzWkdWeWN5OWtiMk5yWlhJaUxDSmhjbWR6SWpwYkltSjFhV3hrSWl3aUxTMWlkV2xzWkMxaGNtY2lMQ0pVUVZKSFJWUkJVa05JUFdGdFpEWTBJaXdpTFhRaUxDSjFjeTFqWlc1MGNtRnNNUzFrYjJOclpYSXVjR3RuTG1SbGRpOXdjbTlxWldOMExUTmxNakUyTjJVMkxXUmlOVGd0TkdGaU55MWhNakl2YzNCcGEyVXRhVzFoWjJWekwyRndjR1JsYkdsMlpYSjVPbUpzWkMwMU5qbGlNR1ZoTjJVeE1ETWlMQ0l0WmlJc0lrUnZZMnRsY21acGJHVXVZWEJ3WkdWc2FYWmxjbmtpTENJdUlsMHNJblJwYldsdVp5STZleUp6ZEdGeWRGUnBiV1VpT2lJeU1ESTJMVEV3TFRNd1ZERTVPakUyT2pBeExqZzVORFF4T0RFNU1sb2lMQ0psYm1SVWFXMWxJam9pTWpBeU5pMHhNQzB6TUZReE9Ub3hOem95TWk0M016WXpNVE01T0RSYUluMHNJbkIxYkd4VWFXMXBibWNpT25zaWMzUmhjblJVYVcxbElqb2lNakF5TmkweE1DMHpNRlF4T1RveE5qb3dNUzQ0T1RRME1UZ3hPVEphSWl3aVpXNWtWR2x0WlNJNklqSXdNall0TVRBdE16QlVNVGs2TVRZNk1ERXVPVEF4TWpRek1EUTNXaUo5TENKemRHRjBkWE1pT2lKVFZVTkRSVk5USW4xZExDSnpiM1Z5WTJWUWNtOTJaVzVoYm1ObElqcDdmU3dpYjNCMGFXOXVjeUk2ZXlKeVpYRjFaWE4wWldSV1pYSnBabmxQY0hScGIyNGlPaUpXUlZKSlJrbEZSQ0lzSW0xaFkyaHBibVZVZVhCbElqb2lSVEpmVFVWRVNWVk5JaXdpY0c5dmJDSTZlMzBzSW14dloyZHBibWNpT2lKRFRFOVZSRjlNVDBkSFNVNUhYMDlPVEZraUxDSjNiM0pyWlhKU1pXeGxZWE5sSWpvaWJHVm5ZV041SW4wc0luUmhaM01pT2xzaVlYQndaR1ZzYVhabGNua2lMQ0p6YUc5d0xYUmxZVzBpTENKa1pYWWlMQ0ppYkdRdE5UWTVZakJsWVRkbE1UQXpJbDE5Iiwic3Vic3RpdHV0aW9ucyI6e319LCJpbnRlcm5hbFBhcmFtZXRlcnMiOnsic3lzdGVtU3Vic3RpdHV0aW9ucyI6eyJCVUlMRF9JRCI6ImFmYmM1ZTEyLTA1ZGItNGMxYS05NWVkLWRlOGMwYWY4NzA0NSIsIkxPQ0FUSU9OIjoidXMtY2VudHJhbDEiLCJQUk9KRUNUX05VTUJFUiI6IjEwNzE0OTQ4MzQ3NzkiLCJTRVJWSUNFX0FDQ09VTlQiOiJwcm9qZWN0cy9wcm9qZWN0LTNlMjE2N2U2LWRiNTgtNGFiNy1hMjIvc2VydmljZUFjY291bnRzL2J1aWxkLWRldkBwcm9qZWN0LTNlMjE2N2U2LWRiNTgtNGFiNy1hMjIuaWFtLmdzZXJ2aWNlYWNjb3VudC5jb20iLCJTRVJWSUNFX0FDQ09VTlRfRU1BSUwiOiJidWlsZC1kZXZAcHJvamVjdC0zZTIxNjdlNi1kYjU4LTRhYjctYTIyLmlhbS5nc2VydmljZWFjY291bnQuY29tIn19LCJyZXNvbHZlZERlcGVuZGVuY2llcyI6W3sidXJpIjoiZ2l0K2h0dHBzOi8vZ2l0aHViLmNvbS9icmlhbmJvdGkvZmFzdC1kZXBsb3kuZ2l0IiwiZGlnZXN0Ijp7ImdpdENvbW1pdCI6ImFhZmQ2OGJjNzA0OTEyYjczMmZmZmM0YTA3MWM3YTNkYjMxMzQwY2EifX0seyJ1cmkiOiJnY3IuaW8vY2xvdWQtYnVpbGRlcnMvZG9ja2VyQHNoYTI1NjpmNzcyYWI0NTk4ODljNjc4MzViZDk1OWMyYjllOTM1MWYyYzA3NTJjNGY5ODk3MTBlY2RhMjBjMjI5ZjA3MzNlIiwiZGlnZXN0Ijp7InNoYTI1NiI6ImY3NzJhYjQ1OTg4OWM2NzgzNWJkOTU5YzJiOWU5MzUxZjJjMDc1MmM0Zjk4OTcxMGVjZGEyMGMyMjlmMDczM2UifX1dfSwicnVuRGV0YWlscyI6eyJidWlsZGVyIjp7ImlkIjoiaHR0cHM6Ly9jbG91ZGJ1aWxkLmdvb2dsZWFwaXMuY29tL0dvb2dsZUhvc3RlZFdvcmtlciJ9LCJtZXRhZGF0YSI6eyJpbnZvY2F0aW9uSWQiOiJodHRwczovL2Nsb3VkYnVpbGQuZ29vZ2xlYXBpcy5jb20vdjEvcHJvamVjdHMvcHJvamVjdC0zZTIxNjdlNi1kYjU4LTRhYjctYTIyL2xvY2F0aW9ucy91cy1jZW50cmFsMS9idWlsZHMvYWZiYzVlMTItMDVkYi00YzFhLTk1ZWQtZGU4YzBhZjg3MDQ1Iiwic3RhcnRlZE9uIjoiMjAyNi0xMC0zMFQxOToxNTo1NS40NzkyNjIyNDJaIiwiZmluaXNoZWRPbiI6IjIwMjYtMTAtMzBUMTk6MTg6MDYuNDEyMTIzWiJ9LCJieXByb2R1Y3RzIjpbe31dfX19",
+     "payloadType": "application/vnd.in-toto+json",
+     "signatures": [
+      {
+       "keyid": "projects/verified-builder/locations/global/keyRings/attestor/cryptoKeys/google-hosted-worker/cryptoKeyVersions/1",
+       "sig": "MEUCIQCGRFfbEbeQ34xH9s5glBEk7XJmS5f7slw_CWfFnyXoywIgBblCbMVYvhYOtQGY5MSKe9AhHEIXJ7-SKrU2538ayhY="
+      },
+      {
+       "keyid": "projects/verified-builder/locations/global/keyRings/attestor/cryptoKeys/pqcProvenanceSigner/cryptoKeyVersions/1",
+       "sig": "QuvEZkpf0ao-y3DYLYS_KhfpuYtfyc3aPMVRlNp_aA2dDUPhs1mM90zAdD9xOK7TrKSx3MK6HmG2X-A-47rWMU3_5OEEc6cnA7AYTVFH2-Rx6NbE4T94ebQJ4Z96TiYGCua2yGs4Pi6y0763YjC8iAd-nGTd1IUbC1UAy7bFffz8bZzTlCfprSblDjG1bRCcm1iEK3nPafGgdvsAY7ZjNrZWKk_m3bhFvPy4afcwaATmCQ8r4DznUhsHIuYAmIP9y-MgUR9Klm9JXe_mOq2kNgSav1jMYuhjBLTTtN2WbQBAXalpHUjEB5DwYKH18Ue2ljcwVJ29qW0scwdphoIy7kUJE2-lOd6ZQduEPaNG8uxh79PfsP22bZmvbQC76QBbaM6FUyjR79TfdYecA1ztACVx2bW2U0Wv5RA9y4vzDiO547f_2fui07US_JFRwL_jRNHjvZn5qhQhi0wbdiDT7NNeRGjy17N9ZRpfViN0plMEjh3s2DwTcoO81jxUNegdHELTojSFbnRl57qhsadnHE8fcDyV61nDRSos8b-ls6nEI5soRykdYa5cZ955xZSPciPSDDcZrp7ijyJfi4f7tfvtEihb9sXe2wcptyaXhk8VljyMWGPfztgjpiCpU-v5cGH3D_e76ojl6RJ5kBEfnbUTVOKQWbZvabvP7CG1jUqEydepwnujyAJ7yyqbPTzCdfEG6zD9oxuSPfAJnM5QnXhVnI5orG-RtHO_sjXA-FhP9lEQAidRF5I9R_dMkxaf_xde3kBN64FikUaR9pGiPBiVDd7ew5M-alyCzeCjlO_UDfQs06p-7B4UwVX2ykrAP8PwlP22fUVAXQBfR3AzNBu6yWlT-2balJM3M8YqBPErzq8vkhmaX5ytlqc5pyTWD9QxFj7LxcFQKcPLvNeCtAKr4AstxBA-X5yTg3H8QaX_-bx6h0r0X1E6VaIzLY0pwY4bi2M4zwEdBrsC1xyHJ9oT9jBzHhtbT4LZY-bvheZThSH2O-y0SJvkmbhOENfMPjFv2nPg-k-aAJGKLxXggcQXDZU0gca4mWKdfKfxzjvUyt42oxuldEsvTtskGv9htfQfvsoQSo8EdyZHalMO5oJPHWKrH1SOaxyi6gS6RNqXOrwm5vtW_FGWGvMt2VOWpcz1TC96VKONBLjumQ2QEROtGKVhq8tB0oPwuNpdAFcg3OEsXUXZYSe8asEr7SlbWpJ12LyLi8xRYxkSJpzAs9on4PWLiKzVs4MmuZ8m5hPqSGTltofgW2v3mKpTgdMRi838AERbP4sZe7SowH7RjlhUwteEJGQY2-N3doxrRJyK_JG0z7luXuvuMSw5cQXfKtewMXBpE8j5iuwtVAyAwdGvqjR48P9Wm6v-jbhilbUkJgsObnW20h7b724nZ2aT-Wf-b7gR5Nb2DYWm89YHzdXFo6hqY7Igss4ZmLnN6ML4-Hh8KMw-8ViNFjuyY9l7aRcjlavskAtyDapjTjgY7IKVSJuHdGI0X1f_7w57QyAMaVPdfTFYfEAmu-wgeUkOz0scrVFErUcazohr-avHC_Cs8y24kDvMti0oESVkaQsOgxRdshmbHyhdpOwfpLS0u7r6WODqCeivoo37c3ikCQLv-OCYuUdmTBiAReQrb6Vr7JTmxBQ0qqvpIEXnkoh7zgY8cypALe7mpQBz1aIWL_HPrLG5YDuOh2XfYcnO5c04m61nfdEq82GKtemuWF3bWCrFBHjwQ2sQzmXH9Ja1wPM67IvuCFOlGc1reFaKu0o-1s4l2HzTk7yAW4gSYhJUj2xKMGS55bZvkwbB4wK3S9DNh1IDEH6a0Q68JVzQyAg-ynAxAfnpHXMyG2QoZ76hG3Q2GEvBkVBAbtuouqgZQWFVbjLGe3v-XgMIObFFYtCNmwFHH-33LUKd897KRGA4qQM0EaYtsf8HlJ1R_Xl8_WqzCdfshTvqLsar44_V4GIJ-hHSkLO96J0iBMxSonJJIlmv9kHPcyKuLM0MiBkU_ZkVseOsyjJRO3klwZB8YE8_ohqRUiuy5ZwLDi_M_0Qm3t8QuEMYP4G8Kv6CmDe5jntOGu0DJUQ6r2tOjNnB9V98oyfWy0SBASAxouLebCWaDSUASXCm03nKOOxZ5SsVcr2eWvAKHHhQITHNYhMtZWmLx6wvc--4toe8jivRcO32Si3mrTYqCObx0iIBcK01gOoHdz45LHvQjyVtWHSsRpobWLRjo40moAkpzgyQzghetP5IF6OHi4gCcKsh0wl_uC5Mo-BVCtX2MxGY1XI4Ib7TShTiw832Q9BjH-G1mInfSC8ZcSij_SvgSMm1G1N_VVrlamo6oJIHO5UTZLygNKb6aBJpGITTlTmnY3lipO_zqquTlOEYqWoRUFZRkoYW3BqlSbgBYFFvjKTyumpC53t81aCi1xQ2-1bXaIKguiDdBaLbfY5ikPtxDJBXG3CnWZRqgwjg3qw8hTWXflD8KaleLmyl_a2b4qE9Ttpe4Z0u8csQnnYgDnIcoCFCrNNxg_d8F5rKii_b_RHNqK-BcQBck54apPgR46ikoO6cPma2hv-bhADrLoG8P5hYrXMa3slMOcX1hbDcIHP1E142yKSzDtKyugYNRHJCAXzdK9LZltCyEQRfyGB86mwQIyZenOt3mUceAtNDuW7GN_MGIZNAmnuGuw_B-h6v3mMywQHwVcPetHN7CIKYS5V6lo127PniRSWrfqrIzAftz6AryNqA1UnDPZBmjP1s1KINktbpdbjQsedWsS5fUGKBJjdfF2A2770ruMzgQLBltjgAkBiljTmspFo-Y4NniCUVw5w-R-LkVvm6bfiiE8xuLdUxCOtKqpkM5fqO7sGhIf6L_PhA4TCRtImxhU8WmvUZW1dE7iTMZZ8o21Fuj795iwO4Cqa30dX7O92fYIdUVjvGESM4UOGPWJVcNtJyLAckpmobuoAbo0e2TgW_vSnYaIyG8MbyMHITfEvb3oldRW4NExHfb05ld3SH2QlzEmnfw5a_YmsbPZsRyEg9ymm6UnXcwebBI8kZbMpHDh7WTiJv_DjyhcILcDdFQK0TJAuzyrNtBVz6DrCzS6-rHjnaABtTEBgdZCJS0HQbSzpiMtYTI-h8vgpPCFJMDLUQn5ha-C_kqsfmNAUtZ8fJCoXedoo7j-2KGluabtq87eOhwhz7ldkVSwglx-sOiZlNbKIiILaQlyTVkZ7BddEhmvOuDvOQfUcYl6hEqyzUX78r48C_fGPL8rH4zXmtI2TJ-Lyq9xEBvwnxS6rf5cWW0vbkgrq6Ye_T1i7pndFFioeNm5QPcg_twY2EPJ5Y9xWCVquC-vv1vmQlnWf071KZuxkZJELtjPbv9FW8GreKRILUX6EPcc5UTIJVOauQtmyZi7tzmgGLvRinbgSC5cMiuVwfRbxkYo4dMNUqDDOgM2onHB9hFn5Wl_PO8sDCXf4SVLzf-aDey1epQ2iVOrPqbAORjICXZoeySJFFiuriavfKnmlpGN6aNS0Vn2jIwp-hycFKvtgfoggi_EARTjPP_p9VQIswHhLMqakIxPEq7Le2YZ40gRoR_EjZF056F-bQhtexLyd4kxNPPIkKaHVjkKlWXzpIJzoGQPW_U_R1OMmPr4I9XWXP_3VSQP9IunxBbE7AtBXECFahAh0s78qCLvTXFxeOeTRWJN2eZnjSlCTcuZzKHZj95rZlka7BUWxfeLnwcn3agY_qyGJG-sfbijWDIRpauXHXOT7u0DkLMu10uLzfZUsjaZjV4S9nBnhgIm1Y880VzNupI200xHEcBHuTgxOWH9VDL54C2cGx5jR5STrkKl4Ln3vZ-CbNDtz-A1ni9Pu1RA07BuIZIajhoN00gTXTpZcLfqVaAnh8qUwKLmccXW9YkbxZV2341PuQkyw1WskDbkY4XFt8Y-bs58JvP1zfgUS8U5Z76TcSknKR-YEYpLyNf78c9QCqFIrS5KDv-P8wBm8IEmkHtsNCnHMApb7bbMs21bybUrqQyxa-J1lr5uXjtC6UCQb-sZaXOMQXc_si3XcHo7VEQS4A2FsAIW3IS_phkGdZ_a9bjacHoNpE_OPJCTikumtpguU4lO47jguWVj8MxV63kc6NhKqLe083K3Gm-Xr68ElTFBf0iCxrM9z8X3JqIzjJGBbJCmQGbg-WVM1hKBEVIrwqOXJXu6C4JVg6vBU1OqfwDB0SJPc9sLPMsgdgTmKxHfaRBnEbpJkg0NNvJfW8TND0uGEjbnMe4kJigwH0iynQGQAJYcT5BsQrHWwf9utWhU1IY_SW4TW1Z3Wtu9Mtn_LDNGBpL7TQLYbanJTEtd_7cgDnpmnxRNICDS9siJGbuLy91x47g5BCjqGotcfL6ktYWVpmi6nO9TlYc6arrur3AytEw9fk9P8AAAAAAAAACw8XICgw"
+      }
+     ]
+    },
+    "kind": "BUILD",
+    "name": "projects/project-3e2167e6-db58-4ab7-a22/occurrences/083042bd-e2d8-4b2a-896c-67988d0fe739",
+    "noteName": "projects/verified-builder/notes/intoto_slsa_v1_afbc5e12-05db-4c1a-95ed-de8c0af87045",
+    "resourceUri": "https://us-central1-docker.pkg.dev/project-3e2167e6-db58-4ab7-a22/spike-images/appdelivery@sha256:647ea40708608dba7635801a7d04095e38e2f00bc4c7c3d74a73d6148b42f528",
+    "updateTime": "2026-10-30T19:18:17.952957Z"
+   }
+  ]
+ },
+ "image_summary": {
+  "digest": "sha256:647ea40708608dba7635801a7d04095e38e2f00bc4c7c3d74a73d6148b42f528",
+  "fully_qualified_digest": "us-central1-docker.pkg.dev/project-3e2167e6-db58-4ab7-a22/spike-images/appdelivery@sha256:647ea40708608dba7635801a7d04095e38e2f00bc4c7c3d74a73d6148b42f528",
+  "registry": "us-central1-docker.pkg.dev",
+  "repository": "spike-images",
+  "slsa_build_level": 3
+ }
+}

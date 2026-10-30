@@ -200,7 +200,8 @@ runs builds as (a build always names it; the default build accounts are never us
 **Sources.** A Cloud Build 2nd-gen connection to the company's Git host in the trusted project (GitHub: the Cloud Build
 GitHub App installed on the organisation), one linked repository per source; the host's token is a secret in Secret
 Manager there, read by the Cloud Build service agent `service-NUMBER@gcp-sa-cloudbuild.iam.gserviceaccount.com` with
-`roles/secretmanager.secretAccessor`. Linking needs `roles/cloudbuild.connectionAdmin` once. The project must belong to
+`roles/secretmanager.admin` on the project, to create that secret and set its policy (found on 2026-10-30: the
+documentation names only `secretAccessor`, and creating the connection fails with it). Linking needs `roles/cloudbuild.connectionAdmin` once. The project must belong to
 an organisation (a user-specified build account needs it), and `iam.disableCrossProjectServiceAccountUsage` stays
 enforced: build account, Cloud Build and registries are in one project.
 

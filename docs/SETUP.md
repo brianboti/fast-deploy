@@ -178,6 +178,17 @@ COMPLETE` in `gcloud builds connections describe`):
 gcloud services enable cloudbuild.googleapis.com containeranalysis.googleapis.com --project $PROJECT
 ```
 
+The Cloud Build service agent creates the secret that holds the GitHub token, so it needs Secret Manager Admin first
+(the console offers this grant; the role may be removed once the connection exists):
+
+```bash
+PROJECT_NUMBER=$(gcloud projects describe $PROJECT --format "value(projectNumber)")
+```
+
+```bash
+gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:service-$PROJECT_NUMBER@gcp-sa-cloudbuild.iam.gserviceaccount.com --role roles/secretmanager.admin --condition=None
+```
+
 ```bash
 gcloud builds connections create github github --region $REGION --project $PROJECT
 ```

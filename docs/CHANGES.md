@@ -25,8 +25,12 @@ it ([research/RESEARCH-2026-10-30-trusted-build.md](research/RESEARCH-2026-10-30
 Upgrading: a release of an image that was built elsewhere is now refused. Link each source, create the build accounts
 (docs/SETUP.md section 4), add `build`, `sources` and `can_build`, and build the images to release. In `cloudinfra`,
 replace `access.workload_identity_pools` with `access.registry_writers` and revoke any federated member before
-upgrading, since a stored one no longer validates. Not yet: the release gate does not verify Cloud Build's signed
-provenance, and no build has run on Google Cloud.
+upgrading, since a stored one no longer validates.
+
+Run on Google Cloud on 2026-10-30 (docs/DELIVERY-SPIKE.md section 14): a build by commit succeeded with signed SLSA
+provenance naming the GitHub source, and a digest pushed by hand was refused. Making the connection needs the Cloud
+Build service agent to hold Secret Manager Admin (docs/SETUP.md). Not yet: the release gate does not verify Cloud
+Build's signed provenance.
 
 # Unreleased: the repository is the two services, and the documents say so
 

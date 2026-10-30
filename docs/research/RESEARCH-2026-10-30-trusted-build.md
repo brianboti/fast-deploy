@@ -108,7 +108,9 @@ the same gate if an environment wants it.
   `gcloud builds repositories create NAME --remote-uri=https://github.com/ORG/REPO.git --connection=CONNECTION --region=REGION`.
 - **Where the credential lives**: "authorization creates a token stored as a secret in Secret Manager in your project";
   the Cloud Build service agent `service-PROJECT_NUMBER@gcp-sa-cloudbuild.iam.gserviceaccount.com` reads it with
-  `roles/secretmanager.secretAccessor`. A classic personal access token (`repo`, `read:user`, `read:org`; fine-grained
+  `roles/secretmanager.secretAccessor`. **Corrected by the run** ([DELIVERY-SPIKE.md](../DELIVERY-SPIKE.md) section 14):
+  creating the connection needs the service agent to hold `roles/secretmanager.admin`, since it creates the secret
+  and sets its policy. A classic personal access token (`repo`, `read:user`, `read:org`; fine-grained
   tokens are not supported) can stand in for the app flow, with `--authorizer-token-secret-version` and
   `--app-installation-id`. So the GitHub credential is the platform's, in the trusted project, and no team or CI job
   holds one for this purpose.
@@ -166,7 +168,7 @@ inside".
 |---|---|---|
 | `appdelivery`'s host account (the caller of Cloud Build) | `cloudbuild.builds.create`, `cloudbuild.builds.get` (`roles/cloudbuild.builds.editor` has them; a custom role with these two is tighter); `iam.serviceAccounts.actAs` on each build account (`roles/iam.serviceAccountUser`) | the project; each build account |
 | a build account per environment, user-managed | `roles/logging.logWriter`; `roles/artifactregistry.writer` on the team's repository | the project; **each repository** the account may push to |
-| the Cloud Build service agent `service-NUMBER@gcp-sa-cloudbuild.iam.gserviceaccount.com` | `roles/secretmanager.secretAccessor` on the connection's secret | created by the connection flow |
+| the Cloud Build service agent `service-NUMBER@gcp-sa-cloudbuild.iam.gserviceaccount.com` | `roles/secretmanager.admin` to create the connection (found by the run; the page says `secretAccessor`), `roles/secretmanager.secretAccessor` on the connection's secret | created by the connection flow |
 | `appdelivery`'s environment accounts (unchanged) | `roles/artifactregistry.reader` on the repositories in `allowed_registries`; `containeranalysis.occurrences.list` to read provenance | each repository; the project |
 
 Facts behind the table:
@@ -233,7 +235,9 @@ worker's daemon; if so, the `TARGETARCH` argument becomes unnecessary.
 
 ## 8. The design to build, in order
 
-Status, 2026-10-30: steps 1 and 3 are built, and step 2's first half (a release names only a digest a build of this
+Status, 2026-10-30: the real run (step 6) is done for builds and the gate ([DELIVERY-SPIKE.md](../DELIVERY-SPIKE.md)
+section 14). It answered section 7's open question: the v1 provenance of an API build from a connected repository names
+the GitHub URI and the commit, so `slsa-verifier --source-uri github.com/ORG/REPO` should apply. Steps 1 and 3 are built, and step 2's first half (a release names only a digest a build of this
 service recorded for the same team). Step 3 took the operator's list of writers rather than a per-provider setting:
 `access.registry_writers`, provider-independent, applied in the grant loop. Provenance verification waits for the real
 run, so that it is written against Cloud Build's actual occurrence JSON rather than the documentation's examples. Steps
