@@ -20,6 +20,7 @@ from ..models.request import (
     InfrastructureRequest,
     JobRequest,
     LoadBalancerRequest,
+    LogExportRequest,
     MonitorRequest,
     NetworkRequest,
     NoSqlRequest,
@@ -41,6 +42,7 @@ from ..models.resources import (
     IdentityResource,
     JobResource,
     LoadBalancerResource,
+    LogExportResource,
     MonitorResource,
     NetworkResource,
     NoSqlResource,
@@ -266,6 +268,16 @@ class CloudProvider(ABC):
 
     @abstractmethod
     def delete_budget(self, resource: BudgetResource, ctx: ProvisionContext) -> None: ...
+
+    # ---- log_export (the request's logs routed to its own bucket or dataset)
+    @abstractmethod
+    def create_log_export(self, spec: LogExportRequest, planned: PlannedResource, ctx: ProvisionContext, created: list) -> LogExportResource: ...
+
+    @abstractmethod
+    def get_log_export(self, resource: LogExportResource) -> LogExportResource: ...
+
+    @abstractmethod
+    def delete_log_export(self, resource: LogExportResource, ctx: ProvisionContext) -> None: ...
 
     # ---- dns (a public zone and its records)
     @abstractmethod

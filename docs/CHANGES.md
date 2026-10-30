@@ -1,3 +1,12 @@
+# Unreleased: log export
+
+Second of the second round (docs/INFRASTRUCTURE-ARCHITECTURE.md, "Log export"):
+
+- **An eighteenth kind, `log_export`.** A Cloud Logging sink routing the logs of the request's machines, clusters,
+  services, jobs and databases to its own bucket or dataset, from a severity up if asked.
+- **Least privilege**: the sink's own writer identity is granted on the destination only, and loses it with the sink.
+- **Tools**: `get_log_export`, `delete_log_export` (71 tools); a full request makes it.
+
 # Unreleased: a spending budget
 
 First of the second round the operator chose (docs/INFRASTRUCTURE-ARCHITECTURE.md, "A spending budget"):

@@ -105,6 +105,11 @@ def info(resource, resources: list, project: str, drivers: bool = False) -> Conn
                            prerequisites=["Firestore has no policy per database: the platform team grants roles/datastore.user on the project once, with an IAM "
                                           f'condition resource.name == "projects/{project}/databases/{resource.database}"'],
                            notes=[f"Clients name the database {resource.database}, not (default)"])
+    if kind == "log_export":
+        read = (f"gcloud storage ls gs://{resource.destination_name}/" if resource.to == "storage" else f"bq ls {project}:{resource.destination_name}")
+        return ConnectInfo(commands={"read": read, "sink": f"gcloud logging sinks describe {resource.name} --project {project}"},
+                           notes=["Entries arrive within minutes, in hourly files in a bucket or a table per log in a dataset",
+                                  "A bucket holding logs is deleted only when empty"])
     if kind == "budget":
         budget = (resource.budget or "").rsplit("/", 1)[-1]
         account = (resource.billing_account or "").rsplit("/", 1)[-1]

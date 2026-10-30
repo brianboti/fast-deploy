@@ -28,6 +28,7 @@ DNS = "https://dns.googleapis.com/dns/v1"
 BIGQUERY = "https://bigquery.googleapis.com/bigquery/v2"
 FIRESTORE = "https://firestore.googleapis.com/v1"
 BILLING = "https://cloudbilling.googleapis.com/v1"
+LOGGING = "https://logging.googleapis.com/v2"
 BILLING_BUDGETS = "https://billingbudgets.googleapis.com/v1"
 LONG_POLL_SECONDS = 10
 RETRIES = 4  # attempts of a call Google rate limited, or of a read it answered 5xx
