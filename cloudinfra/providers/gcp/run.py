@@ -105,14 +105,14 @@ class GcpRun:
 
     def _view(self, resource: ServiceResource, found: dict, strict: bool = False) -> ServiceResource:
         condition = found.get("terminalCondition") or {}
-        if condition.get("state") == "CONDITION_FAILED":
+        serving = next((item.get("revision") for item in found.get("trafficStatuses", []) if item.get("percent") == 100), None)
+        if condition.get("state") == "CONDITION_FAILED" and (strict or not serving):
             if strict:
                 raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"Cloud Run could not make {resource.name}: {condition.get('message', 'no reason given')}",
                                           {"reason": condition.get("reason")})
             status = ResourceStatus.FAILED
-        else:
+        else:  # a release whose revision failed leaves the condition failed while the one before it serves on (found on a real project on 2026-10-30)
             status = ResourceStatus.UPDATING if found.get("reconciling") else ResourceStatus.READY
-        serving = next((item.get("revision") for item in found.get("trafficStatuses", []) if item.get("percent") == 100), None)
         return resource.model_copy(update={"status": status, "url": found.get("uri"), "revision": serving or found.get("latestReadyRevision", "").rsplit("/", 1)[-1] or None,
                                            "created_at": resource.created_at or found.get("createTime")})
 

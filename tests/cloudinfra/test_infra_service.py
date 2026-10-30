@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from cloudinfra.config import Config
 from cloudinfra.models import InfrastructureRequest
 from cloudinfra.models.errors import InfrastructureError
+from cloudinfra.models.resources import ResourceKind
 from cloudinfra.providers.gcp.run import STAND_IN, runtime_account
 
 DELIVERY = "serviceAccount:appdelivery-dev@example.com"
@@ -136,3 +137,13 @@ def test_only_warm_instances_cost_while_idle(tmp_path):
     cold = orchestrator.plan(InfrastructureRequest.model_validate({"region": "us-central1", "name": "shop", "service": {}}), who)
     warm = orchestrator.plan(InfrastructureRequest.model_validate({"region": "us-central1", "name": "shop", "service": {"min_instances": 2}}), who)
     assert cold.estimate.monthly_usd == 0 and warm.estimate.monthly_usd > 0
+
+
+def test_a_service_that_serves_on_after_a_failed_revision_is_ready(tmp_path):
+    """Found on a real project on 2026-10-30: a release's revision that failed leaves Cloud Run's condition failed while the
+    revision before it serves all traffic; the service is usable, and must stay so for a rollback."""
+    orchestrator, fake, who, response = provision(tmp_path, {})
+    fake.run_services["shop-service"]["terminalCondition"] = {"type": "Ready", "state": "CONDITION_FAILED", "message": "Revision 'x' is not ready"}
+    assert orchestrator.get_resource(response.resources.service[0].id, who, ResourceKind.service).resource.status == "READY"
+    fake.run_services["shop-service"]["trafficStatuses"] = []
+    assert orchestrator.get_resource(response.resources.service[0].id, who, ResourceKind.service).resource.status == "FAILED", "nothing serves: failed"
