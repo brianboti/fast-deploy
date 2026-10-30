@@ -15,6 +15,7 @@ from .loadbalancer import GcpLoadBalancer
 from .monitoring import GcpMonitoring
 from .network import GcpNetwork
 from .queue import GcpQueue
+from .run import GcpRun
 from .secret import GcpSecret
 from .storage import GcpStorage
 
@@ -29,7 +30,7 @@ class GCPProvider(CloudProvider):
     name = "gcp"
     supported_kinds = RESOURCE_KINDS
     stoppable_kinds = ("compute", "database")
-    grantable_kinds = ("compute", "storage", "secret", "queue", "cluster")
+    grantable_kinds = ("compute", "storage", "secret", "queue", "cluster", "service")
 
     def __init__(self, settings, api: GcpApi | None = None, token=None, kube=None):
         self.settings = settings
@@ -42,6 +43,7 @@ class GCPProvider(CloudProvider):
         self.queue = GcpQueue(self.api, settings)
         self.secret = GcpSecret(self.api, settings)
         self.cluster = GcpCluster(self.api, settings, kube)
+        self.run = GcpRun(self.api, settings)
         self.load_balancer = GcpLoadBalancer(self.api, settings, self.network)
         self.monitoring = GcpMonitoring(self.api)
         self.iam = GcpIam(self.api)
@@ -87,6 +89,11 @@ class GCPProvider(CloudProvider):
             elif unknown := [registry for registry in cluster.registries if registry not in self.settings.registries]:
                 problems.append(Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, f"Not a registry the operator lets requests name: {', '.join(unknown)}; allowed: "
                                         f"{', '.join(self.settings.registries) or 'none'}", "cluster.registries"))
+        for service in request.services():
+            problems.extend(translate.service_problems(service))
+            if service.public and not self.settings.allow_public_services:
+                problems.append(Problem(ErrorCode.INVALID_SERVICE_CONFIGURATION, f"service {service.service_name}: this operator does not allow services callable "
+                                        "without signing in (providers.gcp.allow_public_services)", "service.public"))
         return problems
 
     def plan(self, request: InfrastructureRequest, ctx: ProvisionContext) -> list[PlannedResource]:
@@ -162,6 +169,11 @@ class GCPProvider(CloudProvider):
                                                  "node_count": cluster.node_count, "node_disk_gb": cluster.node_disk_gb, "private_nodes": cluster.private_nodes,
                                                  "network": own_network or cluster.network_id or self.settings.default_network,
                                                  "public": {"hostnames": list(cluster.public.hostnames)} if cluster.public else None}))
+        for service in request.services():
+            mapping = "run.services.create, iam.serviceAccounts.create" + (", run.services.setIamPolicy (invoker check off)" if service.public else "")
+            planned.append(PlannedResource(kind="service", name=f"{prefix}-{service.service_name}", provider_mapping=mapping,
+                                           spec={"service": service.service_name, "cpu": service.cpu, "memory_mb": service.memory_mb, "min_instances": service.min_instances,
+                                                 "max_instances": service.max_instances, "public": service.public, "ingress": service.ingress}))
         if request.load_balancer:
             balancer = request.load_balancer
             group = request.group(balancer.backend_group)
@@ -282,6 +294,15 @@ class GCPProvider(CloudProvider):
 
     def delete_cluster(self, resource, ctx):
         self.cluster.delete(resource, ctx)
+
+    def create_service(self, spec, planned, ctx, network, secrets):
+        return self.run.create(spec, planned, ctx, network, secrets)
+
+    def get_service(self, resource):
+        return self.run.get(resource)
+
+    def delete_service(self, resource, ctx):
+        self.run.delete(resource, ctx)
 
     def create_load_balancer(self, spec, planned, ctx, backends, network):
         return self.load_balancer.create(spec, planned, ctx, backends, network)

@@ -54,6 +54,8 @@ class GcpSettings(BaseModel):
     # DNS domains a cluster's front door may serve (a hostname is the domain or ends in .domain); none, and a front door
     # serves plain HTTP on its address only.
     public_domains: list[str] = Field(default_factory=list)
+    # Whether a request may make a managed container service callable without signing in (Cloud Run's invoker check off).
+    allow_public_services: bool = False
 
     @model_validator(mode="after")
     def _profiles(self):

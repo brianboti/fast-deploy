@@ -1,6 +1,6 @@
 # MCP service catalog
 
-Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 45 tools in 11 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, `cac-`, `que-`, `sec-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
+Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 48 tools in 12 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, `cac-`, `que-`, `sec-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
 
 ## At a glance
 
@@ -34,6 +34,9 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | Cluster | `create_cluster` | Create a Kubernetes cluster | changes cloud |
 | Cluster | `get_cluster` | Get a cluster | read only |
 | Cluster | `delete_cluster` | Delete a cluster | destructive |
+| Service | `create_service` | Create a managed container service | changes cloud |
+| Service | `get_service` | Get a service | read only |
+| Service | `delete_service` | Delete a service | destructive |
 | Load balancer | `create_load_balancer` | Create a load balancer | changes cloud |
 | Load balancer | `get_load_balancer` | Get a load balancer | read only |
 | Load balancer | `delete_load_balancer` | Delete a load balancer | destructive |
@@ -66,6 +69,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `INVALID_DATABASE_CONFIGURATION` | An engine version the provider does not run, or a private database without a network. |
 | `INVALID_CACHE_CONFIGURATION` | A cache version the provider does not run, or a cache without a network. |
 | `INVALID_CLUSTER_CONFIGURATION` | A node shape the provider has no type for. |
+| `INVALID_SERVICE_CONFIGURATION` | CPU and memory the provider does not pair, or a public service the operator does not allow. |
 | `INVALID_LOAD_BALANCER_CONFIGURATION` | No machines behind it, or machines in different zones or regions. |
 | `UNSUPPORTED_RESOURCE_KIND` | A request block of a kind the contract or the chosen adapter does not provide; details name the nearest kind. |
 | `INVALID_ACCESS` | A member outside the operator's allowed domains, a malformed member, a duplicate, or more members than allowed. |
@@ -787,6 +791,86 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 **Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy.
 
 **Provider mapping (Google Cloud).** Kubernetes Engine: container.projects.locations.clusters.delete.
+
+## Service
+
+### `create_service`
+
+**Purpose.** Create an empty managed container service (Cloud Run): its identity, limits, scaling and who may reach it. It serves a stand-in until the delivery layer puts a release on it; this service never runs application code.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
+| `provider` | no | The cloud provider adapter; gcp (default) is the one implemented. |
+| `cpu` | no | Virtual CPUs per instance: 1, 2, 4 or 8 (default 1). |
+| `memory_mb` | no | Memory per instance in MiB (default 512). |
+| `min_instances` | no | Instances kept warm (default 0). |
+| `max_instances` | no | At most this many instances (default 10). |
+| `concurrency` | no | Requests one instance serves at once (default 80). |
+| `timeout_seconds` | no | How long a request may take (default 300). |
+| `ingress` | no | all (default), internal, or internal_and_load_balancer. |
+| `public` | no | Callable without signing in; only when the operator allows public services (default false). |
+| `network_id` | no | A network this service created earlier (net-…), to join instead of the operator's default network. |
+| `egress` | no | With a network: private_ranges (default) or all. |
+| `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
+| `labels` | no | Labels for every resource, next to the service's ownership labels. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `region`.
+**Optional fields.** `provider`, `cpu`, `memory_mb`, `min_instances`, `max_instances`, `concurrency`, `timeout_seconds`, `ingress`, `public`, `network_id`, `egress`, `name`, `labels`, `wait_seconds`.
+
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
+
+**Possible errors.** `INVALID_SERVICE_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
+
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. It runs as a service account made for it, which reads the request's secrets and nothing else, deleted with it. use grants the invoker role on it; admin also the developer role and acting as its runtime account, which deploying a revision needs. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+
+**Provider mapping (Google Cloud).** Cloud Run: run.services.create, and setIamPolicy for a public service (invoker check off) and for grants; IAM: serviceAccounts.create, delete and setIamPolicy; Secret Manager: the request's secrets' setIamPolicy.
+
+### `get_service`
+
+**Purpose.** Address, limits, state and the revision serving now of one managed container service.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** none.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`.
+
+**Security.** Read-only; creates and changes nothing. Read-only.
+
+**Provider mapping (Google Cloud).** Cloud Run: run.services.get.
+
+### `delete_service`
+
+**Purpose.** Delete the service, every revision and its runtime account.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** `wait_seconds`.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `DESTROY_FAILED`.
+
+**Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy.
+
+**Provider mapping (Google Cloud).** Cloud Run: run.services.delete; IAM: serviceAccounts.delete.
 
 ## Load balancer
 

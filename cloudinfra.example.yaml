@@ -53,6 +53,7 @@ providers:
     # registries:                                 # Artifact Registry repositories a request may let its clusters pull from
     #   - us-central1-docker.pkg.dev/your-apps-project/shop
     # public_domains: [apps.example.com]          # DNS domains a cluster's front door may serve over HTTPS
+    # allow_public_services: false                # whether a request may make a managed container service callable without signing in
     # profiles:                                   # software images the platform team approves; a request names one as compute.profile
     #   gpu-signed:                               # built with Google's cuda_installer.pyz build_image: signed drivers, Secure Boot stays on
     #     image: projects/your-images-project/global/images/family/gpu-signed-cu129

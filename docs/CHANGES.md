@@ -1,3 +1,20 @@
+# Unreleased: a managed container service (Cloud Run)
+
+Phase 4, step 1 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECTURE.md, "A managed container service"):
+
+- **A tenth kind, `service`.** One or a list (named, as clusters): CPU (1, 2, 4, 8), memory (checked against Cloud Run's
+  pairs), minimum and maximum instances, concurrency, request timeout, ingress (`all`, `internal`,
+  `internal_and_load_balancer`), `public`, and Direct VPC egress through the request's network. Made empty with Google's
+  sample image; the delivery layer puts releases on it.
+- **Its own runtime account**, `run-<request id>-<name>`, which reads the request's secrets and nothing else; deleted
+  after the service, or at once when Google refuses the service.
+- **Public only with the operator's leave**: `providers.gcp.allow_public_services` (off by default) turns Cloud Run's
+  invoker check off for a request that asks.
+- **Grants**: `use` → `run.invoker`; `admin` → also `run.developer` on the service and Service Account User on its
+  runtime account, which deploying a revision needs.
+- **Tools**: `create_service`, `get_service`, `delete_service` (48 tools). Priced as warm instances at the idle rate.
+- `list_resource_kinds` now marks clusters as several per request too, which phase 3 had left out.
+
 # Unreleased: a cluster's front door
 
 Phase 3, step 5 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECTURE.md, "A cluster's front door"):

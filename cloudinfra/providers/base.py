@@ -19,6 +19,7 @@ from ..models.request import (
     NetworkRequest,
     QueueRequest,
     SecretRequest,
+    ServiceRequest,
     StorageRequest,
 )
 from ..models.resources import (
@@ -33,6 +34,7 @@ from ..models.resources import (
     QueueResource,
     ResourceStatus,
     SecretResource,
+    ServiceResource,
     StorageResource,
 )
 from ..models.response import CostEstimate, Health, PlannedResource, Usage
@@ -200,6 +202,17 @@ class CloudProvider(ABC):
 
     @abstractmethod
     def delete_cluster(self, resource: ClusterResource, ctx: ProvisionContext) -> None: ...
+
+    # ---- service (a managed container service)
+    @abstractmethod
+    def create_service(self, spec: ServiceRequest, planned: PlannedResource, ctx: ProvisionContext, network: NetworkResource | None,
+                       secrets: list[SecretResource]) -> ServiceResource: ...
+
+    @abstractmethod
+    def get_service(self, resource: ServiceResource) -> ServiceResource: ...
+
+    @abstractmethod
+    def delete_service(self, resource: ServiceResource, ctx: ProvisionContext) -> None: ...
 
     # ---- load balancer
     @abstractmethod

@@ -317,14 +317,60 @@ Steps, each its own pull request:
    HTTP (docs/DELIVERY-SPIKE.md section 12): everything held; it found one defect, fixed (GKE learns a new node account
    later than IAM). HTTPS on a real domain is still to be run.
 
-### Not planned: Cloud Run
+### Phase 4: Cloud Run services and jobs
 
-With `labdeploy` going away, nothing in this repository will put an image on Cloud Run. That is acceptable for the
-first two phases: a stateless web service runs on a machine group behind `cloudinfra`'s load balancer, or on a cluster.
-If the company wants Cloud Run back, it is two pieces, in this order: `cloudinfra` gains a `service` kind that creates
-the empty Cloud Run service with its identity, ingress and limits (infrastructure), and this service deploys revisions
-onto it (delivery). The second piece alone would mean this service creating infrastructure, which section 1 rules out.
-Decision 5 in section 12.
+**Decided on 2026-10-29 by the operator:** Cloud Run comes back as the two pieces this section always named, service
+first, then job; a job's schedule is infrastructure, made by `cloudinfra`; a public service (no Google sign-in needed to
+call it) is allowed only when the operator turns it on in `cloudinfra`'s settings, off by default, as with front door
+domains. Checked on Google's pages first (Cloud Run Admin API v2):
+
+- A service needs an image to exist; Google's sample `us-docker.pkg.dev/cloudrun/container/hello` stands in until the
+  first release. Create and update are long-running; the service itself reports `reconciling`, `terminalCondition`,
+  `latestReadyRevision` and `trafficStatuses`, so polling it needs no operation rights.
+  ([services](https://docs.cloud.google.com/run/docs/reference/rest/v2/projects.locations.services))
+- Any change to the template makes a new revision, which can be named. A revision that fails its startup probe never
+  gets traffic, and the last serving one keeps it. A traffic split pinned to a named revision persists across later
+  deploys, so every deploy sets traffic explicitly. Rollback is traffic on an older revision, which Cloud Run keeps
+  (1000 per service). ([rollouts](https://docs.cloud.google.com/run/docs/rollouts-rollbacks-traffic-migration))
+- Environment from Secret Manager: `secretKeyRef` read at instance start by the runtime identity, which needs
+  `secretmanager.secretAccessor`; Google recommends pinning a version. The value never passes through this service.
+- A public service is made by turning off the invoker IAM check (`invokerIamDisabled`), Google's recommended way, which
+  needs `run.services.setIamPolicy`; granting `allUsers` is blocked by Domain Restricted Sharing.
+  ([public](https://docs.cloud.google.com/run/docs/authenticating/public))
+- `roles/run.developer` can be granted on one service or job; deploying also needs Service Account User on the runtime
+  identity. It can change ingress, scaling and egress too, and delete the service; it cannot change IAM or the invoker
+  check. Only org policies (`run.allowedIngress`, `run.allowedVPCEgress`) or a custom role narrow it further, so this
+  service's own code changes nothing but the template's container and the traffic; a custom role for `admin` on
+  services is a later option.
+- A job is replaced whole on update (no update mask; the etag guards it). `:run` starts an execution, whose counts and
+  conditions say how it went; executions are kept (the last 1000, or 7 days). A schedule is a Cloud Scheduler job
+  calling `:run` with an OAuth token of an account that may run the job.
+  ([jobs](https://docs.cloud.google.com/run/docs/reference/rest/v2/projects.locations.jobs),
+  [on a schedule](https://docs.cloud.google.com/run/docs/execute/jobs-on-schedule))
+
+The design:
+
+- **`cloudinfra` `service` kind.** One service or a list (named, as clusters): CPU (1, 2, 4, 8), memory, minimum and
+  maximum instances, concurrency, request timeout, ingress (`all`, `internal`, `internal_and_load_balancer`), `public`
+  (refused unless the operator's `allow_public_services`), and Direct VPC egress into the request's network. It runs as
+  a service account made for it (`run-<request>-<name>`), which reads the request's secrets and nothing else, and is
+  deleted with it. Grants: `use` → `run.invoker` (call it), `admin` → `run.developer` on the service and Service Account
+  User on its runtime account. The connect block gives the URL and how to call it.
+- **`appdelivery` service target.** `{service: NAME | true}`, keyed `service:<name>`. A release is a revision named after
+  it, with the image, port, a startup probe on the health path, plain values, and secrets as `secretKeyRef` pinned to
+  the version current at deploy. It is made with traffic pinned where it was; once it is ready, traffic moves to it
+  wholly. A revision that does not become ready gets no traffic, so a failure needs no restore. Rollback moves the
+  traffic to the previous release's revision; remove puts the stand-in image back and sends traffic to it.
+- **`cloudinfra` `job` kind.** One job or a list: CPU, memory, tasks, parallelism, retries, task timeout, egress, and an
+  optional `schedule` (cron and time zone) that makes a Cloud Scheduler job running it as a second account made for the
+  job, allowed to run that job only. Grants: `use` → `run.invoker` (run it), `admin` → `run.developer` and Service Account
+  User on its runtime account.
+- **`appdelivery` job target.** `{job: NAME | true}`: a release replaces the job's container (image, values, secrets as
+  above) and becomes the job's current release; `run` starts an execution now and reports its counts and log link;
+  rollback puts the previous release's container back; remove puts the stand-in back.
+
+Steps, each its own pull request: 1. `cloudinfra` service kind (built 2026-10-29); 2. delivery to a service; 3.
+`cloudinfra` job kind with its schedule; 4. delivery to a job and running it; 5. a real run.
 
 ## 5. A release's life
 

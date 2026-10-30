@@ -16,6 +16,7 @@ from .request import (
     PublicRequest,
     QueueRequest,
     SecretRequest,
+    ServiceRequest,
     StorageRequest,
 )
 from .resources import (
@@ -32,6 +33,7 @@ from .resources import (
     ResourceKind,
     ResourceStatus,
     SecretResource,
+    ServiceResource,
     StorageResource,
 )
 from .response import (
@@ -63,4 +65,4 @@ __all__ = ["RESOURCE_KINDS", "AcceleratorRequest", "AccessGrant", "AccessRequest
            "ListResponse", "LoadBalancerRequest", "LoadBalancerResource", "NetworkRequest",
     "PublicRequest", "NetworkResource", "OperationRecord", "OperationStatus", "PlanResponse",
            "PlannedResource", "ProfileInfo", "QueueRequest", "QueueResource", "RequestStatus", "ResourceKind", "ResourceKindsResponse", "ResourceResponse", "ResourceStatus",
-           "Resources", "SecretRequest", "SecretResource", "StorageRequest", "StorageResource", "Usage", "ValidationResponse"]
+           "Resources", "SecretRequest", "ServiceRequest", "ServiceResource", "SecretResource", "StorageRequest", "StorageResource", "Usage", "ValidationResponse"]

@@ -86,6 +86,12 @@ def info(resource, resources: list, project: str, drivers: bool = False) -> Conn
             notes.append(f"Access is granted in namespace {resource.namespace} only: use binds the ClusterRole view there, admin binds edit")
         return ConnectInfo(commands=commands, notes=notes + ([] if resource.access else [NOT_GRANTED]),
                            prerequisites=["A project-level container.clusterViewer role, which the platform team grants once", "The gke-gcloud-auth-plugin"])
+    if kind == "service":
+        url = resource.url or "URL"
+        if resource.public:
+            return ConnectInfo(commands={"call": f"curl {url}"}, notes=["Callable without signing in: the operator allowed it and the request asked for it"])
+        return ConnectInfo(commands={"call": f'curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" {url}'},
+                           notes=[f"Ingress {resource.ingress}; a caller needs the invoker role, which use grants"] + ([] if resource.access else [NOT_GRANTED]))
     if kind == "load_balancer":
         address = resource.address or "ADDRESS"
         command = f"curl http://{address}:{resource.port}{resource.health_check_path or '/'}" if resource.type == "http" else f"nc -vz {address} {resource.port}"

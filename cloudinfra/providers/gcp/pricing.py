@@ -23,6 +23,8 @@ PRICING = {
     "cache_gb_hour": {"BASIC": 0.049, "STANDARD_HA": 0.062},
     "secret_version_month": 0.06,
     "forwarding_rule_hour": 0.025,
+    "run_idle_vcpu_second": 0.0000025,  # Cloud Run, request-based, idle minimum instances, us-central1
+    "run_idle_gib_second": 0.0000025,
     "shared_core_hour": {"e2-micro": 0.008376, "e2-small": 0.016751, "e2-medium": 0.033503},
     "disk_gb_month": {"pd-standard": 0.04, "pd-balanced": 0.10, "pd-ssd": 0.17},
     "external_ip_hour": 0.005,
@@ -98,6 +100,11 @@ def line(planned: PlannedResource) -> CostLine:
             rules = 2 if spec["public"].get("hostnames") else 1
             monthly += rules * PRICING["forwarding_rule_hour"] * HOURS_PER_MONTH
             basis += f", and the front door's {rules} forwarding rule{'s' if rules > 1 else ''} (data processed is billed by the GB on top)"
+    elif planned.kind == "service":  # request-based billing: only warm instances cost when idle (https://cloud.google.com/run/pricing)
+        idle = spec["min_instances"] * (spec["cpu"] * PRICING["run_idle_vcpu_second"] + spec["memory_mb"] / 1024 * PRICING["run_idle_gib_second"]) * HOURS_PER_MONTH * 3600
+        monthly = idle
+        basis = (f"{spec['min_instances']} warm instance{'s' if spec['min_instances'] != 1 else ''} at the idle rate; requests are billed by use on top"
+                 if spec["min_instances"] else "billed by use only: CPU and memory while handling requests, and per million requests")
     elif planned.kind == "load_balancer":
         monthly = PRICING["forwarding_rule_hour"] * HOURS_PER_MONTH
         basis = "one forwarding rule; data processed is billed by the GB on top"
@@ -131,6 +138,8 @@ def as_planned(resource) -> PlannedResource:
                 "public": {"hostnames": resource.public.hostnames} if resource.public else None}
     elif kind == "secret":
         spec = {"versions": resource.versions}
+    elif kind == "service":
+        spec = {"cpu": resource.cpu, "memory_mb": resource.memory_mb, "min_instances": resource.min_instances}
     return PlannedResource(kind=kind, name=resource.name, provider_mapping="existing", spec=spec)
 
 

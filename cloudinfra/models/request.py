@@ -2,7 +2,7 @@
 
 Every field is a size, a count, a name, a version or a switch. There is no repository, image, command, script, key or
 provider-specific structure, so a request can describe "one Ubuntu machine with 4 CPUs and 16 GB" and nothing about any
-application. Strict models: no unknown field, no type coercion. Nine kinds: network, storage, compute (one group or
+application. Strict models: no unknown field, no type coercion. Ten kinds: network, storage, compute (one group or
 several), database, cache, queue, secret, cluster and load_balancer.
 """
 import re
@@ -27,10 +27,11 @@ RESERVED_SECRETS = {"db-password": "database", "cache-auth": "cache"}  # secrets
 LoadBalancerType = Literal["http", "tcp"]
 GROUP = r"^[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?$"  # a group's, queue's or secret's short name: up to 12 characters, part of resource names
 # The kinds, in the order they are created; destruction is the reverse. Every top-level block of a request is one of these.
-RESOURCE_KINDS = ("network", "storage", "compute", "database", "cache", "queue", "secret", "cluster", "load_balancer")
+RESOURCE_KINDS = ("network", "storage", "compute", "database", "cache", "queue", "secret", "cluster", "service", "load_balancer")
 MAX_QUEUES = 8
 MAX_SECRETS = 16
 MAX_CLUSTERS = 4
+MAX_SERVICES = 8
 HOSTNAME = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 REGISTRY = re.compile(r"^[a-z0-9-]+-docker\.pkg\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/[a-z0-9][a-z0-9._-]{0,62}$")  # an Artifact Registry repository
 
@@ -229,6 +230,44 @@ class ClusterRequest(StrictModel):
         return self.name or "cluster"
 
 
+class ServiceRequest(StrictModel):
+    """A managed container service, made empty: its identity, limits, scaling and who may reach it. It runs a stand-in until
+    the delivery layer puts a release on it; what runs is the Application Layer's. A request
+    may carry one service or a list of them."""
+    name: str | None = Field(default=None, pattern=GROUP, description="The service's name, part of its provider name (<request>-<name>); service when omitted. "
+                                                                      "Required and unique when a request has several services.")
+    cpu: int = Field(default=1, description="Virtual CPUs per instance: 1, 2, 4 or 8.")
+    memory_mb: int = Field(default=512, ge=128, le=32768, description="Memory per instance, in MiB.")
+    min_instances: int = Field(default=0, ge=0, le=100, description="Instances kept warm; idle ones are billed at a lower rate.")
+    max_instances: int = Field(default=10, ge=1, le=1000)
+    concurrency: int = Field(default=80, ge=1, le=1000, description="Requests one instance serves at once.")
+    timeout_seconds: int = Field(default=300, ge=1, le=3600, description="How long a request may take.")
+    ingress: Literal["all", "internal", "internal_and_load_balancer"] = Field(default="all", description="Where requests may come from: the internet, the "
+                                                                                                         "project's networks only, or those and a load balancer.")
+    public: bool = Field(default=False, description="Callable without signing in; only when the operator allows public services. Otherwise callers need the "
+                                                    "invoker role, which use grants.")
+    network_id: str | None = Field(default=None, description="A network this service created earlier (net-…) for egress to private addresses; the request's "
+                                                             "own network when it has one.")
+    egress: Literal["private_ranges", "all"] = Field(default="private_ranges", description="With a network: send only private addresses through it, or everything.")
+
+    @field_validator("network_id")
+    @classmethod
+    def _network_id(cls, value):
+        return None if value is None else validation.check_identifier(value, "service.network_id")
+
+    @model_validator(mode="after")
+    def _limits(self):
+        if self.cpu not in (1, 2, 4, 8):
+            raise ValueError("service.cpu: 1, 2, 4 or 8")
+        if self.min_instances > self.max_instances:
+            raise ValueError("service.min_instances is above max_instances")
+        return self
+
+    @property
+    def service_name(self) -> str:
+        return self.name or "service"
+
+
 class LoadBalancerRequest(StrictModel):
     """A public load balancer in front of one compute group."""
     type: LoadBalancerType = Field(default="http", description="http: an application load balancer with a health check on a path; tcp: a passthrough network load balancer.")
@@ -287,6 +326,7 @@ class InfrastructureRequest(StrictModel):
     queue: QueueRequest | list[QueueRequest] | None = Field(default=None, description="One topic, or a list of them.")
     secret: SecretRequest | list[SecretRequest] | None = Field(default=None, description="One secret container, or a list of them.")
     cluster: ClusterRequest | list[ClusterRequest] | None = Field(default=None, description="One cluster, or a list of them.")
+    service: ServiceRequest | list[ServiceRequest] | None = Field(default=None, description="One managed container service, or a list of them.")
     load_balancer: LoadBalancerRequest | None = None
     lifetime: LifetimeRequest | None = Field(default=None, description="How long the request lives; the operator's default applies when omitted, and there is none unless the operator sets one.")
     access: list[AccessRequest] = Field(default_factory=list, max_length=20, description="People, groups or service accounts to grant access to what is created; "
@@ -316,7 +356,7 @@ class InfrastructureRequest(StrictModel):
 
     @model_validator(mode="after")
     def _consistent(self):
-        for kind in ("compute", "queue", "secret", "cluster"):
+        for kind in ("compute", "queue", "secret", "cluster", "service"):
             if getattr(self, kind) == []:
                 raise ValueError(f"{kind}: a list cannot be empty")
         if not any(getattr(self, kind) for kind in RESOURCE_KINDS):
@@ -335,15 +375,15 @@ class InfrastructureRequest(StrictModel):
                 raise ValueError("compute: every group of a list needs a group name")
             if len(set(names)) != len(names):
                 raise ValueError("compute: group names must be unique")
-        clusters = self.clusters()
-        if len(clusters) > MAX_CLUSTERS:
-            raise ValueError(f"cluster: at most {MAX_CLUSTERS} per request")
-        if len(clusters) > 1:
-            names = [cluster.name for cluster in clusters]
-            if any(name is None for name in names):
-                raise ValueError("cluster: every cluster of a list needs a name")
-            if len(set(names)) != len(names):
-                raise ValueError("cluster: names must be unique")
+        for kind, items, limit in (("cluster", self.clusters(), MAX_CLUSTERS), ("service", self.services(), MAX_SERVICES)):
+            if len(items) > limit:
+                raise ValueError(f"{kind}: at most {limit} per request")
+            if len(items) > 1:
+                names = [item.name for item in items]
+                if any(name is None for name in names):
+                    raise ValueError(f"{kind}: every {kind} of a list needs a name")
+                if len(set(names)) != len(names):
+                    raise ValueError(f"{kind}: names must be unique")
         for kind, items, limit in (("queue", self.queues(), MAX_QUEUES), ("secret", self.secrets(), MAX_SECRETS)):
             names = [item.name for item in items]
             if len(names) > limit:
@@ -378,6 +418,12 @@ class InfrastructureRequest(StrictModel):
 
     def clusters(self) -> list[ClusterRequest]:
         return [] if self.cluster is None else (self.cluster if isinstance(self.cluster, list) else [self.cluster])
+
+    def services(self) -> list[ServiceRequest]:
+        return [] if self.service is None else (self.service if isinstance(self.service, list) else [self.service])
+
+    def service_named(self, name: str) -> ServiceRequest | None:
+        return next((service for service in self.services() if service.service_name == name), None)
 
     def cluster_named(self, name: str | None) -> ClusterRequest | None:
         clusters = self.clusters()

@@ -22,6 +22,7 @@ CONTAINER = "https://container.googleapis.com/v1"
 REDIS = "https://redis.googleapis.com/v1"
 IAM = "https://iam.googleapis.com/v1"
 ARTIFACT_REGISTRY = "https://artifactregistry.googleapis.com/v1"
+RUN = "https://run.googleapis.com/v2"
 LONG_POLL_SECONDS = 10
 RETRIES = 4  # attempts of a call Google rate limited, or of a read it answered 5xx
 RETRY_PAUSE_SECONDS = 1.0  # doubled after each attempt, unless Google says how long in Retry-After

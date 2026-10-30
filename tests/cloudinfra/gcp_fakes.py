@@ -60,6 +60,7 @@ class FakeGcpApi(GcpApi):
         self.order: list[tuple[str, str]] = []  # deletes, in the order they reached the fake
         self.gateway_kinds_missing = 0  # how many more Gateway API writes find no such kind yet, as just after a cluster runs
         self.service_accounts: dict[str, dict] = {}  # email -> the account
+        self.run_services: dict[str, dict] = {}  # Cloud Run services by name
         self.repositories = {"us-central1-docker.pkg.dev/test-project/apps", "us-central1-docker.pkg.dev/test-project/shared"}
         self.account_unknown_to_gke_for = 0  # how many more cluster creates GKE refuses because it does not know the new node account yet
         self.unknown_for = 0  # how many more grants naming a new service account IAM refuses as unknown, as it does for seconds after a create
@@ -92,7 +93,11 @@ class FakeGcpApi(GcpApi):
         path = "/" + path.split("?", 1)[0]
         handlers = (
             (r"^/v1/projects/[^/]+/serviceAccounts$", self._service_accounts) if host.startswith("iam") else (r"^$", None),
+            (r"^/v1/projects/[^/]+/serviceAccounts/([^/:]+):(getIamPolicy|setIamPolicy)$", self._account_policy) if host.startswith("iam") else (r"^$", None),
             (r"^/v1/projects/[^/]+/serviceAccounts/([^/]+)$", self._service_account) if host.startswith("iam") else (r"^$", None),
+            (r"^/v2/projects/[^/]+/locations/([^/]+)/services$", self._run_services_collection) if host.startswith("run") else (r"^$", None),
+            (r"^/v2/projects/[^/]+/locations/[^/]+/services/([^/:]+):(getIamPolicy|setIamPolicy)$", self._run_policy) if host.startswith("run") else (r"^$", None),
+            (r"^/v2/projects/[^/]+/locations/[^/]+/services/([^/:]+)$", self._run_service) if host.startswith("run") else (r"^$", None),
             (r"^/v1/projects/([^/:]+):(getIamPolicy|setIamPolicy)$", self._project_policy) if host.startswith("cloudresourcemanager") else (r"^$", None),
             (r"^/v1/projects/([^/]+)/locations/([^/]+)/repositories/([^/:]+):(getIamPolicy|setIamPolicy)$", self._repository_policy)
             if host.startswith("artifactregistry") else (r"^$", None),
@@ -210,6 +215,42 @@ class FakeGcpApi(GcpApi):
         if method == "DELETE":
             return self.service_accounts.pop(found.group(1)) and {}
         return self.service_accounts[found.group(1)]
+
+    def _account_policy(self, found, method, body, params):
+        if found.group(1) not in self.service_accounts:
+            raise self._not_found(found.group(1))
+        writing = found.group(2) == "setIamPolicy"
+        return self._policy(("account", found.group(1)), writing, body.get("policy"))
+
+    # ---- Cloud Run
+    def _run_services_collection(self, found, method, body, params):
+        name = params["serviceId"]
+        if name in self.run_services:
+            raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, "Google Cloud refused the request: already exists", {"http_status": 409})
+        account = body["template"].get("serviceAccount")
+        assert account in self.service_accounts, "a service runs as an account that exists"
+        revision = f"{name}-00001-abc"
+        self.run_services[name] = {**body, "name": f"projects/{self.project}/locations/{found.group(1)}/services/{name}", "uri": f"https://{name}-xyz.a.run.app",
+                                   "reconciling": False, "terminalCondition": {"type": "Ready", "state": "CONDITION_SUCCEEDED"}, "createTime": "2026-10-29T10:00:00Z",
+                                   "latestReadyRevision": f"projects/{self.project}/locations/{found.group(1)}/services/{name}/revisions/{revision}",
+                                   "trafficStatuses": [{"type": "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST", "percent": 100, "revision": revision}]}
+        return {"name": f"operations/run-{self.counter}", "done": False}
+
+    def _run_service(self, found, method, body, params):
+        name = found.group(1)
+        if name not in self.run_services:
+            raise self._not_found(name)
+        if method == "DELETE":
+            self.order.append(("run DELETE", name))
+            del self.run_services[name]
+            return {"name": "operations/run-delete", "done": False}
+        return copy.deepcopy(self.run_services[name])
+
+    def _run_policy(self, found, method, body, params):
+        if found.group(1) not in self.run_services:
+            raise self._not_found(found.group(1))
+        writing = found.group(2) == "setIamPolicy"
+        return self._policy(("run", found.group(1)), writing, body.get("policy"))
 
     def _known(self, policy):
         for binding in policy.get("bindings", []):
