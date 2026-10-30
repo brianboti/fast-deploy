@@ -33,6 +33,7 @@ class Network(View):
     status: str
     cidr: str | None = None
     firewall_rules: list[FirewallRule] = Field(default_factory=list)
+    nat_router: str | None = None  # outbound internet for machines without a public address
 
     def admits(self, port: int, source: str) -> bool:
         return any(source in rule.sources and (not rule.ports or port in rule.ports) for rule in self.firewall_rules)
@@ -71,6 +72,7 @@ class FrontDoor(View):
     hostnames: list[str] = Field(default_factory=list)
     gateway: str
     certificate: str | None = None
+    security_policy: str | None = None
 
 
 class Cluster(View):

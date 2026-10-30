@@ -1,5 +1,6 @@
 from typing import Annotated
 
+from ...models.request import WafRequest
 from ...models.resources import ResourceKind
 from ._common import Result, Wait, field, register
 
@@ -12,11 +13,12 @@ def tools(mcp, orchestrator, wrap, identity):
                        private_nodes: Annotated[bool, field("create_cluster", "private_nodes")] = False, network_id: Annotated[str | None, field("create_cluster", "network_id")] = None,
                        registries: Annotated[list[str] | None, field("create_cluster", "registries")] = None,
                        public: Annotated[bool, field("create_cluster", "public")] = False, hostnames: Annotated[list[str] | None, field("create_cluster", "hostnames")] = None,
+                       waf: Annotated[WafRequest | None, field("create_cluster", "waf")] = None,
                        zone: Annotated[str | None, field("create_cluster", "zone")] = None, name: Annotated[str | None, field("create_cluster", "name")] = None,
                        labels: Annotated[dict[str, str] | None, field("create_cluster", "labels")] = None, wait_seconds: Wait = 0) -> Result:
         return orchestrator.create_cluster(identity(), region=region, provider=provider, node_count=node_count, node_cpu=node_cpu, node_memory_gb=node_memory_gb, node_disk_gb=node_disk_gb,
                                            kubernetes_version=kubernetes_version, private_nodes=private_nodes, network_id=network_id, registries=registries, public=public,
-                                           hostnames=hostnames, zone=zone, name=name, labels=labels, wait_seconds=wait_seconds)
+                                           hostnames=hostnames, waf=waf, zone=zone, name=name, labels=labels, wait_seconds=wait_seconds)
 
     def get_cluster(resource_id: Annotated[str, field("get_cluster", "resource_id")]) -> Result:
         return orchestrator.get_resource(resource_id, identity(), ResourceKind.cluster)

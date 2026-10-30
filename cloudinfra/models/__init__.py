@@ -30,6 +30,7 @@ from .request import (
     SnapshotRequest,
     StorageRequest,
     UptimeRequest,
+    WafRequest,
     WarehouseRequest,
 )
 from .resources import (
@@ -90,7 +91,7 @@ __all__ = ["RESOURCE_KINDS", "AcceleratorRequest", "AccessGrant", "AccessRequest
     "PublicRequest", "NetworkResource", "OperationRecord", "OperationStatus", "PlanResponse",
            "PlannedResource", "ProfileInfo", "QueueRequest", "QueueResource", "RequestStatus", "ResourceKind", "ResourceKindsResponse", "ResourceResponse", "ResourceStatus",
            "Resources", "DnsRecordRequest", "DnsRequest", "DnsResource", "IdentityRequest", "IdentityResource", "JobRequest", "NoSqlRequest", "NoSqlResource", "WarehouseRequest",
-           "WarehouseResource", "MonitorRequest", "MonitorResource", "UptimeRequest",
+           "WarehouseResource", "MonitorRequest", "MonitorResource", "UptimeRequest", "WafRequest",
            "JobResource", "ScheduleRequest", "SecretRequest",
            "ServiceRequest", "SnapshotRequest", "ServiceResource", "SecretResource", "StorageRequest",
            "StorageResource", "Usage", "ValidationResponse"]

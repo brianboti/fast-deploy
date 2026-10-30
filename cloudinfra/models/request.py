@@ -233,12 +233,35 @@ class SecretRequest(StrictModel):
     generate_value: bool = Field(default=False, description="Write a generated random value as the first version; the value is never returned or logged.")
 
 
+class WafRequest(StrictModel):
+    """A web application firewall in front of public HTTP: refuse listed sources, limit each client address to a rate, and
+    refuse requests the provider's preconfigured OWASP rules recognise."""
+    owasp: bool = Field(default=True, description="Refuse SQL injection, cross-site scripting, file inclusion, remote code execution, scanners, protocol "
+                                                  "attacks and session fixation, with the provider's preconfigured rules at their lowest sensitivity.")
+    rate_limit_per_minute: int | None = Field(default=None, ge=10, le=100_000, description="Requests a minute one client address may make; over it, 429. "
+                                                                                           "No limit when omitted.")
+    deny_sources: list[str] = Field(default_factory=list, max_length=10, description="IPv4 ranges refused with 403.")
+    preview: bool = Field(default=False, description="Only log what the rules would refuse, to tune them before they enforce.")
+
+    @field_validator("deny_sources")
+    @classmethod
+    def _sources(cls, value):
+        return validation.check_sources(value) if value else value
+
+    @model_validator(mode="after")
+    def _something(self):
+        if not (self.owasp or self.rate_limit_per_minute or self.deny_sources):
+            raise ValueError("waf: nothing to do; keep owasp, or give rate_limit_per_minute or deny_sources")
+        return self
+
+
 class PublicRequest(StrictModel):
     """A front door for the cluster's workloads, made and owned by this service: a reserved public address and one
     Gateway in front of it that accepts routes from the request's namespace only. With hostnames it serves HTTPS with a
     Google-managed certificate for them and redirects HTTP; without, plain HTTP on the address."""
     hostnames: list[str] = Field(default_factory=list, max_length=5, description="DNS names the operator points at the address, in domains the operator allows; "
                                                                                 "the certificate covers them. Lowercase, no wildcard.")
+    waf: WafRequest | None = Field(default=None, description="A web application firewall on the workloads behind the door, applied as each is exposed.")
 
     @field_validator("hostnames")
     @classmethod
@@ -506,6 +529,7 @@ class LoadBalancerRequest(StrictModel):
     backends: list[str] | None = Field(default=None, description="Machines this service created earlier (cmp-…), instead of a compute group of the same request.")
     hostnames: list[str] = Field(default_factory=list, max_length=5, description="With http: also serve HTTPS on 443, with a provider-managed certificate for "
                                                                                 "these names, in domains the operator allows.")
+    waf: WafRequest | None = Field(default=None, description="With http: a web application firewall on the load balancer.")
 
     @field_validator("hostnames")
     @classmethod
@@ -681,6 +705,8 @@ class InfrastructureRequest(StrictModel):
             raise ValueError(f"storage.group names {self.storage.group!r}, which is not a compute group of this request")
         if self.load_balancer and self.load_balancer.hostnames and self.load_balancer.type != "http":
             raise ValueError("load_balancer.hostnames: HTTPS needs type http; a tcp load balancer passes TLS through untouched")
+        if self.load_balancer and self.load_balancer.waf and self.load_balancer.type != "http":
+            raise ValueError("load_balancer.waf: a firewall reads HTTP, so it needs type http")
         if self.load_balancer and self.load_balancer.backends:
             if groups or self.load_balancer.backend_group:
                 raise ValueError("load_balancer.backends names existing machines; a compute group in the same request is one or the other")

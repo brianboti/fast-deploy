@@ -51,14 +51,14 @@ WRITE = ["get", "list", "watch", "create", "update", "patch", "delete"]
 
 
 def routes_role(labels: dict[str, str]) -> tuple[str, dict]:
-    """HTTPRoutes, and GKE's HealthCheckPolicies for the Services behind them, added to the built-in edit role by
-    aggregation: Kubernetes' Gateway API ships no such rules, and a namespace with edit then attaches its workloads to the
-    front door with the health check they need. Gateways stay out of edit."""
+    """HTTPRoutes, and GKE's HealthCheckPolicies and GCPBackendPolicies for the Services behind them, added to the built-in
+    edit role by aggregation: Kubernetes' Gateway API ships no such rules, and a namespace with edit then attaches its
+    workloads to the front door with the health check and firewall policy they need. Gateways stay out of edit."""
     return ("/apis/rbac.authorization.k8s.io/v1/clusterroles",
             {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole",
              "metadata": {"name": "cloudinfra-routes", "labels": {**labels, "rbac.authorization.k8s.io/aggregate-to-edit": "true"}},
              "rules": [{"apiGroups": ["gateway.networking.k8s.io"], "resources": ["httproutes"], "verbs": WRITE},
-                       {"apiGroups": ["networking.gke.io"], "resources": ["healthcheckpolicies"], "verbs": WRITE}]})
+                       {"apiGroups": ["networking.gke.io"], "resources": ["healthcheckpolicies", "gcpbackendpolicies"], "verbs": WRITE}]})
 
 
 def front_door(tenant: str, address_name: str, certificate_name: str | None, labels: dict[str, str]) -> list[tuple[str, dict]]:

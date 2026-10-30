@@ -16,6 +16,7 @@ from ...models.errors import ErrorCode, InfrastructureError
 from ...models.resources import ClusterResource, FrontDoor, ResourceStatus
 from . import translate
 from .api import COMPUTE, CONTAINER
+from .armor import GcpArmor
 from .kubernetes import CLUSTER_ROLES, DOOR, DOOR_NAMESPACE, GATEWAYS, ROUTES, TENANT, KubeApi, front_door, no_public_entry, routes_role
 from .nodeaccount import NOT_YET, NodeAccounts, account_id
 
@@ -37,6 +38,7 @@ def binding_name(member: str, level: str) -> str:
 class GcpCluster:
     def __init__(self, api, settings, kube=None):
         self.api, self.settings, self.accounts = api, settings, NodeAccounts(api)
+        self.armor = GcpArmor(api)
         self.kube = kube or (lambda endpoint, ca_certificate: KubeApi(endpoint, ca_certificate, api.token))
 
     def _clusters(self, location):
@@ -69,7 +71,8 @@ class GcpCluster:
             cluster["networkConfig"] = {"gatewayApiConfig": {"channel": "CHANNEL_STANDARD"}}
             cluster["addonsConfig"] = {"httpLoadBalancing": {"disabled": False}}
             door = FrontDoor(hostnames=list(spec.public.hostnames), address_name=f"{planned.name}-door",
-                             certificate_name=f"{planned.name}-door" if spec.public.hostnames else None)
+                             certificate_name=f"{planned.name}-door" if spec.public.hostnames else None,
+                             security_policy=f"{planned.name}-waf" if spec.public.waf else None)
         registries, account = list(spec.registries), None
         if self.settings.cluster_node_accounts:
             account = self.accounts.create(account_id(ctx.request_id, planned.spec.get("cluster", "cluster")), f"Nodes of cluster {planned.name}. {translate.description(ctx)}")
@@ -99,7 +102,7 @@ class GcpCluster:
         kube.ensure_namespace(ctx.name, {**labels, **TENANT})
         resource = resource.model_copy(update={"namespace": ctx.name})
         if door is not None:
-            resource = resource.model_copy(update={"public": self._open(door, kube, ctx, labels)})
+            resource = resource.model_copy(update={"public": self._open(door, kube, ctx, labels, spec.public.waf)})
         return resource
 
     # ---- the front door
@@ -112,13 +115,15 @@ class GcpCluster:
                 raise
         return self.api.get(f"{COMPUTE}/projects/{self.api.project}/global/{collection}/{body['name']}")
 
-    def _open(self, door: FrontDoor, kube, ctx, labels) -> FrontDoor:
+    def _open(self, door: FrontDoor, kube, ctx, labels, waf=None) -> FrontDoor:
         address = self._global("addresses", {"name": door.address_name, "addressType": "EXTERNAL", "ipVersion": "IPV4", "description": translate.description(ctx)})
         certificate = None
         if door.certificate_name:
             found = self._global("sslCertificates", {"name": door.certificate_name, "type": "MANAGED", "managed": {"domains": door.hostnames},
                                                      "description": translate.description(ctx)})
             certificate = (found.get("managed") or {}).get("status")
+        if door.security_policy:  # each exposed workload's GCPBackendPolicy names it (the delivery layer writes those)
+            self.armor.create(door.security_policy, waf, ctx)
         kube.ensure_namespace(DOOR_NAMESPACE, labels)  # the platform's, not a tenant's: the admission policy does not reach it
         for collection, body in front_door(ctx.name, door.address_name, door.certificate_name, labels):
             for attempt in range(GATEWAY_KINDS[0]):
@@ -157,6 +162,8 @@ class GcpCluster:
                                   {"address": address})
 
     def _release(self, door: FrontDoor) -> None:
+        if door.security_policy:  # once GKE has deleted the backends that named it
+            self.armor.delete(door.security_policy)
         for collection, name in (("sslCertificates", door.certificate_name), ("addresses", door.address_name)):
             if not name:
                 continue

@@ -274,6 +274,7 @@ def test_a_release_by_name_replaces_one_asked_for_with_true():
 # ---- exposing a workload through the cluster's front door (phase 3, step 6)
 ROUTES = f"/apis/gateway.networking.k8s.io/v1/namespaces/{NAMESPACE}/httproutes"
 HEALTH_CHECKS = f"/apis/networking.gke.io/v1/namespaces/{NAMESPACE}/healthcheckpolicies"
+BACKEND_POLICIES = f"/apis/networking.gke.io/v1/namespaces/{NAMESPACE}/gcpbackendpolicies"
 
 
 def exposed(answer, expose):
@@ -313,9 +314,9 @@ def test_expose_belongs_to_a_cluster_target_and_names_a_host_and_path(target):
         ReleaseRequest.model_validate(release_dict(target=target))
 
 
-def door_world(hostnames=("shop.example.com",)):
+def door_world(hostnames=("shop.example.com",), security_policy=None):
     world = World(cluster=True)
-    world.infra.answers["dev"] = with_door(world.infra.answers["dev"], hostnames=hostnames)
+    world.infra.answers["dev"] = with_door(world.infra.answers["dev"], hostnames=hostnames, security_policy=security_policy)
     return world
 
 
@@ -334,6 +335,21 @@ def test_a_healthy_exposed_release_is_routed_from_the_front_door():
     assert route["spec"]["hostnames"] == ["shop.example.com"]
     assert route["spec"]["rules"] == [{"matches": [{"path": {"type": "PathPrefix", "value": "/"}}], "backendRefs": [{"name": "web", "port": 8080}]}]
     assert f"{HEALTH_CHECKS}/web" not in world.kube.objects, "the load balancer's own check of / is right"
+
+
+def test_a_door_with_a_firewall_puts_it_on_each_exposed_workload_and_takes_it_off_with_the_route():
+    world = door_world(security_policy="shop-cluster-waf")
+    done = deploy_exposed(world)
+    policy = world.kube.objects[f"{BACKEND_POLICIES}/web"]
+    assert policy["spec"] == {"default": {"securityPolicy": "shop-cluster-waf"}, "targetRef": {"group": "", "kind": "Service", "name": "web"}}
+    assert world.delivery.remove(done.release_id, world.team).status == "REMOVED"
+    assert f"{BACKEND_POLICIES}/web" not in world.kube.objects and f"{ROUTES}/web" not in world.kube.objects
+
+
+def test_a_door_without_a_firewall_writes_no_backend_policy():
+    world = door_world()
+    deploy_exposed(world)
+    assert f"{BACKEND_POLICIES}/web" not in world.kube.objects
 
 
 def test_a_health_path_other_than_root_gets_the_load_balancer_a_health_check():

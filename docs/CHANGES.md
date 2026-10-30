@@ -1,3 +1,15 @@
+# Unreleased: a web application firewall
+
+Last of the second round (docs/INFRASTRUCTURE-ARCHITECTURE.md, "A web application firewall"):
+
+- **`load_balancer.waf` and `cluster.public.waf`.** A Cloud Armor policy: listed sources refused, a rate per client
+  address, and Google's preconfigured OWASP rules at sensitivity 1; `preview` only logs.
+- **Load balancer**: the backend service names the policy, made before it and deleted after it.
+- **Cluster front door**: the delivery layer writes a `GCPBackendPolicy` naming the door's policy for each exposed
+  workload, before the route, and removes it with the route; tenants' edit role may write `gcpbackendpolicies`.
+- **Delivery planner**: a machine without a public address may pull from a registry on the internet when its network
+  has Cloud NAT.
+
 # Unreleased: a customer-managed encryption key
 
 Third of the second round (docs/INFRASTRUCTURE-ARCHITECTURE.md, "A customer-managed encryption key"):

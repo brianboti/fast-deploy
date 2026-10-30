@@ -1018,13 +1018,14 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `registries` | no | Artifact Registry repositories (LOCATION-docker.pkg.dev/PROJECT/REPO) the nodes may pull images from; only ones the operator lists. |
 | `public` | no | A front door: a reserved public address and a Gateway taking routes from the request's namespace (default false). |
 | `hostnames` | no | The front door's DNS names, in domains the operator allows: HTTPS with a Google-managed certificate; none, plain HTTP. |
+| `waf` | no | A web application firewall on the door's workloads: owasp (default true), rate_limit_per_minute, deny_sources, preview. |
 | `zone` | no | A zone of the region; the provider picks the first when omitted. |
 | `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
 | `labels` | no | Labels for every resource, next to the service's ownership labels. |
 | `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
 
 **Required fields.** `region`.
-**Optional fields.** `provider`, `node_count`, `node_cpu`, `node_memory_gb`, `node_disk_gb`, `kubernetes_version`, `private_nodes`, `network_id`, `registries`, `public`, `hostnames`, `zone`, `name`, `labels`, `wait_seconds`.
+**Optional fields.** `provider`, `node_count`, `node_cpu`, `node_memory_gb`, `node_disk_gb`, `kubernetes_version`, `private_nodes`, `network_id`, `registries`, `public`, `hostnames`, `waf`, `zone`, `name`, `labels`, `wait_seconds`.
 
 **Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
 
@@ -1254,12 +1255,13 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `port` | no | The port the machines serve on; the public port is the same (default 80). |
 | `health_check_path` | no | The path an http health check requests (default /). |
 | `hostnames` | no | With http: names served over HTTPS on 443 with a provider-managed certificate, in domains the operator allows. |
+| `waf` | no | With http: a web application firewall (owasp, default true; rate_limit_per_minute; deny_sources; preview). |
 | `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
 | `labels` | no | Labels for every resource, next to the service's ownership labels. |
 | `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
 
 **Required fields.** `region`, `backends`.
-**Optional fields.** `provider`, `type`, `port`, `health_check_path`, `hostnames`, `name`, `labels`, `wait_seconds`.
+**Optional fields.** `provider`, `type`, `port`, `health_check_path`, `hostnames`, `waf`, `name`, `labels`, `wait_seconds`.
 
 **Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
 
