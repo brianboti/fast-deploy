@@ -14,7 +14,7 @@ import time
 
 import httpx
 
-from . import attest, bindings, planner, remote
+from . import attest, bindings, planner, provenance, remote
 from .building import Builder
 from .cloudbuild import CloudBuildClient
 from .errors import DeliveryError, ErrorCode
@@ -253,6 +253,12 @@ class Delivery:
             values: dict[str, str] = {}
             try:
                 infra, session = self._prepare(record, release)
+                if environment.require_provenance:
+                    build = self.state.built(record["infra_owner"], release.image)
+                    if build is None:
+                        raise DeliveryError(ErrorCode.NOT_BUILT_HERE, f"{release.image} was not built by this service", {"image": release.image})
+                    found = provenance.occurrences(self.http, self.tokens(environment.service_account), release.image)
+                    event("provenance_verified", **provenance.verify(release.image, build, found))
                 if environment.require_attestation:
                     verified = attest.verify(release, environment, self._registry_token(release, environment), self.runner)
                     event("image_verified", **verified)
@@ -592,7 +598,7 @@ class Delivery:
 
     def service_status(self, version: str) -> dict:
         environments = {name: {"service_account": item.service_account, "allowed_registries": item.allowed_registries, "require_attestation": item.require_attestation,
-                               "require_approval": item.require_approval,
+                               "require_provenance": item.require_provenance, "require_approval": item.require_approval,
                                "build": {"service_account": item.build.service_account, "machine_type": item.build.machine_type} if item.build else None}
                         for name, item in self.config.environments.items()}
         return {"status": "OK", "version": version, "cloudinfra": self.config.cloudinfra.url, "environments": environments,

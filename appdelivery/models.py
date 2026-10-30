@@ -304,6 +304,7 @@ class PlanResponse(BaseModel):
     machines: list[PlannedMachine]
     env: dict[str, str] = Field(description="Each name and where its value comes from; never a secret's value.")
     attestation_required: bool
+    provenance_required: bool = False
     approval_required: bool
     target: Literal["machines", "cluster", "service", "job"] = "machines"
     namespace: str | None = Field(default=None, description="On a cluster: the request's namespace.")

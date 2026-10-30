@@ -222,4 +222,5 @@ def plan(release: ReleaseRequest, principal, config, infra: InfraRequest) -> Pla
                     for machine in infra.group(release.target.group)]
     return PlanResponse(environment=release.environment, request_id=release.request_id, image=release.image, service_account=environment.service_account,
                         machines=machines, env={name: binding.source() for name, binding in release.env.items()},
-                        attestation_required=environment.require_attestation, approval_required=environment.require_approval, warnings=warnings, **extra)
+                        attestation_required=environment.require_attestation, provenance_required=environment.require_provenance,
+                        approval_required=environment.require_approval, warnings=warnings, **extra)

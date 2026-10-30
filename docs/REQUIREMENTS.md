@@ -26,7 +26,8 @@ Direct dependencies, pinned exactly in `pyproject.toml` and hash-locked in `requ
 | `httpx` | 0.28.1 | Every call to Google's APIs, to a cluster's API, and from `appdelivery` to `cloudinfra` |
 | `pydantic` | 2.14.1 | The strict contracts (requests, releases, configuration), unknown fields refused |
 | `PyYAML` | 6.0.3 | Configuration files, request and release files |
-| `PyJWT[crypto]` | 2.15.1 | Tokens of the Claude chat sign-in (with `cryptography` 50.0.2) |
+| `PyJWT[crypto]` | 2.15.1 | Tokens of the Claude chat sign-in |
+| `cryptography` | 50.0.2 | PyJWT's signatures, and the delivery service's check of Google's signature on Cloud Build provenance; declared directly since 2026-10-30, at the version PyJWT already brought |
 | `uvicorn` | 0.54.0 | The ASGI server both images run |
 
 Transitive packages, as `requirements.lock` resolves them (each with its hashes there): annotated-doc 0.0.5,
@@ -186,6 +187,7 @@ Backstops the positioning review recommends as organisation policies on that pro
 | `roles/container.clusterViewer` (cluster targets: to fetch credentials) | the project |
 | `roles/artifactregistry.reader` on each repository in `allowed_registries` (service and job targets: Cloud Run checks that the deployer can read the image, found 2026-10-30) | each repository |
 | `roles/cloudbuild.builds.editor` (builds: create and read) | the project |
+| `roles/containeranalysis.occurrences.viewer` (environments with `require_provenance`: read an image's provenance) | the project that holds the images |
 | `roles/iam.serviceAccountUser` on the environment's build account (to start builds as it) | the build account |
 | everything else: OS Login admin and the IAP tunnel on machines, secret access, `edit` in a cluster's namespace, `run.developer` and Service Account User on a service or job | granted by `cloudinfra` when the team names the account at `admin` in the request's `access` |
 
@@ -300,6 +302,7 @@ client; the sign-in page and Claude's client send one.
 | Locked packages and hashes | `requirements.lock`, `requirements-dev.lock`, `audit.lock` | `uv pip compile --generate-hashes pyproject.toml -o requirements.lock`, the same with `--extra dev -o requirements-dev.lock`, and `uv pip compile --generate-hashes audit.in -o audit.lock`; then `python -m pytest -q` and `python -m pip_audit --require-hashes -r …` |
 | The Python image digest | both Dockerfiles (must match; a test checks) | `docker buildx imagetools inspect python:3.12-slim`, after review |
 | gcloud and Cosign versions and sums | `Dockerfile.appdelivery` | as its header describes; a test checks the shape of every pin |
+| Google's key for Cloud Build provenance | `appdelivery/provenance.py` (`GOOGLE_KEYS`, read 2026-10-30) | `gcloud kms keys versions get-public-key VERSION --location global --keyring attestor --key google-hosted-worker --project verified-builder` when a release is refused naming a key id it does not trust |
 | CI tools and action commits | `.github/workflows/ci.yml`, `.pre-commit-config.yaml` | Dependabot for the actions; the rest by hand |
 | Resource kinds, fields, tools, error codes | `cloudinfra/mcp/catalog.py` and `cloudinfra/models/` → `docs/MCP-CATALOG.md`; `appdelivery/catalog.py` → `docs/DELIVERY-CATALOG.md` | `python -m cloudinfra.cli catalog --write docs/MCP-CATALOG.md`; `app-delivery catalog --write docs/DELIVERY-CATALOG.md`; a test fails while either is stale |
 | Limits and defaults | `cloudinfra/config.py`, `cloudinfra/models/request.py`, `appdelivery/config.py`, `appdelivery/models.py` | with the code |

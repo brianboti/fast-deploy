@@ -87,5 +87,5 @@ def test_the_package_builds_nothing_itself():
     from appdelivery import remote
     assert remote.COMMANDS == ("gcloud", "cosign")
     for path in modules(PACKAGE):
-        if "cloudbuild.googleapis.com" in path.read_text():
+        if "cloudbuild.googleapis.com/v" in path.read_text():  # the API; provenance names the builder by its own address
             assert path.name == "cloudbuild.py", f"{path.relative_to(ROOT)} calls Cloud Build"

@@ -132,13 +132,13 @@ class World:
         for image in (V1, V2, V3, IMAGE):
             self.built(image)
 
-    def built(self, image, infra_owner="shop-team"):
+    def built(self, image, infra_owner="shop-team", cloud_build_id=None, revision="a" * 40):
         """Record image@digest as one a build of this service produced, as building.py does when Cloud Build reports success."""
         self.seeded = getattr(self, "seeded", 0) + 1
         build_id = f"bld-{self.seeded:012x}"
         tag = f"{image.split('@')[0]}:{build_id}"
-        self.state.create_build(build_id, "dev", infra_owner, "shop-team", "shop-web", "a" * 40, tag, "WORKING", "cloud-" + build_id, None,
-                                {"environment": "dev", "source": "shop-web", "revision": "a" * 40, "image": "web"})
+        self.state.create_build(build_id, "dev", infra_owner, "shop-team", "shop-web", revision, tag, "WORKING", cloud_build_id or "cloud-" + build_id, None,
+                                {"environment": "dev", "source": "shop-web", "revision": revision, "image": "web"})
         self.state.update_build(build_id, ("WORKING",), "SUCCEEDED", built=image)
         return build_id
 

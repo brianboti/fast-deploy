@@ -237,7 +237,9 @@ worker's daemon; if so, the `TARGETARCH` argument becomes unnecessary.
 
 Status, 2026-10-30: the real run (step 6) is done for builds and the gate ([DELIVERY-SPIKE.md](../DELIVERY-SPIKE.md)
 section 14). It answered section 7's open question: the v1 provenance of an API build from a connected repository names
-the GitHub URI and the commit, so `slsa-verifier --source-uri github.com/ORG/REPO` should apply. Steps 1 and 3 are built, and step 2's first half (a release names only a digest a build of this
+the GitHub URI and the commit, so `slsa-verifier --source-uri github.com/ORG/REPO` should apply. Step 2's provenance half is built against the run's real answer
+(`appdelivery/provenance.py`): Google's signature over DSSE's encoding with the `google-hosted-worker` key, then the
+signed statement held to the record; `slsa-verifier` was not needed, so the image gains no binary. Steps 1 and 3 are built, and step 2's first half (a release names only a digest a build of this
 service recorded for the same team). Step 3 took the operator's list of writers rather than a per-provider setting:
 `access.registry_writers`, provider-independent, applied in the grant loop. Provenance verification waits for the real
 run, so that it is written against Cloud Build's actual occurrence JSON rather than the documentation's examples. Steps

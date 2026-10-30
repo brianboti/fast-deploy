@@ -81,6 +81,8 @@ class Environment(StrictModel):
     attestation_type: str = Field(default="slsaprovenance1", pattern=r"^[a-z0-9]{3,40}$")
     trusted_signers: list[str | KeylessSigner] = Field(default_factory=list)
     require_approval: bool = False
+    require_provenance: bool = Field(default=False, description="A release's image must carry Cloud Build's SLSA v1 provenance, signed by Google, naming the build "
+                                     "this service recorded for it; read as service_account, which needs roles/containeranalysis.occurrences.viewer.")
     build: BuildSettings | None = Field(default=None, description="Building images in this environment; none when it has no block.")
 
     @field_validator("allowed_registries")

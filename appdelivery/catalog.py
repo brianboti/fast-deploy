@@ -20,6 +20,8 @@ MEANINGS = {
     ErrorCode.UNREACHABLE_TARGET: "A machine this service cannot reach (no SSH through IAP) or that cannot pull (no public address for a registry on the internet).",
     ErrorCode.REGISTRY_NOT_ALLOWED: "The image is not under the registries the environment allows.",
     ErrorCode.ATTESTATION_FAILED: "No trusted signer of the environment has an attestation for this image digest.",
+    ErrorCode.PROVENANCE_FAILED: "The environment requires Cloud Build's provenance, and the image has none signed by Google that names the build this service "
+                                 "recorded, or Container Analysis could not be read.",
     ErrorCode.NOT_BUILT_HERE: "The image digest is not one a build of this service produced for the team: images are built only in the trusted project.",
     ErrorCode.BUILD_UNAVAILABLE: "Cloud Build could not be reached, or refused the environment's service account (builds.editor, and serviceAccountUser on the build account).",
     ErrorCode.BUILD_FAILED: "Cloud Build refused the build or ended it without success (failure, timeout, cancelled); its log says why.",
@@ -106,7 +108,8 @@ RUN_OUT = "RunResponse: release_id, execution, status (RUNNING, SUCCEEDED, FAILE
 FOLLOW = "It answers at once with the work running, or waits up to wait_seconds; follow it with get_release until the status is RUNNING, FAILED, ROLLED_BACK or REMOVED."
 PLAN_ERRORS = ("INVALID_RELEASE", "INVALID_BINDING", "UNKNOWN_ENVIRONMENT", "PERMISSION_DENIED", "NOT_FOUND", "INVALID_STATE", "NOT_GRANTED", "UNSUPPORTED_TARGET",
                "UNREACHABLE_TARGET", "REGISTRY_NOT_ALLOWED", "NOT_BUILT_HERE", "INFRA_UNAVAILABLE", "INFRA_AUTH_FAILED")
-RUN_ERRORS = ("ATTESTATION_FAILED", "SECRET_UNAVAILABLE", "GOOGLE_AUTH_FAILED", "MACHINE_UNREACHABLE", "MACHINE_ERROR", "CLUSTER_UNREACHABLE", "CLUSTER_ERROR", "SERVICE_UNREACHABLE", "SERVICE_ERROR",
+RUN_ERRORS = ("ATTESTATION_FAILED", "PROVENANCE_FAILED",
+              "SECRET_UNAVAILABLE", "GOOGLE_AUTH_FAILED", "MACHINE_UNREACHABLE", "MACHINE_ERROR", "CLUSTER_UNREACHABLE", "CLUSTER_ERROR", "SERVICE_UNREACHABLE", "SERVICE_ERROR",
               "PULL_FAILED", "UNHEALTHY", "ROLLOUT_FAILED")
 
 CATALOG = (
@@ -128,7 +131,7 @@ CATALOG = (
     ToolSpec("plan_release", "Plan a release",
              "Check a release against the infrastructure layer's request as it is now and say what deploying it would do: the machines, where each environment "
              "value comes from, whether an attestation and an approval are needed, and which running release it would replace.",
-             (RELEASE,), "PlanResponse: status PLANNED, machines, env sources, attestation_required, approval_required, replaces, build_id, warnings.", PLAN_ERRORS,
+             (RELEASE,), "PlanResponse: status PLANNED, machines, env sources, attestation_required, provenance_required, approval_required, replaces, build_id, warnings.", PLAN_ERRORS,
              "Needs can_deploy in the release's environment. Every problem is reported at once, each with a code.", "read_only"),
     ToolSpec("deploy_release", "Deploy a release",
              "Record a release and roll it out. On machines: one at a time (pull, start, health check); the first machine that fails stops the rollout and "
@@ -169,7 +172,7 @@ CATALOG = (
              (RELEASE_ID, WAIT), RELEASE_OUT, ("NOT_FOUND", "PERMISSION_DENIED", "INVALID_STATE", "MACHINE_UNREACHABLE", "MACHINE_ERROR", "REMOVE_FAILED"),
              "Needs can_deploy in the release's environment.", "destructive", FOLLOW),
     ToolSpec("get_service_status", "Get the service status", "The service's version, the infrastructure layer it reads, and its environments with their rules.",
-             (), "{status, version, cloudinfra, environments: {name: {service_account, allowed_registries, require_attestation, require_approval, build}}, moving, building}.", (),
+             (), "{status, version, cloudinfra, environments: {name: {service_account, allowed_registries, require_attestation, require_provenance, require_approval, build}}, moving, building}.", (),
              "Any principal.", "read_only"),
 )
 BY_NAME = {spec.name: spec for spec in CATALOG}

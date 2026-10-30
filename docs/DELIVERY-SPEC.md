@@ -149,6 +149,13 @@ Rules, all checked before anything runs:
   environment (an image is built once and released to dev, then prod). Anything else is `NOT_BUILT_HERE`, before the
   infrastructure layer is read: an image built on a laptop or in a CI job, or pushed into the team's own registry by
   anyone, has no such build. Checked again when a release waiting for approval starts.
+- In an environment with `require_provenance`, the rollout also reads the image's Cloud Build provenance from
+  Container Analysis and accepts it only if Google's own key (`google-hosted-worker`, pinned in
+  `appdelivery/provenance.py`) signed it over DSSE's encoding, and the signed SLSA v1 statement names this digest in
+  this repository, Cloud Build's hosted worker as the builder, the recorded Cloud Build build as its invocation, and the
+  recorded commit as its source. The occurrence's unsigned copy is never read. Anything else is `PROVENANCE_FAILED` and
+  no target is touched. This holds even if this service's own records were changed: only Cloud Build can make what
+  Google signs.
 - `env` values are a literal, an endpoint of this request, or a secret of this request; never a secret of another
   request. A literal that looks like a credential (by the same key list `cloudinfra`'s redaction uses) is refused: put it
   in a secret.
@@ -536,6 +543,7 @@ environments:
     service_account: appdelivery-prod@infra-project.iam.gserviceaccount.com
     allowed_registries: [us-central1-docker.pkg.dev/infra-project/shop-images]
     build: {service_account: build-prod@infra-project.iam.gserviceaccount.com, machine_type: E2_HIGHCPU_8}
+    require_provenance: true
     require_attestation: true
     trusted_signers: ["gcpkms://projects/acme-sec/locations/global/keyRings/release/cryptoKeys/attestor"]
     require_approval: true
@@ -587,7 +595,7 @@ As `tests/cloudinfra/test_infra_catalog.py` does for `cloudinfra`:
   speaks to `cloudinfra` only over HTTP, and `cloudinfra` never imports `appdelivery`. Its tests live in
   `tests/appdelivery/` with their own fakes and no `conftest.py`, and use no helper from elsewhere.
 - It has its own console script and container image (`Dockerfile.appdelivery`). It needs no Python dependency beyond
-  those `cloudinfra` already pins (mcp, fastapi, httpx, pydantic, PyYAML, PyJWT, uvicorn). Its image adds two pinned
+  those `cloudinfra` already pins (mcp, fastapi, httpx, pydantic, PyYAML, PyJWT, cryptography, uvicorn). Its image adds two pinned
   binaries: the gcloud CLI and Cosign 3.1.x.
 - It copies nothing from `cloudinfra` by import. The bearer-token gate, rate limiter and audit wrapper are small and are
   written again in `appdelivery`; a shared library can come later if a third service needs them.
@@ -614,8 +622,9 @@ As `tests/cloudinfra/test_infra_catalog.py` does for `cloudinfra`:
 5. **Builds in the trusted project.** Built 2026-10-30 (section 3): `build_image`, `get_build`, `list_builds`, and the
    rule that a release names only a digest built here. `cloudinfra`'s registries let only the operator's registry
    writers (the build accounts) push, and no federated CI identity is a member. Run on Google Cloud on 2026-10-30
-   ([DELIVERY-SPIKE.md](DELIVERY-SPIKE.md) section 14). Still to do: the release gate also
-   verifies Cloud Build's signed provenance; the platform's own images built the same way
+   ([DELIVERY-SPIKE.md](DELIVERY-SPIKE.md) section 14). With `require_provenance`, the release gate also verifies
+   Cloud Build's signed provenance, written against the real answer from that run. Still to do: the platform's own
+   images built the same way
    ([research/RESEARCH-2026-10-30-trusted-build.md](research/RESEARCH-2026-10-30-trusted-build.md) section 8).
 6. **Later, convenience:** a Score file as an alternative input; `cloudinfra`'s `scope: granted`; an internal front
    door; a machine service account chosen by the request.

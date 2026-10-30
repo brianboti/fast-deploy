@@ -224,6 +224,12 @@ gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:appdeliv
 gcloud iam service-accounts add-iam-policy-binding build-dev@$PROJECT.iam.gserviceaccount.com --project $PROJECT --member serviceAccount:appdelivery-dev@$PROJECT.iam.gserviceaccount.com --role roles/iam.serviceAccountUser
 ```
 
+In an environment with `require_provenance`, its account also reads the provenance Cloud Build records:
+
+```bash
+gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:appdelivery-prod@$PROJECT.iam.gserviceaccount.com --role roles/containeranalysis.occurrences.viewer --condition=None
+```
+
 In `cloudinfra`'s configuration the environment is a read-only principal (section 3 above); its token goes into the
 variable the environment names. Then:
 

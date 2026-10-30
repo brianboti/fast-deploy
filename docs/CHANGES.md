@@ -29,8 +29,13 @@ upgrading, since a stored one no longer validates.
 
 Run on Google Cloud on 2026-10-30 (docs/DELIVERY-SPIKE.md section 14): a build by commit succeeded with signed SLSA
 provenance naming the GitHub source, and a digest pushed by hand was refused. Making the connection needs the Cloud
-Build service agent to hold Secret Manager Admin (docs/SETUP.md). Not yet: the release gate does not verify Cloud
-Build's signed provenance.
+Build service agent to hold Secret Manager Admin (docs/SETUP.md). After the run, the release gate verifies provenance too:
+
+- **`require_provenance`** per environment: at rollout the image's Cloud Build provenance is read from Container
+  Analysis and must be signed by Google's key for Cloud Build's hosted workers (pinned), with the signed SLSA v1
+  statement naming the digest, the builder, the recorded Cloud Build build and its commit. Otherwise
+  `PROVENANCE_FAILED`, and no target is touched. Plans say `provenance_required`. The environment's account needs
+  `roles/containeranalysis.occurrences.viewer`. Tested against the real answer from the run, kept as a fixture.
 
 # Unreleased: the repository is the two services, and the documents say so
 

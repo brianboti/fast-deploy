@@ -36,6 +36,7 @@ environments:
     allowed_registries: [us-central1-docker.pkg.dev/your-infrastructure-project/shop-images]
     build:
       service_account: build-prod@your-infrastructure-project.iam.gserviceaccount.com
+    require_provenance: true                     # Cloud Build's provenance, signed by Google, must name the build recorded here
     require_attestation: true
     # attestation_type: slsaprovenance1
     trusted_signers:
