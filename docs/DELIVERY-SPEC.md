@@ -369,7 +369,8 @@ The design:
   above) and becomes the job's current release; `run` starts an execution now and reports its counts and log link;
   rollback puts the previous release's container back; remove puts the stand-in back.
 
-Steps, each its own pull request: 1. `cloudinfra` service kind (built 2026-10-29); 2. delivery to a service (built
+Steps, each its own pull request (step 5 done 2026-10-30, docs/DELIVERY-SPIKE.md section 13, which found six defects,
+all fixed): 1. `cloudinfra` service kind (built 2026-10-29); 2. delivery to a service (built
 2026-10-29); 3.
 `cloudinfra` job kind with its schedule (built 2026-10-29); 4. delivery to a job and running it (built 2026-10-29: `run_release`
 and `get_release_run`); 5. a real run.
@@ -492,6 +493,12 @@ itself enforces that `appdelivery` sees only what teams handed it.
 **For phase 2** (decided 2026-10-29, section 4): a namespace per cluster and grants as RoleBindings in it. The two
 alternatives set aside: IAM's `container.developer` for the delivery service account (reaches every cluster of the
 project), and Google Groups for RBAC (needs a Workspace domain; it remains usable for `group:` members).
+
+**For phase 4** (decided 2026-10-29, section 4): the `service` and `job` kinds, with their runtime accounts and, for a
+job, its schedule. Beyond what `cloudinfra` grants, the operator gives each environment's service account, once,
+`roles/artifactregistry.reader` on the repositories in its `allowed_registries`: Cloud Run checks that the account
+deploying a revision or a job can read the image, not only the service's own account (found on a real project on
+2026-10-30).
 
 **Later, optional:** a machine service account chosen by the request, so an application on the machine can read its
 own secrets and pull its own images; then `appdelivery` would pass secret names instead of values.

@@ -410,3 +410,59 @@ route and the health check as the environment's account.
 Everything was destroyed or deleted afterwards: the request through `cloudinfra`; then the platform machine, its
 firewall rule, both repositories, the build bucket, the three service accounts and every binding, the conditional one
 included. Kubernetes Engine, Artifact Registry and Cloud Build APIs stay enabled with the others.
+
+## 13. Phase 4, Cloud Run on Google Cloud
+
+Run on 2026-10-30 between 04:20 and 05:50 UTC by Claude for the operator, in the same sandbox project, from branch
+`phase4-job-delivery` (PRs #213 to #216). As in sections 10 and 12, both services ran from their own images on a platform
+machine, `cloudinfra` with the roles the architecture document lists for services and jobs (`run.admin`,
+`iam.serviceAccountAdmin` and `serviceAccountUser`, `secretmanager.admin`, `cloudscheduler.admin`, and readers), and with
+`allow_public_services` on. The environment's account had no project role at all. Cloud Build copied `hello-app` 1.0 and
+2.0, Google's sample job and `busybox` into a private repository.
+
+`cloudinfra` made one request with two services, `api` (private) and `web` (public), a job `nightly` with two tasks on
+the schedule `*/2 * * * *`, a generated secret, and the environment's account at `admin`.
+
+| Step | Result |
+|---|---|
+| the request | `READY`: both services and the job each with its own runtime account; the job's schedule enabled, running as its own account |
+| `service: true` with two services | refused with their names |
+| `api` with no sign-in, then signed in | 403, then 200 |
+| deploy 1.0, then 2.0, on `api` | each a revision named after its release, proved under a `candidate` tag, then given all traffic; the address answered 1.0.0, then 2.0.0 |
+| a release of `busybox` (exits at once) | `FAILED` with Cloud Run's own reason ("failed the configured startup probe checks"); 2.0 kept all traffic and its rollback |
+| roll back 2.0 | `ROLLED_BACK`; the address answered 1.0.0 |
+| deploy 1.0 on `web` | answered with no sign-in at all |
+| the schedule | ran the job by itself every two minutes, two tasks succeeding each time |
+| the job: deploy, run | the release became the job's container; `run_release` → `SUCCEEDED`, 2 of 2 tasks, with the log page |
+| a release with `FAIL_RATE=1`, run | `FAILED`, 0 of 2 tasks; running the release the job no longer held was refused (`INVALID_STATE`) |
+| roll back the job, run | the previous container again, its secret pinned anew; `SUCCEEDED` |
+| remove both services | the stand-in page again |
+| the secret | in no file and no log line of either service |
+| destroy | both services, the job, the schedule, every runtime and schedule account, and the secret gone |
+
+Found on the way, and fixed (each with a test that fails without the fix):
+
+- **Cloud Run checks that the deployer can read the image**, not only the service's account: every release was refused
+  with `artifactregistry.repositories.downloadArtifacts` until the environment's account could read the repository.
+  An operator's one-time grant (section 9); the refusal now says so.
+- **A revision with no traffic and no tag is retired at once**, reported Ready without ever starting, so a container
+  that exits looked healthy. The new revision now gets a `candidate` tag at 0%, as Google's no-traffic deploy does, and
+  its readiness is read from the revision itself.
+- **Right after a change, a service may report the state before it.** It is settled only once `observedGeneration` has
+  reached `generation`.
+- **A service whose newest revision failed reports a failed condition while it serves on.** `cloudinfra` called it
+  FAILED, and since a FAILED resource is never read again, the delivery service refused the rollback for good. A service
+  with a revision serving all traffic is READY.
+- **A fresh grant reaches a service's revisions minutes after the service**: two minutes after the request a PATCH went
+  through while reading the new revision was refused; five minutes after, both worked. A 403 that is not about the
+  image is tried again for up to five minutes.
+- **After moving traffic, the first reads may still report it where it was**, and the failed condition above stopped the
+  wait at once, so a rollback that worked was called failed. The wait now looks only at the traffic.
+
+Not checked here: removing a job's release (the script lost its id; the same whole-job write served deploy and rollback,
+and the tests cover it), and a custom domain or HTTPS beyond Cloud Run's own address.
+
+Everything was deleted afterwards: the requests through `cloudinfra`; then the platform machine, its firewall rule, both
+repositories, the build bucket, the three service accounts and every binding. Cloud Run and Cloud Scheduler APIs stay
+enabled with the others.
+
