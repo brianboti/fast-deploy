@@ -11,6 +11,8 @@ Phase 4, step 3 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECT
   on its runtime account.
 - **Destroy** takes the schedule away first, then the job, then both accounts; a schedule Google refuses leaves nothing.
 - **Tools**: `create_job`, `get_job`, `delete_job` (51 tools).
+- **Fixed on a real project** (docs/DELIVERY-SPIKE.md section 13): a Cloud Run service whose newest revision failed while
+  an earlier one serves all traffic is READY, not FAILED.
 
 # Unreleased: a managed container service (Cloud Run)
 
