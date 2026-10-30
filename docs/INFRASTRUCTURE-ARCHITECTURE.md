@@ -298,6 +298,7 @@ database was created and finds no trace of the password.
 | Boundary | How |
 |---|---|
 | Caller identity | Bearer token per principal, stored as a SHA-256 hash, compared in constant time; identity comes from the credential, never a parameter |
+| Sign-in for Claude chat | Off unless `sign_in` is set (`security/oauth.py`): the service is its own OAuth 2.1 server for claude.ai, which cannot send a fixed token. A person pastes their principal's token on the service's own page, never in the chat; Claude gets a one-hour access token and a thirty-day refresh token standing for that principal, with its rights. PKCE, registration only for the configured callbacks (Claude's), codes and tokens kept as hashes, a refresh token used once (a second use ends the sign-in), and a principal removed or given a new token ends its sign-ins |
 | Authorization | `can_provision` for tools that create or change, `can_destroy` for deletes and for a lifetime, which ends in one; `scope: own` sees only its own requests (another caller's request is NOT_FOUND, not merely forbidden); `scope: all` for an operator identity |
 | Budgets | Per-identity request budget, per-address failed-login budget (429 with Retry-After) |
 | Provider credential | Taken by the adapter from the host (metadata server, or gcloud with optional impersonation); never configured in a file, never accepted from a caller, never visible to the Application Layer |
@@ -373,4 +374,31 @@ operations tools. The MCP endpoint is `/mcp`; the REST endpoints are `POST /infr
 `GET /infrastructure/{id}`, `DELETE /infrastructure/{id}`, `POST /infrastructure/{id}/actions` (`action`, `hours`),
 `POST /infrastructure/{id}/access` (`action`, `member`, `level`), `GET /catalog` and `GET /status`. The same Docker image as Fast Deploy carries the package; its command is the uvicorn line above. The
 Fast Deploy controller and this service are separate processes with separate principals, state files and credentials;
-Fast Deploy's OAuth sign-in can front this server the same way when Claude's hosted connector needs it.
+Claude chat connects through the service's own sign-in; see "Connect Claude chat" below.
+
+## Connect Claude chat
+
+claude.ai adds a remote MCP server as a custom connector, and signs in to it only with OAuth: it cannot send a fixed
+bearer token. So the service can sign a person in itself.
+
+1. Serve the service on a public HTTPS address that Claude's servers reach, such as `https://infra.example.com`, behind
+   a TLS proxy or load balancer.
+2. In the configuration, add that host to `allowed_hosts` and turn sign-in on:
+
+   ```yaml
+   allowed_hosts: ["infra.example.com"]
+   sign_in:
+     url: https://infra.example.com
+     # callbacks: [https://claude.ai/api/mcp/auth_callback, https://claude.com/api/mcp/auth_callback]   # the default
+     # access_token_minutes: 60
+     # refresh_token_days: 30
+   ```
+
+3. In Claude: Customize, Connectors, Add custom connector, URL `https://infra.example.com/mcp`. Claude registers itself
+   and opens the service's sign-in page in the browser. Paste the token of the principal Claude should act as; Claude
+   then has that principal's rights and nothing more. Every call is audited under that principal's name, and the
+   sign-in itself is an event (`sign_in`, `token_reuse`, `sign_out`).
+
+Give the person their own principal (for example `scope: all` and no `can_destroy` for someone who only looks) rather
+than a system's. To end a sign-in, give the principal a new token or remove it. Static tokens keep working beside it.
+The delivery service (`appdelivery`) takes the same `sign_in` block.

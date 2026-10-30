@@ -20,6 +20,7 @@ from .catalog import CATALOG, render_markdown
 from .config import load_config
 from .errors import DeliveryError, ErrorCode, problems_from
 from .models import ReleaseRequest
+from .oauth import SignIn
 from .releases import Delivery
 from .state import ProcessLock, StateManager
 
@@ -129,7 +130,9 @@ def build_app(config, delivery: Delivery | None = None, state: StateManager | No
 
     app = FastAPI(title="Application Delivery", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.mcp, app.state.delivery, app.state.state = mcp, delivery, state
-    app.add_middleware(Authenticate, config=config, state=state)
+    sign_in = SignIn(config, state) if config.sign_in else None
+    app.state.sign_in = sign_in
+    app.add_middleware(Authenticate, config=config, state=state, sign_in=sign_in)
 
     def rest(name, fn, subject=None):
         result = invoke(state, "rest", name, fn, subject)
@@ -197,6 +200,8 @@ def build_app(config, delivery: Delivery | None = None, state: StateManager | No
     async def running(request_id: str, live: bool = False):
         return await in_worker("running", lambda: delivery.running(request_id, identity.get(), live))
 
+    if sign_in is not None:
+        app.router.routes.extend(sign_in.routes())  # before the catch-all MCP mount, which would take every path
     app.mount("/", mcp.streamable_http_app())
     return app
 

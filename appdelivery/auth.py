@@ -52,12 +52,16 @@ class RateLimiter:
 
 
 class Authenticate:
-    """ASGI gate: /healthz is public; everything else needs the bearer token of a configured principal."""
+    """ASGI gate: /healthz is public; everything else needs the bearer token of a configured principal. With sign-in on
+    (oauth.py), the OAuth paths are public too, budgeted per address, and an access token from a sign-in stands for the
+    principal who signed in."""
 
-    def __init__(self, app, config, state=None):
-        self.app, self.config, self.state = app, config, state
+    def __init__(self, app, config, state=None, sign_in=None):
+        self.app, self.config, self.state, self.sign_in = app, config, state, sign_in
         self.identities = RateLimiter(config.rate_limit_per_minute)
         self.failures = RateLimiter(config.auth_failures_per_minute)
+        self.public = RateLimiter(config.rate_limit_per_minute)
+        self.challenge = "Bearer" if sign_in is None else f'Bearer resource_metadata="{sign_in.metadata_url}"'
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope["path"] == "/healthz":
@@ -65,9 +69,17 @@ class Authenticate:
         client = (scope.get("client") or ("unknown", 0))[0]
         address = client_address.set(client)
         try:
+            if self.sign_in is not None and self.sign_in.is_public(scope["path"]):
+                allowed, retry_after = self.public.allow(client)
+                if not allowed:
+                    return await JSONResponse({"error": "temporarily_unavailable", "error_description": "Too many requests from this address"},
+                                              status_code=429, headers={"Retry-After": str(retry_after)})(scope, receive, send)
+                return await self.app(scope, receive, send)
             headers = dict(scope["headers"])
             scheme, _, token = headers.get(b"authorization", b"").decode("latin1").partition(" ")
             principal = find_principal(self.config, token.strip()) if scheme.lower() == "bearer" else None
+            if principal is None and self.sign_in is not None and scheme.lower() == "bearer" and token.strip():
+                principal = await run_in_threadpool(self.sign_in.principal_for, token.strip())
             if principal is None:
                 allowed, retry_after = self.failures.allow(client)
                 if not allowed:
@@ -76,7 +88,7 @@ class Authenticate:
                     return await JSONResponse({"status": "FAILED", "error": {"code": "PERMISSION_DENIED", "message": "Too many failed authentication attempts"}},
                                               status_code=429, headers={"Retry-After": str(retry_after)})(scope, receive, send)
                 return await JSONResponse({"status": "FAILED", "error": {"code": "PERMISSION_DENIED", "message": "Authentication required"}},
-                                          status_code=401, headers={"WWW-Authenticate": "Bearer"})(scope, receive, send)
+                                          status_code=401, headers={"WWW-Authenticate": self.challenge})(scope, receive, send)
             allowed, retry_after = self.identities.allow(principal.name)
             if not allowed:
                 return await JSONResponse({"status": "FAILED", "error": {"code": "PERMISSION_DENIED", "message": "Rate limit exceeded for this identity; retry later"}},
