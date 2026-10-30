@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from ..models.errors import ErrorCode, InfrastructureError
 from ..models.request import (
     RESOURCE_KINDS,
+    BudgetRequest,
     CacheRequest,
     ClusterRequest,
     ComputeRequest,
@@ -29,6 +30,7 @@ from ..models.request import (
     WarehouseRequest,
 )
 from ..models.resources import (
+    BudgetResource,
     CacheResource,
     ClusterResource,
     ComputeResource,
@@ -254,6 +256,16 @@ class CloudProvider(ABC):
 
     @abstractmethod
     def delete_monitor(self, resource: MonitorResource, ctx: ProvisionContext) -> None: ...
+
+    # ---- budget (a monthly spending budget on a request's costs, with email alerts)
+    @abstractmethod
+    def create_budget(self, spec: BudgetRequest, planned: PlannedResource, ctx: ProvisionContext) -> BudgetResource: ...
+
+    @abstractmethod
+    def get_budget(self, resource: BudgetResource) -> BudgetResource: ...
+
+    @abstractmethod
+    def delete_budget(self, resource: BudgetResource, ctx: ProvisionContext) -> None: ...
 
     # ---- dns (a public zone and its records)
     @abstractmethod

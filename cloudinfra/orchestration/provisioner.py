@@ -16,6 +16,7 @@ from ..models.request import (
     RESOURCE_KINDS,
     AcceleratorRequest,
     AutostopRequest,
+    BudgetRequest,
     CacheRequest,
     ClusterRequest,
     ComputeRequest,
@@ -38,6 +39,7 @@ from ..models.request import (
     WarehouseRequest,
 )
 from ..models.resources import (
+    BudgetResource,
     CacheResource,
     ClusterResource,
     ComputeResource,
@@ -91,6 +93,7 @@ POLL_SECONDS = 0.5
 DESTROY_ORDER = tuple(ResourceKind(kind) for kind in reversed(RESOURCE_KINDS))
 KIND_MODELS = {"network": NetworkRequest, "storage": StorageRequest, "compute": ComputeRequest, "database": DatabaseRequest, "cache": CacheRequest, "queue": QueueRequest,
                "secret": SecretRequest, "cluster": ClusterRequest, "service": ServiceRequest, "job": JobRequest, "identity": IdentityRequest, "dns": DnsRequest, "monitor": MonitorRequest,
+               "budget": BudgetRequest,
                "warehouse": WarehouseRequest,
                "nosql": NoSqlRequest,
                "load_balancer": LoadBalancerRequest}
@@ -291,6 +294,8 @@ class Orchestrator:
                                           {"active": active, "limit": self.config.limits.max_active_requests_per_principal})
             existing = self._existing_networks(request, principal, provider)
             external_backends = self._existing_backends(request, principal, provider)
+            if request.budget is not None and request.budget.request_id:  # a budget may watch only a request its caller may see
+                self._record(request.budget.request_id, principal)
             # The database password is generated here, written by the worker to a secret the request owns, and dropped.
             password = secrets.token_urlsafe(24) if request.database else None
             ctx.database_password = password
@@ -373,6 +378,8 @@ class Orchestrator:
             return NoSqlResource(**common, database=item.name, location=ctx.region)
         if item.kind == "monitor":
             return MonitorResource(**common, notify=list(request.monitor.notify))
+        if item.kind == "budget":
+            return BudgetResource(**common, monthly_amount=request.budget.monthly_amount, notify=list(request.budget.notify), watches=spec["watch"])
         if item.kind == "dns":
             return DnsResource(**common, dns_name=spec["zone"])
         if item.kind == "identity":
@@ -424,6 +431,8 @@ class Orchestrator:
                         resource = provider.create_nosql(next(item_ for item_ in request.nosqls() if item_.nosql_name == item.spec["nosql"]), item, ctx)
                     elif item.kind == "monitor":
                         resource = provider.create_monitor(request.monitor, item, ctx, created)
+                    elif item.kind == "budget":
+                        resource = provider.create_budget(request.budget, item, ctx)
                     elif item.kind == "dns":
                         resource = provider.create_dns(request.dns, item, ctx, created)  # made last: what its records point to is made
                     elif item.kind == "identity":
@@ -1162,6 +1171,12 @@ class Orchestrator:
     def create_monitor(self, principal, *, region, notify, uptime, provider="gcp", name=None, labels=None, wait_seconds=0):
         monitor = MonitorRequest(notify=list(notify), uptime=list(uptime))
         return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, monitor=monitor), principal, wait_seconds)
+
+    def create_budget(self, principal, *, request_id, monthly_amount, notify, thresholds=None, forecast=True, name=None, labels=None, wait_seconds=0):
+        """A budget on an earlier request's costs, made as a request of its own in that request's region."""
+        record = self._record(request_id, principal)
+        budget = BudgetRequest(monthly_amount=monthly_amount, notify=list(notify), thresholds=list(thresholds or [50, 90, 100]), forecast=forecast, request_id=request_id)
+        return self.provision(InfrastructureRequest(provider=record["provider"], region=record["region"], name=name, labels=labels or {}, budget=budget), principal, wait_seconds)
 
     def create_dns(self, principal, *, region, zone, records=None, provider="gcp", name=None, labels=None, wait_seconds=0):
         dns = DnsRequest(zone=zone, records=list(records or []))

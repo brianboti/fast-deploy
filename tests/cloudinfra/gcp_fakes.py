@@ -66,6 +66,8 @@ class FakeGcpApi(GcpApi):
         self.monitoring: dict[str, dict] = {}  # Cloud Monitoring channels, uptime checks and alert policies by full name
         self.datasets: dict[str, dict] = {}  # BigQuery datasets by id, with "tables" a test may set
         self.firestore: dict[str, dict] = {}  # Firestore databases by id
+        self.budgets: dict[str, dict] = {}  # Cloud Billing budgets by full name
+        self.billing_info = {"billingEnabled": True, "billingAccountName": "billingAccounts/01ABCD-234567-89EFAB"}
         self.snapshots: dict[str, dict] = {}  # disk snapshots by name, as a schedule takes them (take_snapshot)
         self.schedules: dict[str, dict] = {}  # Cloud Scheduler jobs by full name
         self.repositories = {"us-central1-docker.pkg.dev/test-project/apps", "us-central1-docker.pkg.dev/test-project/shared"}
@@ -109,6 +111,9 @@ class FakeGcpApi(GcpApi):
             (r"^/v1/projects/[^/]+/databases$", self._firestore_collection) if host.startswith("firestore") else (r"^$", None),
             (r"^/v1/projects/[^/]+/databases/([^/]+)$", self._firestore_item) if host.startswith("firestore") else (r"^$", None),
             (r"^/v3/projects/[^/]+/(notificationChannels|uptimeCheckConfigs|alertPolicies)$", self._monitoring_collection) if host.startswith("monitoring") else (r"^$", None),
+            (r"^/v1/projects/[^/]+/billingInfo$", lambda m, *a: dict(self.billing_info)) if host.startswith("cloudbilling") else (r"^$", None),
+            (r"^/v1/(billingAccounts/[^/]+)/budgets$", self._budgets) if host.startswith("billingbudgets") else (r"^$", None),
+            (r"^/v1/(billingAccounts/[^/]+/budgets/[^/]+)$", self._budget) if host.startswith("billingbudgets") else (r"^$", None),
             (r"^/v3/(projects/[^/]+/(?:notificationChannels|uptimeCheckConfigs|alertPolicies)/[^/]+)$", self._monitoring_item) if host.startswith("monitoring") else (r"^$", None),
             (r"^/dns/v1/projects/[^/]+/managedZones/([^/:]+):(getIamPolicy|setIamPolicy)$", self._zone_policy) if host.startswith("dns") else (r"^$", None),
             (r"^/dns/v1/projects/[^/]+/managedZones/([^/:]+)(/changes|/rrsets)?$", self._zone) if host.startswith("dns") else (r"^$", None),
@@ -372,9 +377,28 @@ class FakeGcpApi(GcpApi):
         if method == "DELETE":
             if "/notificationChannels/" in name:
                 assert not [item for item in self.monitoring.values() if name in item.get("notificationChannels", [])], "a channel goes after the alerts using it"
+                assert not [item for item in self.budgets.values() if name in item["notificationsRule"]["monitoringNotificationChannels"]], "and after the budgets"
             del self.monitoring[name]
             return {}
         return self.monitoring[name]
+
+    # ---- Cloud Billing budgets
+    def _budgets(self, found, method, body, params):
+        assert len(body["notificationsRule"]["monitoringNotificationChannels"]) <= 5, "a budget takes at most five channels"
+        [values] = body["budgetFilter"]["labels"].values()
+        assert len(body["budgetFilter"]["labels"]) == 1 and len(values) == 1, "a budget filters on one label with one value"
+        name = f"{found.group(1)}/budgets/b{len(self.budgets) + 1}"
+        self.budgets[name] = {**body, "name": name}
+        return self.budgets[name]
+
+    def _budget(self, found, method, body, params):
+        name = found.group(1)
+        if name not in self.budgets:
+            raise self._not_found(name)
+        if method == "DELETE":
+            del self.budgets[name]
+            return {}
+        return self.budgets[name]
 
     # ---- Cloud DNS
     def _zones_collection(self, found, method, body, params):

@@ -56,6 +56,8 @@ class GcpSettings(BaseModel):
     public_domains: list[str] = Field(default_factory=list)
     # Whether a request may make a managed container service callable without signing in (Cloud Run's invoker check off).
     allow_public_services: bool = False
+    # The billing account (XXXXXX-XXXXXX-XXXXXX) a request's budget is made on; the project's own, read from Cloud Billing, when unset.
+    billing_account: str | None = Field(default=None, pattern=r"^[0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6}$")
 
     @model_validator(mode="after")
     def _profiles(self):

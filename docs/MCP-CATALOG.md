@@ -1,6 +1,6 @@
 # MCP service catalog
 
-Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 66 tools in 18 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, `cac-`, `que-`, `sec-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
+Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 69 tools in 19 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, `cac-`, `que-`, `sec-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
 
 ## At a glance
 
@@ -58,6 +58,9 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | Monitor | `create_monitor` | Create monitoring | changes cloud |
 | Monitor | `get_monitor` | Get monitoring | read only |
 | Monitor | `delete_monitor` | Delete monitoring | destructive |
+| Budget | `create_budget` | Create a budget | changes cloud |
+| Budget | `get_budget` | Get a budget | read only |
+| Budget | `delete_budget` | Delete a budget | destructive |
 | Infrastructure | `list_resource_kinds` | List resource kinds | read only |
 | Infrastructure | `validate_infrastructure_request` | Validate a request | read only |
 | Infrastructure | `plan_infrastructure` | Plan a request | read only |
@@ -1403,6 +1406,79 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 **Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy.
 
 **Provider mapping (Google Cloud).** Cloud Monitoring: alertPolicies, uptimeCheckConfigs and notificationChannels delete.
+
+## Budget
+
+### `create_budget`
+
+**Purpose.** Create a monthly spending budget on an earlier request's costs, with an email to the given addresses as spending crosses each threshold and when the month's forecast passes the amount. It alerts and stops nothing; a full request may carry its own budget block.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `request_id` | yes | The request whose costs it counts; one of yours. |
+| `monthly_amount` | yes | The month's amount, in the billing account's currency. |
+| `notify` | yes | Up to five email addresses alerted, in domains the operator allows. |
+| `thresholds` | no | Percentages of the amount at which actual spending alerts (default 50, 90, 100). |
+| `forecast` | no | Also alert when the month's forecast passes the amount (default true). |
+| `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
+| `labels` | no | Labels for every resource, next to the service's ownership labels. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `request_id`, `monthly_amount`, `notify`.
+**Optional fields.** `thresholds`, `forecast`, `name`, `labels`, `wait_seconds`.
+
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
+
+**Possible errors.** `INVALID_ACCESS`, `NOT_FOUND`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
+
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. It counts only costs labelled with that request, which every resource of it carries; billing data, and so an alert, arrives hours late. Alerts go only to the operator's allowed domains, not to the billing account's administrators. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+
+**Provider mapping (Google Cloud).** Cloud Billing: billingbudgets.budgets.create; Cloud Monitoring: notificationChannels.create.
+
+### `get_budget`
+
+**Purpose.** The budget's amount, thresholds, addresses and the request it counts.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** none.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`.
+
+**Security.** Read-only; creates and changes nothing. Read-only.
+
+**Provider mapping (Google Cloud).** Cloud Billing: billingbudgets.budgets.get.
+
+### `delete_budget`
+
+**Purpose.** Delete the budget and its notification channels; nothing it watched is touched.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** `wait_seconds`.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `DESTROY_FAILED`.
+
+**Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy.
+
+**Provider mapping (Google Cloud).** Cloud Billing: billingbudgets.budgets.delete; Cloud Monitoring: notificationChannels.delete.
 
 ## Infrastructure
 

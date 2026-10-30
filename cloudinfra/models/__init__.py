@@ -5,6 +5,7 @@ from .request import (
     AcceleratorRequest,
     AccessRequest,
     AutostopRequest,
+    BudgetRequest,
     CacheRequest,
     ClusterRequest,
     ComputeRequest,
@@ -30,6 +31,7 @@ from .request import (
     WarehouseRequest,
 )
 from .resources import (
+    BudgetResource,
     CacheResource,
     ClusterResource,
     ComputeResource,
@@ -75,7 +77,8 @@ from .response import (
     ValidationResponse,
 )
 
-__all__ = ["RESOURCE_KINDS", "AcceleratorRequest", "AccessGrant", "AccessRequest", "AutostopRequest", "CacheRequest", "CacheResource", "ClusterRequest", "ClusterResource",
+__all__ = ["RESOURCE_KINDS", "AcceleratorRequest", "AccessGrant", "AccessRequest", "AutostopRequest",
+           "BudgetRequest", "BudgetResource", "CacheRequest", "CacheResource", "ClusterRequest", "ClusterResource",
            "ComputeRequest", "ComputeResource", "ConnectInfo", "CostEstimate", "CostLine", "Credentials", "DatabaseRequest", "DatabaseResource", "Endpoints", "ErrorCode",
            "ErrorDetail", "FirewallRule", "Grant", "Health", "InfrastructureError", "InfrastructureRequest", "InfrastructureResponse", "Lifecycle", "LifetimeRequest",
            "ListResponse", "LoadBalancerRequest", "LoadBalancerResource", "NetworkRequest",

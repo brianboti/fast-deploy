@@ -223,6 +223,24 @@ The service's own identity then needs, once, from the platform team:
 | give a node account its project role | `roles/resourcemanager.projectIamAdmin` | an IAM condition, so it can grant that one role and no other: `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])` ([limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)) |
 | let a node account read a repository | `roles/artifactregistry.admin` | each repository listed in `providers.gcp.registries`, granted on the repository |
 
+### A spending budget
+
+`budget: {monthly_amount, notify, thresholds, forecast}` makes a Cloud Billing budget for the month on the costs that
+carry the request's `cloudinfra-request` label, which every resource the service makes carries, so it counts what the
+request costs and nothing else. An email goes to `notify` as actual spending crosses each threshold (50, 90 and 100
+percent by default) and, unless `forecast` is off, when the month's forecast passes the amount
+([budgets](https://docs.cloud.google.com/billing/docs/how-to/budgets)). It alerts and stops nothing. Addresses must be
+in `access.allowed_domains`, as a monitor's are; they are reached through Cloud Monitoring email channels, and the
+billing account's administrators are left out so that they do not hear of every request. The amount is in the billing
+account's currency. Billing data arrives some hours late, and so does an alert.
+
+The budget is made first and deleted with the request. `create_budget` adds one to an earlier request of the caller's
+(`budget.request_id`); a request of another owner is not found. The billing account is the operator's
+`providers.gcp.billing_account`, or the project's own read from Cloud Billing. The service's identity needs
+`roles/billing.costsManager` on that account (and, without the setting, permission to read the project's billing info).
+Budgets are free. Ranked first of the second round of the coverage research of 2026-10-30: managing cloud spend is the
+first challenge companies name, and 29 percent of it is wasted (Flexera 2026).
+
 ### Outbound internet and disk snapshots
 
 `network.nat: true` adds a Cloud Router on the request's network carrying a Cloud NAT for every range of its subnet,
@@ -470,7 +488,7 @@ python -m pytest tests/cloudinfra -q                # the boundary tests, no clo
 CLOUDINFRA_INTEGRATION=1 CLOUDINFRA_PROJECT=my-project python -m pytest tests/integration/cloudinfra -q   # one real machine, then destroyed
 ```
 
-The catalog has 66 tools: create, get and delete for each of the sixteen kinds (plus list, resize, attach and firewall
+The catalog has 69 tools: create, get and delete for each of the seventeen kinds (plus list, resize, attach and firewall
 configuration where they apply), the lifecycle tools (stop, start, extend and keep awake among them), access, and the
 operations tools. The MCP endpoint is `/mcp`; the REST endpoints are `POST /infrastructure/validate`,
 `POST /infrastructure/plan`, `POST /infrastructure`, `GET /infrastructure` (with `status` and `expiring_within_hours`),

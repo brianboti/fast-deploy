@@ -27,6 +27,9 @@ def problems(request, config, principal=None) -> list[Problem]:
     for address in (request.monitor.notify if request.monitor else []):  # alerts go only where access may
         if not allowed(f"user:{address}", config):
             found.append(Problem(ErrorCode.INVALID_ACCESS, refusal(address, config), "monitor.notify"))
+    for address in (request.budget.notify if request.budget else []):
+        if not allowed(f"user:{address}", config):
+            found.append(Problem(ErrorCode.INVALID_ACCESS, refusal(address, config), "budget.notify"))
     count = len(members(request, principal, config))
     if count > config.access.max_members:
         found.append(Problem(ErrorCode.INVALID_ACCESS, f"At most {config.access.max_members} members per request, the requester included; {count} asked", "access"))

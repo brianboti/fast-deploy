@@ -1,3 +1,14 @@
+# Unreleased: a spending budget
+
+First of the second round the operator chose (docs/INFRASTRUCTURE-ARCHITECTURE.md, "A spending budget"):
+
+- **A seventeenth kind, `budget`.** A monthly Cloud Billing budget on the costs carrying the request's label, with
+  emails at each threshold (50, 90, 100 percent by default) and on the month's forecast. It stops nothing.
+- **Alerts stay in the company**: addresses must be in `access.allowed_domains`; billing administrators are not mailed.
+- **On an earlier request**: `create_budget(request_id, …)`, for the caller's own requests only.
+- **Setting**: `providers.gcp.billing_account`, else the project's own billing account.
+- **Tools**: `create_budget`, `get_budget`, `delete_budget` (69 tools).
+
 # Unreleased: outbound internet and disk snapshots
 
 Beside the four kinds (docs/INFRASTRUCTURE-ARCHITECTURE.md, "Outbound internet and disk snapshots"):

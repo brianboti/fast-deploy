@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .errors import ErrorDetail
 from .request import InfrastructureRequest
 from .resources import (
+    BudgetResource,
     CacheResource,
     ClusterResource,
     ComputeResource,
@@ -94,6 +95,7 @@ class Resources(Model):
     load_balancer: list[LoadBalancerResource] = Field(default_factory=list)
     dns: list[DnsResource] = Field(default_factory=list)
     monitor: list[MonitorResource] = Field(default_factory=list)
+    budget: list[BudgetResource] = Field(default_factory=list)
 
     def all(self) -> list:
         return [*self.network, *self.storage, *self.compute, *self.database, *self.cache, *self.queue, *self.secret, *self.cluster, *self.load_balancer]
@@ -226,7 +228,7 @@ class ResourceResponse(Model):
     resource: (IdentityResource | ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | WarehouseResource | NoSqlResource | SecretResource
                | ClusterResource | ServiceResource
                | JobResource | LoadBalancerResource | DnsResource
-               | MonitorResource) = Field(discriminator="kind")
+               | MonitorResource | BudgetResource) = Field(discriminator="kind")
     operation: OperationRecord | None = None
 
 

@@ -6,6 +6,7 @@ from ..base import CloudProvider, Problem, ProvisionContext
 from . import connect, pricing, translate
 from .api import COMPUTE, GcpApi
 from .auth import GoogleToken
+from .budget import GcpBudget
 from .cache import GcpCache
 from .cluster import GcpCluster
 from .compute import GcpCompute
@@ -52,6 +53,7 @@ class GCPProvider(CloudProvider):
         self.identity = GcpIdentity(self.api, settings)
         self.dns = GcpDns(self.api, settings)
         self.monitor = GcpMonitor(self.api, settings)
+        self.budget = GcpBudget(self.api, settings)
         self.warehouse, self.nosql = GcpWarehouse(self.api, settings), GcpNoSql(self.api, settings)
         self.load_balancer = GcpLoadBalancer(self.api, settings, self.network)
         self.monitoring = GcpMonitoring(self.api)
@@ -117,6 +119,9 @@ class GCPProvider(CloudProvider):
 
     def plan(self, request: InfrastructureRequest, ctx: ProvisionContext) -> list[PlannedResource]:
         prefix, zone, planned = ctx.name, ctx.zone or self.zones(request.region)[0], []
+        if request.budget is not None:  # first: it counts from the request's first cost
+            planned.append(PlannedResource(kind="budget", name=f"{prefix}-budget", provider_mapping="monitoring.notificationChannels.create, billingbudgets.budgets.create",
+                                           spec={"watch": request.budget.request_id or ctx.request_id, "monthly_amount": request.budget.monthly_amount}))
         for identity in request.identities():  # first: machines run as them, and they are granted on everything after
             planned.append(PlannedResource(kind="identity", name=f"{prefix}-{identity.identity_name}", provider_mapping="iam.serviceAccounts.create"
                                            + (", iam.serviceAccounts.setIamPolicy (Workload Identity)" if request.clusters() else ""),
@@ -368,6 +373,15 @@ class GCPProvider(CloudProvider):
 
     def delete_monitor(self, resource, ctx):
         self.monitor.delete(resource, ctx)
+
+    def create_budget(self, spec, planned, ctx):
+        return self.budget.create(spec, planned, ctx)
+
+    def get_budget(self, resource):
+        return self.budget.get(resource)
+
+    def delete_budget(self, resource, ctx):
+        self.budget.delete(resource, ctx)
 
     def create_dns(self, spec, planned, ctx, created):
         return self.dns.create(spec, planned, ctx, created)
