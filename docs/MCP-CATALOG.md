@@ -324,20 +324,21 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `type` | no | persistent (default): a block disk; object: a bucket. |
 | `performance` | no | Disk class: standard, balanced (default) or ssd. |
 | `zone` | no | A zone of the region; the provider picks the first when omitted. |
+| `snapshot_keep_days` | no | A disk only: take a snapshot daily at 03:00 UTC and keep each this many days (1 to 365); none when omitted. |
 | `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
 | `labels` | no | Labels for every resource, next to the service's ownership labels. |
 | `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
 
 **Required fields.** `region`, `size_gb`.
-**Optional fields.** `provider`, `type`, `performance`, `zone`, `name`, `labels`, `wait_seconds`.
+**Optional fields.** `provider`, `type`, `performance`, `zone`, `snapshot_keep_days`, `name`, `labels`, `wait_seconds`.
 
 **Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
 
 **Possible errors.** `INVALID_STORAGE_CONFIGURATION`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Buckets get uniform access and enforced public-access prevention. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Buckets get uniform access and enforced public-access prevention. Snapshots stay in the region, and deleting the disk deletes them with its schedule. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
 
-**Provider mapping (Google Cloud).** Compute Engine: compute.disks.insert; Cloud Storage: storage.buckets.insert.
+**Provider mapping (Google Cloud).** Compute Engine: compute.disks.insert, compute.resourcePolicies.insert (snapshot schedule); Cloud Storage: storage.buckets.insert.
 
 ### `attach_storage`
 
@@ -421,12 +422,13 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `allowed_ports` | no | Ports opened from allowed_sources when public_access is on (default 80, 443). |
 | `allowed_sources` | no | IPv4 ranges allowed to reach allowed_ports (default 0.0.0.0/0). |
 | `iap_ssh` | no | SSH on port 22 from the identity-aware proxy range (default true). |
+| `nat` | no | Outbound internet for machines and nodes without public addresses, through Cloud NAT (default false); nothing comes in through it. |
 | `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
 | `labels` | no | Labels for every resource, next to the service's ownership labels. |
 | `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
 
 **Required fields.** `region`.
-**Optional fields.** `provider`, `public_access`, `cidr`, `allowed_ports`, `allowed_sources`, `iap_ssh`, `name`, `labels`, `wait_seconds`.
+**Optional fields.** `provider`, `public_access`, `cidr`, `allowed_ports`, `allowed_sources`, `iap_ssh`, `nat`, `name`, `labels`, `wait_seconds`.
 
 **Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
 
@@ -434,7 +436,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. No rule ever opens port 22 to the internet; private ranges only for the subnet.
 
-**Provider mapping (Google Cloud).** Compute Engine: compute.networks.insert (custom subnets), compute.subnetworks.insert, compute.firewalls.insert.
+**Provider mapping (Google Cloud).** Compute Engine: compute.networks.insert (custom subnets), compute.subnetworks.insert, compute.firewalls.insert, compute.routers.insert (Cloud NAT).
 
 ### `get_network`
 

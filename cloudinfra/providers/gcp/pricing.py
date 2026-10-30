@@ -29,6 +29,9 @@ PRICING = {
     "run_idle_gib_second": 0.0000025,
     "shared_core_hour": {"e2-micro": 0.008376, "e2-small": 0.016751, "e2-medium": 0.033503},
     "disk_gb_month": {"pd-standard": 0.04, "pd-balanced": 0.10, "pd-ssd": 0.17},
+    "snapshot_gb_month": 0.05,  # a standard snapshot in one region (https://cloud.google.com/compute/disks-image-pricing)
+    "nat_vm_hour": 0.0014,  # Cloud NAT per machine using it, up to 32 machines (https://cloud.google.com/vpc/network-pricing)
+    "nat_max_vms": 32,
     "external_ip_hour": 0.005,
     "bucket_gb_month": 0.020,
     "sql": {"db-f1-micro": 7.67, "db-g1-small": 25.55, "vcpu_hour": 0.0413, "gb_hour": 0.007, "storage_ssd_gb_month": 0.17, "ha_multiplier": 2.0},
@@ -85,6 +88,9 @@ def line(planned: PlannedResource) -> CostLine:
     elif planned.kind == "storage" and spec.get("type") == "persistent":
         monthly = spec["size_gb"] * PRICING["disk_gb_month"][spec["disk_type"]]
         basis = f"{spec['size_gb']} GB of {spec['disk_type']}"
+        if spec.get("snapshots"):  # the first snapshot holds the disk; later ones only what changed
+            monthly += spec["size_gb"] * PRICING["snapshot_gb_month"]
+            basis += f", and its daily snapshots kept {spec['snapshots']['keep_days']} days (one full copy; changes billed on top)"
     elif planned.kind == "storage":
         monthly = spec.get("size_gb", 0) * PRICING["bucket_gb_month"]
         basis = f"{spec.get('size_gb', 0)} GB of standard storage, if used; a bucket bills by what it holds"
@@ -129,6 +135,10 @@ def line(planned: PlannedResource) -> CostLine:
         basis = f"{spec.get('versions', 0)} active versions; accesses are billed per 10,000 on top"
     elif planned.kind == "queue":
         monthly, basis = 0.0, "message delivery is billed by volume after the account's free allowance; nothing while idle"
+    elif planned.kind == "network" and spec.get("nat"):
+        machines = min(spec.get("machines", 1), PRICING["nat_max_vms"])
+        monthly = machines * PRICING["nat_vm_hour"] * HOURS_PER_MONTH
+        basis = f"Cloud NAT for {machines} machine{'s' if machines != 1 else ''}; data processed is billed by the GB on top"
     else:
         monthly, basis = 0.0, "a network, its subnet and firewall rules cost nothing while idle"
     return CostLine(resource=planned.name, kind=planned.kind, monthly_usd=round(monthly, 2), basis=basis, stopped_usd=stopped(planned, round(monthly, 2)))
@@ -144,7 +154,10 @@ def as_planned(resource) -> PlannedResource:
         spec = {"machine_type": resource.machine_type, "boot_disk_gb": resource.boot_disk_gb, "public_ip": bool(resource.public_ip),
                 "accelerator": {"type": gpu, "count": int(count)} if gpu else None}
     elif kind == "storage":
-        spec = {"type": resource.type, "size_gb": resource.size_gb, "disk_type": disk_type(resource.performance or "balanced")}
+        spec = {"type": resource.type, "size_gb": resource.size_gb, "disk_type": disk_type(resource.performance or "balanced"),
+                "snapshots": {"keep_days": resource.snapshot_keep_days} if resource.snapshot_schedule else None}
+    elif kind == "network":
+        spec = {"nat": bool(resource.nat_router)}
     elif kind == "database":
         spec = {"tier": resource.tier, "high_availability": resource.high_availability, "storage_gb": resource.storage_gb}
     elif kind == "cache":

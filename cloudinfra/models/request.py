@@ -140,6 +140,12 @@ class ComputeRequest(StrictModel):
         return self.os or "ubuntu"
 
 
+class SnapshotRequest(StrictModel):
+    """A daily snapshot of each disk, kept in the request's region for keep_days."""
+    keep_days: int = Field(default=7, ge=1, le=365, description="Each snapshot is deleted this many days after it is taken.")
+    hour_utc: int = Field(default=3, ge=0, le=23, description="The hour of the day, in UTC, the snapshot starts.")
+
+
 class StorageRequest(StrictModel):
     """Block storage (one disk per machine, or one disk alone) or an object bucket."""
     type: StorageType = Field(default="persistent", description="persistent: block disks attached to the machines; object: a bucket.")
@@ -147,6 +153,13 @@ class StorageRequest(StrictModel):
                          description="Size of each disk in GB; for a bucket, the expected capacity used only in the cost estimate.")
     performance: StoragePerformance = Field(default="balanced", description="Disk class: standard (HDD), balanced or ssd.")
     group: str | None = Field(default=None, pattern=GROUP, description="Attach one disk to each machine of this compute group only; every machine when omitted.")
+    snapshots: SnapshotRequest | None = Field(default=None, description="A daily snapshot of each disk; none when omitted. Disks only.")
+
+    @model_validator(mode="after")
+    def _snapshots(self):
+        if self.snapshots is not None and self.type == "object":
+            raise InfrastructureError(ErrorCode.INVALID_STORAGE_CONFIGURATION, "Snapshots are taken of disks; a bucket is not snapshotted", {"field": "storage.snapshots"})
+        return self
 
 
 class DatabaseRequest(StrictModel):
@@ -472,6 +485,8 @@ class NetworkRequest(StrictModel):
     allowed_ports: list[int] = Field(default_factory=lambda: [80, 443], description="Ports opened from allowed_sources when public_access is true.")
     allowed_sources: list[str] = Field(default_factory=lambda: ["0.0.0.0/0"], description="IPv4 ranges allowed to reach allowed_ports.")
     iap_ssh: bool = Field(default=True, description="Allow SSH on port 22 from the provider's identity-aware proxy range only; never from the internet.")
+    nat: bool = Field(default=False, description="Outbound internet for machines and cluster nodes without public addresses, through a managed NAT; "
+                                                 "nothing comes in through it.")
 
     @field_validator("cidr")
     @classmethod

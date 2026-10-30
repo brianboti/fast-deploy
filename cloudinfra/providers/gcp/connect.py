@@ -71,7 +71,11 @@ def info(resource, resources: list, project: str, drivers: bool = False) -> Conn
                                notes=[] if resource.access else [NOT_GRANTED])
         machine = by_id.get(resource.attached_to)
         where = f"on {machine.name} as /dev/disk/by-id/google-{resource.name}" if machine is not None else "on no machine yet: attach it with attach_storage"
-        return ConnectInfo(notes=[f"A block disk, attached {where}"])
+        notes = [f"A block disk, attached {where}"]
+        if resource.snapshot_schedule:
+            notes.append(f"Snapshotted daily, each kept {resource.snapshot_keep_days} days; deleting the disk deletes them")
+            return ConnectInfo(commands={"snapshots": f"gcloud compute snapshots list --filter=labels.cloudinfra-disk={resource.name} --project {project}"}, notes=notes)
+        return ConnectInfo(notes=notes)
     if kind == "queue":
         topic, subscription = resource.topic.rsplit("/", 1)[-1], (resource.subscription or "").rsplit("/", 1)[-1]
         commands = {"publish": f"gcloud pubsub topics publish {topic} --message=TEXT --project {project}"}
