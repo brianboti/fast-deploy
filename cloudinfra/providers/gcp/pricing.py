@@ -114,8 +114,9 @@ def line(planned: PlannedResource) -> CostLine:
         monthly = 0.0
         basis = "billed by run only: CPU and memory for each task's running time" + (f", on the schedule {spec['schedule']['cron']}" if spec.get("schedule") else "")
     elif planned.kind == "load_balancer":
-        monthly = PRICING["forwarding_rule_hour"] * HOURS_PER_MONTH
-        basis = "one forwarding rule; data processed is billed by the GB on top"
+        rules = 2 if spec.get("hostnames") else 1
+        monthly = rules * PRICING["forwarding_rule_hour"] * HOURS_PER_MONTH
+        basis = f"{rules} forwarding rule{'s' if rules > 1 else ''}{' (http and https)' if rules > 1 else ''}; data processed is billed by the GB on top"
     elif planned.kind == "secret":
         monthly = PRICING["secret_version_month"] * spec.get("versions", 0)
         basis = f"{spec.get('versions', 0)} active versions; accesses are billed per 10,000 on top"

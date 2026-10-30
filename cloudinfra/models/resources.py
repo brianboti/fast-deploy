@@ -249,6 +249,8 @@ class LoadBalancerResource(Resource):
     backend_group: str
     backends: list[str] = Field(default_factory=list, description="The compute resource ids behind it.")
     health_check_path: str | None = None
+    hostnames: list[str] = Field(default_factory=list, description="Names served over HTTPS on 443, with a provider-managed certificate.")
+    certificate: str | None = Field(default=None, description="The managed certificate's state (PROVISIONING until DNS points at the address, then ACTIVE).")
     components: list[dict[str, Any]] = Field(default_factory=list, description="The provider pieces in creation order (kind, name, url), for teardown in reverse.")
 
 
