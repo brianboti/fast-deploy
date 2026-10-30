@@ -64,8 +64,8 @@ class LifetimeRequest(StrictModel):
 
 class AccessRequest(StrictModel):
     """Someone to grant access to what the request creates: login on machines, reading secrets, using buckets and queues."""
-    member: str = Field(description="user:, group: or serviceAccount: and an email address in a domain the operator allows; or a CI job's federated identity, "
-                                    "principal:// or principalSet:// in a workload identity pool the operator allows, which is granted on registries only.")
+    member: str = Field(description="user:, group: or serviceAccount: and an email address in a domain the operator allows, or one of the operator's registry "
+                                    "writers (pushes to registries, granted nowhere else).")
     level: AccessLevel = Field(default="use", description="use (log in, read and write data) or admin (administrator login, manage secret versions and objects).")
 
     @field_validator("member")

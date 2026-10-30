@@ -721,7 +721,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 ### `create_registry`
 
-**Purpose.** Create a container image repository (Docker format) in the region. Name a team's CI job in access at admin and it pushes with its own identity, a service account or a keyless federated identity; members at use pull. Releases name its images by digest.
+**Purpose.** Create a container image repository (Docker format) in the region. Images are built only in the trusted project: only the operator's registry writers, named in access at admin, push; every other member pulls. Releases name its images by digest.
 
 **Inputs.**
 
@@ -1282,7 +1282,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 ### `manage_infrastructure_access`
 
-**Purpose.** Grant a person, group or service account access to what a request created, or revoke it: login on its machines through the provider's IAM and an identity-aware tunnel, reading its secrets (the database password and cache AUTH string among them), using its buckets and queues, pulling from and pushing to its registries.
+**Purpose.** Grant a person, group or service account access to what a request created, or revoke it: login on its machines through the provider's IAM and an identity-aware tunnel, reading its secrets (the database password and cache AUTH string among them), using its buckets and queues, pulling from its registries (pushing only for the operator's registry writers).
 
 **Inputs.**
 
@@ -1290,7 +1290,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 |---|---|---|
 | `request_id` | yes | The request id this service issued (32 hex characters). |
 | `action` | yes | grant or revoke. |
-| `member` | yes | user:, group: or serviceAccount: and an email address in a domain the operator allows, or a principal's own identity; or a CI job's principal:// or principalSet:// identity in a workload identity pool the operator allows, granted on registries only. |
+| `member` | yes | user:, group: or serviceAccount: and an email address in a domain the operator allows, a principal's own identity, or one of the operator's registry writers, which push to registries and are granted nowhere else. |
 | `level` | no | use (default: log in, read and write data) or admin (administrator login, manage secret versions and objects). |
 
 **Required fields.** `request_id`, `action`, `member`.

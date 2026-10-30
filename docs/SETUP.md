@@ -201,6 +201,10 @@ gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:build-de
 gcloud artifacts repositories add-iam-policy-binding shop-images --location $REGION --project $PROJECT --member serviceAccount:build-dev@$PROJECT.iam.gserviceaccount.com --role roles/artifactregistry.writer
 ```
 
+That grant is for a repository the platform team made by hand. For a registry a team's `cloudinfra` request makes,
+list the build account in `cloudinfra`'s `access.registry_writers` instead, and the team names it at `admin`: it is then
+the registry's only writer and is granted nothing else in the request.
+
 ```bash
 gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:appdelivery-dev@$PROJECT.iam.gserviceaccount.com --role roles/cloudbuild.builds.editor
 ```

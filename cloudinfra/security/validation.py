@@ -22,14 +22,6 @@ MAX_SOURCES = 16
 # Who may be granted access to what a request creates: a person, a group or a service account, by email address. Never
 # allUsers, allAuthenticatedUsers or a whole domain.
 MEMBER = re.compile(r"^(user|group|serviceAccount):[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$")
-# A CI job's own identity through workload identity federation (a GitHub or GitLab job, without a key or a service
-# account): principal://POOL/subject/S for one subject, principalSet://POOL/group/G or principalSet://POOL/attribute.A/V
-# for every identity of a group or carrying one attribute value. Never a whole pool (/*). POOL is the pool's address
-# (HOST/PATH), which the adapter checks for its cloud's form. Its parts are case-sensitive, so it is kept as written.
-_POOL = r"([a-z0-9.-]{3,63}/[A-Za-z0-9._/-]{3,300}?)"
-_VALUE = r"[A-Za-z0-9._:/@+=-]{1,127}"
-FEDERATED = re.compile(rf"^(?:principal://{_POOL}/subject/{_VALUE}|principalSet://{_POOL}/(?:group/{_VALUE}|attribute\.[a-z_][a-z0-9_]{{0,63}}/{_VALUE}))$")
-POOL = re.compile(r"^[a-z0-9.-]{3,63}/[A-Za-z0-9._/-]{3,300}[A-Za-z0-9]$")
 IDENTIFIER = re.compile(r"^[a-z]{2,8}-[a-f0-9]{12}$")  # a resource id this service issued (cmp-…, sto-…, net-…, db-…)
 REQUEST_ID = re.compile(r"^[a-f0-9]{32}$")
 PRIVATE_RANGES = [ipaddress.ip_network(cidr) for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
@@ -111,30 +103,17 @@ def check_labels(labels: dict[str, str]) -> dict[str, str]:
 
 def check_member(value: str, field: str = "access.member") -> str:
     """A member as it is compared and stored: its kind as written, its email address in lowercase, as Google accounts and
-    groups do not tell case apart; a federated identity exactly as written."""
-    if not isinstance(value, str) or not (MEMBER.fullmatch(value) or FEDERATED.fullmatch(value)):
-        raise InfrastructureError(ErrorCode.INVALID_ACCESS, f"{value!r} is not a member: write user:, group: or serviceAccount: and an email address, or a "
-                                  "principal:// or principalSet:// identity in a workload identity pool (one subject, group or attribute, never the whole pool)",
+    groups do not tell case apart. A CI job's federated identity (principal://, principalSet://) is not a member: images
+    are built only in the trusted project, so nothing outside pushes to a registry (decided 2026-10-30)."""
+    if not isinstance(value, str) or not MEMBER.fullmatch(value):
+        raise InfrastructureError(ErrorCode.INVALID_ACCESS, f"{value!r} is not a member: write user:, group: or serviceAccount: and an email address",
                                   {"field": field, "value": value})
     return normal_member(value)
 
 
 def normal_member(value: str) -> str:
-    if is_federated(value):
-        return value
     kind, email = value.split(":", 1)
     return f"{kind}:{email.lower()}"
-
-
-def is_federated(member: str) -> bool:
-    return member.startswith(("principal://", "principalSet://"))
-
-
-def federated_pool(member: str) -> str | None:
-    """The pool's address (HOST/PATH, what follows the scheme up to the subject, group or attribute) of a federated
-    member; None for any other."""
-    found = FEDERATED.fullmatch(member)
-    return (found.group(1) or found.group(2)) if found else None
 
 
 def member_domain(member: str) -> str:

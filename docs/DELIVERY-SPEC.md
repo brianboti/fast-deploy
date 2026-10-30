@@ -612,9 +612,9 @@ As `tests/cloudinfra/test_infra_catalog.py` does for `cloudinfra`:
    section 12); HTTPS on a real domain is still to be run.
 4. **Phase 4, Cloud Run services and jobs.** Done 2026-10-30 (section 4; spike section 13).
 5. **Builds in the trusted project.** Built 2026-10-30 (section 3): `build_image`, `get_build`, `list_builds`, and the
-   rule that a release names only a digest built here. Still to do: `cloudinfra`'s registries keep a single writer
-   (the build account) and lose the CI push path; the release gate also verifies Cloud Build's signed provenance; the
-   platform's own images built the same way; a real run on Google Cloud
+   rule that a release names only a digest built here. `cloudinfra`'s registries let only the operator's registry
+   writers (the build accounts) push, and no federated CI identity is a member. Still to do: the release gate also
+   verifies Cloud Build's signed provenance; the platform's own images built the same way; a real run on Google Cloud
    ([research/RESEARCH-2026-10-30-trusted-build.md](research/RESEARCH-2026-10-30-trusted-build.md) section 8).
 6. **Later, convenience:** a Score file as an alternative input; `cloudinfra`'s `scope: granted`; an internal front
    door; a machine service account chosen by the request.

@@ -195,7 +195,7 @@ runs builds as (a build always names it; the default build accounts are never us
 | What | Where |
 |---|---|
 | `roles/logging.logWriter` (builds log to Cloud Logging only) | the project |
-| `roles/artifactregistry.writer`: push and tag, never delete | each source's registry |
+| `roles/artifactregistry.writer`: push and tag, never delete | each source's registry: for one a `cloudinfra` request made, the account is listed in `cloudinfra`'s `access.registry_writers` and named at `admin` by the team, and is granted nothing else |
 
 **Sources.** A Cloud Build 2nd-gen connection to the company's Git host in the trusted project (GitHub: the Cloud Build
 GitHub App installed on the organisation), one linked repository per source; the host's token is a secret in Secret

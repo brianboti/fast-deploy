@@ -1,22 +1,24 @@
-"""Registries: a container image repository a request owns. Members at use pull, at admin push; a team's CI job is named in
-access at admin, as a service account or as its own federated identity (principal://, principalSet://) from a workload
-identity pool the operator allows, which needs no key and is granted on registries only."""
+"""Registries: a container image repository a request owns. Images are built only in the trusted project (decided
+2026-10-30): only the operator's registry writers, the accounts that build there, push, named in access at admin and
+granted on registries and nothing else; every other member pulls, whatever its level. A CI job's federated identity is
+not a member at all."""
 import pytest
 from gcp_fakes import make_config, make_orchestrator, principal
 
+from cloudinfra.config import AccessSettings
 from cloudinfra.models import InfrastructureRequest, ResourceKind
 from cloudinfra.models.errors import ErrorCode, InfrastructureError
 
-POOL = "iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/github"
-CI = f"principalSet://{POOL}/attribute.repository/Acme/Shop"  # GitHub repository names keep their case
+BUILDER = "serviceAccount:build-dev@test-project.iam.gserviceaccount.com"
 CI_ACCOUNT = "serviceAccount:shop-ci@example.com"
 DEVS = "group:shop-devs@example.com"
 ADDRESS = "us-central1-docker.pkg.dev/test-project/shop-images"
 REPOSITORY = ("repository", ADDRESS)
+ACCESS = {"allowed_domains": ["example.com"], "registry_writers": [BUILDER]}
 
 
 def setup(tmp_path, access=(), **body):
-    config = make_config(tmp_path, access={"allowed_domains": ["example.com"], "workload_identity_pools": [POOL]})
+    config = make_config(tmp_path, access=ACCESS)
     orchestrator, fake = make_orchestrator(tmp_path, config=config)
     who = principal(config)
     request = {"region": "us-central1", "name": "shop", "registry": {"name": "images"}, "access": list(access), **body}
@@ -33,71 +35,85 @@ def test_a_registry_is_a_docker_repository_in_the_region(tmp_path):
     body = fake.repository_bodies[ADDRESS]
     assert body["format"] == "DOCKER" and body["dockerConfig"] == {"immutableTags": False} and body["labels"]["managed-by"] == "cloudinfra"
     assert response.endpoints.registry_addresses == [ADDRESS]
+    assert any("only the operator's registry writers" in item for item in response.warnings)
 
 
-def test_ci_pushes_and_developers_pull(tmp_path):
-    _, fake, _, response = setup(tmp_path, access=[{"member": CI, "level": "admin"}, {"member": CI_ACCOUNT, "level": "admin"}, {"member": DEVS, "level": "use"}])
-    assert fake.members(REPOSITORY, "roles/artifactregistry.writer") == [CI, CI_ACCOUNT]
-    assert fake.members(REPOSITORY, "roles/artifactregistry.reader") == [DEVS]
+def test_only_the_build_account_pushes_and_everyone_else_pulls(tmp_path):
+    _, fake, _, response = setup(tmp_path, access=[{"member": BUILDER, "level": "admin"}, {"member": CI_ACCOUNT, "level": "admin"}, {"member": DEVS, "level": "use"}])
+    assert fake.members(REPOSITORY, "roles/artifactregistry.writer") == [BUILDER], "a CI account at admin is not a writer"
+    assert set(fake.members(REPOSITORY, "roles/artifactregistry.reader")) >= {CI_ACCOUNT, DEVS}
     assert all(entry.status == "GRANTED" for entry in response.access), response.access
-    assert CI in fake.members(REPOSITORY, "roles/artifactregistry.writer"), "a federated identity is kept as written, case and all"
 
 
-def test_a_federated_identity_is_granted_on_registries_only(tmp_path):
-    _, fake, _, response = setup(tmp_path, access=[{"member": CI, "level": "admin"}], compute={"cpu": 2, "memory_gb": 4}, secret={"name": "token"})
+def test_a_person_at_admin_only_pulls(tmp_path):
+    lead = "user:lead@example.com"
+    _, fake, _, _ = setup(tmp_path, access=[{"member": lead, "level": "admin"}])
+    assert lead in fake.members(REPOSITORY, "roles/artifactregistry.reader") and fake.members(REPOSITORY, "roles/artifactregistry.writer") == []
+
+
+def test_the_build_account_is_granted_on_registries_only(tmp_path):
+    _, fake, _, response = setup(tmp_path, access=[{"member": BUILDER, "level": "admin"}], compute={"cpu": 2, "memory_gb": 4}, secret={"name": "token"})
     [registry], [machine], [secret] = response.resources.registry, response.resources.compute, response.resources.secret
-    entry = next(item for item in response.access if item.member == CI)
+    entry = next(item for item in response.access if item.member == BUILDER)
     assert entry.status == "GRANTED" and entry.resources == [registry.id]
     for key in (("instance", machine.zone, machine.name), ("secret", secret.name)):
-        assert all(CI not in binding["members"] for binding in fake.policies.get(key, {}).get("bindings", [])), key
+        assert all(BUILDER not in binding["members"] for binding in fake.policies.get(key, {}).get("bindings", [])), key
 
 
-def test_a_federated_identity_outside_the_allowed_pools_is_refused(tmp_path):
-    other = "principalSet://iam.googleapis.com/projects/999/locations/global/workloadIdentityPools/gitlab/attribute.project_path/acme/shop"
-    orchestrator, fake, who, _ = setup(tmp_path)
-    found = orchestrator.validate(InfrastructureRequest.model_validate({"region": "us-central1", "registry": {"name": "x"}, "access": [{"member": other}]}), who)
-    assert not found.valid and [problem.code for problem in found.problems] == ["INVALID_ACCESS"]
-    assert "not a workload identity pool this service grants to" in found.problems[0].message
+def test_a_registry_writer_at_use_only_pulls(tmp_path):
+    _, fake, _, _ = setup(tmp_path, access=[{"member": BUILDER, "level": "use"}])
+    assert fake.members(REPOSITORY, "roles/artifactregistry.writer") == [] and BUILDER in fake.members(REPOSITORY, "roles/artifactregistry.reader")
 
 
-@pytest.mark.parametrize("member", [f"principalSet://{POOL}/*", f"principal://{POOL}", "principalSet://iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/x/y"])
-def test_a_whole_pool_or_a_malformed_identity_is_not_a_member(member):
+@pytest.mark.parametrize("member", ["principalSet://iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/github/attribute.repository/acme/shop",
+                                    "principal://iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/github/subject/repo:acme/shop:ref:refs/heads/main"])
+def test_a_ci_jobs_federated_identity_is_not_a_member(member):
     with pytest.raises(ValueError, match="INVALID_ACCESS"):  # the contract's refusal, carried by pydantic's ValidationError
         InfrastructureRequest.model_validate({"region": "us-central1", "registry": {"name": "x"}, "access": [{"member": member}]})
 
 
-def test_the_google_adapter_takes_google_pools_only(tmp_path):
-    elsewhere = "sts.example.net/pools/ci"
-    config = make_config(tmp_path, access={"allowed_domains": ["example.com"], "workload_identity_pools": [elsewhere]})
-    orchestrator, _ = make_orchestrator(tmp_path, config=config)
-    request = {"region": "us-central1", "registry": {"name": "x"}, "access": [{"member": f"principal://{elsewhere}/subject/job"}]}
-    found = orchestrator.validate(InfrastructureRequest.model_validate(request), principal(config))
-    assert [problem.code for problem in found.problems] == ["INVALID_ACCESS"] and "Google workload identity pool" in found.problems[0].message
+def test_the_removed_pool_setting_says_what_replaced_it():
+    with pytest.raises(ValueError, match="registry_writers"):
+        AccessSettings.model_validate({"workload_identity_pools": ["iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/github"]})
+
+
+@pytest.mark.parametrize("member", ["user:builder@example.com", "group:builders@example.com", "serviceAccount:not-an-email"])
+def test_a_registry_writer_is_a_service_account(member):
+    with pytest.raises(ValueError, match="registry_writers"):
+        AccessSettings.model_validate({"registry_writers": [member]})
+
+
+def test_a_registry_writer_may_be_named_outside_the_allowed_domains(tmp_path):
+    orchestrator, _, who, _ = setup(tmp_path)
+    found = orchestrator.validate(InfrastructureRequest.model_validate({"region": "us-central1", "registry": {"name": "x"},
+                                                                        "access": [{"member": BUILDER, "level": "admin"}]}), who)
+    assert found.valid, found.problems
 
 
 def test_grant_and_revoke_after_creation(tmp_path):
     orchestrator, fake, who, response = setup(tmp_path)
-    orchestrator.manage_access(response.request_id, "grant", CI, who, level="admin")
-    assert fake.members(REPOSITORY, "roles/artifactregistry.writer") == [CI]
-    orchestrator.manage_access(response.request_id, "grant", CI, who, level="use")
-    assert fake.members(REPOSITORY, "roles/artifactregistry.writer") == [] and fake.members(REPOSITORY, "roles/artifactregistry.reader") == [CI]
-    lower = CI.replace("Acme/Shop", "acme/shop")
-    orchestrator.manage_access(response.request_id, "grant", lower, who, level="use")
-    orchestrator.manage_access(response.request_id, "revoke", lower, who)
-    assert fake.members(REPOSITORY, "roles/artifactregistry.reader") == [CI], "another case is another identity: revoking it leaves this one"
+    orchestrator.manage_access(response.request_id, "grant", BUILDER, who, level="admin")
+    assert fake.members(REPOSITORY, "roles/artifactregistry.writer") == [BUILDER]
+    orchestrator.manage_access(response.request_id, "grant", BUILDER, who, level="use")
+    assert fake.members(REPOSITORY, "roles/artifactregistry.writer") == [] and BUILDER in fake.members(REPOSITORY, "roles/artifactregistry.reader")
+    orchestrator.manage_access(response.request_id, "grant", CI_ACCOUNT, who, level="admin")
+    assert CI_ACCOUNT not in fake.members(REPOSITORY, "roles/artifactregistry.writer")
+    orchestrator.manage_access(response.request_id, "revoke", BUILDER, who)
+    assert BUILDER not in fake.members(REPOSITORY, "roles/artifactregistry.reader")
 
 
 def test_connect_and_cost(tmp_path):
     orchestrator, _, who, response = setup(tmp_path, registry={"name": "images", "size_gb": 50})
     [registry] = response.resources.registry
     assert registry.connect.commands["login"] == "gcloud auth configure-docker us-central1-docker.pkg.dev"
-    assert registry.connect.commands["push"] == f"docker push {ADDRESS}/IMAGE:TAG"
+    assert "push" not in registry.connect.commands and registry.connect.commands["pull"] == f"docker pull {ADDRESS}/IMAGE@sha256:DIGEST"
+    assert any("Nothing outside pushes here" in note for note in registry.connect.notes)
     line = next(item for item in orchestrator.cost(who, request_id=response.request_id)["estimate"]["lines"] if item["kind"] == "registry")
     assert line["monthly_usd"] == 5.0
 
 
 def test_destroy_deletes_the_repository_and_its_policy(tmp_path):
-    orchestrator, fake, who, response = setup(tmp_path, access=[{"member": CI, "level": "admin"}])
+    orchestrator, fake, who, response = setup(tmp_path, access=[{"member": BUILDER, "level": "admin"}])
     destroyed = orchestrator.destroy(response.request_id, who, wait_seconds=45)
     assert destroyed.status == "DESTROYED" and ADDRESS not in fake.repository_bodies and REPOSITORY not in fake.policies
     assert ("registry", "shop-images") in fake.order
@@ -117,7 +133,7 @@ def test_one_registry_alone_through_its_own_tools(tmp_path):
 
 
 def test_a_failed_wait_still_deletes_the_repository(tmp_path):
-    config = make_config(tmp_path, access={"allowed_domains": ["example.com"], "workload_identity_pools": [POOL]})
+    config = make_config(tmp_path, access=ACCESS)
     orchestrator, fake = make_orchestrator(tmp_path, config=config)
     fake.fail_on.append(("GET", "/operations/repo-"))
     response = orchestrator.provision(InfrastructureRequest.model_validate({"region": "us-central1", "name": "shop", "registry": {"name": "images"}}),

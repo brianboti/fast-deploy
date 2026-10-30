@@ -749,8 +749,11 @@ class Orchestrator:
                     continue
                 granted, errors = [], []
                 for target in targets:
+                    level = access_rules.level_on(target.kind.value, entry["member"], entry["level"], self.config)
+                    if level is None:  # a registry writer, on anything but a registry
+                        continue
                     try:
-                        roles = provider.grant(target, entry["member"], entry["level"], ctx)
+                        roles = provider.grant(target, entry["member"], level, ctx)
                     except Exception as exc:
                         cause = self._cause(exc)
                         errors.append(cause.detail().model_dump(mode="json"))
@@ -762,7 +765,7 @@ class Orchestrator:
                     kept = [grant for grant in fresh.access if grant.member != entry["member"]]
                     self.state.save_resource(fresh.model_copy(update={"access": [*kept, *(Grant(member=entry["member"], role=role) for role in roles)]}))
                     granted.append(target.id)
-                    event("access_granted", member=entry["member"], level=entry["level"], resource_id=target.id, roles=roles)
+                    event("access_granted", member=entry["member"], level=level, resource_id=target.id, roles=roles)
                 status, error = access_rules.outcome(granted, errors, waiting)
                 entry.update(status=status, resources=granted, error=error, updated_at=lifecycle.iso(self.wallclock()))
             self.state.set_access(request_id, entries)

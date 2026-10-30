@@ -233,9 +233,11 @@ worker's daemon; if so, the `TARGETARCH` argument becomes unnecessary.
 
 ## 8. The design to build, in order
 
-Status, 2026-10-30: step 1 is built, and step 2's first half (a release names only a digest a build of this service
-recorded for the same team). Provenance verification waits for the real run, so that it is written against Cloud
-Build's actual occurrence JSON rather than the documentation's examples. Steps 3 to 6 remain.
+Status, 2026-10-30: steps 1 and 3 are built, and step 2's first half (a release names only a digest a build of this
+service recorded for the same team). Step 3 took the operator's list of writers rather than a per-provider setting:
+`access.registry_writers`, provider-independent, applied in the grant loop. Provenance verification waits for the real
+run, so that it is written against Cloud Build's actual occurrence JSON rather than the documentation's examples. Steps
+4 to 6 remain.
 
 1. **`appdelivery`: the build request.** `BuildRequest {environment, repository (an operator-listed name), revision
    (40 hex), dockerfile (relative path, default `Dockerfile`), context (relative dir, default `.`), image (a name under the

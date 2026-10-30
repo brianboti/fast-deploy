@@ -252,8 +252,8 @@ CATALOG: tuple[ToolSpec, ...] = (
     ToolSpec("delete_secret", "Secret", "Delete a secret", "Delete the secret and every version.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS, "Needs can_destroy.",
              "Secret Manager: secretmanager.projects.secrets.delete."),
     # ---- registry
-    ToolSpec("create_registry", "Registry", "Create an image registry", "Create a container image repository (Docker format) in the region. Name a team's CI job in "
-             "access at admin and it pushes with its own identity, a service account or a keyless federated identity; members at use pull. Releases name its images "
+    ToolSpec("create_registry", "Registry", "Create an image registry", "Create a container image repository (Docker format) in the region. Images are built only "
+             "in the trusted project: only the operator's registry writers, named in access at admin, push; every other member pulls. Releases name its images "
              "by digest.",
              (REGION, Input("registry_name", "The repository's short name, part of its provider name.", True), PROVIDER,
               Input("immutable_tags", "Refuse to move a tag once pushed (default false)."),
@@ -389,11 +389,11 @@ CATALOG: tuple[ToolSpec, ...] = (
              hint="changes_cloud", until="READY, STOPPED or FAILED"),
     ToolSpec("manage_infrastructure_access", "Infrastructure", "Grant or revoke access",
              "Grant a person, group or service account access to what a request created, or revoke it: login on its machines through the provider's IAM and an "
-             "identity-aware tunnel, reading its secrets (the database password and cache AUTH string among them), using its buckets and queues, pulling from and "
-             "pushing to its registries.",
+             "identity-aware tunnel, reading its secrets (the database password and cache AUTH string among them), using its buckets and queues, pulling from its "
+             "registries (pushing only for the operator's registry writers).",
              (REQUEST_ID, Input("action", "grant or revoke.", True),
-              Input("member", "user:, group: or serviceAccount: and an email address in a domain the operator allows, or a principal's own identity; or a CI job's "
-                    "principal:// or principalSet:// identity in a workload identity pool the operator allows, granted on registries only.", True),
+              Input("member", "user:, group: or serviceAccount: and an email address in a domain the operator allows, a principal's own identity, or one of the "
+                    "operator's registry writers, which push to registries and are granted nowhere else.", True),
               Input("level", "use (default: log in, read and write data) or admin (administrator login, manage secret versions and objects).")),
              RESPONSE + " The access block shows each member's status (RECORDED when nothing in the request has an access policy) and the resources granted on; each "
              "resource's connect block says how to reach it.",

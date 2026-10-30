@@ -74,17 +74,28 @@ class AccessSettings(StrictModel):
     allowed_domains: list[str] = Field(default_factory=list, description="Domains a member must belong to, such as the company's; empty allows only principals' identities.")
     grant_requester: bool = Field(default=True, description="Grant the requesting principal's identity on what it creates.")
     max_members: int = Field(default=10, ge=0, le=50, description="At most this many members per request, the requester included.")
-    workload_identity_pools: list[str] = Field(default_factory=list, description="Workload identity pools, each as its address (HOST/PATH, what follows "
-                                               "principal:// up to /subject/), whose identities a request may name, so that a CI job pushes to a registry with "
-                                               "its own identity and no key; the platform team makes each pool and its provider once. Empty allows none.")
+    registry_writers: list[str] = Field(default_factory=list, description="The only members a registry lets push: the service accounts that build images in "
+                                        "the trusted project, named by a request at admin. They are granted on registries and nothing else; every other member of "
+                                        "a registry pulls, whatever its level. Empty: nobody pushes to a registry this service made.")
 
-    @field_validator("workload_identity_pools")
+    @model_validator(mode="before")
     @classmethod
-    def _pools(cls, value):
-        for pool in value:
-            if not validation.POOL.fullmatch(pool):
-                raise ValueError(f"access.workload_identity_pools: {pool!r} is not a pool's address, HOST/PATH")
-        return value
+    def _removed(cls, data):
+        if isinstance(data, dict) and "workload_identity_pools" in data:
+            raise ValueError("access.workload_identity_pools was removed on 2026-10-30: images are built only in the trusted project, never pushed by a CI job; "
+                             "list the build accounts in access.registry_writers")
+        return data
+
+    @field_validator("registry_writers")
+    @classmethod
+    def _writers(cls, value):
+        for member in value:
+            if not member.startswith("serviceAccount:") or not validation.MEMBER.fullmatch(member):
+                raise ValueError(f"access.registry_writers: {member!r} is not serviceAccount: and an account's email address")
+        return [validation.normal_member(member) for member in value]
+
+    def writes_registries(self, member: str) -> bool:
+        return validation.normal_member(member) in self.registry_writers
 
 
 CLAUDE_CALLBACKS = ("https://claude.ai/api/mcp/auth_callback", "https://claude.com/api/mcp/auth_callback")

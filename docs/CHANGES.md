@@ -12,14 +12,21 @@ it ([research/RESEARCH-2026-10-30-trusted-build.md](research/RESEARCH-2026-10-30
 - **`appdelivery`: only built images run.** A release whose digest is not the `built` digest of a succeeded build of
   the same team is refused with `NOT_BUILT_HERE` before anything else is read; plans and releases name their
   `build_id`. New codes `INVALID_BUILD`, `NOT_BUILT_HERE`, `BUILD_UNAVAILABLE`, `BUILD_FAILED`.
+- **`cloudinfra`: a registry has one kind of writer.** `access.registry_writers` lists the service accounts that build
+  images in the trusted project. Named in a request at `admin`, they push (`roles/artifactregistry.writer`, which never
+  deletes) and are granted on registries only; every other member of a registry pulls, whatever its level. A CI job's
+  federated identity (`principal://`, `principalSet://`) is no longer a member, and `access.workload_identity_pools` is
+  refused with a message naming its replacement. The registry's connect block has no push command; the plan warns who
+  pushes.
 - **Configuration.** `environments.<name>.build` (`service_account`, never the environment's own; `machine_type`,
   `timeout_seconds`, `builder`), `sources` (`repository`, `infra_owner`, `registry`, all in the trusted project), and
   `can_build` on a principal.
 
 Upgrading: a release of an image that was built elsewhere is now refused. Link each source, create the build accounts
-(docs/SETUP.md section 4), add `build`, `sources` and `can_build`, and build the images to release. Not yet in this
-change: `cloudinfra`'s registries still let a team's CI push (next), the release gate does not yet verify Cloud Build's
-signed provenance, and no build has run on Google Cloud.
+(docs/SETUP.md section 4), add `build`, `sources` and `can_build`, and build the images to release. In `cloudinfra`,
+replace `access.workload_identity_pools` with `access.registry_writers` and revoke any federated member before
+upgrading, since a stored one no longer validates. Not yet: the release gate does not verify Cloud Build's signed
+provenance, and no build has run on Google Cloud.
 
 # Unreleased: the repository is the two services, and the documents say so
 
@@ -30,9 +37,8 @@ contracts, examples and twenty-four documents. Git history keeps them. The repos
 `app-delivery`.
 
 - **A twelfth kind, `registry`** (from the `registry-kind` branch, merged here with phase 4): a Docker repository in
-  Artifact Registry, made and deleted with its request; `use` pulls, `admin` pushes; a team's CI job may be named in
-  `access` by its own federated identity (`principal://`, `principalSet://`) from a pool the operator lists in
-  `access.workload_identity_pools`, and is granted on registries only. Tools `create_registry`, `get_registry`,
+  Artifact Registry, made and deleted with its request; `use` pulls, `admin` pushes (narrowed the same day to the
+  operator's registry writers, above; the federated CI members first offered here are gone). Tools `create_registry`, `get_registry`,
   `delete_registry`: 54 tools, twelve kinds, `reg-` ids, `endpoints.registry_addresses`.
 - **Images.** `Dockerfile` is now `Dockerfile.cloudinfra` and runs the infrastructure service (port 8100,
   `CLOUDINFRA_CONFIG=/config/cloudinfra.yaml`, state under `/data`); `Dockerfile.appdelivery` is unchanged.
