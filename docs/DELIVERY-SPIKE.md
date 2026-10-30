@@ -1,4 +1,10 @@
-# Delivery service, step 0: the spike
+# Delivery service: the runs on Google Cloud
+
+The record of every run of the delivery service and the infrastructure layer on a real project, in order: the spike
+of step 0 (sections 1 to 7), the machine session (8), the end-to-end run (9), the first run from the image on Google
+Cloud (10), the first cluster (11), several clusters with a front door (12), and Cloud Run services and jobs (13).
+Each run says what held, what it found and what was fixed, and ends with everything deleted. Sections 1 to 6 are the
+spike's procedure as it was written before step 6 was built:
 
 The four facts of [DELIVERY-SPEC.md](DELIVERY-SPEC.md) section 13 that no Google page confirms, proven by hand on a real
 project before step 6 is built. About 30 minutes, one small machine for under an hour (a few cents), everything deleted

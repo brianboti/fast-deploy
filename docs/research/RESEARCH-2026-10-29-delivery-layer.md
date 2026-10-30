@@ -10,7 +10,7 @@ Method: the reviewer read the primary pages listed in section 7 (the CNCF Platfo
 principles, Google's Cloud Deploy documentation, Google's enterprise application blueprint, Google's Compute Engine
 container pages, the AWS Deployment Pipeline Reference Architecture, the Score specification, Team Topologies' material
 on the thinnest viable platform, Argo CD's core concepts) and compared each with the three-layer picture in
-[INFRASTRUCTURE-ARCHITECTURE.md](INFRASTRUCTURE-ARCHITECTURE.md) and with what `labdeploy` does today. Each source is
+[INFRASTRUCTURE-ARCHITECTURE.md](../INFRASTRUCTURE-ARCHITECTURE.md) and with what `labdeploy` does today. Each source is
 marked F (read on the page) or S (a search snippet or a secondary source).
 
 ## 1. The short answer
@@ -139,7 +139,7 @@ and is the recommendation. The first is faster for fleets of identical machines 
 
 Taking the CNCF's "thinnest reasonable layer" and "do not implement what is available elsewhere" seriously:
 
-- **Targets, in order.** Corrected the same day in [DELIVERY-SPEC.md](DELIVERY-SPEC.md): machines over the IAP tunnel
+- **Targets, in order.** Corrected the same day in [DELIVERY-SPEC.md](../DELIVERY-SPEC.md): machines over the IAP tunnel
   first, then GKE clusters created by `cloudinfra`, and Cloud Run never. `cloudinfra` has no Cloud Run kind, so a Cloud
   Run target would not run on its resources and would only duplicate `labdeploy`. Managed instance groups are not a
   `cloudinfra` kind today and wait.
@@ -159,7 +159,7 @@ Taking the CNCF's "thinnest reasonable layer" and "do not implement what is avai
   health and bake it needs to decide a rollout, and choosing machine sizes.
 
 Decided the same day: a new package, and `labdeploy` is neither used nor touched; it is to be removed, so the delivery
-service has no dependency on it ([DELIVERY-SPEC.md](DELIVERY-SPEC.md)). The rest of this section records the reasoning
+service has no dependency on it ([DELIVERY-SPEC.md](../DELIVERY-SPEC.md)). The rest of this section records the reasoning
 as it stood before that decision.
 
 Whether this is a new package beside `labdeploy` or `labdeploy` with new targets is a packaging question the sources do

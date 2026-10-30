@@ -3,7 +3,7 @@
 Written 2026-10-28 UTC as a read-only review of the Cloud Infrastructure MCP (`cloudinfra`, version 1.36.1, commit
 `984ec36` on `main`). Nothing in the code was changed; one sentence of the previous review was corrected (section 8). The
 question asked was the operator's: where does this service stand among the tools people use today, and what can we add
-or change to make it better and more practical? It follows `docs/RESEARCH-2026-10-28-infrastructure-layer.md`, which
+or change to make it better and more practical? It follows `docs/research/RESEARCH-2026-10-28-infrastructure-layer.md`, which
 asked whether the layer is built right. This one asks whether it is useful, to whom, and what stands between it and
 daily use. The service is meant for industry: developers and platform teams in companies. A first draft assumed a
 university research lab; the operator corrected that, and this version is written for companies (section 8).

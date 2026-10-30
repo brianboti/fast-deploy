@@ -1,11 +1,12 @@
-# Application delivery service: specification (draft)
+# Application delivery service: specification
 
-Draft of 2026-10-29. Nothing here is built yet. The decision it follows: deploying a container onto what the
-infrastructure layer built is the job of a **small separate service**, a new package beside `cloudinfra`
-([RESEARCH-2026-10-29-delivery-layer.md](RESEARCH-2026-10-29-delivery-layer.md)). It neither uses nor depends on
-`labdeploy`: that package will not be used and is to be removed, so nothing here may rely on it, borrow its code, or
-assume it exists.
-The working name is `appdelivery` (CLI `app-delivery`); the name is not a decision.
+Written 2026-10-29 as the specification to build from, and kept current with what was built: phases 1 to 4 (machines,
+clusters, several clusters with a front door, Cloud Run services and jobs) are in `main` and each ran on a real
+project ([DELIVERY-SPIKE.md](DELIVERY-SPIKE.md)). The decision it follows: deploying a container onto what the
+infrastructure layer built is the job of a **small separate service**, a package beside `cloudinfra`
+([research/RESEARCH-2026-10-29-delivery-layer.md](research/RESEARCH-2026-10-29-delivery-layer.md)). It neither uses nor
+depends on the Fast Deploy workflow that preceded it, which was removed from the repository on 2026-10-30.
+The name is `appdelivery` (CLI `app-delivery`).
 
 ## 1. What it is
 
@@ -24,18 +25,18 @@ cloudinfra             machines · networks · databases · secrets · clusters,
 
 | It owns | It does not own |
 |---|---|
-| Running a given image on a given request's machines (later: clusters) | Building, testing or signing images |
+| Running a given image on a given request's machines, clusters, managed container services and jobs | Building, testing or signing images |
 | Turning bindings into environment values at run time | Creating, resizing or deleting infrastructure |
 | The health check that decides a rollout, and the rollback | Firewall rules, load balancers, machine sizes |
-| Which release runs where, who asked, and the one before it | Cloud Run services (not offered; section 4) |
+| Which release runs where, who asked, and the one before it | Creating the Cloud Run services and jobs it releases onto (the infrastructure layer's) |
 | Approval of a release in an environment that asks for one | The application's own logs, metrics and alerts beyond the rollout |
 
 ### A correction to the research note
 
-The research note put Cloud Run first among targets, on the grounds that existing code already did it. That reason is
-gone (`labdeploy` is not used), and the target was wrong for this service anyway: `cloudinfra` has no Cloud Run kind, so a
-Cloud Run target would not run on "our resources" at all. The targets are therefore **machines first, clusters second**;
-Cloud Run is not planned (section 4).
+The research note put Cloud Run first among targets, on the grounds that the earlier workflow already did it. That
+reason went with the workflow, and the target was wrong for this service at the time anyway: `cloudinfra` had no Cloud
+Run kind, so a Cloud Run target would not have run on "our resources". The targets were therefore built **machines
+first, clusters second**, and Cloud Run came back in phase 4 as a `cloudinfra` kind plus a target here (section 4).
 
 ## 2. Who trusts whom
 
@@ -71,7 +72,7 @@ and level `admin`. Any "no" is a refusal with a code, before anything touches a 
 ```yaml
 environment: prod                     # one of the operator's environments; picks the identity and the policy
 request_id: 3f6c…e2a1                 # the cloudinfra request that holds the target
-target: {group: web}                  # a compute group of that request: every machine in it (later: {cluster: clu-…})
+target: {group: web}                  # a compute group of that request; or {cluster: NAME, workload, replicas}, {service: NAME}, {job: NAME}
 image: us-central1-docker.pkg.dev/acme-apps/shop/web@sha256:9b2f…   # a digest is required; a tag is refused
 port: 8080                            # the container's port, published on the same port of the machine
 health: {path: /healthz, timeout_seconds: 60}
@@ -512,13 +513,12 @@ own secrets and pull its own images; then `appdelivery` would pass secret names 
 
 As `tests/cloudinfra/test_infra_catalog.py` does for `cloudinfra`:
 
-- `appdelivery` imports neither `cloudinfra` nor `labdeploy`; it speaks to `cloudinfra` only over HTTP, and `cloudinfra`
-  never imports `appdelivery`. No source, test, configuration or document of `appdelivery` names `labdeploy`, and its
-  tests pass with the `labdeploy` directory deleted: they live in `tests/appdelivery/` and use none of the shared test
-  helpers under `tests/` (the root `tests/conftest.py` belongs to the old tests).
-- It has its own console script and container image; it does not ride in the image that runs `labdeploy` today. It
-  needs no Python dependency beyond those `cloudinfra` already pins (mcp, fastapi, httpx, pydantic, PyYAML, uvicorn). Its
-  image adds two pinned binaries: the gcloud CLI and Cosign 3.1.x.
+- `appdelivery` imports neither `cloudinfra` nor the removed Fast Deploy workflow, whose name may not come back; it
+  speaks to `cloudinfra` only over HTTP, and `cloudinfra` never imports `appdelivery`. Its tests live in
+  `tests/appdelivery/` with their own fakes and no `conftest.py`, and use no helper from elsewhere.
+- It has its own console script and container image (`Dockerfile.appdelivery`). It needs no Python dependency beyond
+  those `cloudinfra` already pins (mcp, fastapi, httpx, pydantic, PyYAML, PyJWT, uvicorn). Its image adds two pinned
+  binaries: the gcloud CLI and Cosign 3.1.x.
 - It copies nothing from `cloudinfra` by import. The bearer-token gate, rate limiter and audit wrapper are small and are
   written again in `appdelivery`; a shared library can come later if a third service needs them.
 - The release models have no field that could carry source, a build, a command or a mount (section 3).
@@ -530,19 +530,24 @@ As `tests/cloudinfra/test_infra_catalog.py` does for `cloudinfra`:
 ## 11. Phases and what "done" means
 
 1. **Phase 1, machines.** Plan, deploy, health, rollback, remove on one machine and on a group; attestation and
-   approval per environment; the boundary tests. Done when one real run on the company's project takes an image by
-   digest onto a `container-host` machine of a `cloudinfra` request, answers on its health path, rolls back on a broken
-   image, and leaves no secret value in the state or the log.
-2. **Phase 2, clusters,** once section 9's cluster choice is made.
-3. **Phase 3, convenience:** a Score file as an alternative input; `cloudinfra`'s `scope: granted`.
+   approval per environment; the boundary tests. Done 2026-10-29: a real run took an image by digest onto
+   `container-host` machines of a `cloudinfra` request, rolled a broken image back, and left no secret value in the
+   state or the log (section 14; [DELIVERY-SPIKE.md](DELIVERY-SPIKE.md) sections 9 and 10).
+2. **Phase 2, clusters.** Done 2026-10-29 (section 4; spike section 11).
+3. **Phase 3, several clusters, private images, a front door.** Done 2026-10-29 over plain HTTP (section 4; spike
+   section 12); HTTPS on a real domain is still to be run.
+4. **Phase 4, Cloud Run services and jobs.** Done 2026-10-30 (section 4; spike section 13).
+5. **Later, convenience:** a Score file as an alternative input; `cloudinfra`'s `scope: granted`; an internal front
+   door; a machine service account chosen by the request.
 
 ## 12. Decisions that are yours
 
-1. The name (`appdelivery` is a placeholder).
-2. Whether attestation is required in every environment or only in production.
+1. The name: `appdelivery` stayed.
+2. Whether attestation is required in every environment or only in production: per environment, `require_attestation`.
 3. Phase 2's cluster choice (section 9): decided 2026-10-29, a namespace per cluster with RBAC grants.
-4. Whether a release on a group may run on several machines at once (faster) or always one at a time (safer; the draft).
-5. Whether Cloud Run comes back later, as a `cloudinfra` kind plus a target here (section 4), or stays out.
+4. Whether a release on a group may run on several machines at once (faster) or always one at a time (safer): one at a
+   time, as built.
+5. Whether Cloud Run comes back: decided 2026-10-29, as a `cloudinfra` kind plus a target here (section 4, phase 4).
 
 ## 13. Checked before building (2026-10-29)
 
@@ -590,10 +595,9 @@ On a new branch from `main`, in this order; each step ends green on `python -m p
    `cli.py` (`token`, `check-config`, and `plan FILE --config --as PRINCIPAL`, which reads the request from `cloudinfra`
    and runs every check; the tool catalog moves to step 8 with the server), the `app-delivery` script in
    `pyproject.toml`, `appdelivery.example.yaml`, and `tests/appdelivery/test_delivery_boundaries.py`: no import of
-   `cloudinfra` or `labdeploy` in the package and none of `appdelivery` in either of them, `labdeploy` named nowhere in
-   the package or its tests, no shared test helper and no `conftest.py`, commands only in `remote.py`, no field in the
-   contract that could run or build something, and the whole directory run again in a fresh interpreter where
-   importing `labdeploy` fails.
+   `cloudinfra` or the old workflow in the package and none of `appdelivery` in `cloudinfra`, the old workflow named
+   nowhere in the package or its tests, no shared test helper and no `conftest.py`, commands only in `remote.py`, and no
+   field in the contract that could run or build something.
 2. **Contract.** Built. `models.py` and `errors.py`: digest required, the three binding sources, credential-looking
    names refused as literals (by whole words, so `AUTHOR_NAME` passes and `API_KEY` does not), plain health paths only,
    port 22 refused. Every refusal of section 3 has a test.

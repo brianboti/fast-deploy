@@ -119,7 +119,7 @@ gone resource answers `INVALID_STATE`, so the hint is not quite true. We meet th
 false`, per-identity and per-address budgets and an audit row per call; we lack the confirmation step, parameters in
 the audit row, and OAuth resource metadata (static bearer tokens work in Claude Code and the Messages API's MCP
 connector, but claude.ai accepts a fixed request header only in a beta for a limited set of organisations, as one
-organisation-wide credential, so per-person use there needs OAuth; corrected by `docs/RESEARCH-2026-10-28-positioning.md`).
+organisation-wide credential, so per-person use there needs OAuth; corrected by `docs/research/RESEARCH-2026-10-28-positioning.md`).
 
 **Peers.** HashiCorp's Terraform MCP server has 61 tools with write operations off by default and a plan modelled as a
 run you poll; AWS Labs' servers are read-only by default with `--allow-write`, use an `operation` parameter per

@@ -78,7 +78,7 @@ Google API; a test fails if any other module of the core does.
 
 | Module | Holds |
 |---|---|
-| `auth.py` | `GoogleToken`: a token from the metadata server on a Google Cloud machine, else from gcloud (impersonating a configured service account when asked). Moved here from `labdeploy/cloud.py`, which re-exports it. |
+| `auth.py` | `GoogleToken`: a token from the metadata server on a Google Cloud machine, else from gcloud (impersonating a configured service account when asked). |
 | `api.py` | `GcpApi`: one REST client with the bearer token, HTTP error → `InfrastructureError` translation (401 auth, 403 permission or quota, 404, 409/412 conflict, 429 and 5xx unavailable), and the operation waits for Compute Engine (`operations.wait`), Cloud SQL (poll) and Service Networking (poll). The single seam the unit tests replace with a fake. |
 | `translate.py` | Generic → Google shapes: `machine_type(cpu, memory_gb)` (E2 predefined when the ratio matches, E2 custom within 0.5 to 8 GB per vCPU, shared-core for one CPU), image families, disk types, database versions and tiers, the IAP range, zone table, labels and descriptions. |
 | `pricing.py` | Approximate list prices for us-central1 and the estimate; `verified` is null until someone checks them. |

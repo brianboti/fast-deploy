@@ -1,28 +1,30 @@
 # Cloud Infrastructure MCP: architecture and boundaries
 
-The repository holds two layers. `cloudinfra` is the **Infrastructure Layer**: a provider-independent service that
-provisions, inspects, monitors and destroys cloud infrastructure on request. `labdeploy` (Fast Deploy) is an optional
-**application delivery workflow** that sits on top: it owns repositories, builds, tests, images and releases, and may use
-the infrastructure layer. The infrastructure layer knows nothing about it. This document describes the infrastructure
-layer; [ARCHITECTURE.md](ARCHITECTURE.md) describes the delivery workflow; [REFACTOR-2026-10-28.md](REFACTOR-2026-10-28.md)
-records why the split was made this way.
+The repository holds two services. `cloudinfra` is the **Infrastructure Layer**: a provider-independent service that
+provisions, grants access to, prices, stops, starts, expires and destroys cloud infrastructure on request.
+`appdelivery` is the **application delivery service** above it: it runs an image that already exists on what a request
+created, and reads `cloudinfra` only over HTTP ([DELIVERY-SPEC.md](DELIVERY-SPEC.md)). The infrastructure layer knows
+nothing about it, nor about any other caller. This document describes the infrastructure layer;
+[research/REFACTOR-2026-10-28.md](research/REFACTOR-2026-10-28.md) records why the layers were cut this way, and
+[research/RESEARCH-2026-10-28-infrastructure-layer.md](research/RESEARCH-2026-10-28-infrastructure-layer.md) checks the
+design against the specifications and the literature.
 
 ```
-Application Layer            any system: Claude, a CI job, another service, the Fast Deploy workflow
+Application Layer            any system: Claude, a CI job, another service, the delivery service (appdelivery)
   │
   │  Infrastructure contract  InfrastructureRequest → InfrastructureResponse (cloudinfra/models)
-  │                           MCP (Streamable HTTP, 48 tools) or REST, bearer token per caller
+  │                           MCP (Streamable HTTP, 54 tools) or REST, bearer token per caller
   ▼
 ┌────────────────────────────────────────────────────────────────────────────────────┐
 │ Cloud Infrastructure MCP  (cloudinfra)                                             │
 │                                                                                    │
 │  mcp/server.py       FastAPI + StrictMCP: auth gate, rate limits, audit, hints     │
 │  mcp/catalog.py      the service catalog: one record per tool, renders the doc     │
-│  mcp/tools/*         compute · storage · network · database · infrastructure · ops │
+│  mcp/tools/*         one module per kind · infrastructure · operations            │
 │  orchestration/      validator → planner → provisioner (status, destroy, cleanup)  │
 │                      access (grants) · lifecycle (time) · sweeper (expiry, idle)   │
 │  state/              SQLite: requests, resources, operations, events               │
-│  security/           principals and token hashes · request value validation        │
+│  security/           principals and token hashes · validation · Claude sign-in     │
 │  observability/      JSON events with request_id and operation_id, redaction       │
 │  providers/base.py   CloudProvider: the primitive interface                        │
 └──────────────────────────────────────┬─────────────────────────────────────────────┘
@@ -31,7 +33,7 @@ Application Layer            any system: Claude, a CI job, another service, the 
                  ▼                     ▼                     ▼                      ▼
        providers/gcp/            AWSProvider           AzureProvider        JetstreamProvider
        GCPProvider               (later)               (later)              (later)
-                 │  REST: compute, sqladmin, storage, servicenetworking, redis, pubsub, secretmanager, artifactregistry, container, iap, monitoring
+                 │  REST: compute, sqladmin, storage, servicenetworking, redis, pubsub, secretmanager, artifactregistry, container, iam, iap, run, cloudscheduler, monitoring
                  ▼
             Google Cloud
 ```
@@ -55,12 +57,13 @@ Application Layer            any system: Claude, a CI job, another service, the 
 The infrastructure layer does not clone a repository, run a test, build anything, hold a GitHub credential, choose an
 application's architecture, decide when or what to release, or scale an application. A request that names an image, a
 script, a command or a key is refused by the contract (`InfrastructureRequest` forbids unknown fields). A test holds the
-line: `tests/cloudinfra/test_infra_catalog.py` fails if any module of `cloudinfra` imports `labdeploy`, `github`,
-`templates` or `workers`, if a command runs anywhere but the token helper, or if Google Cloud is named outside its adapter.
+line: `tests/cloudinfra/test_infra_catalog.py` fails if any module of `cloudinfra` imports the delivery service, GitHub,
+Docker or any application code, if a command runs anywhere but the token helper, or if Google Cloud is named outside its
+adapter.
 
 ## The contract
 
-A request is a provider name, a region and at least one of ten blocks. Every field is a size, a count, a name, a version
+A request is a provider name, a region and at least one of twelve blocks. Every field is a size, a count, a name, a version
 or a switch; the operator's project, credentials, limits and allowed regions are configuration, never request parameters.
 `list_resource_kinds` returns the blocks with their fields; a block of any other name is refused with
 `UNSUPPORTED_RESOURCE_KIND` and the nearest kind.
@@ -380,14 +383,12 @@ the lifecycle is a JSON line on the `cloudinfra` logger carrying `request_id`, `
 `idle_stop_suspended`, `expiry_warning`, `request_expired`, `machine_idle`, `sweep_completed`, `sweep_failed`,
 `internal_error`, and `provider_call` for each provider request (method, URL, HTTP status). Fields under secret-looking keys are redacted before a line is written.
 
-## Terraform
+## No Terraform
 
-The Terraform roots and modules under `infra/gcp` belong to the application delivery workflow: they describe Cloud Run
-services and are applied by the GitHub pipeline from merged pull requests. The infrastructure core calls the provider's
-APIs directly through one thin client (`providers/gcp/api.py`): the unit tests need no binary, state bucket or plugin,
-every call is mockable, and a plan can be computed offline. A Terraform-backed driver can implement the same
-`CloudProvider` interface later, with the state it needs kept in the service's own state store; the Application Layer
-never writes HCL either way.
+The infrastructure core calls the provider's APIs directly through one thin client (`providers/gcp/api.py`): the unit
+tests need no binary, state bucket or plugin, every call is mockable, and a plan can be computed offline. A
+Terraform-backed driver can implement the same `CloudProvider` interface later, with the state it needs kept in the
+service's own state store; the Application Layer never writes HCL either way.
 
 ## Extending to another provider
 
@@ -431,9 +432,10 @@ configuration where they apply), the lifecycle tools (stop, start, extend and ke
 operations tools. The MCP endpoint is `/mcp`; the REST endpoints are `POST /infrastructure/validate`,
 `POST /infrastructure/plan`, `POST /infrastructure`, `GET /infrastructure` (with `status` and `expiring_within_hours`),
 `GET /infrastructure/{id}`, `DELETE /infrastructure/{id}`, `POST /infrastructure/{id}/actions` (`action`, `hours`),
-`POST /infrastructure/{id}/access` (`action`, `member`, `level`), `GET /catalog` and `GET /status`. The same Docker image as Fast Deploy carries the package; its command is the uvicorn line above. The
-Fast Deploy controller and this service are separate processes with separate principals, state files and credentials;
-Claude chat connects through the service's own sign-in; see "Connect Claude chat" below.
+`POST /infrastructure/{id}/access` (`action`, `member`, `level`), `GET /catalog` and `GET /status`. `Dockerfile.cloudinfra`
+builds its image, which runs the uvicorn line above on port 8100 with the configuration mounted at `/config` and the
+state under `/data`. The delivery service is a separate process with its own principals, state file, credentials and
+image; Claude chat connects to each through its own sign-in; see "Connect Claude chat" below.
 
 ## Connect Claude chat
 
