@@ -141,12 +141,16 @@ class Config(StrictModel):
     allowed_hosts: list[str] = Field(default_factory=lambda: ["127.0.0.1:*", "localhost:*"])
     rate_limit_per_minute: int = Field(default=120, ge=1)
     auth_failures_per_minute: int = Field(default=20, ge=1)
+    registrations_per_hour: int = Field(default=10, ge=1, description="OAuth client registrations one address may make in an hour, with sign-in on.")
+    max_request_bytes: int = Field(default=65_536, ge=4096, le=4 * 1024 * 1024, description="Larger request bodies are refused with 413 before they are read.")
     log_file: str | None = None
     workers: int = Field(default=4, ge=1, le=32, description="Provisioning and destruction run in this many background workers.")
     cleanup_on_failure: bool = Field(default=True, description="Delete what a failed request created; false keeps it for inspection and reports it.")
     labels: dict[str, str] = Field(default_factory=dict, description="The operator's labels on every resource (cost center, environment).")
     limits: Limits = Field(default_factory=Limits)
     access: AccessSettings = Field(default_factory=AccessSettings)
+    closed_public_ports: list[int] = Field(default_factory=lambda: list(validation.CLOSED_PUBLIC_PORTS),
+                                           description="Ports never opened from a public range by a network block or configure_firewall; 22 and 3389 always are.")
     sweep_interval_seconds: int = Field(default=300, ge=0, le=86400, description="How often the sweeper checks expiry and idleness; 0 turns it off, and with "
                                                                                  "it every lifetime and idle stop, which requests then may not ask for.")
     return_database_password: bool = Field(default=False, description="Also return a generated database password once in the creating response; "
@@ -154,6 +158,12 @@ class Config(StrictModel):
     sign_in: SignInSettings | None = None
     providers: Providers
     principals: list[Principal]
+
+    @field_validator("closed_public_ports")
+    @classmethod
+    def _closed(cls, value):
+        validation.check_ports([*value, *(port for port in validation.CLOSED_PUBLIC_PORTS if port not in value)], "closed_public_ports")
+        return sorted({*value, *validation.CLOSED_PUBLIC_PORTS})
 
     @model_validator(mode="after")
     def _consistent(self):

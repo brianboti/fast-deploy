@@ -21,6 +21,10 @@ PORT=$(decode "${IN_PORT:-}")
 HEALTH_PATH=$(decode "${IN_HEALTH_PATH:-}")
 TIMEOUT=$(decode "${IN_TIMEOUT:-}")
 REGISTRY=$(decode "${IN_REGISTRY:-}")
+# the bounds every container runs under; the service sends them, and a missing one gets a conservative default
+CPUS=$(decode "${IN_CPUS:-}"); CPUS=${CPUS:-1}
+MEMORY_MB=$(decode "${IN_MEMORY_MB:-}"); MEMORY_MB=${MEMORY_MB:-1024}
+PIDS=$(decode "${IN_PIDS:-}"); PIDS=${PIDS:-512}
 RUN_DIR=${APPDELIVERY_RUN_DIR:-/run}  # memory on Container-Optimized OS; a test points it elsewhere
 
 APP=app
@@ -99,7 +103,13 @@ deploy() {
         docker stop "$APP" >/dev/null
         docker rename "$APP" "$PREVIOUS" >/dev/null
     fi
-    if docker run -d --name "$APP" --restart=always --label "appdelivery.release=$RELEASE" -p "${PORT}:${PORT}" --env-file "$ENV_FILE" "$IMAGE" >/dev/null 2>&1 && healthy; then
+    # No privilege escalation, the capabilities an entrypoint needs to start as root and drop to its user and nothing more
+    # (no raw sockets, chroot, mknod), and bounds on CPU, memory, processes and log size: a compromised or runaway
+    # application stays an application (the review of 2026-10-30)
+    if docker run -d --name "$APP" --restart=always --label "appdelivery.release=$RELEASE" -p "${PORT}:${PORT}" --env-file "$ENV_FILE" \
+        --security-opt no-new-privileges --cap-drop ALL \
+        --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add FSETID --cap-add SETGID --cap-add SETUID --cap-add NET_BIND_SERVICE --cap-add KILL \
+        --cpus "$CPUS" --memory "${MEMORY_MB}m" --pids-limit "$PIDS" --log-opt max-size=50m --log-opt max-file=3 "$IMAGE" >/dev/null 2>&1 && healthy; then
         say result=healthy image="$IMAGE" release="$RELEASE" previous="$(image_of "$PREVIOUS")"
         docker image prune -af >/dev/null 2>&1 || true
         return

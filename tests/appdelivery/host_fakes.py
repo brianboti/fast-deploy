@@ -37,7 +37,7 @@ case "$cmd" in
   start) echo true > "$c/$1/running" ;;
   rename) mv "$c/$1" "$c/$2" ;;
   run)
-    name=""; restart=""; release=""; envfile=""; image=""
+    name=""; restart=""; release=""; envfile=""; image=""; flags=""
     while [ $# -gt 0 ]; do
       case "$1" in
         -d) ;;
@@ -46,6 +46,7 @@ case "$cmd" in
         --label) release=${2#appdelivery.release=}; shift ;;
         -p) shift ;;
         --env-file) envfile=$2; shift ;;
+        --security-opt|--cap-drop|--cap-add|--cpus|--memory|--pids-limit|--log-opt) flags="$flags $1=$2"; shift ;;
         *) image=$1 ;;
       esac
       shift
@@ -53,7 +54,7 @@ case "$cmd" in
     [ -e "$S/fail_run" ] && exit 125
     mkdir -p "$c/$name"
     echo "$image" > "$c/$name/image"; echo "$restart" > "$c/$name/restart"; printf '%s' "$release" > "$c/$name/release"
-    cp "$envfile" "$c/$name/env"
+    cp "$envfile" "$c/$name/env"; printf '%s' "${flags# }" > "$c/$name/flags"
     if [ -e "$S/crash_image" ] && [ "$(cat "$S/crash_image")" = "$image" ]; then echo false > "$c/$name/running"; else echo true > "$c/$name/running"; fi
     echo "container-$name" ;;
   image) echo pruned >> "$S/prunes" ;;

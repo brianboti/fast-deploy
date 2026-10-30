@@ -82,14 +82,15 @@ on a builder without BuildKit (Cloud Build's docker step). The delivery image se
 |---|---|---|---|
 | GitHub Actions runner | `ubuntu-24.04` | label | `.github/workflows/ci.yml`, on push, pull request and weekly (Monday 06:19 UTC) |
 | `actions/checkout` | v7.0.1 | commit `3d3c42e5aac5ba805825da76410c181273ba90b1` | |
-| `actions/setup-python` | v7.0.0 | commit `5fda3b95a4ea91299a34e894583c3862153e4b97` | Python 3.12 |
+| `actions/setup-python` | v7.1.0 | commit `6d4fd22b20465ccc0f7354476588e8df7c9ca0e0` (Dependabot moves it) | Python 3.12 |
 | ruff | 0.17.0 | `requirements-dev.lock` | `python -m ruff check .` |
 | zizmor | 1.30.1 | `requirements-dev.lock` | `zizmor .github/workflows .github/dependabot.yml` |
 | hadolint | v2.15.1 | downloaded by version, SHA-256 `c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507` | both Dockerfiles, failing on errors |
-| pip-audit | 2.10.1 | `audit.lock` | both requirement locks |
+| pip-audit | 2.10.1 | `audit.lock` | every lock: `requirements.lock`, `requirements-dev.lock`, `audit.lock` itself and `pip.lock` |
+| pip | 26.2.2 | `pip.lock` (from `pip.in`) | installed first in both images, by hash: the base image's pip is older than the 2026 advisories fixed in 26.x |
 | pytest | 9.1.1 | `requirements-dev.lock` | `python -m pytest -q` |
 | `cloud-infra validate` and `plan` | the package | | `examples/infrastructure-request.yaml`, offline |
-| Dependabot | | `.github/dependabot.yml` | weekly, the workflow's actions only, releases at least 7 days old |
+| Dependabot | | `.github/dependabot.yml` | weekly, the workflow's actions and the Dockerfiles' base image digest, releases at least 7 days old; Dependabot alerts are expected to be on in the repository's settings |
 | pre-commit (optional) | ruff-pre-commit v0.17.0, zizmor-pre-commit v1.30.1 | `.pre-commit-config.yaml` | the same two lints locally |
 
 Docker is needed only for a local development build of the images (Docker Desktop built both for amd64 and arm64 on
@@ -177,9 +178,13 @@ recommender):
 | usage and health | `roles/monitoring.viewer` |
 | the project itself | `roles/browser` (the run of 2026-10-29 gave it), and `serviceusage.services.use` on the quota project when run from a laptop |
 
-Backstops the positioning review recommends as organisation policies on that project: `compute.requireOsLogin`,
-`compute.vmExternalIpAccess`, `compute.trustedImageProjects`, `compute.restrictLoadBalancerCreationForTypes`,
-`sql.restrictPublicIp`.
+Backstops the positioning review and the security assessment of 2026-10-30 recommend as organisation policies on that
+project: `compute.requireOsLogin`, `compute.vmExternalIpAccess`, `compute.trustedImageProjects`,
+`compute.restrictLoadBalancerCreationForTypes`, `sql.restrictPublicIp`, `sql.restrictAuthorizedNetworks`,
+`iam.disableServiceAccountKeyCreation`, `iam.disableServiceAccountKeyUpload`,
+`iam.automaticIamGrantsForDefaultServiceAccounts`, `iam.allowedPolicyMemberDomains`, `compute.requireShieldedVm`,
+`compute.disableSerialPortAccess`, `compute.skipDefaultNetworkCreation`, `storage.publicAccessPrevention`,
+`storage.uniformBucketLevelAccess`; and Data Access audit logs for IAM, STS, Secret Manager, Cloud SQL and Cloud Storage.
 
 **The delivery service's identities.** One service account per environment (dev, staging, prod kept apart), each:
 
@@ -190,6 +195,7 @@ Backstops the positioning review recommends as organisation policies on that pro
 | a custom role with `compute.projects.get` and `compute.instances.get` (so gcloud finds a machine) | the project |
 | `roles/container.clusterViewer` (cluster targets: to fetch credentials) | the project |
 | `roles/artifactregistry.reader` on each repository in `allowed_registries` (service and job targets: Cloud Run checks that the deployer can read the image, found 2026-10-30) | each repository |
+| the environment's `pull_service_account`: `roles/artifactregistry.reader` on each repository in `allowed_registries` and nothing else; the delivery service's host holds `roles/iam.serviceAccountTokenCreator` on it, as on the environment's account | each repository, the account |
 | `roles/cloudbuild.builds.editor` (builds: create and read) | the project |
 | `roles/containeranalysis.occurrences.viewer` (environments with `require_provenance`: read an image's provenance) | the project that holds the images |
 | `roles/iam.serviceAccountUser` on the environment's build account (to start builds as it) | the build account |
@@ -281,7 +287,7 @@ Per release, by the delivery contract: an image by digest only; port 1 to 65535 
 seconds (60 by default); up to 64 environment values of up to 4096 characters, one line each, with no credential as a
 literal; replicas 1 to 20 on a cluster; a note up to 300 characters.
 
-Server settings, both services: `rate_limit_per_minute` 120 per identity, `auth_failures_per_minute` 20 per client
+Server settings, both services: `max_request_bytes` 65,536 (413 above it), `registrations_per_hour` 10 per client address with sign-in on, `rate_limit_per_minute` 120 per identity, `auth_failures_per_minute` 20 per client
 address, `workers` 4 (1 to 32), `allowed_hosts` `127.0.0.1:*` and `localhost:*` by default. The infrastructure
 service's `sweep_interval_seconds` is 300 (0 turns expiry and idle stop off); a provisioning call may wait up to 45
 seconds (`wait_seconds`). Sign-in tokens: access 60 minutes (5 to 1440), refresh 30 days (1 to 90), codes 5 minutes,

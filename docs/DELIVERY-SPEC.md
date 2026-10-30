@@ -73,6 +73,12 @@ builds as it (`roles/cloudbuild.builds.editor` on the project, `roles/iam.servic
 The source reaches Cloud Build through a repository connection whose host credential lives in Secret Manager in the
 trusted project, read only by Cloud Build's service agent: no team or CI job holds one for this.
 
+A fifth identity pulls: **a pull account per environment** (`pull_service_account`), with `roles/artifactregistry.reader`
+on the environment's registries and nothing else. Its five-minute token, minted for the one pull, is the only credential
+a machine ever receives: root on a team's machine can read whatever the machine receives, and the environment's own
+account reaches every team's machines, secrets and services in that environment, so its token never leaves this service
+(the security assessment of 2026-10-30, H1).
+
 Before every action `appdelivery` checks, from `cloudinfra`'s answer: the request's `owner` is the caller's
 `infra_owner`; its status is `READY`; its `access` list holds this environment's service account with status `GRANTED`
 and level `admin`. Any "no" is a refusal with a code, before anything touches a machine.
@@ -99,7 +105,11 @@ Rules, all checked before Cloud Build is called:
   <context>`; the image pushed by Cloud Build through `images`, the only push for which it records provenance;
   `serviceAccount` the environment's build account; `logging: CLOUD_LOGGING_ONLY`; `requestedVerifyOption: VERIFIED`,
   so a build without signed SLSA provenance fails; the environment's machine type and timeout.
-- Paths are relative, inside the source, with no `..` part and no leading `-` (which docker would read as a flag).
+- Paths are relative, inside the source, with no `..` part and no leading `-` (which docker would read as a flag), and
+  none that docker would read as a git address (`github.com/…`, a scheme, `.git`): the context is sent anchored (`./web`),
+  so it is a directory of the source or nothing, never a repository docker clones in place of the linked one.
+- A team's builds in an environment are bounded: `max_concurrent_builds` queued or working at once and
+  `max_builds_per_day`, refused with `BUILD_LIMIT_EXCEEDED`.
 - The caller needs `can_build` in the environment; the source must be its own team's (another team's is not found);
   the environment must have build settings; the source's registry must be under the environment's
   `allowed_registries`.
@@ -224,27 +234,34 @@ gcloud CLI on the host where `appdelivery` runs: `gcloud compute ssh NAME --zone
 --tunnel-through-iap --impersonate-service-account ENV_SA --command "sudo bash -s"`, the `connect.ssh` command
 `cloudinfra` already returns plus impersonation. IAP's tunnel protocol is not documented for other clients, so gcloud
 is the only supported way in. OS Login gives the service account a POSIX user named `sa_…`; its key is created per
-session and expires with it. Docker on Container-Optimized OS needs root for an OS Login user, which is why the grant is
+session, registered in the account's OS Login profile with a fifteen-minute expiry (`--ssh-key-expire-after`) and
+registered again once it has expired, so a copy of the key is worth nothing minutes after the last session. Docker on
+Container-Optimized OS needs root for an OS Login user, which is why the grant is
 `admin` (`roles/compute.osAdminLogin`, sudo). The identity `appdelivery` itself runs as needs Token Creator on each
 environment's service account, and each environment's service account needs the project-level role with
 `compute.projects.get` and `compute.instances.get` that every `cloudinfra` connect block already names.
 
 **What runs on the machine.** One fixed script, a file in `appdelivery`'s package, checked against its recorded hash and
 sent on standard input to `sudo bash -s`. Its inputs are prepended as shell variable assignments whose values are
-**base64 text only** (image reference, container port, health path, timeout, the environment file, the token), each
+**base64 text only** (image reference, container port, health path, timeout, the environment file, the pull token, the
+CPU, memory and process bounds), each
 validated before encoding, so nothing a caller sends can become shell syntax and the script needs no JSON parser
 (Container-Optimized OS has none). Then:
 
 1. Make a temporary `DOCKER_CONFIG` directory (writing `/root/.docker` is not permitted on Container-Optimized OS), log
    in to the registry with `docker login -u oauth2accesstoken --password-stdin https://LOCATION-docker.pkg.dev` using a
-   short-lived access token of the environment's service account (valid for 60 minutes; the machine has no service
-   account of its own, so it cannot pull a private image by itself), pull `image@digest`, delete the directory.
+   five-minute access token of the environment's pull account, minted for this one pull (never the environment's own
+   token; the machine has no service account of its own, so it cannot pull a private image by itself), pull
+   `image@digest`, delete the directory.
 2. Write the environment to a root-only file under `/run` (memory). Docker's `--env-file` takes one `NAME=value` per
    line with no quoting, so a value with a newline is refused at plan time (store a PEM file in a secret and bind it as
    base64, or wait for the later machine service account).
 3. Rename the running container to `app-previous`, take away its restart policy and stop it (a stopped container with
    `--restart=always` comes back when Docker's daemon restarts, so at the next boot it would take the port); start the
-   new one as `app` with `--restart=always`, `--env-file`, the port, a release label, and nothing else. A failed pull
+   new one as `app` with `--restart=always`, `--env-file`, the port, a release label, no privilege escalation
+   (`--security-opt no-new-privileges`), every capability dropped but the ones an entrypoint needs to start as root and
+   drop to its user (chown, setuid, a port under 1024), the environment's CPU, memory and process bounds (`workload`),
+   bounded logs, and nothing else. A failed pull
    or login stops here, before anything running is touched.
 4. Check `http://127.0.0.1:PORT/PATH` with `curl` until it answers 2xx or `timeout_seconds` passes. (The spike found
    that Container-Optimized OS 133 ships curl and that its bash has no `/dev/tcp`.)
@@ -272,7 +289,7 @@ gives `container.clusters.get` (enough to fetch credentials) and no access to an
 `container.developer` cannot be limited to one cluster, it reaches every cluster of the project; Google Groups for RBAC
 needs a Workspace domain and a `gke-security-groups` group. So the grant lives in the cluster, not in IAM:
 
-- **`cloudinfra`** creates one namespace per cluster, named after the request, as soon as the cluster runs, and treats a
+- **`cloudinfra`** creates one namespace per cluster, named after the request and the start of its id, as soon as the cluster runs, and treats a
   cluster as a resource that takes grants. A member at `use` gets a RoleBinding to the built-in ClusterRole `view` in
   that namespace, at `admin` one to `edit` (which covers Deployments, Services and Secrets, and no RBAC or namespace
   change). A `user:` or `serviceAccount:` member is bound as a `User` named by its email, a `group:` member as a `Group`
@@ -338,7 +355,7 @@ The design:
 
 - **Several clusters (`cloudinfra`).** `cluster` takes one cluster or a list, as `compute`, `queue` and `secret` do;
   each has a `name` (`cluster` when omitted, so `<request>-cluster` as today), required and unique in a list. Each
-  cluster has its own namespace named after the request and its own grants.
+  cluster has its own namespace named after the request and its id, and its own grants.
 - **A cluster target names its cluster (`appdelivery`).** `{cluster: NAME, workload, replicas}`; `cluster: true`
   still means the request's only cluster. Releases are keyed `cluster:<name>:<workload>`; a release stored before keeps
   its key.

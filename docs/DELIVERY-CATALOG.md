@@ -41,6 +41,7 @@ Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DE
 | `PROVENANCE_FAILED` | The environment requires Cloud Build's provenance, and the image has none signed by Google that names the build this service recorded, or Container Analysis could not be read. |
 | `BUILD_UNAVAILABLE` | Cloud Build could not be reached, or refused the environment's service account (builds.editor, and serviceAccountUser on the build account). |
 | `BUILD_FAILED` | Cloud Build refused the build or ended it without success (failure, timeout, cancelled); its log says why. |
+| `BUILD_LIMIT_EXCEEDED` | The team has as many builds queued or working in this environment as the operator allows at once, or as many in 24 hours; wait, or ask for more. |
 | `INFRA_UNAVAILABLE` | The infrastructure layer could not be reached or answered something unexpected; retry later. |
 | `INFRA_AUTH_FAILED` | The infrastructure layer refused this service's token for the environment. |
 | `GOOGLE_AUTH_FAILED` | This service's host could not get a token, or may not act as the environment's service account. |
@@ -71,9 +72,9 @@ Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DE
 
 **Output.** BuildResponse: build_id, status (QUEUED, WORKING, SUCCEEDED, FAILED), environment, source, revision, dockerfile, context, image (pushed by tag), built (the same image by digest, once it succeeded: what a release names), requested_by, cloud_build_id, log_url, error.
 
-**Possible errors.** `INVALID_BUILD`, `UNKNOWN_ENVIRONMENT`, `PERMISSION_DENIED`, `NOT_FOUND`, `REGISTRY_NOT_ALLOWED`, `GOOGLE_AUTH_FAILED`, `BUILD_UNAVAILABLE`, `BUILD_FAILED`.
+**Possible errors.** `INVALID_BUILD`, `UNKNOWN_ENVIRONMENT`, `PERMISSION_DENIED`, `NOT_FOUND`, `REGISTRY_NOT_ALLOWED`, `BUILD_LIMIT_EXCEEDED`, `GOOGLE_AUTH_FAILED`, `BUILD_UNAVAILABLE`, `BUILD_FAILED`.
 
-**Security.** Builds and pushes an image in the trusted project; runs nothing on machines. Needs can_build in the environment, and a source of the caller's own team.
+**Security.** Builds and pushes an image in the trusted project; runs nothing on machines. Needs can_build in the environment, and a source of the caller's own team; a team's builds are bounded at once and per day.
 
 **After the call.** It answers once Cloud Build has the build, or waits up to wait_seconds; follow it with get_build until the status is SUCCEEDED or FAILED, then release the image named in built.
 

@@ -25,6 +25,7 @@ MEANINGS = {
     ErrorCode.NOT_BUILT_HERE: "The image digest is not one a build of this service produced for the team: images are built only in the trusted project.",
     ErrorCode.BUILD_UNAVAILABLE: "Cloud Build could not be reached, or refused the environment's service account (builds.editor, and serviceAccountUser on the build account).",
     ErrorCode.BUILD_FAILED: "Cloud Build refused the build or ended it without success (failure, timeout, cancelled); its log says why.",
+    ErrorCode.BUILD_LIMIT_EXCEEDED: "The team has as many builds queued or working in this environment as the operator allows at once, or as many in 24 hours; wait, or ask for more.",
     ErrorCode.INFRA_UNAVAILABLE: "The infrastructure layer could not be reached or answered something unexpected; retry later.",
     ErrorCode.INFRA_AUTH_FAILED: "The infrastructure layer refused this service's token for the environment.",
     ErrorCode.GOOGLE_AUTH_FAILED: "This service's host could not get a token, or may not act as the environment's service account.",
@@ -117,9 +118,9 @@ CATALOG = (
              "Build an image in the trusted Google Cloud project from one commit of a source the operator linked: Cloud Build fetches the source itself, runs "
              "docker build with the given Dockerfile and context as the environment's build account, pushes the image to the team's registry and records "
              "signed provenance for it. Images are never built or uploaded anywhere else: a release names only the digest a build reports here.",
-             (BUILD, WAIT), BUILD_OUT, ("INVALID_BUILD", "UNKNOWN_ENVIRONMENT", "PERMISSION_DENIED", "NOT_FOUND", "REGISTRY_NOT_ALLOWED", "GOOGLE_AUTH_FAILED",
-                                       "BUILD_UNAVAILABLE", "BUILD_FAILED"),
-             "Needs can_build in the environment, and a source of the caller's own team.", "builds",
+             (BUILD, WAIT), BUILD_OUT, ("INVALID_BUILD", "UNKNOWN_ENVIRONMENT", "PERMISSION_DENIED", "NOT_FOUND", "REGISTRY_NOT_ALLOWED", "BUILD_LIMIT_EXCEEDED",
+                                       "GOOGLE_AUTH_FAILED", "BUILD_UNAVAILABLE", "BUILD_FAILED"),
+             "Needs can_build in the environment, and a source of the caller's own team; a team's builds are bounded at once and per day.", "builds",
              "It answers once Cloud Build has the build, or waits up to wait_seconds; follow it with get_build until the status is SUCCEEDED or FAILED, then "
              "release the image named in built."),
     ToolSpec("get_build", "Get a build", "A build as Cloud Build reports it now, with the digest to release once it succeeded.", (BUILD_ID_IN,), BUILD_OUT,

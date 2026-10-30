@@ -175,6 +175,22 @@ gcloud iam service-accounts create appdelivery-dev --project $PROJECT --display-
 gcloud iam service-accounts add-iam-policy-binding appdelivery-dev@$PROJECT.iam.gserviceaccount.com --project $PROJECT --member serviceAccount:platform-machine@$PROJECT.iam.gserviceaccount.com --role roles/iam.serviceAccountTokenCreator
 ```
 
+And a pull account for the environment, which reads the environment's registries and nothing else: its five-minute
+token is the only credential a machine ever receives (`pull_service_account`; the environment's own token never leaves
+the delivery service).
+
+```bash
+gcloud iam service-accounts create pull-dev --project $PROJECT --display-name "appdelivery dev image pulls"
+```
+
+```bash
+gcloud iam service-accounts add-iam-policy-binding pull-dev@$PROJECT.iam.gserviceaccount.com --project $PROJECT --member serviceAccount:platform-machine@$PROJECT.iam.gserviceaccount.com --role roles/iam.serviceAccountTokenCreator
+```
+
+```bash
+gcloud artifacts repositories add-iam-policy-binding shop-images --location $REGION --project $PROJECT --member serviceAccount:pull-dev@$PROJECT.iam.gserviceaccount.com --role roles/artifactregistry.reader
+```
+
 ```bash
 gcloud iam roles create appdeliveryInstanceViewer --project $PROJECT --title "appdelivery instance viewer" --permissions compute.projects.get,compute.instances.get
 ```
@@ -274,11 +290,13 @@ environments:
   dev:
     token_env: APPDELIVERY_DEV_INFRA_TOKEN
     service_account: appdelivery-dev@your-infrastructure-project.iam.gserviceaccount.com
+    pull_service_account: pull-dev@your-infrastructure-project.iam.gserviceaccount.com
     allowed_registries: [us-central1-docker.pkg.dev/your-infrastructure-project/shop-images]
     build: {service_account: build-dev@your-infrastructure-project.iam.gserviceaccount.com}
   prod:
     token_env: APPDELIVERY_PROD_INFRA_TOKEN
     service_account: appdelivery-prod@your-infrastructure-project.iam.gserviceaccount.com
+    pull_service_account: pull-prod@your-infrastructure-project.iam.gserviceaccount.com
     allowed_registries: [us-central1-docker.pkg.dev/your-infrastructure-project/shop-images]
     build: {service_account: build-prod@your-infrastructure-project.iam.gserviceaccount.com}
     require_attestation: true

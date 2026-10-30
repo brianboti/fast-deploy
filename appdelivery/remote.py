@@ -6,6 +6,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 COMMANDS = ("gcloud", "cosign")
+# gcloud registers its SSH key in the service account's OS Login profile with this expiry, and registers it again when it
+# has expired: a copy of the key (the data volume, a backup) is worth nothing minutes after the last session.
+KEY_LIFETIME = "15m"
 
 
 @dataclass
@@ -54,5 +57,5 @@ def gcloud_ssh(name: str, zone: str, project: str, service_account: str, stdin: 
     host key under its numeric id, so a new machine's key is accepted on first contact and a replaced machine never
     inherits an old one."""
     argv = ["gcloud", "compute", "ssh", name, "--zone", zone, "--project", project, "--tunnel-through-iap", "--impersonate-service-account", service_account,
-            "--quiet", "--strict-host-key-checking=no", "--command", "sudo bash -s"]
+            "--quiet", "--strict-host-key-checking=no", f"--ssh-key-expire-after={KEY_LIFETIME}", "--command", "sudo bash -s"]
     return runner(argv, stdin, None, timeout)

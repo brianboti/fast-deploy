@@ -299,6 +299,10 @@ class CloudProvider(ABC):
         """The boot disk a compute group's machines get, which the adapter's software may make larger than asked."""
         return group.boot_disk_gb
 
+    def resize_preview(self, resource, cpu: int, memory_gb: int):
+        """The machine as a resize would leave it (its new machine type, CPUs and memory), for pricing before anything is touched."""
+        self._unsupported("preview a resize of", resource)
+
     def estimate_resources(self, resources: list) -> CostEstimate:
         """What resources cost a month as they exist now (after a resize, whatever profile they came from), from list prices."""
         self._unsupported("price existing resources")

@@ -1,4 +1,9 @@
 .git
+infra
+output
+.claude
+*.tfvars
+*.tfstate*
 .github
 .venv
 .env

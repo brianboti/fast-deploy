@@ -27,9 +27,9 @@ V1 = next(item for item in FOUND if "inTotoSlsaProvenanceV1" in item["build"])
 STATEMENT = json.loads(base64.b64decode(V1["envelope"]["payload"]))
 
 
-def refused(image=IMAGE, build=BUILD, found=FOUND, keys=None):
+def refused(image=IMAGE, build=BUILD, found=FOUND, keys=None, expected=None):
     with pytest.raises(DeliveryError) as caught:
-        provenance.verify(image, build, found, keys)
+        provenance.verify(image, build, found, keys, expected)
     assert caught.value.code == ErrorCode.PROVENANCE_FAILED
     return caught.value
 
@@ -103,6 +103,43 @@ def test_each_field_of_a_trusted_statement_is_held_to_the_record(change, expecte
     assert provenance.verify(IMAGE, BUILD, signed(STATEMENT, "own"), keys={"own": OWN_PEM})["key"] == "own", "the same statement unchanged verifies"
 
 
+EXPECTED = {"builder": "gcr.io/cloud-builders/docker@sha256:" + "f" * 64, "args": STATEMENT["predicate"]["buildDefinition"]["externalParameters"] and
+            json.loads(base64.b64decode(STATEMENT["predicate"]["buildDefinition"]["externalParameters"]["buildConfig"]))["steps"][0]["args"],
+            "tags": ["appdelivery", "shop-team", "dev", BUILD["build_id"]]}
+
+
+def test_the_real_statement_ran_exactly_what_this_service_composed():
+    record = {"build_id": BUILD["build_id"], "infra_owner": "shop-team", "environment": "dev", "image": IMAGE.split("@")[0] + ":" + BUILD["build_id"],
+              "request": {"dockerfile": "Dockerfile.appdelivery", "context": "."}}
+    from appdelivery import cloudbuild
+    expected = cloudbuild.expected(record, EXPECTED["builder"])
+    assert expected == EXPECTED, "the builder's digest is accepted when the statement records the name alone"
+    assert provenance.verify(IMAGE, BUILD, FOUND, expected=expected)["commit"] == BUILD["revision"]
+
+
+def rewritten(change):
+    statement = copy.deepcopy(STATEMENT)
+    config = json.loads(base64.b64decode(statement["predicate"]["buildDefinition"]["externalParameters"]["buildConfig"]))
+    change(config)
+    statement["predicate"]["buildDefinition"]["externalParameters"]["buildConfig"] = base64.b64encode(json.dumps(config).encode()).decode()
+    return signed(statement, "own")
+
+
+@pytest.mark.parametrize("change,expected", [(lambda c: c["steps"].append({"name": "x", "args": ["sh"]}), "2 build steps"),
+                                             (lambda c: c["steps"][0].update(name="docker.io/library/docker"), "a builder"),
+                                             (lambda c: c["steps"][0]["args"].__setitem__(-1, "github.com/evil/repo"), "build arguments"),
+                                             (lambda c: c["options"].update(requestedVerifyOption="NOT_VERIFIED"), "options"),
+                                             (lambda c: c.update(tags=["appdelivery", "other-team", "dev", BUILD["build_id"]]), "tags")])
+def test_a_build_config_that_is_not_this_services_is_refused(change, expected):
+    assert expected in refused(found=rewritten(change), keys={"own": OWN_PEM}, expected=EXPECTED).message
+
+
+def test_a_statement_without_a_build_config_is_refused_when_one_is_expected():
+    statement = copy.deepcopy(STATEMENT)
+    del statement["predicate"]["buildDefinition"]["externalParameters"]["buildConfig"]
+    assert "build config is missing" in refused(found=signed(statement, "own"), keys={"own": OWN_PEM}, expected=EXPECTED).message
+
+
 # ---- reading it from Container Analysis
 def analysis(status=200, body=None, seen=None):
     def handle(request):
@@ -150,10 +187,19 @@ def world_requiring_provenance(occurrences):
 def test_a_release_whose_provenance_verifies_rolls_out(caplog):
     caplog.set_level(logging.INFO, logger="appdelivery")
     world = world_requiring_provenance(FOUND)
-    world.built(IMAGE, cloud_build_id=BUILD["cloud_build_id"], revision=BUILD["revision"])
+    world.built(IMAGE, cloud_build_id=BUILD["cloud_build_id"], revision=BUILD["revision"], build_id=BUILD["build_id"], dockerfile="Dockerfile.appdelivery")
     assert world.delivery.plan(world.release(IMAGE), world.team).provenance_required is True
     released = world.deploy(IMAGE)
     assert released.status == "RUNNING" and "provenance_verified" in caplog.text
+
+
+def test_a_recorded_build_whose_provenance_ran_other_arguments_is_refused():
+    """The signed statement carries the build config Cloud Build ran; it must be the one step this service composed for that
+    build, with its arguments and tags, so a build that ran anything else never releases (the review of 2026-10-30)."""
+    world = world_requiring_provenance(FOUND)
+    world.built(IMAGE, cloud_build_id=BUILD["cloud_build_id"], revision=BUILD["revision"], build_id=BUILD["build_id"], dockerfile="other/Dockerfile")
+    released = world.deploy(IMAGE)
+    assert released.status == "FAILED" and released.error["code"] == "PROVENANCE_FAILED" and "build arguments" in released.error["message"]
 
 
 def test_a_recorded_build_without_matching_provenance_never_reaches_a_machine():

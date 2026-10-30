@@ -31,6 +31,9 @@ CREDENTIAL_PAIRS = frozenset({("PRIVATE", "KEY"), ("API", "KEY"), ("ACCESS", "KE
 COMMIT = re.compile(r"^[a-f0-9]{40}$")
 # A path inside the source: relative, no .. part, never starting with - (docker would read it as a flag).
 SOURCE_PATH = re.compile(r"^(?!.*(?:^|/)\.\.(?:/|$))(?!.*//)[A-Za-z0-9._][A-Za-z0-9._/-]{0,199}$")
+# What docker reads as a remote git source instead of a directory (docker/cli urlutil.IsGitURL, BuildKit gitutil.ParseGitRef): a
+# scheme, a github.com/ prefix, a .git suffix. Refused as well as anchored (cloudbuild.anchored), found in the review of 2026-10-30.
+GIT_LOOKING = re.compile(r"(?i)(?:^github\.com/|^[a-z][a-z0-9+.-]*://|\.git(?:/|$)|^git@)")
 # A name under the team's registry, up to three parts; the first has no dot, so it never reads as another registry's host.
 IMAGE_NAME = re.compile(r"^[a-z0-9]+(?:[_-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*){0,2}$")
 BUILD_ID = re.compile(r"^bld-[a-f0-9]{12}$")
@@ -263,6 +266,9 @@ class BuildRequest(StrictModel):
     def _path(cls, value, info):
         if not SOURCE_PATH.match(value):
             raise DeliveryError(ErrorCode.INVALID_BUILD, f"{info.field_name} {value!r}: a path inside the source, relative, without .. or a leading -")
+        if GIT_LOOKING.search(value):
+            raise DeliveryError(ErrorCode.INVALID_BUILD, f"{info.field_name} {value!r} reads as a git address, not a path in the source: the build fetches only the linked "
+                                "repository at the given commit")
         return value
 
 

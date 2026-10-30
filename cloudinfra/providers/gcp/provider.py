@@ -261,6 +261,13 @@ class GCPProvider(CloudProvider):
     def resize_compute(self, resource, cpu, memory_gb, ctx):
         return self.compute.resize(resource, cpu, memory_gb, ctx)
 
+    def resize_preview(self, resource, cpu, memory_gb):
+        shape = self.compute.shape(resource, cpu, memory_gb)
+        if isinstance(shape, Problem):
+            raise InfrastructureError(shape.code, shape.message, {"cpu": cpu, "memory_gb": memory_gb})
+        machine, cpu, memory_gb = shape
+        return resource.model_copy(update={"machine_type": machine, "cpu": cpu, "memory_gb": memory_gb})
+
     def resize_problem(self, resource, cpu, memory_gb):
         shape = self.compute.shape(resource, cpu, memory_gb)
         return shape if isinstance(shape, Problem) else None

@@ -27,8 +27,9 @@ def test_each_cluster_of_a_list_is_its_own_cluster_with_its_own_namespace_and_gr
     assert set(found) == {"shop-blue", "shop-green"} and {name for _, name in fake.clusters} == {"shop-blue", "shop-green"}
     assert found["shop-green"].node_count == 2 and found["shop-green"].machine_type == "e2-standard-4"
     assert found["shop-blue"].endpoint != found["shop-green"].endpoint
-    assert all(cluster.namespace == "shop" for cluster in found.values())
-    assert fake.namespaces == {found["shop-blue"].endpoint: {"shop"}, found["shop-green"].endpoint: {"shop"}}
+    namespace = f"shop-{response.request_id[:6]}"
+    assert all(cluster.namespace == namespace for cluster in found.values())
+    assert fake.namespaces == {found["shop-blue"].endpoint: {namespace}, found["shop-green"].endpoint: {namespace}}
     assert {(endpoint, item["role"]) for (endpoint, _, _), item in fake.role_bindings.items()} == {
         (found["shop-blue"].endpoint, "edit"), (found["shop-green"].endpoint, "edit")}
     [entry] = response.access

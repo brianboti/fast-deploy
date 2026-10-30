@@ -73,6 +73,8 @@ class StateManager:
                 db.execute(statement)
             if self._memory is None:
                 db.execute("PRAGMA journal_mode=WAL")
+        if self._memory is None and os.path.isfile(path):
+            os.chmod(path, 0o600)  # the inventory of releases, every caller's address and token hashes: the service's user only
 
     @contextlib.contextmanager
     def connect(self):
@@ -197,6 +199,19 @@ class StateManager:
             rows = db.execute("SELECT build_id FROM builds WHERE infra_owner = ? AND (? IS NULL OR environment = ?) AND (? IS NULL OR source = ?) "
                               "ORDER BY created_at DESC, rowid DESC LIMIT ?", (infra_owner, environment, environment, source, source, limit)).fetchall()
         return [self.get_build(row["build_id"]) for row in rows]
+
+    def count_builds(self, infra_owner: str, environment: str, statuses: tuple = (), since: str | None = None) -> int:
+        """How many builds of one team in one environment are in the statuses, or were created at or after `since`."""
+        marks = ", ".join("?" for _ in statuses)
+        where, values = ["infra_owner = ?", "environment = ?"], [infra_owner, environment]
+        if statuses:
+            where.append(f"status IN ({marks})")
+            values.extend(statuses)
+        if since is not None:
+            where.append("created_at >= ?")
+            values.append(since)
+        with self.connect() as db:
+            return db.execute(f"SELECT COUNT(*) FROM builds WHERE {' AND '.join(where)}", tuple(values)).fetchone()[0]  # noqa: S608 - placeholders only
 
     def builds_in(self, statuses) -> list[dict]:
         marks = ", ".join("?" for _ in statuses)

@@ -14,7 +14,7 @@ from kube_fakes import NAMESPACE
 from appdelivery import planner
 from appdelivery.errors import DeliveryError, ErrorCode, problems_from
 from appdelivery.infra import InfraRequest
-from appdelivery.kube import KubeClient, deployment_body, secret_name, service_body
+from appdelivery.kube import ENTRYPOINT_CAPABILITIES, KubeClient, deployment_body, secret_name, service_body
 from appdelivery.models import ReleaseRequest
 
 CLUSTER = {"cluster": True, "workload": "web", "replicas": 2}
@@ -81,7 +81,10 @@ def test_the_deployment_never_drops_below_the_wanted_replicas_and_probes_the_hea
     assert container["readinessProbe"]["httpGet"] == {"path": "/healthz", "port": 8080}
     assert container["envFrom"] == [{"secretRef": {"name": "web-env-rel-000000000001"}}] and "env" not in container
     assert spec["template"]["spec"]["automountServiceAccountToken"] is False, "the workload gets no Kubernetes credential"
-    assert set(container) == {"name", "image", "ports", "envFrom", "readinessProbe"}, "no command, volume or privilege"
+    assert set(container) == {"name", "image", "ports", "envFrom", "readinessProbe", "securityContext", "resources"}, "no command, volume or privilege"
+    assert container["securityContext"] == {"allowPrivilegeEscalation": False, "privileged": False, "capabilities": {"drop": ["ALL"], "add": ENTRYPOINT_CAPABILITIES}}
+    assert container["resources"] == {"requests": {"cpu": "100m", "memory": "1024Mi"}, "limits": {"cpu": "1000m", "memory": "1024Mi"}}
+    assert spec["template"]["spec"]["securityContext"] == {"seccompProfile": {"type": "RuntimeDefault"}}
     service = service_body(NAMESPACE, release)
     assert service["spec"]["type"] == "ClusterIP" and service["spec"]["ports"] == [{"name": "http", "port": 8080, "targetPort": 8080}]
 

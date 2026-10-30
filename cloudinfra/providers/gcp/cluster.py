@@ -1,7 +1,7 @@
 """Kubernetes Engine clusters behind the generic cluster primitives: one zonal cluster with one node pool, VPC-native,
 shielded nodes, workload identity on, a release channel for versions. Credentials never come from this service.
 
-Each cluster gets one namespace, named after the request, and access to what a request created is granted there: a
+Each cluster gets one namespace, named after the request and the start of its id (unique per request), and access to what a request created is granted there: a
 member at `use` is bound to the built-in ClusterRole view, at `admin` to edit, through RoleBindings in that namespace
 only (docs/DELIVERY-SPEC.md, phase 2). Fetching credentials still needs the project-level container.clusterViewer. An
 admission policy keeps that namespace from opening a public address of its own (phase 3); the front door, when asked
@@ -16,7 +16,7 @@ from ...models.errors import ErrorCode, InfrastructureError
 from ...models.resources import ClusterResource, FrontDoor, ResourceStatus
 from . import translate
 from .api import COMPUTE, CONTAINER
-from .kubernetes import CLUSTER_ROLES, DOOR, DOOR_NAMESPACE, GATEWAYS, ROUTES, TENANT, KubeApi, front_door, no_public_entry, routes_role
+from .kubernetes import CLUSTER_ROLES, DOOR, DOOR_NAMESPACE, GATEWAYS, ROUTES, TENANT, KubeApi, front_door, no_public_entry, routes_role, tenant_namespace
 from .nodeaccount import NOT_YET, NodeAccounts, account_id
 
 # Gateway API's kinds appear a little after a cluster runs; a Gateway is tried again meanwhile.
@@ -96,8 +96,9 @@ class GcpCluster:
         labels = {"managed-by": "cloudinfra", "cloudinfra-request": ctx.request_id}
         for collection, body in [*no_public_entry(labels), routes_role(labels)]:  # before the namespace, so no moment exists without them
             kube.put(collection, body)
-        kube.ensure_namespace(ctx.name, {**labels, **TENANT})
-        resource = resource.model_copy(update={"namespace": ctx.name})
+        namespace = tenant_namespace(ctx)
+        kube.ensure_namespace(namespace, {**labels, **TENANT})
+        resource = resource.model_copy(update={"namespace": namespace})
         if door is not None:
             resource = resource.model_copy(update={"public": self._open(door, kube, ctx, labels)})
         return resource
@@ -120,7 +121,7 @@ class GcpCluster:
                                                      "description": translate.description(ctx)})
             certificate = (found.get("managed") or {}).get("status")
         kube.ensure_namespace(DOOR_NAMESPACE, labels)  # the platform's, not a tenant's: the admission policy does not reach it
-        for collection, body in front_door(ctx.name, door.address_name, door.certificate_name, labels):
+        for collection, body in front_door(tenant_namespace(ctx), door.address_name, door.certificate_name, labels):
             for attempt in range(GATEWAY_KINDS[0]):
                 try:
                     kube.put(collection, body)

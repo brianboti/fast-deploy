@@ -14,7 +14,7 @@ import pydantic
 from fastapi import FastAPI, Request
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
-from mcp.server.transport_security import TransportSecuritySettings
+from mcp.server.transport_security import RequestBodyLimitMiddleware, TransportSecuritySettings
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
@@ -143,6 +143,7 @@ class StrictMCP(FastMCP):
 
 
 def build_app(config, registry: ProviderRegistry | None = None, state: StateManager | None = None, executor=None) -> FastAPI:
+    os.umask(0o077)  # the state file, its lock and journal, and the log are the service's alone
     observability.configure(path=config.log_file)
     state = state or StateManager(config.database)
     registry = registry or ProviderRegistry(config)
@@ -183,6 +184,7 @@ def build_app(config, registry: ProviderRegistry | None = None, state: StateMana
     sign_in = SignIn(config, state) if config.sign_in else None
     app.state.sign_in = sign_in
     app.add_middleware(Authenticate, config=config, state=state, sign_in=sign_in)
+    app.add_middleware(RequestBodyLimitMiddleware, max_body_size=config.max_request_bytes)  # outermost: a large body is refused before anything reads it
 
     def rest(name, fn, subject=None):
         result = invoke(state, "rest", name, fn, subject)

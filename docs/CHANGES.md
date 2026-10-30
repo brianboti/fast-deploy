@@ -1,3 +1,45 @@
+# Unreleased: the security assessment's first release (S1)
+
+The security assessment of 2026-10-30 ([research/RESEARCH-2026-10-30-security-assessment.md](research/RESEARCH-2026-10-30-security-assessment.md))
+measured both services against the MCP specification of 2026-07-28, OAuth 2.1 and RFC 9700, SLSA v1.2, OWASP ASVS 5.0,
+CIS GCP and Google's foundations blueprint. Release S1 closes its four High findings and the cheap Medium ones; each
+has a test (`tests/cloudinfra/test_infra_security_s1.py`, `tests/appdelivery/test_delivery_security_s1.py`, and the
+suites they name).
+
+Security:
+
+- **`appdelivery`: a machine receives a pull-only identity, never the environment's (H1).** Each environment names a
+  `pull_service_account` (reader on its registries and nothing else); its five-minute token is minted fresh for the one
+  pull. The environment's own token never leaves the service, since root on a team's machine could read it and act as
+  the environment on every other team's machines, secrets and services.
+- **`appdelivery`: a build context is a path, never a git address (H2).** `github.com/…`, a scheme or `.git` is refused
+  and the context is sent anchored (`./web`), so docker never clones another repository in place of the linked one;
+  the signed provenance is now held to the one step the service composed (its arguments and tags), as SLSA asks.
+- **`cloudinfra`: the tenant namespace is unique per request (H3).** `<name>-<6 hex of the request id>`: a Workload
+  Identity principal is project-wide, and two requests of one name no longer share one.
+- **`cloudinfra`: 22 and 3389 are never opened from a public range (H4).** By a network block's `allowed_ports` or by
+  `configure_firewall`; the operator may close more (`closed_public_ports`).
+- **Both: bounded bodies and registration (M1, M2).** 413 above `max_request_bytes` (64 KiB) before anything reads a
+  body; the sign-in form takes two small fields; OAuth registration accepts public clients only (no client secret or key
+  set), small, `registrations_per_hour` per address, forgotten after a day without a sign-in; the metadata advertises
+  `token_endpoint_auth_methods_supported: ["none"]`.
+- **Both: single use is atomic, files are private (L1, L2).** A code or sign-in link is taken with one `DELETE …
+  RETURNING`; a refresh token exchanged twice at the same moment ends the sign-in; the state file is mode 0600 and the
+  services set `umask 077`.
+- **`appdelivery`: the OS Login key expires (M3)**, `--ssh-key-expire-after=15m`.
+- **`appdelivery`: containers run bounded (M4, M5).** On machines: no privilege escalation, capabilities dropped but
+  the ones an entrypoint needs, CPU, memory, process and log bounds; on clusters: the same securityContext, the default
+  seccomp profile, resources. Bounds per environment under `workload`.
+- **`cloudinfra`: a resize is held to the cost ceiling (M8).**
+- **`appdelivery`: a team's builds are bounded (M9)**, `max_concurrent_builds` and `max_builds_per_day` per environment,
+  refused with `BUILD_LIMIT_EXCEEDED`.
+- **Repository and images (M16, M17 in part).** `audit.lock` regenerated (filelock 4.2.5) and audited in CI with
+  `pip.lock`; Dependabot moves the base image digests; `cloudbuild.yaml` names its build account; both images install
+  pip 26.2.2 by hash first and carry a `HEALTHCHECK`; `output/`, `.claude/` and the old `infra/` tree are kept out of
+  git and the build context.
+- **Documents corrected** where they said more than the code did: machines' service accounts, the node account's project
+  role, the SSH key's expiry, the token the machine receives, CODEOWNERS' review claim.
+
 # Unreleased: a workload identity with no key
 
 The first of the kinds the coverage research ranks highest (docs/RESEARCH-2026-10-28-infrastructure-layer.md section 7;

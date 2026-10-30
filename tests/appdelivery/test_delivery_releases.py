@@ -27,7 +27,9 @@ def test_a_release_rolls_out_to_every_machine_one_at_a_time():
     assert [world.fleet.app[name] for name in WEB] == [V1, V1]
     deploys = [call for call in world.fleet.calls if call["action"] == "deploy"]
     assert [call["machine"] for call in deploys] == list(WEB) and {call["environment"] for call in deploys} == {"dev"}
-    assert deploys[0]["env_text"] == f"LOG_LEVEL=info\nDB_HOST=10.20.0.5\nDB_PASSWORD={SECRET_VALUE}\n" and deploys[0]["token"] == "dev-token"
+    assert deploys[0]["env_text"] == f"LOG_LEVEL=info\nDB_HOST=10.20.0.5\nDB_PASSWORD={SECRET_VALUE}\n"
+    assert deploys[0]["token"] == "dev-pull-token", "the machine receives the pull account's token, never the environment's"
+    assert deploys[0]["limits"] == world.config.environments["dev"].workload
     assert response.env == {"LOG_LEVEL": "value", "DB_HOST": "endpoint database_host", "DB_PASSWORD": "secret db-password"}
 
 
@@ -65,10 +67,10 @@ def test_a_machine_that_fails_its_health_check_stops_the_rollout_and_the_done_on
             fake = original(environment)
             deploy = fake.deploy
 
-            def flaky(machine, release_id, release, env_text, token):
+            def flaky(machine, release_id, release, env_text, token, limits=None):
                 if machine.name == "shop-web-2":
                     world.fleet.unhealthy.add(release.image)
-                return deploy(machine, release_id, release, env_text, token)
+                return deploy(machine, release_id, release, env_text, token, limits)
             fake.deploy = flaky
             return fake
         world.delivery.machines = session

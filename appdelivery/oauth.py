@@ -20,6 +20,7 @@ import sqlite3
 import time
 from urllib.parse import urlparse
 
+from mcp.server.auth.handlers.metadata import MetadataHandler
 from mcp.server.auth.provider import (
     AccessToken,
     AuthorizationCode,
@@ -29,7 +30,7 @@ from mcp.server.auth.provider import (
     TokenError,
     construct_redirect_uri,
 )
-from mcp.server.auth.routes import build_resource_metadata_url, create_auth_routes, create_protected_resource_routes
+from mcp.server.auth.routes import build_metadata, build_resource_metadata_url, cors_middleware, create_auth_routes, create_protected_resource_routes
 from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyHttpUrl
@@ -43,7 +44,14 @@ from .auth import RateLimiter, find_principal
 CODE_SECONDS = 300  # RFC 6749 recommends at most ten minutes for an authorization code
 LOGIN_SECONDS = 600  # a sign-in page left open longer than this must be opened again from Claude
 SIGN_IN_PATH = "/sign-in"
+METADATA_PATH = "/.well-known/oauth-authorization-server"
 PUBLIC_PATHS = frozenset({"/authorize", "/token", "/register", "/revoke", SIGN_IN_PATH})
+# Registration (RFC 7591, deprecated by the MCP specification of 2026-07-28 but what Claude uses) is open to anyone before
+# a token: what it may store is small, public (PKCE, no secret) and short-lived unless a sign-in completes.
+MAX_CLIENT_BYTES = 2048
+MAX_CLIENT_NAME = 100
+CLIENT_RETENTION_SECONDS = 86_400  # a registered client that completed no sign-in is forgotten after a day
+
 # No form-action directive: Chrome applies it to the redirect after the POST, which would block the hop back to Claude.
 PAGE_HEADERS = {"Cache-Control": "no-store", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff",
                 "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"}
@@ -98,8 +106,12 @@ class SignInStore:
             db.close()
 
     def add_client(self, client: OAuthClientInformationFull) -> None:
+        now = self.clock()
         with self.connect() as db:
-            db.execute("INSERT INTO oauth_clients VALUES (?, ?, ?)", (client.client_id, client.model_dump_json(), self.clock()))
+            # a client with no live token a day after registering never signed in, or signed out: gone, so the table cannot grow without bound
+            db.execute("DELETE FROM oauth_clients WHERE created < ? AND client_id NOT IN (SELECT client_id FROM oauth_tokens WHERE expires > ? AND revoked = 0)",
+                       (now - CLIENT_RETENTION_SECONDS, now))
+            db.execute("INSERT INTO oauth_clients VALUES (?, ?, ?)", (client.client_id, client.model_dump_json(), now))
 
     def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
         with self.connect() as db:
@@ -113,11 +125,13 @@ class SignInStore:
             db.execute("INSERT INTO oauth_grants VALUES (?, ?, ?, ?)", (digest(secret), kind, now + lifetime, json.dumps(payload)))
 
     def get_grant(self, secret: str, kind: str, take: bool = False) -> dict | None:
-        """A live pending sign-in or code; `take` removes it in the same transaction, so it is used at most once."""
+        """A live pending sign-in or code; `take` removes it in the same statement, so of two callers at once exactly one
+        gets it (DELETE ... RETURNING: the read and the removal are one operation, never a read then a removal)."""
         with self.connect() as db:
-            row = db.execute("SELECT expires, payload FROM oauth_grants WHERE digest=? AND kind=?", (digest(secret), kind)).fetchone()
-            if row and take:
-                db.execute("DELETE FROM oauth_grants WHERE digest=?", (digest(secret),))
+            if take:
+                row = db.execute("DELETE FROM oauth_grants WHERE digest=? AND kind=? RETURNING expires, payload", (digest(secret), kind)).fetchone()
+            else:
+                row = db.execute("SELECT expires, payload FROM oauth_grants WHERE digest=? AND kind=?", (digest(secret), kind)).fetchone()
         return json.loads(row[1]) if row and row[0] >= self.clock() else None
 
     def add_token(self, token: str, kind: str, family: str, client_id: str, lifetime: float, payload: dict) -> None:
@@ -134,9 +148,10 @@ class SignInStore:
             return None
         return {"family": row[0], "client_id": row[1], "expires": row[2], "revoked": bool(row[3]), **json.loads(row[4])}
 
-    def revoke_token(self, token: str) -> None:
+    def revoke_token(self, token: str) -> bool:
+        """Revoke a live token; False when it was already revoked, which for a refresh token means a second use at once."""
         with self.connect() as db:
-            db.execute("UPDATE oauth_tokens SET revoked=1 WHERE digest=?", (digest(token),))
+            return db.execute("UPDATE oauth_tokens SET revoked=1 WHERE digest=? AND revoked=0", (digest(token),)).rowcount == 1
 
     def revoke_family(self, family: str) -> None:
         with self.connect() as db:
@@ -179,8 +194,26 @@ class SignIn:
         if refused or not client_info.redirect_uris:
             self.note("oauth_register", outcome="refused", detail=f"callbacks not allowed: {refused}"[:500])
             raise RegistrationError("invalid_redirect_uri", f"This service returns only to {', '.join(self.settings.callbacks)}")
+        problem = self.metadata_problem(client_info)
+        if problem:
+            self.note("oauth_register", outcome="refused", detail=problem[:500])
+            raise RegistrationError("invalid_client_metadata", problem)
         await run_in_threadpool(self.store.add_client, client_info)
         self.note("oauth_register", outcome="ok", detail=f"{client_info.client_name or 'unnamed'} {client_info.client_id}"[:500])
+
+    @staticmethod
+    def metadata_problem(client_info: OAuthClientInformationFull) -> str | None:
+        """Why a registration is refused: this service serves public clients with PKCE only, so a client secret or a key set has
+        no use here and would only be stored; and what is stored is small."""
+        if client_info.token_endpoint_auth_method not in (None, "none"):
+            return "This service's clients are public: register with token_endpoint_auth_method none (PKCE); no client secret is issued or accepted"
+        if client_info.jwks is not None or client_info.jwks_uri is not None:
+            return "This service accepts no key set: register with token_endpoint_auth_method none (PKCE)"
+        if len(client_info.client_name or "") > MAX_CLIENT_NAME:
+            return f"client_name is at most {MAX_CLIENT_NAME} characters"
+        if len(client_info.model_dump_json(exclude_none=True)) > MAX_CLIENT_BYTES:
+            return f"The registration is larger than {MAX_CLIENT_BYTES} bytes: send the redirect_uris, a name and the grant and response types"
+        return None
 
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
         login = secrets.token_urlsafe(32)
@@ -214,7 +247,11 @@ class SignIn:
         if self.current(refresh_token.subject, refresh_token.credential) is None:
             await run_in_threadpool(self.store.revoke_family, refresh_token.family)
             raise TokenError("invalid_grant", "the principal of this sign-in was removed or given a new token; sign in again")
-        await run_in_threadpool(self.store.revoke_token, refresh_token.token)  # rotation: the old one is now a reuse signal
+        if not await run_in_threadpool(self.store.revoke_token, refresh_token.token):  # rotation: the old one is now a reuse signal
+            # two exchanges of one refresh token at the same moment: the second finds it revoked already, and that is a reuse
+            await run_in_threadpool(self.store.revoke_family, refresh_token.family)
+            self.note("token_reuse", identity=refresh_token.subject, outcome="session_revoked", detail=f"client {client.client_id}")
+            raise TokenError("invalid_grant", "refresh token already used")
         return await run_in_threadpool(self.issue, client.client_id, refresh_token.subject, refresh_token.credential, scopes or refresh_token.scopes,
                                        refresh_token.resource, refresh_token.family)
 
@@ -265,7 +302,7 @@ input,button{{font:inherit;width:100%;box-sizing:border-box;padding:.6rem;margin
 
     async def submit(self, request: Request):
         address = request.client.host if request.client else "unknown"
-        form = await request.form()
+        form = await request.form(max_fields=2, max_part_size=4096)  # a login id and a token; nothing larger belongs here
         login, token = str(form.get("login", "")), str(form.get("token", "")).strip()
         pending = await run_in_threadpool(self.store.get_grant, login, "login")
         if pending is None:
@@ -295,5 +332,11 @@ input,button{{font:inherit;width:100%;box-sizing:border-box;padding:.6rem;margin
         issuer = AnyHttpUrl(self.issuer)
         resource = create_protected_resource_routes(AnyHttpUrl(self.resource), [issuer], resource_name="Application Delivery")
         root = [Route("/.well-known/oauth-protected-resource", endpoint=resource[0].endpoint, methods=["GET", "OPTIONS"])]
-        return [*create_auth_routes(self, issuer, client_registration_options=ClientRegistrationOptions(enabled=True), revocation_options=RevocationOptions(enabled=True)),
-                *resource, *root, Route(SIGN_IN_PATH, endpoint=self.show, methods=["GET"]), Route(SIGN_IN_PATH, endpoint=self.submit, methods=["POST"])]
+        registration, revocation = ClientRegistrationOptions(enabled=True), RevocationOptions(enabled=True)
+        # The SDK's metadata advertises client-secret authentication; this service's clients are public (PKCE), which is also
+        # what Claude needs to see before it uses a client id metadata document instead of registering
+        metadata = build_metadata(issuer, None, registration, revocation)
+        metadata.token_endpoint_auth_methods_supported = ["none"]
+        own = Route(METADATA_PATH, endpoint=cors_middleware(MetadataHandler(metadata).handle, ["GET", "OPTIONS"]), methods=["GET", "OPTIONS"])
+        sdk = [route for route in create_auth_routes(self, issuer, client_registration_options=registration, revocation_options=revocation) if route.path != METADATA_PATH]
+        return [own, *sdk, *resource, *root, Route(SIGN_IN_PATH, endpoint=self.show, methods=["GET"]), Route(SIGN_IN_PATH, endpoint=self.submit, methods=["POST"])]

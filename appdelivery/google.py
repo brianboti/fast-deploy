@@ -18,6 +18,7 @@ SECRET_MANAGER = "https://secretmanager.googleapis.com/v1"  # noqa: S105 - an AP
 # https://cloud.google.com/kubernetes-engine/docs/how-to/role-based-access-control)
 SCOPES = ["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email"]
 LIFETIME_SECONDS = 900  # long enough for one machine's pull, short enough to be worthless soon after
+PULL_LIFETIME_SECONDS = 300  # a pull takes seconds; the token a machine receives is minted fresh for it and dies minutes later
 
 
 class HostToken:
@@ -63,10 +64,19 @@ class ServiceAccountTokens:
         cached = self.cache.get(service_account)
         if cached and self.clock() < cached[1]:
             return cached[0]
+        token = self.mint(service_account, LIFETIME_SECONDS)
+        self.cache[service_account] = (token, self.clock() + LIFETIME_SECONDS - 60)
+        return token
+
+    def fresh(self, service_account: str) -> str:
+        """A token minted now, for a few minutes, never cached: what a machine gets for its pull."""
+        return self.mint(service_account, PULL_LIFETIME_SECONDS)
+
+    def mint(self, service_account: str, lifetime: int) -> str:
         for refreshed in (False, True):
             try:
                 response = self.client.post(f"{IAM_CREDENTIALS}/projects/-/serviceAccounts/{service_account}:generateAccessToken",
-                                            headers={"Authorization": f"Bearer {self.host_token()}"}, json={"scope": SCOPES, "lifetime": f"{LIFETIME_SECONDS}s"})
+                                            headers={"Authorization": f"Bearer {self.host_token()}"}, json={"scope": SCOPES, "lifetime": f"{lifetime}s"})
             except httpx.HTTPError as exc:
                 raise DeliveryError(ErrorCode.GOOGLE_AUTH_FAILED, f"Google's IAM Credentials API did not answer: {type(exc).__name__}") from None
             if response.status_code != 401 or refreshed or not hasattr(self.host_token, "invalidate"):
@@ -78,7 +88,6 @@ class ServiceAccountTokens:
         token = response.json().get("accessToken")
         if not token:
             raise DeliveryError(ErrorCode.GOOGLE_AUTH_FAILED, "Google's IAM Credentials API returned no token")
-        self.cache[service_account] = (token, self.clock() + LIFETIME_SECONDS - 60)
         return token
 
 

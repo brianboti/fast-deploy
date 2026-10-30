@@ -4,7 +4,7 @@ import base64
 
 import httpx
 from build_fakes import FakeCloudBuild
-from delivery_fakes import DEV_SA, IMAGE, PROD_SA, Runner, cluster_response, infra_response, job_response, make_config, principal, release_dict, service_response
+from delivery_fakes import DEV_PULL_SA, DEV_SA, IMAGE, PROD_PULL_SA, PROD_SA, Runner, cluster_response, infra_response, job_response, make_config, principal, release_dict, service_response
 from kube_fakes import FakeKube
 from run_fakes import FakeRun, FakeRunJob
 
@@ -48,8 +48,8 @@ class FakeSession:
         if machine.name in self.fleet.unreachable:
             raise DeliveryError(ErrorCode.MACHINE_UNREACHABLE, f"Cannot reach {machine.name}: the SSH session failed", {"machine": machine.name})
 
-    def deploy(self, machine, release_id, release, env_text, token):
-        self._reach(machine, "deploy", release_id=release_id, image=release.image, env_text=env_text, token=token)
+    def deploy(self, machine, release_id, release, env_text, token, limits=None):
+        self._reach(machine, "deploy", release_id=release_id, image=release.image, env_text=env_text, token=token, limits=limits)
         fleet, name = self.fleet, machine.name
         if release.image in fleet.pull_fails:
             return HostReport("pull_failed", {"reason": "pull"})
@@ -132,13 +132,13 @@ class World:
         for image in (V1, V2, V3, IMAGE):
             self.built(image)
 
-    def built(self, image, infra_owner="shop-team", cloud_build_id=None, revision="a" * 40):
+    def built(self, image, infra_owner="shop-team", cloud_build_id=None, revision="a" * 40, build_id=None, dockerfile="Dockerfile", context="."):
         """Record image@digest as one a build of this service produced, as building.py does when Cloud Build reports success."""
         self.seeded = getattr(self, "seeded", 0) + 1
-        build_id = f"bld-{self.seeded:012x}"
+        build_id = build_id or f"bld-{self.seeded:012x}"
         tag = f"{image.split('@')[0]}:{build_id}"
         self.state.create_build(build_id, "dev", infra_owner, "shop-team", "shop-web", revision, tag, "WORKING", cloud_build_id or "cloud-" + build_id, None,
-                                {"environment": "dev", "source": "shop-web", "revision": revision, "image": "web"})
+                                {"environment": "dev", "source": "shop-web", "revision": revision, "image": "web", "dockerfile": dockerfile, "context": context})
         self.state.update_build(build_id, ("WORKING",), "SUCCEEDED", built=image)
         return build_id
 
@@ -157,7 +157,7 @@ class World:
 
     def token(self, service_account):
         self.tokens.append(service_account)
-        return {DEV_SA: "dev-token", PROD_SA: "prod-token"}[service_account]
+        return {DEV_SA: "dev-token", PROD_SA: "prod-token", DEV_PULL_SA: "dev-pull-token", PROD_PULL_SA: "prod-pull-token"}[service_account]
 
     def release(self, image=V1, environment="dev", **overrides):
         return ReleaseRequest.model_validate(release_dict(environment=environment, image=image, **overrides))

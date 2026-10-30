@@ -44,9 +44,21 @@ def test_machines_of_a_group_run_as_the_identity_it_names(tmp_path):
 def test_pods_in_the_requests_namespace_act_as_it_with_no_key(tmp_path):
     _, fake, _, response = provision(tmp_path, {"identity": {"name": "app"}, "cluster": {"node_count": 1}})
     [identity] = response.resources.identity
-    assert identity.kubernetes_service_account == "shop/app"
-    assert fake.members(("account", identity.email), WORKLOAD_USER) == [f"serviceAccount:{PROJECT}.svc.id.goog[shop/app]"]
+    namespace = f"shop-{response.request_id[:6]}"
+    assert identity.kubernetes_service_account == f"{namespace}/app" and response.resources.cluster[0].namespace == namespace
+    assert fake.members(("account", identity.email), WORKLOAD_USER) == [f"serviceAccount:{PROJECT}.svc.id.goog[{namespace}/app]"]
     assert "iam.gke.io/gcp-service-account=" in response.resources.identity[0].connect.commands["kubernetes"]
+
+
+def test_two_requests_of_one_name_never_share_a_bound_principal(tmp_path):
+    """A Workload Identity principal is project-wide: the same namespace/name pair in any cluster of the project is the same
+    identity. So the namespace carries the request's id, and a second request of the same name, by anyone, binds another."""
+    orchestrator, fake, who, first = provision(tmp_path, {"identity": {"name": "app"}, "cluster": {"node_count": 1}})
+    other = InfrastructureRequest.model_validate({"region": "us-central1", "name": "shop", "zone": "us-central1-b", "identity": {"name": "app"}, "cluster": {"name": "two", "node_count": 1}})
+    second = orchestrator.provision(other, who, wait_seconds=45)
+    assert second.error is None, second.error
+    principals = {fake.members(("account", response.resources.identity[0].email), WORKLOAD_USER)[0] for response in (first, second)}
+    assert len(principals) == 2 and first.resources.cluster[0].namespace != second.resources.cluster[0].namespace
 
 
 def test_without_a_cluster_no_kubernetes_account_may_act_as_it(tmp_path):

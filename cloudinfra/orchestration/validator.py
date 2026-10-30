@@ -3,6 +3,7 @@ and the rules that tie the blocks of one request together. Returns problems; the
 from ..models.errors import ErrorCode, InfrastructureError
 from ..models.request import InfrastructureRequest
 from ..providers.base import CloudProvider, Problem
+from ..security import validation
 
 
 def validate(request: InfrastructureRequest, config, provider: CloudProvider) -> list[Problem]:
@@ -25,6 +26,11 @@ def validate(request: InfrastructureRequest, config, provider: CloudProvider) ->
     if request.lifetime and config.sweep_interval_seconds == 0:
         problems.append(Problem(ErrorCode.INVALID_REQUEST, "This service applies no lifetimes: the operator turned its sweeper off (sweep_interval_seconds: 0)",
                                 "lifetime"))
+    if request.network is not None and request.network.public_access:
+        try:
+            validation.check_public_rule(request.network.allowed_ports, request.network.allowed_sources, config.closed_public_ports)
+        except InfrastructureError as exc:
+            problems.append(Problem(exc.code, exc.message, "network.allowed_ports"))
     for group in groups:
         where = f"compute[{group.group_name}]" if len(groups) > 1 else "compute"
         if (group.autostop or group.max_run_hours) and "compute" not in provider.stoppable_kinds:

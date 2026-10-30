@@ -102,7 +102,7 @@ def test_the_build_is_one_docker_step_pushed_by_cloud_build_as_the_build_account
     tag = f"{TEAM_REGISTRY}/web:bld-0123456789ab"
     assert body == {
         "source": {"connectedRepository": {"repository": SOURCE_REPOSITORY, "revision": COMMIT}},
-        "steps": [{"name": BuildSettings.model_fields["builder"].default, "args": ["build", "--build-arg", "TARGETARCH=amd64", "-t", tag, "-f", "web/Dockerfile", "web"]}],
+        "steps": [{"name": BuildSettings.model_fields["builder"].default, "args": ["build", "--build-arg", "TARGETARCH=amd64", "-t", tag, "-f", "web/Dockerfile", "./web"]}],
         "images": [tag],
         "serviceAccount": f"projects/infra-project/serviceAccounts/{DEV_BUILD_SA}",
         "options": {"logging": "CLOUD_LOGGING_ONLY", "requestedVerifyOption": "VERIFIED", "machineType": "E2_STANDARD_2"},
@@ -355,3 +355,55 @@ def test_the_service_status_names_each_environments_build_account():
     status = world.delivery.service_status("x")
     assert status["environments"]["dev"]["build"] == {"service_account": DEV_BUILD_SA, "machine_type": "E2_STANDARD_2"} and status["building"] == 0
     assert V1 in {record["built"] for record in world.state.list_builds("shop-team", limit=200)}
+
+
+# ---- the review of 2026-10-30: a context is a directory of the source, never a git address; builds are budgeted
+@pytest.mark.parametrize("field,value", [("context", "github.com/evil/repo"), ("context", "GitHub.com/evil/repo"), ("context", "https://github.com/evil/repo.git"),
+                                         ("context", "evil/repo.git"), ("dockerfile", "github.com/evil/repo/Dockerfile"), ("context", "git@github.com/x/y")])
+def test_a_path_docker_would_read_as_a_git_address_is_refused(field, value):
+    problems = refused(build_dict(**{field: value}))
+    assert problems[0].code == ErrorCode.INVALID_BUILD and ("git address" in problems[0].message or "leading -" in problems[0].message)
+
+
+@pytest.mark.parametrize("context,arg", [(".", "."), ("web", "./web"), ("services/web", "./services/web"), ("a.b/c", "./a.b/c")])
+def test_the_context_is_anchored_so_docker_never_takes_it_for_a_remote(context, arg):
+    assert cloudbuild.args("t", "Dockerfile", context)[-1] == arg
+    assert cloudbuild.anchored(context) == arg
+
+
+def test_a_team_has_at_most_so_many_builds_at_once_in_an_environment():
+    # Cloud Build does not answer, so each follower gives up with its build still QUEUED: as many builds in flight as asked
+    world = World(cloud_build=FakeCloudBuild(fail_get=1000))
+    limit = world.config.environments["dev"].build.max_concurrent_builds
+    for _ in range(limit):
+        assert world.delivery.build(request(), world.team).status == "QUEUED"
+    with pytest.raises(DeliveryError) as caught:
+        world.delivery.build(request(), world.team)
+    assert caught.value.code == ErrorCode.BUILD_LIMIT_EXCEEDED and caught.value.details["moving"] == limit and len(world.cloud_build.created) == limit
+    assert world.delivery.build(request(environment="prod"), world.team).status == "QUEUED", "another environment has its own budget"
+
+
+def test_a_team_has_at_most_so_many_builds_a_day_in_an_environment():
+    data = config_dict()
+    world = World()  # seeds four finished builds of the team in dev, which count against the day
+    seeded = world.state.count_builds("shop-team", "dev")
+    data["environments"]["dev"]["build"]["max_builds_per_day"] = seeded + 2
+    data["environments"]["dev"]["build"]["max_concurrent_builds"] = 30
+    world.delivery.config = world.delivery.builder.config = Config.model_validate(data)
+    world.delivery.build(request(), world.team)
+    world.delivery.build(request(), world.team)
+    with pytest.raises(DeliveryError) as caught:
+        world.delivery.build(request(), world.team)
+    assert caught.value.code == ErrorCode.BUILD_LIMIT_EXCEEDED and caught.value.details["today"] == seeded + 2
+    assert world.delivery.build(request(environment="prod"), world.team).status == "SUCCEEDED", "another environment has its own budget"
+
+
+def test_the_budget_is_the_teams_not_the_principals():
+    world = World(cloud_build=FakeCloudBuild(fail_get=1000))
+    limit = world.config.environments["dev"].build.max_concurrent_builds
+    for _ in range(limit):
+        world.delivery.build(request(), world.team)
+    other = world.team.model_copy(update={"name": "shop-ci"})
+    with pytest.raises(DeliveryError) as caught:
+        world.delivery.build(request(), other)
+    assert caught.value.code == ErrorCode.BUILD_LIMIT_EXCEEDED

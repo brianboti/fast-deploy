@@ -198,7 +198,7 @@ CATALOG: tuple[ToolSpec, ...] = (
     ToolSpec("configure_firewall", "Network", "Add a firewall rule", "Add one ingress rule (TCP ports from source ranges) to a network this service created.",
              (Input("network_id", "The network (net-…).", True), Input("ports", "TCP ports to open.", True), Input("sources", "IPv4 ranges allowed in.", True)), RESOURCE,
              ("INVALID_NETWORK_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", "PERMISSION_DENIED", "PROVIDER_ERROR", "PROVIDER_UNAVAILABLE", "OPERATION_TIMEOUT"),
-             "Needs can_provision. Ingress only; ports and ranges are validated.", "Compute Engine: compute.firewalls.insert."),
+             "Needs can_provision. Ingress only; ports and ranges are validated; 22 and 3389 (closed_public_ports) are never opened from a public range.", "Compute Engine: compute.firewalls.insert."),
     ToolSpec("delete_network", "Network", "Delete a network", "Delete a network's firewall rules, service peering, subnet and the network itself, once nothing of its request runs in it.",
              (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS, "Needs can_destroy. Refused while machines or a database of the same request remain.",
              "Compute Engine: compute.firewalls.delete, compute.subnetworks.delete, compute.networks.delete; Service Networking: deleteConnection; compute.addresses.delete."),

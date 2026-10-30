@@ -44,8 +44,9 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/* /tmp/gcloud.tar.gz; \
     gcloud version; cosign version
 WORKDIR /app
-COPY requirements.lock .
-RUN pip install --no-cache-dir --require-hashes -r requirements.lock
+COPY requirements.lock pip.lock ./
+# The base image's pip is older than the 2026 advisories fixed in 26.x; the locked one goes first, by hash, then the packages
+RUN pip install --no-cache-dir --require-hashes -r pip.lock && pip install --no-cache-dir --require-hashes -r requirements.lock
 COPY appdelivery ./appdelivery
 # OpenSSH refuses to run for a uid without a passwd entry ("No user exists for uid"), so the user is named
 RUN useradd --system --uid 65532 --user-group --home-dir /data --no-create-home --shell /usr/sbin/nologin appdelivery && mkdir /data && chown 65532:65532 /data
@@ -55,6 +56,7 @@ USER 65532:65532
 # environment's service account. The configuration is mounted at /config.
 ENV HOME=/data CLOUDSDK_CONFIG=/data/gcloud APPDELIVERY_CONFIG=/config/appdelivery.yaml
 EXPOSE 8200
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8200/healthz', timeout=3).status == 200 else 1)"]
 # Behind a reverse proxy set FORWARDED_ALLOW_IPS to the proxy's address (uvicorn reads it), or every caller looks like
 # the proxy and the per-address limits collapse into one.
 CMD ["uvicorn", "appdelivery.server:create_app", "--factory", "--host", "0.0.0.0", "--port", "8200"]

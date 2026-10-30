@@ -7,6 +7,7 @@ without a migration. One service process works on a state file at a time, which 
 import contextlib
 import datetime
 import json
+import os
 import sqlite3
 import uuid
 
@@ -97,6 +98,12 @@ class ProcessLock:
             self._file = None
 
 
+def private(path: str) -> None:
+    """The state file readable by the service's user only: it holds the inventory, every caller's address and token hashes."""
+    if path != ":memory:" and os.path.isfile(path):
+        os.chmod(path, 0o600)
+
+
 class StateManager:
     def __init__(self, path: str):
         self.path = path
@@ -106,6 +113,7 @@ class StateManager:
             self.migrate(db)
             db.execute("CREATE INDEX IF NOT EXISTS requests_expires ON requests (expires_at)")
             db.execute("PRAGMA journal_mode=WAL")
+        private(path)
 
     @staticmethod
     def migrate(db) -> None:
