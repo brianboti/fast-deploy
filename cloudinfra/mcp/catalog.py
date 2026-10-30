@@ -291,6 +291,24 @@ CATALOG: tuple[ToolSpec, ...] = (
              READ_ERRORS, "Read-only.", "Cloud Run: run.services.get."),
     ToolSpec("delete_service", "Service", "Delete a service", "Delete the service, every revision and its runtime account.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
              "Needs can_destroy.", "Cloud Run: run.services.delete; IAM: serviceAccounts.delete."),
+    # ---- warehouse and nosql
+    ToolSpec("create_warehouse", "Warehouse", "Create an analytics dataset", "Create an empty analytics dataset (BigQuery) in the region; its tables are the "
+             "Application Layer's. use grants editing its data, admin owning it.",
+             (REGION, PROVIDER, Input("table_expiration_days", "New tables are deleted this many days after they are made; kept when omitted."), NAME, LABELS, WAIT),
+             RESPONSE, ("NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
+             f"Needs can_provision. Deleted only when empty, as a bucket is. {OWNERSHIP}", "BigQuery: datasets.insert, get, patch (access) and delete."),
+    ToolSpec("get_warehouse", "Warehouse", "Get an analytics dataset", "The dataset's id, location and table expiry.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only.",
+             "BigQuery: datasets.get."),
+    ToolSpec("delete_warehouse", "Warehouse", "Delete an analytics dataset", "Delete the dataset when it holds no table.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
+             "Needs can_destroy.", "BigQuery: datasets.delete."),
+    ToolSpec("create_nosql", "NoSQL", "Create a document database", "Create an empty document database (Firestore, native mode) in the region; its documents are "
+             "the Application Layer's.", (REGION, PROVIDER, NAME, LABELS, WAIT), RESPONSE, ("NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
+             f"Needs can_provision. Access is project-level for Firestore, the platform team's one-time grant with a condition on the database. {OWNERSHIP}",
+             "Firestore: databases.create and delete."),
+    ToolSpec("get_nosql", "NoSQL", "Get a document database", "The database's id and location.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only.",
+             "Firestore: databases.get."),
+    ToolSpec("delete_nosql", "NoSQL", "Delete a document database", "Delete the database and its documents.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
+             "Needs can_destroy.", "Firestore: databases.delete."),
     # ---- monitor
     ToolSpec("create_monitor", "Monitor", "Create monitoring", "Create uptime checks on public endpoints this service made, and an alert to email addresses "
              "when one fails. In a full request a check names the request's load balancer, a cluster's front door, or a public service.",
@@ -449,7 +467,8 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Read-only; no secret is included.", "None."),
 )
 BY_NAME = {spec.name: spec for spec in CATALOG}
-GROUPS = ("Identity", "Compute", "Storage", "Network", "Database", "Cache", "Queue", "Secret", "Cluster", "Service", "Job", "Load balancer", "DNS", "Monitor", "Infrastructure", "Operations")
+GROUPS = ("Identity", "Compute", "Storage", "Network", "Database", "Cache", "Queue", "Warehouse", "NoSQL", "Secret", "Cluster", "Service", "Job", "Load balancer", "DNS", "Monitor",
+    "Infrastructure", "Operations")
 
 
 def render_markdown(catalog=CATALOG) -> str:

@@ -1,3 +1,15 @@
+# Unreleased: an analytics dataset and a document database
+
+Fourth of the kinds the operator chose (docs/INFRASTRUCTURE-ARCHITECTURE.md, "An analytics dataset and a document
+database"):
+
+- **A fifteenth kind, `warehouse`.** An empty BigQuery dataset in the request's region, granted on the dataset itself
+  (`use` WRITER, `admin` OWNER), deleted only when empty, as a bucket is.
+- **A sixteenth kind, `nosql`.** An empty Firestore database in native mode, deleted with its documents; access is the
+  platform team's project-level grant with a condition on the database's name, named in the connect block.
+- **Tools**: `create_warehouse`, `get_warehouse`, `delete_warehouse`, `create_nosql`, `get_nosql`, `delete_nosql` (66
+  tools).
+
 # Unreleased: monitoring of the request's public endpoints
 
 Third of the kinds the operator chose (docs/INFRASTRUCTURE-ARCHITECTURE.md, "Monitoring"):

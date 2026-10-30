@@ -1,6 +1,6 @@
 # MCP service catalog
 
-Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 60 tools in 16 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, `cac-`, `que-`, `sec-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
+Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog --write`; a test keeps this file and the registered tools equal to the records. 66 tools in 18 groups. Every result is a JSON object with `status`; a failed one is `{"status": "FAILED", "error": {"code": "…", "message": "…", "details": {…}}}`. Identifiers: requests are 32 hex characters; resources are `cmp-`, `sto-`, `net-`, `db-`, `cac-`, `que-`, `sec-`, `clu-` or `lb-` plus 12 hex characters. Authentication: a bearer token of a configured principal; `can_provision` for tools that create or change, `can_destroy` for tools that delete, `scope: all` to see every caller's requests.
 
 ## At a glance
 
@@ -31,6 +31,12 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | Queue | `create_queue` | Create a queue | changes cloud |
 | Queue | `get_queue` | Get a queue | read only |
 | Queue | `delete_queue` | Delete a queue | destructive |
+| Warehouse | `create_warehouse` | Create an analytics dataset | changes cloud |
+| Warehouse | `get_warehouse` | Get an analytics dataset | read only |
+| Warehouse | `delete_warehouse` | Delete an analytics dataset | destructive |
+| NoSQL | `create_nosql` | Create a document database | changes cloud |
+| NoSQL | `get_nosql` | Get a document database | read only |
+| NoSQL | `delete_nosql` | Delete a document database | destructive |
 | Secret | `create_secret` | Create a secret | changes cloud |
 | Secret | `get_secret` | Get a secret | read only |
 | Secret | `delete_secret` | Delete a secret | destructive |
@@ -722,6 +728,147 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 **Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy.
 
 **Provider mapping (Google Cloud).** Pub/Sub: pubsub.projects.subscriptions.delete, pubsub.projects.topics.delete.
+
+## Warehouse
+
+### `create_warehouse`
+
+**Purpose.** Create an empty analytics dataset (BigQuery) in the region; its tables are the Application Layer's. use grants editing its data, admin owning it.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
+| `provider` | no | The cloud provider adapter; gcp (default) is the one implemented. |
+| `table_expiration_days` | no | New tables are deleted this many days after they are made; kept when omitted. |
+| `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
+| `labels` | no | Labels for every resource, next to the service's ownership labels. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `region`.
+**Optional fields.** `provider`, `table_expiration_days`, `name`, `labels`, `wait_seconds`.
+
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
+
+**Possible errors.** `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
+
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Deleted only when empty, as a bucket is. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+
+**Provider mapping (Google Cloud).** BigQuery: datasets.insert, get, patch (access) and delete.
+
+### `get_warehouse`
+
+**Purpose.** The dataset's id, location and table expiry.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** none.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`.
+
+**Security.** Read-only; creates and changes nothing. Read-only.
+
+**Provider mapping (Google Cloud).** BigQuery: datasets.get.
+
+### `delete_warehouse`
+
+**Purpose.** Delete the dataset when it holds no table.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** `wait_seconds`.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `DESTROY_FAILED`.
+
+**Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy.
+
+**Provider mapping (Google Cloud).** BigQuery: datasets.delete.
+
+## NoSQL
+
+### `create_nosql`
+
+**Purpose.** Create an empty document database (Firestore, native mode) in the region; its documents are the Application Layer's.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
+| `provider` | no | The cloud provider adapter; gcp (default) is the one implemented. |
+| `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
+| `labels` | no | Labels for every resource, next to the service's ownership labels. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `region`.
+**Optional fields.** `provider`, `name`, `labels`, `wait_seconds`.
+
+**Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
+
+**Possible errors.** `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
+
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Access is project-level for Firestore, the platform team's one-time grant with a condition on the database. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+
+**Provider mapping (Google Cloud).** Firestore: databases.create and delete.
+
+### `get_nosql`
+
+**Purpose.** The database's id and location.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** none.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`.
+
+**Security.** Read-only; creates and changes nothing. Read-only.
+
+**Provider mapping (Google Cloud).** Firestore: databases.get.
+
+### `delete_nosql`
+
+**Purpose.** Delete the database and its documents.
+
+**Inputs.**
+
+| Field | Required | Description |
+|---|---|---|
+| `resource_id` | yes | The resource id this service issued. |
+| `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
+
+**Required fields.** `resource_id`.
+**Optional fields.** `wait_seconds`.
+
+**Output.** ResourceResponse: status, request_id, the resource as the provider sees it now, and the running operation when there is one.
+
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `DESTROY_FAILED`.
+
+**Security.** Deletes cloud resources; needs can_destroy. Needs can_destroy.
+
+**Provider mapping (Google Cloud).** Firestore: databases.delete.
 
 ## Secret
 

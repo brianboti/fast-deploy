@@ -2,8 +2,8 @@
 
 Every field is a size, a count, a name, a version or a switch. There is no repository, image, command, script, key or
 provider-specific structure, so a request can describe "one Ubuntu machine with 4 CPUs and 16 GB" and nothing about any
-application. Strict models: no unknown field, no type coercion. Fourteen kinds: identity, network, storage, compute (one
-group or several), database, cache, queue, secret, cluster, service, job, load_balancer, dns and monitor.
+application. Strict models: no unknown field, no type coercion. Sixteen kinds: identity, network, storage, compute (one
+group or several), database, cache, queue, warehouse, nosql, secret, cluster, service, job, load_balancer, dns and monitor.
 """
 import re
 from typing import Literal
@@ -27,13 +27,14 @@ RESERVED_SECRETS = {"db-password": "database", "cache-auth": "cache"}  # secrets
 LoadBalancerType = Literal["http", "tcp"]
 GROUP = r"^[a-z](?:[a-z0-9-]{0,10}[a-z0-9])?$"  # a group's, queue's or secret's short name: up to 12 characters, part of resource names
 # The kinds, in the order they are created; destruction is the reverse. Every top-level block of a request is one of these.
-RESOURCE_KINDS = ("identity", "network", "storage", "compute", "database", "cache", "queue", "secret", "cluster", "service", "job", "load_balancer", "dns", "monitor")
+RESOURCE_KINDS = ("identity", "network", "storage", "compute", "database", "cache", "queue", "warehouse", "nosql", "secret", "cluster", "service", "job", "load_balancer", "dns", "monitor")
 MAX_QUEUES = 8
 MAX_SECRETS = 16
 MAX_CLUSTERS = 4
 MAX_SERVICES = 8
 MAX_JOBS = 8
 MAX_IDENTITIES = 8
+MAX_DATASETS = 8
 MAX_RECORDS = 50
 RECORD_NAME = re.compile(r"^(@|\*|(?:\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*)$")
 IPV4 = re.compile(r"^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$")
@@ -187,6 +188,28 @@ class QueueRequest(StrictModel):
     retention_hours: int = Field(default=168, ge=1, le=744, description="How long the subscription keeps unacknowledged messages (default 7 days).")
     subscription: bool = Field(default=True, description="Create one pull subscription of the same name.")
     ack_deadline_seconds: int = Field(default=20, ge=10, le=600)
+
+
+class WarehouseRequest(StrictModel):
+    """An analytics dataset (a data warehouse's unit of storage and access): its tables are the Application Layer's."""
+    name: str | None = Field(default=None, pattern=GROUP, description="The dataset's name, part of its provider name (<request>_<name>); warehouse when "
+                                                                      "omitted. Required and unique when a request has several.")
+    table_expiration_days: int | None = Field(default=None, ge=1, le=3650, description="New tables are deleted this many days after they are made; kept when "
+                                                                                       "omitted.")
+
+    @property
+    def warehouse_name(self) -> str:
+        return self.name or "warehouse"
+
+
+class NoSqlRequest(StrictModel):
+    """A managed document database (NoSQL): collections of documents, made empty; the documents are the Application Layer's."""
+    name: str | None = Field(default=None, pattern=GROUP, description="The database's name, part of its provider name (<request>-<name>); documents when omitted. "
+                                                                      "Required and unique when a request has several.")
+
+    @property
+    def nosql_name(self) -> str:
+        return self.name or "documents"
 
 
 class SecretRequest(StrictModel):
@@ -480,6 +503,8 @@ class InfrastructureRequest(StrictModel):
     cache: CacheRequest | None = None
     queue: QueueRequest | list[QueueRequest] | None = Field(default=None, description="One topic, or a list of them.")
     secret: SecretRequest | list[SecretRequest] | None = Field(default=None, description="One secret container, or a list of them.")
+    warehouse: WarehouseRequest | list[WarehouseRequest] | None = Field(default=None, description="One analytics dataset, or a list of them.")
+    nosql: NoSqlRequest | list[NoSqlRequest] | None = Field(default=None, description="One document database, or a list of them.")
     cluster: ClusterRequest | list[ClusterRequest] | None = Field(default=None, description="One cluster, or a list of them.")
     identity: IdentityRequest | list[IdentityRequest] | None = Field(default=None, description="One workload identity, or a list of them.")
     service: ServiceRequest | list[ServiceRequest] | None = Field(default=None, description="One managed container service, or a list of them.")
@@ -515,7 +540,7 @@ class InfrastructureRequest(StrictModel):
 
     @model_validator(mode="after")
     def _consistent(self):
-        for kind in ("compute", "queue", "secret", "cluster", "service", "job", "identity"):
+        for kind in ("compute", "queue", "secret", "cluster", "service", "job", "identity", "warehouse", "nosql"):
             if getattr(self, kind) == []:
                 raise ValueError(f"{kind}: a list cannot be empty")
         if not any(getattr(self, kind) for kind in RESOURCE_KINDS):
@@ -535,7 +560,8 @@ class InfrastructureRequest(StrictModel):
             if len(set(names)) != len(names):
                 raise ValueError("compute: group names must be unique")
         for kind, items, limit in (("cluster", self.clusters(), MAX_CLUSTERS), ("service", self.services(), MAX_SERVICES), ("job", self.jobs(), MAX_JOBS),
-                                   ("identity", self.identities(), MAX_IDENTITIES)):
+                                   ("identity", self.identities(), MAX_IDENTITIES), ("warehouse", self.warehouses(), MAX_DATASETS),
+                                   ("nosql", self.nosqls(), MAX_DATASETS)):
             if len(items) > limit:
                 raise ValueError(f"{kind}: at most {limit} per request")
             if len(items) > 1:
@@ -604,6 +630,12 @@ class InfrastructureRequest(StrictModel):
 
     def services(self) -> list[ServiceRequest]:
         return [] if self.service is None else (self.service if isinstance(self.service, list) else [self.service])
+
+    def warehouses(self) -> list[WarehouseRequest]:
+        return [] if self.warehouse is None else (self.warehouse if isinstance(self.warehouse, list) else [self.warehouse])
+
+    def nosqls(self) -> list[NoSqlRequest]:
+        return [] if self.nosql is None else (self.nosql if isinstance(self.nosql, list) else [self.nosql])
 
     def identities(self) -> list[IdentityRequest]:
         return [] if self.identity is None else (self.identity if isinstance(self.identity, list) else [self.identity])

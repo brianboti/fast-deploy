@@ -64,6 +64,8 @@ class FakeGcpApi(GcpApi):
         self.run_jobs: dict[str, dict] = {}  # Cloud Run jobs by name
         self.zones: dict[str, dict] = {}  # Cloud DNS managed zones by name, each with its rrsets
         self.monitoring: dict[str, dict] = {}  # Cloud Monitoring channels, uptime checks and alert policies by full name
+        self.datasets: dict[str, dict] = {}  # BigQuery datasets by id, with "tables" a test may set
+        self.firestore: dict[str, dict] = {}  # Firestore databases by id
         self.schedules: dict[str, dict] = {}  # Cloud Scheduler jobs by full name
         self.repositories = {"us-central1-docker.pkg.dev/test-project/apps", "us-central1-docker.pkg.dev/test-project/shared"}
         self.account_unknown_to_gke_for = 0  # how many more cluster creates GKE refuses because it does not know the new node account yet
@@ -101,6 +103,10 @@ class FakeGcpApi(GcpApi):
             (r"^/v1/projects/[^/]+/serviceAccounts/([^/]+)$", self._service_account) if host.startswith("iam") else (r"^$", None),
             (r"^/v2/projects/[^/]+/locations/([^/]+)/services$", self._run_services_collection) if host.startswith("run") else (r"^$", None),
             (r"^/dns/v1/projects/[^/]+/managedZones$", self._zones_collection) if host.startswith("dns") else (r"^$", None),
+            (r"^/bigquery/v2/projects/[^/]+/datasets$", self._datasets) if host.startswith("bigquery") else (r"^$", None),
+            (r"^/bigquery/v2/projects/[^/]+/datasets/([^/]+)$", self._dataset) if host.startswith("bigquery") else (r"^$", None),
+            (r"^/v1/projects/[^/]+/databases$", self._firestore_collection) if host.startswith("firestore") else (r"^$", None),
+            (r"^/v1/projects/[^/]+/databases/([^/]+)$", self._firestore_item) if host.startswith("firestore") else (r"^$", None),
             (r"^/v3/projects/[^/]+/(notificationChannels|uptimeCheckConfigs|alertPolicies)$", self._monitoring_collection) if host.startswith("monitoring") else (r"^$", None),
             (r"^/v3/(projects/[^/]+/(?:notificationChannels|uptimeCheckConfigs|alertPolicies)/[^/]+)$", self._monitoring_item) if host.startswith("monitoring") else (r"^$", None),
             (r"^/dns/v1/projects/[^/]+/managedZones/([^/:]+):(getIamPolicy|setIamPolicy)$", self._zone_policy) if host.startswith("dns") else (r"^$", None),
@@ -305,6 +311,43 @@ class FakeGcpApi(GcpApi):
         if method == "DELETE":
             return self.schedules.pop(found.group(1)) and {}
         return self.schedules[found.group(1)]
+
+    # ---- BigQuery and Firestore
+    def _datasets(self, found, method, body, params):
+        dataset = body["datasetReference"]["datasetId"]
+        assert all(char.isalnum() or char == "_" for char in dataset), "a dataset id holds letters, digits and underscores"
+        if dataset in self.datasets:
+            raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, "Google Cloud refused the request: Already Exists", {"http_status": 409})
+        self.datasets[dataset] = {**body, "tables": 0, "access": [{"role": "OWNER", "userByEmail": "cloudinfra@test-project.iam.gserviceaccount.com"}]}
+        return self.datasets[dataset]
+
+    def _dataset(self, found, method, body, params):
+        dataset = found.group(1)
+        if dataset not in self.datasets:
+            raise self._not_found(dataset)
+        if method == "DELETE":
+            if self.datasets[dataset]["tables"]:
+                raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"Google Cloud refused the request: Dataset {dataset} is still in use", {"http_status": 400})
+            del self.datasets[dataset]
+            return {}
+        if method == "PATCH":
+            self.datasets[dataset].update(copy.deepcopy(body))
+        return copy.deepcopy(self.datasets[dataset])
+
+    def _firestore_collection(self, found, method, body, params):
+        database = params["databaseId"]
+        assert 4 <= len(database) <= 63 and body["type"] == "FIRESTORE_NATIVE", "a native-mode database with an id of 4 to 63 characters"
+        self.firestore[database] = dict(body)
+        return {"name": f"projects/{self.project}/databases/{database}/operations/create", "done": True}
+
+    def _firestore_item(self, found, method, body, params):
+        database = found.group(1)
+        if database not in self.firestore:
+            raise self._not_found(database)
+        if method == "DELETE":
+            del self.firestore[database]
+            return {"name": f"projects/{self.project}/databases/{database}/operations/delete", "done": True}
+        return self.firestore[database]
 
     # ---- Cloud Monitoring
     def _monitoring_collection(self, found, method, body, params):

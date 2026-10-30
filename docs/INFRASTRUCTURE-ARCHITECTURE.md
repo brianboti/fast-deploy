@@ -223,6 +223,24 @@ The service's own identity then needs, once, from the platform team:
 | give a node account its project role | `roles/resourcemanager.projectIamAdmin` | an IAM condition, so it can grant that one role and no other: `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])` ([limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)) |
 | let a node account read a repository | `roles/artifactregistry.admin` | each repository listed in `providers.gcp.registries`, granted on the repository |
 
+### An analytics dataset and a document database
+
+`warehouse: {name, table_expiration_days}` makes an empty BigQuery dataset `<request>_<name>` in the request's region,
+labelled as everything else is; its tables are the Application Layer's. Access is granted on the dataset itself, through
+its access list (`use` is WRITER, the `bigquery.dataEditor` role; `admin` is OWNER, `bigquery.dataOwner`), and a revoke
+touches only that member's entry. Running queries also needs `bigquery.jobs.create` on a project, which the connect
+block names as the platform team's one-time grant. Like a bucket, a dataset is deleted only when empty: destroy fails,
+saying so, while it still holds tables.
+
+`nosql: {name}` makes an empty Firestore database `<request>-<name>` in native mode in the request's region; destroy
+deletes it with its documents, as a SQL database's are. Firestore has no policy per database, so this service grants
+nothing on it: the connect block names the project-level `roles/datastore.user` grant, limited by an IAM condition on
+the database's name ([Firestore IAM](https://docs.cloud.google.com/firestore/docs/security/iam)).
+
+Both are priced by use. Up to eight of each per request. The service's identity needs `roles/bigquery.dataEditor` and
+`roles/datastore.owner` on the project. Ranked by the coverage research of 2026-10-30: 71 percent of organizations use a
+cloud data warehouse and 52 percent a NoSQL database (Flexera 2026).
+
 ### Monitoring
 
 `monitor: {notify, uptime}` makes, in Cloud Monitoring, an email notification channel per address, an uptime check per
@@ -435,7 +453,7 @@ python -m pytest tests/cloudinfra -q                # the boundary tests, no clo
 CLOUDINFRA_INTEGRATION=1 CLOUDINFRA_PROJECT=my-project python -m pytest tests/integration/cloudinfra -q   # one real machine, then destroyed
 ```
 
-The catalog has 60 tools: create, get and delete for each of the fourteen kinds (plus list, resize, attach and firewall
+The catalog has 66 tools: create, get and delete for each of the sixteen kinds (plus list, resize, attach and firewall
 configuration where they apply), the lifecycle tools (stop, start, extend and keep awake among them), access, and the
 operations tools. The MCP endpoint is `/mcp`; the REST endpoints are `POST /infrastructure/validate`,
 `POST /infrastructure/plan`, `POST /infrastructure`, `GET /infrastructure` (with `status` and `expiring_within_hours`),

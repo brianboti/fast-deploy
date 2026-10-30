@@ -92,6 +92,15 @@ def info(resource, resources: list, project: str, drivers: bool = False) -> Conn
             return ConnectInfo(commands={"call": f"curl {url}"}, notes=["Callable without signing in: the operator allowed it and the request asked for it"])
         return ConnectInfo(commands={"call": f'curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" {url}'},
                            notes=[f"Ingress {resource.ingress}; a caller needs the invoker role, which use grants"] + ([] if resource.access else [NOT_GRANTED]))
+    if kind == "warehouse":
+        return ConnectInfo(commands={"tables": f"bq ls {project}:{resource.dataset}", "query": f"bq query --use_legacy_sql=false --project_id {project} 'SELECT 1'"},
+                           prerequisites=["Running queries needs bigquery.jobs.create on a project (roles/bigquery.jobUser), which the platform team grants once"],
+                           notes=[] if resource.access else [NOT_GRANTED])
+    if kind == "nosql":
+        return ConnectInfo(commands={"describe": f"gcloud firestore databases describe --database={resource.database} --project {project}"},
+                           prerequisites=["Firestore has no policy per database: the platform team grants roles/datastore.user on the project once, with an IAM "
+                                          f'condition resource.name == "projects/{project}/databases/{resource.database}"'],
+                           notes=[f"Clients name the database {resource.database}, not (default)"])
     if kind == "monitor":
         return ConnectInfo(commands={"policies": f"gcloud monitoring policies list --project {project} --filter='user_labels.cloudinfra-request={resource.request_id}'"},
                            notes=[f"Checks {item['url']} every {item['period_seconds']} seconds" for item in resource.checks]
