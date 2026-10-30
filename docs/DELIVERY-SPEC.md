@@ -388,6 +388,11 @@ are in [DELIVERY-CATALOG.md](DELIVERY-CATALOG.md), generated from `appdelivery/c
 registered tools and the document to the records. The MCP endpoint answers only the Host headers in `allowed_hosts`
 (DNS rebinding protection) and refuses any argument a tool does not take, naming the one most likely meant.
 
+Claude chat signs in with OAuth only, so the service can be its own small authorization server: with a `sign_in` block
+(`url`, the service's public HTTPS address), a person pastes their principal's token on the service's own page and
+Claude acts as that principal (`appdelivery/oauth.py`, the same shape as `cloudinfra`'s; see "Connect Claude chat" in
+[INFRASTRUCTURE-ARCHITECTURE.md](INFRASTRUCTURE-ARCHITECTURE.md)). Off by default; static tokens keep working.
+
 ## 7. State
 
 One SQLite file, its own, never `cloudinfra`'s, in WAL mode, written by one process (a lock file next to it):

@@ -11,6 +11,8 @@ allowed_hosts:
 # auth_failures_per_minute: 20                    # failed sign-ins per client address
 # workers: 4                                      # provisioning and destruction run in this many background workers
 # cleanup_on_failure: true                        # delete what a failed request created; false keeps it for inspection and says so
+# sign_in:                                       # sign-in for Claude chat (docs/INFRASTRUCTURE-ARCHITECTURE.md, "Connect Claude chat")
+#   url: https://infra.example.com                # the public HTTPS address; add its host to allowed_hosts
 # sweep_interval_seconds: 300                     # how often expiry and idle stop are checked; 0 turns the sweeper off, and with it lifetimes and idle stop
 # return_database_password: false                 # true also returns a generated database password once; it always goes to a secret
 labels:                                           # the operator's labels on every resource the service creates

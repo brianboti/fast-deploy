@@ -5,6 +5,7 @@ Credentials are not in this file either: the Google adapter takes a token from t
 """
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -74,6 +75,39 @@ class AccessSettings(StrictModel):
     max_members: int = Field(default=10, ge=0, le=50, description="At most this many members per request, the requester included.")
 
 
+CLAUDE_CALLBACKS = ("https://claude.ai/api/mcp/auth_callback", "https://claude.com/api/mcp/auth_callback")
+
+
+class SignInSettings(StrictModel):
+    """Sign-in for Claude's hosted connector (security/oauth.py), which cannot send a fixed token: a person signs in once
+    on the service's own page with their principal's token. Off unless this block is set."""
+    url: str = Field(description="The service's public HTTPS address as Claude reaches it, such as https://infra.example.com; the connector's URL is this plus /mcp.")
+    callbacks: list[str] = Field(default_factory=lambda: list(CLAUDE_CALLBACKS), min_length=1, description="The only addresses a sign-in may return to; Claude's by default.")
+    access_token_minutes: int = Field(default=60, ge=5, le=1440)
+    refresh_token_days: int = Field(default=30, ge=1, le=90)
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, value):
+        parsed = urlparse(value)
+        local = parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1")
+        if not (parsed.scheme == "https" or local) or not parsed.hostname or parsed.path.strip("/") or parsed.query or parsed.fragment:
+            raise ValueError("sign_in.url must be the service's https address with no path, such as https://infra.example.com")
+        return value.rstrip("/")
+
+    @field_validator("callbacks")
+    @classmethod
+    def _callbacks(cls, value):
+        if any(urlparse(uri).scheme != "https" for uri in value):
+            raise ValueError("sign_in.callbacks must be https addresses")
+        return value
+
+
+def host_allowed(host: str, allowed_hosts: list[str]) -> bool:
+    """The MCP SDK's own Host header rule: an exact entry, or HOST:* for the host with any port."""
+    return host in allowed_hosts or any(entry.endswith(":*") and host.startswith(entry[:-2] + ":") for entry in allowed_hosts)
+
+
 class Providers(StrictModel):
     """One optional settings block per adapter; a provider the operator leaves out is refused with UNSUPPORTED_PROVIDER."""
     gcp: GcpSettings | None = None
@@ -94,6 +128,7 @@ class Config(StrictModel):
                                                                                  "it every lifetime and idle stop, which requests then may not ask for.")
     return_database_password: bool = Field(default=False, description="Also return a generated database password once in the creating response; "
                                                                        "it is always written to a secret the request owns.")
+    sign_in: SignInSettings | None = None
     providers: Providers
     principals: list[Principal]
 
@@ -107,6 +142,8 @@ class Config(StrictModel):
         timed = [name for name in ("default_lifetime_hours", "max_lifetime_hours", "default_autostop_idle_minutes") if getattr(self.limits, name)]
         if timed and self.sweep_interval_seconds == 0:
             raise ValueError(f"limits.{timed[0]} needs the sweeper, which sweep_interval_seconds: 0 turns off")
+        if self.sign_in and not host_allowed(urlparse(self.sign_in.url).netloc, self.allowed_hosts):
+            raise ValueError(f"sign_in.url's host {urlparse(self.sign_in.url).netloc} must be in allowed_hosts, or Claude's calls to /mcp are refused")
         return self
 
     def configured_providers(self) -> list[str]:
