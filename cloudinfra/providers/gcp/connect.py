@@ -92,6 +92,10 @@ def info(resource, resources: list, project: str, drivers: bool = False) -> Conn
             return ConnectInfo(commands={"call": f"curl {url}"}, notes=["Callable without signing in: the operator allowed it and the request asked for it"])
         return ConnectInfo(commands={"call": f'curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" {url}'},
                            notes=[f"Ingress {resource.ingress}; a caller needs the invoker role, which use grants"] + ([] if resource.access else [NOT_GRANTED]))
+    if kind == "dns":
+        servers = ", ".join(resource.name_servers) or "its name servers"
+        return ConnectInfo(commands={"check": f"dig +short NS {resource.dns_name}", "records": f"gcloud dns record-sets list --zone {resource.name} --project {project}"},
+                           notes=[f"Point {resource.dns_name} at {servers} at the domain's registrar, once"] + ([] if resource.access else [NOT_GRANTED]))
     if kind == "identity":
         notes = [f"Holds the request's grants at {resource.level}; it has no key, and none is ever made"]
         commands = {}

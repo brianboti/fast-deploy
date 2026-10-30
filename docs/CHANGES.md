@@ -1,3 +1,14 @@
+# Unreleased: a public DNS zone
+
+Second of the kinds the coverage research ranks highest (docs/INFRASTRUCTURE-ARCHITECTURE.md, "A DNS zone"):
+
+- **A thirteenth kind, `dns`.** A public Cloud DNS zone for a domain the operator allows (`public_domains`), its record
+  sets (A, AAAA, CNAME, TXT, MX, CAA) written in one change, names and text normalised as Cloud DNS stores them.
+- **Records to the request's own resources**: `to: load_balancer` or `to: cluster[:NAME]` fills in the address, as the
+  zone is made last.
+- **Grants**: `use` → `dns.reader`, `admin` → `dns.admin`, on the zone. Destroy empties the zone first.
+- **Tools**: `create_dns`, `get_dns`, `delete_dns` (57 tools).
+
 # Unreleased: a workload identity with no key
 
 The first of the kinds the coverage research ranks highest (docs/RESEARCH-2026-10-28-infrastructure-layer.md section 7;

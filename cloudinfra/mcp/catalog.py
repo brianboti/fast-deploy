@@ -21,6 +21,7 @@ MEANINGS = {
     ErrorCode.INVALID_DATABASE_CONFIGURATION: "An engine version the provider does not run, or a private database without a network.",
     ErrorCode.INVALID_CACHE_CONFIGURATION: "A cache version the provider does not run, or a cache without a network.",
     ErrorCode.INVALID_CLUSTER_CONFIGURATION: "A node shape the provider has no type for.",
+    ErrorCode.INVALID_DNS_CONFIGURATION: "A zone outside the domains the operator lets requests use.",
     ErrorCode.INVALID_SERVICE_CONFIGURATION: "CPU and memory the provider does not pair, or a public service the operator does not allow.",
     ErrorCode.INVALID_LOAD_BALANCER_CONFIGURATION: "No machines behind it, or machines in different zones or regions.",
     ErrorCode.INVALID_ACCESS: "A member outside the operator's allowed domains, a malformed member, a duplicate, or more members than allowed.",
@@ -290,6 +291,18 @@ CATALOG: tuple[ToolSpec, ...] = (
              READ_ERRORS, "Read-only.", "Cloud Run: run.services.get."),
     ToolSpec("delete_service", "Service", "Delete a service", "Delete the service, every revision and its runtime account.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
              "Needs can_destroy.", "Cloud Run: run.services.delete; IAM: serviceAccounts.delete."),
+    # ---- dns
+    ToolSpec("create_dns", "DNS", "Create a DNS zone", "Create a public DNS zone for a domain the operator allows, with record sets written in one change. "
+             "In a full request, an A record may point at the request's load balancer or a cluster's front door by name instead of an address.",
+             (REGION, PROVIDER, Input("zone", "The domain, such as shop.example.com, in one the operator allows.", True),
+              Input("records", "Record sets: name (@, www, *.apps), type (A, AAAA, CNAME, TXT, MX, CAA), values, ttl."), NAME, LABELS, WAIT),
+             RESPONSE, ("INVALID_DNS_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
+             f"Needs can_provision. The operator lists the domains (providers.gcp.public_domains). use grants reading the zone, admin changing it. {OWNERSHIP}",
+             "Cloud DNS: managedZones.create, delete and setIamPolicy; changes.create."),
+    ToolSpec("get_dns", "DNS", "Get a DNS zone", "The zone's domain, name servers and the record sets made.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only.",
+             "Cloud DNS: managedZones.get."),
+    ToolSpec("delete_dns", "DNS", "Delete a DNS zone", "Delete the zone's record sets, then the zone.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS, "Needs can_destroy.",
+             "Cloud DNS: changes.create, managedZones.delete."),
     # ---- identity
     ToolSpec("create_identity", "Identity", "Create a workload identity", "Create an identity for a request's workloads: an account with no key that holds "
              "the request's grants at its level. In a full request, machines of a group that names it run as it, and pods of the request's clusters using "
@@ -423,7 +436,7 @@ CATALOG: tuple[ToolSpec, ...] = (
              "Read-only; no secret is included.", "None."),
 )
 BY_NAME = {spec.name: spec for spec in CATALOG}
-GROUPS = ("Identity", "Compute", "Storage", "Network", "Database", "Cache", "Queue", "Secret", "Cluster", "Service", "Job", "Load balancer", "Infrastructure", "Operations")
+GROUPS = ("Identity", "Compute", "Storage", "Network", "Database", "Cache", "Queue", "Secret", "Cluster", "Service", "Job", "Load balancer", "DNS", "Infrastructure", "Operations")
 
 
 def render_markdown(catalog=CATALOG) -> str:

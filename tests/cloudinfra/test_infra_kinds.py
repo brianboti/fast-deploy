@@ -294,7 +294,7 @@ def test_list_resource_kinds_describes_the_contract(tmp_path):
     orchestrator, _ = make_orchestrator(tmp_path)
     found = orchestrator.resource_kinds()
     assert [item.kind for item in found.kinds] == ["identity", "network", "storage", "compute", "database", "cache", "queue", "secret", "cluster", "service", "job",
-                                                  "load_balancer"]
+                                                  "load_balancer", "dns"]
     assert found.providers == ["gcp"] and all(item.providers == ["gcp"] for item in found.kinds)
     compute = next(item for item in found.kinds if item.kind == "compute")
     assert compute.several_per_request and {field.name for field in compute.fields} >= {"cpu", "memory_gb", "accelerator", "group", "network_id"}

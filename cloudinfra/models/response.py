@@ -11,6 +11,7 @@ from .resources import (
     ClusterResource,
     ComputeResource,
     DatabaseResource,
+    DnsResource,
     IdentityResource,
     JobResource,
     LoadBalancerResource,
@@ -86,6 +87,7 @@ class Resources(Model):
     service: list[ServiceResource] = Field(default_factory=list)
     job: list[JobResource] = Field(default_factory=list)
     load_balancer: list[LoadBalancerResource] = Field(default_factory=list)
+    dns: list[DnsResource] = Field(default_factory=list)
 
     def all(self) -> list:
         return [*self.network, *self.storage, *self.compute, *self.database, *self.cache, *self.queue, *self.secret, *self.cluster, *self.load_balancer]
@@ -216,7 +218,7 @@ class ResourceResponse(Model):
     status: str
     request_id: str
     resource: (IdentityResource | ComputeResource | StorageResource | NetworkResource | DatabaseResource | CacheResource | QueueResource | SecretResource | ClusterResource | ServiceResource
-               | JobResource | LoadBalancerResource) = Field(discriminator="kind")
+               | JobResource | LoadBalancerResource | DnsResource) = Field(discriminator="kind")
     operation: OperationRecord | None = None
 
 

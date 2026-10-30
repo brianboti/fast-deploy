@@ -62,6 +62,7 @@ class FakeGcpApi(GcpApi):
         self.service_accounts: dict[str, dict] = {}  # email -> the account
         self.run_services: dict[str, dict] = {}  # Cloud Run services by name
         self.run_jobs: dict[str, dict] = {}  # Cloud Run jobs by name
+        self.zones: dict[str, dict] = {}  # Cloud DNS managed zones by name, each with its rrsets
         self.schedules: dict[str, dict] = {}  # Cloud Scheduler jobs by full name
         self.repositories = {"us-central1-docker.pkg.dev/test-project/apps", "us-central1-docker.pkg.dev/test-project/shared"}
         self.account_unknown_to_gke_for = 0  # how many more cluster creates GKE refuses because it does not know the new node account yet
@@ -98,6 +99,9 @@ class FakeGcpApi(GcpApi):
             (r"^/v1/projects/[^/]+/serviceAccounts/([^/:]+):(getIamPolicy|setIamPolicy)$", self._account_policy) if host.startswith("iam") else (r"^$", None),
             (r"^/v1/projects/[^/]+/serviceAccounts/([^/]+)$", self._service_account) if host.startswith("iam") else (r"^$", None),
             (r"^/v2/projects/[^/]+/locations/([^/]+)/services$", self._run_services_collection) if host.startswith("run") else (r"^$", None),
+            (r"^/dns/v1/projects/[^/]+/managedZones$", self._zones_collection) if host.startswith("dns") else (r"^$", None),
+            (r"^/dns/v1/projects/[^/]+/managedZones/([^/:]+):(getIamPolicy|setIamPolicy)$", self._zone_policy) if host.startswith("dns") else (r"^$", None),
+            (r"^/dns/v1/projects/[^/]+/managedZones/([^/:]+)(/changes|/rrsets)?$", self._zone) if host.startswith("dns") else (r"^$", None),
             (r"^/v2/projects/[^/]+/locations/([^/]+)/jobs$", self._run_jobs_collection) if host.startswith("run") else (r"^$", None),
             (r"^/v2/projects/[^/]+/locations/[^/]+/jobs/([^/:]+):(getIamPolicy|setIamPolicy)$", self._run_job_policy) if host.startswith("run") else (r"^$", None),
             (r"^/v2/projects/[^/]+/locations/[^/]+/jobs/([^/:]+)$", self._run_job) if host.startswith("run") else (r"^$", None),
@@ -298,6 +302,44 @@ class FakeGcpApi(GcpApi):
         if method == "DELETE":
             return self.schedules.pop(found.group(1)) and {}
         return self.schedules[found.group(1)]
+
+    # ---- Cloud DNS
+    def _zones_collection(self, found, method, body, params):
+        if body["name"] in self.zones:
+            raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, "Google Cloud refused the request: already exists", {"http_status": 409})
+        assert body["dnsName"].endswith("."), "a zone's dnsName ends with a dot"
+        servers = [f"ns-cloud-a{n}.googledomains.com." for n in range(1, 5)]
+        self.zones[body["name"]] = {**body, "nameServers": servers, "rrsets": [{"name": body["dnsName"], "type": "NS", "ttl": 21600, "rrdatas": servers},
+                                                                                {"name": body["dnsName"], "type": "SOA", "ttl": 21600, "rrdatas": ["soa"]}]}
+        return {key: value for key, value in self.zones[body["name"]].items() if key != "rrsets"}
+
+    def _zone(self, found, method, body, params):
+        name, part = found.group(1), found.group(2)
+        if name not in self.zones:
+            raise self._not_found(name)
+        zone = self.zones[name]
+        if part == "/rrsets":
+            return {"rrsets": copy.deepcopy(zone["rrsets"])}
+        if part == "/changes":
+            for item in body.get("deletions", []):
+                assert item in zone["rrsets"], "a deletion names a record set as it is"
+                zone["rrsets"].remove(item)
+            for item in body.get("additions", []):
+                assert item["name"].endswith(zone["dnsName"]) and item["name"].endswith("."), "a record set is in its zone, by full name"
+                assert not [have for have in zone["rrsets"] if (have["name"], have["type"]) == (item["name"], item["type"])], "one record set per name and type"
+                zone["rrsets"].append(dict(item))
+            return {"status": "done"}
+        if method == "DELETE":
+            if [item for item in zone["rrsets"] if item["type"] not in ("NS", "SOA")]:
+                raise InfrastructureError(ErrorCode.PROVIDER_ERROR, "Google Cloud refused the request: The resource named in the request is not empty", {"http_status": 400})
+            del self.zones[name]
+            return {}
+        return {key: value for key, value in zone.items() if key != "rrsets"}
+
+    def _zone_policy(self, found, method, body, params):
+        if found.group(1) not in self.zones:
+            raise self._not_found(found.group(1))
+        return self._policy(("zone", found.group(1)), found.group(2) == "setIamPolicy", body.get("policy"))
 
     def _known(self, policy):
         for binding in policy.get("bindings", []):
