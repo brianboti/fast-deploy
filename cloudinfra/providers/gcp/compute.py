@@ -5,7 +5,7 @@ from ...models.resources import ComputeResource, ResourceStatus
 from ...observability.logging import event
 from ..base import Problem
 from . import translate
-from .api import COMPUTE
+from .api import COMPUTE, settled
 from .identity import email as identity_email
 
 STATUS = {"PROVISIONING": ResourceStatus.CREATING, "STAGING": ResourceStatus.CREATING, "RUNNING": ResourceStatus.READY, "STOPPING": ResourceStatus.UPDATING,
@@ -73,7 +73,7 @@ class GcpCompute:
                                    os_image=shape["image"].rsplit("/", 1)[-1], boot_disk_gb=shape["boot_disk_gb"], accelerator=accelerator, labels=body["labels"],
                                    profile=shape.get("profile"), secure_boot=shape.get("secure_boot", True), max_run_hours=shape.get("max_run_hours"),
                                    autostop_idle_minutes=shape.get("autostop_idle_minutes"), provider_id=f"{self._instances(zone)}/{planned.name}", status=ResourceStatus.CREATING)
-        operation = self.api.create(self._instances(zone), f"{self._instances(zone)}/{planned.name}", json=body)
+        operation = self.api.create(self._instances(zone), f"{self._instances(zone)}/{planned.name}", json=body, ready=settled("status", ("PROVISIONING", "STAGING")))
         ctx.accepted(resource)
         self.api.wait_compute(operation)
         return self.get(resource)

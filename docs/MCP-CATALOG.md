@@ -881,7 +881,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `node_memory_gb` | no | Memory per node in GB (default 8). |
 | `node_disk_gb` | no | Node disk in GB (default 50). |
 | `kubernetes_version` | no | A version the provider offers; its default channel when omitted. |
-| `private_nodes` | no | Nodes without public addresses (default true); they reach the internet through their network's NAT. |
+| `private_nodes` | no | Nodes without public addresses (default true); they reach the internet through their network's NAT. false needs the operator's allow_public_exposure. |
 | `network_id` | no | A network this service created earlier (net-…), to join instead of the operator's default network. |
 | `registries` | no | Artifact Registry repositories (LOCATION-docker.pkg.dev/PROJECT/REPO) the nodes may pull images from; only ones the operator lists. |
 | `public` | no | A front door: a reserved public address and a Gateway taking routes from the request's namespace (default false). |

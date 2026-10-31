@@ -16,7 +16,7 @@ import hashlib
 from ...models.errors import ErrorCode, InfrastructureError
 from ...models.resources import ClusterResource, FrontDoor, ResourceStatus
 from . import translate
-from .api import COMPUTE, CONTAINER
+from .api import COMPUTE, CONTAINER, settled
 from .kubernetes import CLUSTER_ROLES, DOOR, DOOR_NAMESPACE, GATEWAYS, ROUTES, KubeApi, front_door, no_public_entry, routes_role, tenant_labels, tenant_namespace
 from .nodeaccount import NOT_YET, NodeAccounts, account_id
 
@@ -192,7 +192,8 @@ class GcpCluster:
         project on 2026-10-29: "failed to check status for ...; Verify if principal exists"); the create is tried again."""
         for attempt in range(NOT_YET[0]):
             try:
-                return self.api.create(self._clusters(location), f"{self._clusters(location)}/{cluster['name']}", json={"cluster": cluster})
+                return self.api.create(self._clusters(location), f"{self._clusters(location)}/{cluster['name']}", json={"cluster": cluster},
+                                       ready=settled("status", ("PROVISIONING",)))
             except InfrastructureError as exc:
                 if "Verify if principal exists" not in exc.message or attempt == NOT_YET[0] - 1:
                     raise

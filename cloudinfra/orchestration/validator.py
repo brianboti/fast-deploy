@@ -104,6 +104,9 @@ def exposure(request: InfrastructureRequest) -> list[Problem]:
     for cluster in request.clusters():
         if cluster.public is not None:
             found.append(Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, f"cluster {cluster.cluster_name}'s front door takes a public address, {said}", "cluster.public"))
+        if not cluster.private_nodes:
+            found.append(Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, f"cluster {cluster.cluster_name}'s nodes would take public addresses, {said}",
+                                 "cluster.private_nodes"))
     if request.database is not None and request.database.public_access:
         found.append(Problem(ErrorCode.INVALID_DATABASE_CONFIGURATION, f"database.public_access gives the database a public address, {said}", "database.public_access"))
     for service in request.services():

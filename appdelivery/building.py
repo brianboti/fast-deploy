@@ -29,7 +29,8 @@ class Builder:
         self.executor = executor or concurrent.futures.ThreadPoolExecutor(max_workers=config.workers, thread_name_prefix="appdelivery-build")
         self.sleep, self.clock = sleep, clock
         self.stopping = threading.Event()
-        self.ordering = threading.Lock()  # the budget is counted and the build ordered under it
+        self.ordering: dict[tuple[str, str], threading.Lock] = {}  # per team and environment: its budget is counted and its build ordered under it
+        self.ordering_guard = threading.Lock()
 
     # ---- helpers
     def authorize(self, request: BuildRequest, principal):
@@ -55,6 +56,12 @@ class Builder:
             raise DeliveryError(ErrorCode.REGISTRY_NOT_ALLOWED, f"{path} is not under the registries allowed in {request.environment}: "
                                 f"{', '.join(environment.allowed_registries)}", {"field": "image"})
         return environment, source
+
+    def _ordering(self, infra_owner: str, environment: str) -> threading.Lock:
+        """The lock one team's builds in one environment are ordered under: the budget is that team's, so another team's
+        order, or a slow answer from Cloud Build to it, never waits on this one."""
+        with self.ordering_guard:
+            return self.ordering.setdefault((infra_owner, environment), threading.Lock())
 
     def budget(self, request: BuildRequest, principal, settings) -> None:
         """A team's builds in an environment are bounded, at once and per day (the review of 2026-10-30): one team, or one
@@ -96,13 +103,14 @@ class Builder:
         build_id = new_build_id()
         tag = cloudbuild.tagged(source, request, build_id)
         body = cloudbuild.compose(request, source, environment.build, build_id, principal.infra_owner)
-        with bound(identity=principal.name), self.ordering:
+        with bound(identity=principal.name), self._ordering(principal.infra_owner, request.environment):
             self.budget(request, principal, environment.build)
             event("build_received", build_id=build_id, environment=request.environment, source=request.source, revision=request.revision, image=tag)
             created = self.client(request.environment).create(source.project, source.region, body)
             status, _, _ = cloudbuild.outcome(created, tag)
             self.state.create_build(build_id, request.environment, principal.infra_owner, principal.name, request.source, request.revision, tag,
-                                    "QUEUED" if status in cloudbuild.FINAL else status, created["id"], created.get("logUrl"), request.model_dump(mode="json"))
+                                    "QUEUED" if status in cloudbuild.FINAL else status, created["id"], created.get("logUrl"),
+                                    {**request.model_dump(mode="json"), "composed": cloudbuild.composed(body)})
             event("build_submitted", build_id=build_id, cloud_build_id=created["id"])
         self._follow_later(build_id)
         if wait_seconds:

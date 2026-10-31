@@ -31,6 +31,13 @@ RETRY_PAUSE_SECONDS = 1.0  # doubled after each attempt, unless Google says how 
 MAX_RETRY_PAUSE_SECONDS = 30
 SQL_POLL_SECONDS = 5
 SERVICE_NETWORKING_POLL_SECONDS = 5
+def settled(field: str, moving: tuple[str, ...]):
+    """A `ready` for GcpApi.create: the resource's field no longer names a state it is still being made in."""
+    return lambda found: found.get(field) not in moving
+
+
+# A create whose answer was lost is looked for this many times, this many seconds apart: Google may show it a moment late.
+LOOKUPS = (4, 5)
 
 
 def translate_http_error(response: httpx.Response) -> InfrastructureError:
@@ -134,22 +141,39 @@ class GcpApi:
     def post(self, url, json=None, **params):
         return self.request("POST", url, json=json, params=params or None)
 
-    def create(self, url, lookup: str, json=None, **params):
+    def create(self, url, lookup: str, json=None, ready=None, **params):
         """POST a create whose answer may be lost: a write that timed out or met a 5xx may have been done, and an adapter
         records a resource only once Google answered, so such a create would be an orphan nothing deletes (review of
-        2026-10-30, L8). The planned name is looked up once; found, the create counts as taken and the adapter records it
-        and waits on the resource itself. Not found, the first error stands."""
+        2026-10-30, L8). The planned name is looked up a few times, since Google may show a create a moment after it took
+        it. Found, the create counts as taken, and the resource is read until `ready` says it has settled (or the operation
+        timeout passes), since the adapter's own wait then has no operation to wait on. Not found, the first error stands."""
         try:
             return self.post(url, json=json, **params)
         except InfrastructureError as exc:
             if not (exc.details.get("maybe_done") or exc.details.get("http_status") in (500, 502, 503, 504)):
                 raise
-            try:
-                self.get(lookup)
-            except InfrastructureError:
+            found = self._look_up(lookup)
+            if found is None:
                 raise exc from None
             event("provider_create_found", provider="gcp", url=lookup, after=exc.code.value)
+            deadline = self.clock() + self.operation_timeout
+            while ready is not None and not ready(found):
+                if self.clock() > deadline:  # recorded all the same: the adapter's next step fails, and the request's cleanup deletes it
+                    event("provider_create_unsettled", provider="gcp", url=lookup)
+                    break
+                self.sleep(LONG_POLL_SECONDS)
+                found = self.get(lookup)
             return {"status": "DONE", "done": True, "found_after": exc.code.value}
+
+    def _look_up(self, url: str) -> dict | None:
+        for attempt in range(LOOKUPS[0]):
+            try:
+                return self.get(url)
+            except InfrastructureError:
+                if attempt == LOOKUPS[0] - 1:
+                    return None
+                self.sleep(LOOKUPS[1])
+        return None
 
     def patch(self, url, json=None):
         return self.request("PATCH", url, json=json)

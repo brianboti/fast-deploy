@@ -164,7 +164,7 @@ class Config(StrictModel):
     limits: Limits = Field(default_factory=Limits)
     access: AccessSettings = Field(default_factory=AccessSettings)
     allow_public_exposure: bool = Field(default=False, description="Whether a request may make anything reachable from the internet: a machine's public "
-                                        "address, a network or firewall rule open to a public range, a load balancer, a cluster's front door, a database's public "
+                                        "address, a network or firewall rule open to a public range, a load balancer, a cluster's front door or public nodes, a database's public "
                                         "address, a container service taking traffic from all of the internet. Off, every such path is refused before any provider call.")
     closed_public_ports: list[int] = Field(default_factory=lambda: list(validation.CLOSED_PUBLIC_PORTS),
                                            description="Ports never opened from a public range by a network block or configure_firewall; 22 and 3389 always are.")

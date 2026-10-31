@@ -102,7 +102,7 @@ def config_problems(statement: dict, expected: dict) -> list[str]:
     name = str(steps[0].get("name", ""))
     if name not in (expected["builder"], expected["builder"].split("@", 1)[0]):
         found.append(f"a builder {name!r}, not {expected['builder']}")
-    if steps[0].get("args") != expected["args"]:
+    if steps[0].get("args") not in [expected["args"], *expected.get("also_args", [])]:
         found.append("build arguments that are not the ones this service composed")
     options = config.get("options") or {}
     if options.get("requestedVerifyOption") != "VERIFIED" or options.get("logging") != "CLOUD_LOGGING_ONLY":

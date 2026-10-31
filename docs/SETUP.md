@@ -63,8 +63,10 @@ by the condition below; services and jobs `roles/run.admin`, `roles/iam.serviceA
 backstops of REQUIREMENTS.md section 6 on the project.
 
 The project IAM role for node accounts, limited to granting the one node role. The service reads the project's policy
-before it writes it and refuses to change project IAM when its own account holds this role, `roles/owner` or
-`roles/iam.securityAdmin` without exactly this condition:
+before it writes it and refuses to change project IAM when its own account holds this role, `roles/owner`,
+`roles/iam.securityAdmin`, a folder or organization administrator role, or a custom role with
+`resourcemanager.projects.setIamPolicy`, without exactly this condition. It sees only what is bound to its own account
+in the project's policy: keep it out of groups that hold such roles, and grant it nothing on the folder or organization.
 
 ```bash
 gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:cloudinfra@$PROJECT.iam.gserviceaccount.com --role roles/resourcemanager.projectIamAdmin --condition='title=node-role-only,expression=api.getAttribute("iam.googleapis.com/modifiedGrantsByRole", []).hasOnly(["roles/container.defaultNodeServiceAccount"])'
@@ -126,8 +128,8 @@ principals:
 ```
 
 **What is closed until you open it.** `allow_public_exposure` is off: a request that asks for a public machine address,
-a network or firewall rule open to a public range, a load balancer, a cluster's front door, a public database or a
-Cloud Run service taking all traffic is refused before any provider call. Turn it on for the services that need it.
+a network or firewall rule open to a public range, a load balancer, a cluster's front door or public nodes, a public
+database or a Cloud Run service taking all traffic is refused before any provider call. Turn it on for the services that need it.
 Point `providers.gcp.default_network` at a network you made, with flow logs and no rule open to the internet, not at
 Google's `default`, whose `default-allow-ssh` rule admits port 22 from everywhere. The other defaults of the
 assessment's release S2 (cluster private nodes, Dataplane V2, Binary Authorization, Pod Security, network logs, Cloud

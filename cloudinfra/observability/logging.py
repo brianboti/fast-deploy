@@ -22,21 +22,28 @@ REDACTED = "[redacted]"
 
 
 # Credentials by their shape, wherever they appear in a value (review of 2026-10-30, L6): a Google access token, a bearer
-# header, a PEM block, and a long run of token characters that mixes cases and digits (a hex digest, all one case, stays).
+# header, a PEM block, and a long run of token characters (base64's / included) that mixes cases and digits, or that is
+# letters and digits alone beyond hex. A hex digest stays, and so does a name or a path, which hyphens or slashes split.
 CREDENTIAL_SHAPES = (re.compile(r"ya29\.[A-Za-z0-9._-]+"), re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),
                      re.compile(r"-----BEGIN [A-Z ]+-----[\s\S]*?(?:-----END [A-Z ]+-----|$)"))
-TOKEN_RUN = re.compile(r"[A-Za-z0-9+_-]{40,}={0,2}")
+TOKEN_RUN = re.compile(r"[A-Za-z0-9+/_-]{40,}={0,2}")
+HEX = re.compile(r"^[a-f0-9]+$")
+ALPHANUMERIC = re.compile(r"^[A-Za-z0-9]+$")
 
 
 def redact_text(text: str) -> str:
     """A string with every credential-shaped part replaced."""
     for shape in CREDENTIAL_SHAPES:
         text = shape.sub(REDACTED, text)
-    return TOKEN_RUN.sub(lambda found: REDACTED if _mixed(found.group(0)) else found.group(0), text)
+    return TOKEN_RUN.sub(lambda found: REDACTED if _secret_like(found.group(0)) else found.group(0), text)
 
 
-def _mixed(run: str) -> bool:
-    return any(c.islower() for c in run) and any(c.isupper() for c in run) and any(c.isdigit() for c in run)
+def _secret_like(run: str) -> bool:
+    run = run.rstrip("=")
+    if any(c.islower() for c in run) and any(c.isupper() for c in run) and any(c.isdigit() for c in run):
+        return True
+    # one case of letters and digits, unbroken: an API key, not a digest (hex) and not a name (it would carry hyphens)
+    return bool(ALPHANUMERIC.fullmatch(run)) and not HEX.fullmatch(run.lower()) and any(c.isdigit() for c in run) and any(c.isalpha() for c in run)
 
 
 def redact(value):

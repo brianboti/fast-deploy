@@ -1,3 +1,28 @@
+# Unreleased: fixes from the code review of 2026-10-31
+
+A review of everything releases S1 and S2 changed found eight problems; each is fixed with a test in
+`tests/cloudinfra/test_infra_review_fixes.py` or `tests/appdelivery/test_delivery_review_fixes.py`.
+
+- cloudinfra: a create whose answer was lost is looked for up to four times, five seconds apart, since Google may show it
+  late; found, it is read until it has settled (a cluster out of PROVISIONING, a Cloud SQL instance out of
+  PENDING_CREATE, a machine out of PROVISIONING and STAGING, a disk, a cache, a Cloud Run service or job no longer
+  reconciling), so the adapter's next step never meets a resource still being made. A subnet asked of a found network
+  Google says is not ready is asked again.
+- cloudinfra: `cluster.private_nodes: false` gives every node a public address, and is now refused like every other public
+  path while `allow_public_exposure` is off.
+- cloudinfra: a resize is priced against the cost ceiling under its request's lock, so two resizes of one request never
+  each pass it against the other's old shape.
+- cloudinfra: the node-role check (M15) also counts a custom role with `resourcemanager.projects.setIamPolicy` and the
+  folder and organization administrator roles bound on the project. A grant through a group or on a folder or the
+  organization is not visible to it; docs/SETUP.md says to keep the account out of both.
+- Both: logs also redact a credential that base64's `/` splits, and a long run of letters and digits in one case that is
+  not hex; digests and hyphenated names stay.
+- appdelivery: a build keeps the step it sent on its record, and its provenance is held to that step, not to what this
+  release would compose now. A build recorded before this is checked as before, with the unanchored context it was sent
+  with before S1 accepted too; a build of an environment since removed fails its provenance instead of the service.
+- appdelivery: one team's build order waits only on that team's other orders in the same environment, never on another
+  team's call to Cloud Build.
+
 # Unreleased: the security assessment's second release (S2)
 
 Release S2 of the assessment of 2026-10-30 ([research/RESEARCH-2026-10-30-security-assessment.md](research/RESEARCH-2026-10-30-security-assessment.md),
