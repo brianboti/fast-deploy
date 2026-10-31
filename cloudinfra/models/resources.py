@@ -105,7 +105,8 @@ class FirewallRule(BaseModel):
     name: str
     direction: Literal["ingress", "egress"] = "ingress"
     ports: list[int]
-    sources: list[str]
+    sources: list[str] = Field(description="For an ingress rule the ranges it admits; for an egress rule the ranges it reaches.")
+    deny: bool = Field(default=False, description="A rule that refuses what it matches, such as the default-deny egress rule.")
     provider_id: str | None = None
 
 
@@ -116,6 +117,9 @@ class NetworkResource(Resource):
     public_access: bool = False
     firewall_rules: list[FirewallRule] = Field(default_factory=list)
     private_services_range: str | None = Field(default=None, description="The range reserved for managed services (databases) on this network.")
+    router: str | None = Field(default=None, description="The Cloud Router carrying the network's NAT, when it has one.")
+    nat: bool = Field(default=False, description="Machines and nodes without public addresses reach the internet through the network's NAT.")
+    dns_policy: str | None = Field(default=None, description="The DNS response policy that sends Google's API names to its private addresses, with egress denied.")
 
 
 class DatabaseResource(Resource):
@@ -249,6 +253,8 @@ class LoadBalancerResource(Resource):
     backend_group: str
     backends: list[str] = Field(default_factory=list, description="The compute resource ids behind it.")
     health_check_path: str | None = None
+    hostnames: list[str] = Field(default_factory=list, description="The names it serves over HTTPS with a managed certificate; none, plain HTTP.")
+    certificate: str | None = Field(default=None, description="The managed certificate's state as the provider reports it (PROVISIONING, then ACTIVE).")
     components: list[dict[str, Any]] = Field(default_factory=list, description="The provider pieces in creation order (kind, name, url), for teardown in reverse.")
 
 

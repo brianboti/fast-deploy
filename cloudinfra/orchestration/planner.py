@@ -107,10 +107,16 @@ def warnings(request: InfrastructureRequest, planned: list[PlannedResource], con
                              "it reports; the certificate becomes ACTIVE only after that, which can take up to an hour")
             elif cluster.public is not None:
                 found.append(f"cluster {cluster.cluster_name}'s front door serves plain HTTP on a public address, with no certificate")
-        if any(cluster.private_nodes for cluster in request.clusters()):
-            found.append("private nodes have no public address: the Application Layer needs the provider's NAT for them to reach the internet")
-    if request.load_balancer:
-        found.append(f"the load balancer is public on port {request.load_balancer.port}; it serves plain {request.load_balancer.type}, and TLS termination is a later feature")
+        outside = [cluster.cluster_name for cluster in request.clusters() if cluster.private_nodes and not (request.network is not None and request.network.nat)]
+        if outside:
+            found.append(f"cluster {', '.join(outside)}: private nodes have no public address and are not on this request's network with its NAT; they reach "
+                         "Google's APIs privately, and the internet only if their network has a NAT of its own")
+    if request.load_balancer and request.load_balancer.hostnames:
+        found.append(f"the load balancer is public on HTTPS for {', '.join(request.load_balancer.hostnames)} and redirects HTTP: point their DNS at the address it "
+                     "reports; the certificate becomes ACTIVE only after that, which can take up to an hour")
+    elif request.load_balancer:
+        found.append(f"the load balancer is public on port {request.load_balancer.port} and serves plain {request.load_balancer.type}"
+                     + ("; give it hostnames in the operator's domains for HTTPS" if request.load_balancer.type == "http" else ", passing TLS through untouched"))
     if "registry" in request.kinds():
         found.append("registries: images are built only in the trusted project; only the operator's registry writers, named at admin, push, and every other "
                      "member pulls, whatever its level")

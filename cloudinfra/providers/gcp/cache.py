@@ -25,7 +25,7 @@ class GcpCache:
         resource = CacheResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region,
                                  provider_id=f"{self._instances(ctx.region)}/{planned.name}", version=planned.spec["version"], tier=tier, memory_gb=spec.memory_gb,
                                  high_availability=spec.high_availability, network=network.id, labels=body["labels"], status=ResourceStatus.CREATING)
-        operation = self.api.post(self._instances(ctx.region), json=body, instanceId=planned.name)
+        operation = self.api.create(self._instances(ctx.region), f"{self._instances(ctx.region)}/{planned.name}", json=body, instanceId=planned.name)
         ctx.accepted(resource)
         self.api.wait_longrunning(operation, REDIS, what="Memorystore")
         return self.get(resource)

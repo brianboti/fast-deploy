@@ -26,7 +26,7 @@ from ..observability import logging as observability
 from ..orchestration.provisioner import Orchestrator
 from ..orchestration.sweeper import Sweeper
 from ..providers import ProviderRegistry
-from ..security.auth import Authenticate, as_tool_error, audited, client_address, identity, invoke
+from ..security.auth import Authenticate, as_tool_error, audited, check_pepper, client_address, identity, invoke
 from ..security.oauth import SignIn
 from ..state.state_manager import ProcessLock, StateManager
 from .catalog import CATALOG, render_markdown
@@ -143,6 +143,7 @@ class StrictMCP(FastMCP):
 
 
 def build_app(config, registry: ProviderRegistry | None = None, state: StateManager | None = None, executor=None) -> FastAPI:
+    check_pepper(config)  # keyed token hashes need their pepper before anything starts
     os.umask(0o077)  # the state file, its lock and journal, and the log are the service's alone
     observability.configure(path=config.log_file)
     state = state or StateManager(config.database)

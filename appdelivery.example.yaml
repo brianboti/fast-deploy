@@ -1,6 +1,9 @@
 # The application delivery service's configuration. Copy to appdelivery.local.yaml (ignored by git). See docs/DELIVERY-SPEC.md.
 # No token or key lives here: each environment names the variable that holds its cloudinfra token, and Google credentials
 # come from the host (the metadata server on Google Cloud, else gcloud), which needs Token Creator on each service account.
+#
+# Behind a proxy or load balancer, every caller arrives from the proxy's address, so the per-address budgets are shared by
+# everyone. Start uvicorn with --proxy-headers and set FORWARDED_ALLOW_IPS to the proxy's own address (never "*").
 database: appdelivery.db
 # log_file: /var/lib/appdelivery/service.log    # one JSON line per event, release id and identity on each, secrets redacted
 # workers: 4                                     # rollouts, rollbacks and removals run in this many background workers
@@ -12,7 +15,7 @@ database: appdelivery.db
 # sign_in:                                       # sign-in for Claude chat (docs/INFRASTRUCTURE-ARCHITECTURE.md, "Connect Claude chat")
 #   url: https://delivery.example.com            # the public HTTPS address; add its host to allowed_hosts
 cloudinfra:
-  url: https://infra.internal.example.com      # the infrastructure layer, read over its REST API
+  url: https://infra.internal.example.com      # the infrastructure layer, read over its REST API: https (plain http to localhost only)
   # timeout_seconds: 30
 gcp:
   project_id: your-infrastructure-project       # the project cloudinfra provisions in
@@ -60,7 +63,7 @@ sources:                                         # repositories the platform tea
     registry: us-central1-docker.pkg.dev/your-infrastructure-project/shop-images   # where its images are pushed
 principals:                                      # application teams; tokens from: app-delivery token
   - name: shop-team
-    token_sha256: "REPLACE_WITH_THE_HASH_FROM_app-delivery_token"
+    token_sha256: "REPLACE_WITH_THE_HASH_FROM_app-delivery_token"   # or token_hmac_sha256, made with APPDELIVERY_TOKEN_PEPPER set
     infra_owner: shop-team                       # the cloudinfra principal whose requests this team may deploy onto
     environments: [dev, prod]
     can_deploy: true

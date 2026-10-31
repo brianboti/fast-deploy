@@ -81,7 +81,12 @@ account reaches every team's machines, secrets and services in that environment,
 
 Before every action `appdelivery` checks, from `cloudinfra`'s answer: the request's `owner` is the caller's
 `infra_owner`; its status is `READY`; its `access` list holds this environment's service account with status `GRANTED`
-and level `admin`. Any "no" is a refusal with a code, before anything touches a machine.
+and level `admin`. Any "no" is a refusal with a code, before anything touches a machine. Reading what a target runs
+now (`get_running` with `live`) is an action too and is checked the same way first; a group that fails the check is
+reported with its error and no target is asked (the security assessment of 2026-10-30, L13). Every value read from
+`cloudinfra`'s answer that reaches gcloud's arguments, a TLS endpoint or a Google URL (machine names and zones, a
+cluster's address, CA and namespace, a service's or job's provider name) must have the shape of one, and
+`cloudinfra.url` must be `https` unless it is this host (L11).
 
 ## 3. The contract
 
@@ -223,9 +228,10 @@ installing software on it.
   on (the default). A machine in the operator's default network is accepted only when the operator's configuration says
   that network has the rule (`default_network_iap: true`).
 - **Pull.** A request's own subnet has Private Google Access, so Artifact Registry (`*-docker.pkg.dev`) is reachable
-  without a public address. Any other registry needs the internet, which a machine without `public_ip` does not have
-  (`cloudinfra` offers no NAT). So `allowed_registries` defaults to Artifact Registry hosts, and a registry outside them
-  is refused for a machine without a public address.
+  without a public address. Any other registry needs the internet, which a machine without `public_ip` reaches only
+  through its network's Cloud NAT (a request's network has one by default since the assessment's release S2, unless the
+  operator denies egress). So `allowed_registries` defaults to Artifact Registry hosts, and a registry outside them is
+  refused for a machine with neither a public address nor a network with a NAT.
 - **Time.** A target group with `autostop` or `max_run_hours` is one that `cloudinfra` will stop by design; the plan
   warns, since a quiet web service is exactly what idle stop looks for.
 
@@ -349,7 +355,7 @@ Checked on Google's and Kubernetes' pages first:
   repository; Google recommends a dedicated node account with `roles/container.defaultNodeServiceAccount` instead of
   the Compute Engine default ([service accounts](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/service-accounts)),
   which in a new project has no rights at all. Private nodes reach Artifact Registry through Private Google Access;
-  Docker Hub needs NAT or a copy in Artifact Registry.
+  Docker Hub needs the network's NAT or a copy in Artifact Registry. Nodes are private by default since release S2.
 
 The design:
 
@@ -435,10 +441,11 @@ domains. Checked on Google's pages first (Cloud Run Admin API v2):
 The design:
 
 - **`cloudinfra` `service` kind.** One service or a list (named, as clusters): CPU (1, 2, 4, 8), memory, minimum and
-  maximum instances, concurrency, request timeout, ingress (`all`, `internal`, `internal_and_load_balancer`), `public`
-  (refused unless the operator's `allow_public_services`), and Direct VPC egress into the request's network. It runs as
-  a service account made for it (`run-<request>-<name>`), which reads the request's secrets and nothing else, and is
-  deleted with it. Grants: `use` → `run.invoker` (call it), `admin` → `run.developer` on the service and Service Account
+  maximum instances, concurrency, request timeout, ingress (`internal_and_load_balancer` by default, `internal`, or
+  `all` with the operator's `allow_public_exposure`), `public` (refused unless the operator's `allow_public_services`),
+  and Direct VPC egress into the request's network. It runs as a service account made for it (`run-<request>-<name>`),
+  which reads the secrets its block names (`secrets`) and nothing else, and is deleted with it. A release that binds a
+  secret its runtime account does not read is refused at the plan. Grants: `use` → `run.invoker` (call it), `admin` → `run.developer` on the service and Service Account
   User on its runtime account. The connect block gives the URL and how to call it.
 - **`appdelivery` service target.** `{service: NAME | true}`, keyed `service:<name>`. A release is a revision named after
   it, with the image, port, a startup probe on the health path, plain values, and secrets as `secretKeyRef` pinned to
@@ -666,7 +673,7 @@ What the design rests on, checked on the primary page or in `cloudinfra`'s code:
 | Docker logs in to Artifact Registry with `-u oauth2accesstoken --password-stdin`; the token lasts 60 minutes | [Artifact Registry authentication](https://docs.cloud.google.com/artifact-registry/docs/docker/authentication) | Pull with a fresh token per machine |
 | SSH through IAP needs the tunnel role, a project-level role with `compute.projects.get`, and a rule from 35.235.240.0/20 on port 22; a VM with a service account would also need `serviceAccountUser`, and `cloudinfra`'s machines have none | [Set up OS Login](https://docs.cloud.google.com/compute/docs/oslogin/set-up-oslogin), `cloudinfra/providers/gcp/connect.py`, `compute.py` | The checks in section 4 |
 | OS Login names a service account's user `sa_…`; 2-step verification is not enforced on service accounts | [OS Login](https://docs.cloud.google.com/compute/docs/oslogin), [Set up OS Login](https://docs.cloud.google.com/compute/docs/oslogin/set-up-oslogin) | Non-interactive SSH is possible |
-| A request's subnet has Private Google Access; `cloudinfra` offers no NAT | `cloudinfra/providers/gcp/network.py` | Artifact Registry only, unless the machine has a public address |
+| A request's subnet has Private Google Access; `cloudinfra` offered no NAT then (it does since release S2) | `cloudinfra/providers/gcp/network.py` | Artifact Registry only, unless the machine has a public address |
 | `cloudinfra`'s status answer carries `owner`, `access` (member, level, status), `endpoints`, `lifecycle`, and each machine's zone, numeric id and network | `cloudinfra/models/response.py`, `resources.py` | Every check in section 2 reads one existing endpoint; no `cloudinfra` change for phase 1 |
 | A principal's `identity` may be named in `access` even outside `allowed_domains` | `cloudinfra/orchestration/access.py` | The delivery service account needs no domain exception |
 | Cosign 3.1.x verifies both the old signature format and the new bundle format; v4 is planned and v3 stays supported | [Cosign releases](https://newreleases.io/project/github/sigstore/cosign/release/v3.1.2) | Pin 3.1.x in the image |

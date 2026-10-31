@@ -17,7 +17,15 @@ are marked F (read on the page) or S (a secondary source or a search snippet); s
 High findings, M1, M2, M3, M4, M5, M8, M9, L1, L2, the repository-side items of M16 and M17 that live in files, and the
 document corrections of section 6, each with a test (`tests/cloudinfra/test_infra_security_s1.py`,
 `tests/appdelivery/test_delivery_security_s1.py`). Left to the maintainer's hands: Dependabot alerts and the review
-requirements in the repository's settings. Not yet run against a real Google project.
+requirements in the repository's settings. Not yet run against a real Google project. S1 was merged into `main`
+(brianboti/fast-deploy#233).
+
+**Status, 2026-10-30, later.** Release S2 was built on branch `security-s2`: all sixteen rows of its table, each with a
+test (`tests/cloudinfra/test_infra_security_s2.py`, `tests/appdelivery/test_delivery_security_s2.py`). Two choices
+differ from the table's words. M14's "narrow the scope" was not done: Secret Manager needs the `cloud-platform` scope,
+and Google advises that scope with IAM as the bound, so an `admin` identity is refused on machines instead. M12's
+"default Cloud Armor policy" is the operator's own policy (`cloud_armor_policy`), attached to every application load
+balancer, so one team keeps the WAF rules. Still not run against a real Google project; S3 is the operator's.
 
 ## 1. The short answer
 

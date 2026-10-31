@@ -105,6 +105,18 @@ class InlineExecutor:
         return None
 
 
+
+SECRET_BY_PURPOSE = {"database_password": "db-password", "cache_auth": "cache-auth"}
+
+
+def named_secrets(created, names: list[str], prefix: str) -> list:
+    """The secrets a service's or job's runtime account may read: those its block names, never the rest of the request's
+    (review of 2026-10-30, L9). A secret's name is its block's, or db-password and cache-auth for the ones made for a
+    request's own credentials."""
+    wanted = set(names)
+    return [made for made in created if made.kind == ResourceKind.secret
+            and (SECRET_BY_PURPOSE.get(made.purpose) or made.name.removeprefix(f"{prefix}-")) in wanted]
+
 class Orchestrator:
     def __init__(self, config, state: StateManager, registry, executor=None, sleep=time.sleep, clock=time.monotonic, wallclock=None):
         self.config, self.state, self.registry, self.sleep, self.clock = config, state, registry, sleep, clock
@@ -383,7 +395,8 @@ class Orchestrator:
         if item.kind == "service":
             return ServiceResource(**common, cpu=spec["cpu"], memory_mb=spec["memory_mb"], min_instances=spec["min_instances"], max_instances=spec["max_instances"],
                                    ingress=spec["ingress"], public=spec["public"])
-        return LoadBalancerResource(**common, type=spec["type"], port=spec["port"], backend_group=spec["backend_group"], health_check_path=spec.get("health_check_path"))
+        return LoadBalancerResource(**common, type=spec["type"], port=spec["port"], backend_group=spec["backend_group"], health_check_path=spec.get("health_check_path"),
+                                    hostnames=spec.get("hostnames") or [])
 
     def _run_provision(self, request_id, request, planned, ctx, provider, operation_id, existing, external_backends=()):
         with bound(request_id=request_id, operation_id=operation_id, identity=ctx.owner):
@@ -434,13 +447,11 @@ class Orchestrator:
                     elif item.kind == "service":
                         service = request.service_named(item.spec["service"])
                         joined = network or existing.get(service.network_id)
-                        secrets = [made for made in created if made.kind == ResourceKind.secret]  # its runtime account reads the request's secrets
-                        resource = provider.create_service(service, item, ctx, joined, secrets)
+                        resource = provider.create_service(service, item, ctx, joined, named_secrets(created, service.secrets, ctx.name))
                     elif item.kind == "job":
                         job = request.job_named(item.spec["job"])
                         joined = network or existing.get(job.network_id)
-                        secrets = [made for made in created if made.kind == ResourceKind.secret]
-                        resource = provider.create_job(job, item, ctx, joined, secrets)
+                        resource = provider.create_job(job, item, ctx, joined, named_secrets(created, job.secrets, ctx.name))
                     elif item.kind == "load_balancer":
                         backends = [computes[name] for name in item.spec["backends"] if name in computes] or list(external_backends)
                         group = request.group(request.load_balancer.backend_group)
@@ -1127,7 +1138,7 @@ class Orchestrator:
         registry = RegistryRequest(name=registry_name, immutable_tags=immutable_tags, size_gb=size_gb)
         return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, registry=registry), principal, wait_seconds)
 
-    def create_cluster(self, principal, *, region, provider="gcp", node_count=1, node_cpu=2, node_memory_gb=8, node_disk_gb=50, kubernetes_version=None, private_nodes=False,
+    def create_cluster(self, principal, *, region, provider="gcp", node_count=1, node_cpu=2, node_memory_gb=8, node_disk_gb=50, kubernetes_version=None, private_nodes=True,
                        network_id=None, registries=None, public=False, hostnames=None, zone=None, name=None, labels=None, wait_seconds=0):
         door = PublicRequest(hostnames=hostnames or []) if public or hostnames else None
         cluster = ClusterRequest(node_count=node_count, node_cpu=node_cpu, node_memory_gb=node_memory_gb, node_disk_gb=node_disk_gb, kubernetes_version=kubernetes_version,
@@ -1135,7 +1146,7 @@ class Orchestrator:
         return self.provision(InfrastructureRequest(provider=provider, region=region, zone=zone, name=name, labels=labels or {}, cluster=cluster), principal, wait_seconds)
 
     def create_service(self, principal, *, region, provider="gcp", cpu=1, memory_mb=512, min_instances=0, max_instances=10, concurrency=80, timeout_seconds=300,
-                       ingress="all", public=False, network_id=None, egress="private_ranges", name=None, labels=None, wait_seconds=0):
+                       ingress="internal_and_load_balancer", public=False, network_id=None, egress="private_ranges", name=None, labels=None, wait_seconds=0):
         service = ServiceRequest(cpu=cpu, memory_mb=memory_mb, min_instances=min_instances, max_instances=max_instances, concurrency=concurrency,
                                  timeout_seconds=timeout_seconds, ingress=ingress, public=public, network_id=network_id, egress=egress)
         return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, service=service), principal, wait_seconds)
@@ -1150,8 +1161,9 @@ class Orchestrator:
                          network_id=network_id, egress=egress, schedule=ScheduleRequest(cron=schedule, time_zone=time_zone) if schedule else None)
         return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, job=job), principal, wait_seconds)
 
-    def create_load_balancer(self, principal, *, region, backends, provider="gcp", type="http", port=80, health_check_path="/", name=None, labels=None, wait_seconds=0):
-        balancer = LoadBalancerRequest(type=type, port=port, health_check_path=health_check_path, backends=backends)
+    def create_load_balancer(self, principal, *, region, backends, provider="gcp", type="http", port=80, health_check_path="/", hostnames=None, name=None, labels=None,
+                             wait_seconds=0):
+        balancer = LoadBalancerRequest(type=type, port=port, health_check_path=health_check_path, backends=backends, hostnames=hostnames or [])
         return self.provision(InfrastructureRequest(provider=provider, region=region, name=name, labels=labels or {}, load_balancer=balancer), principal, wait_seconds)
 
     def resource_kinds(self) -> ResourceKindsResponse:
@@ -1336,6 +1348,10 @@ class Orchestrator:
         self.require(principal, "provision")
         ports, sources = validation.check_ports(ports, "ports"), validation.check_sources(sources)
         validation.check_public_rule(ports, sources, self.config.closed_public_ports, "ports")
+        public = [source for source in sources if validation.is_public_source(source)]
+        if public and not self.config.allow_public_exposure:
+            raise InfrastructureError(ErrorCode.INVALID_NETWORK_CONFIGURATION, f"A rule from {', '.join(public)} opens the network to public ranges, which this operator "
+                                      "does not allow (allow_public_exposure); limit the sources to private ranges", {"field": "sources", "sources": public})
         network, record = self._resource(network_id, principal)
         if network.kind != ResourceKind.network:
             raise InfrastructureError(ErrorCode.NOT_FOUND, f"{network_id} is a {network.kind.value}, not a network", {"resource_id": network_id})

@@ -5,6 +5,8 @@ from ...models.resources import RegistryResource, ResourceStatus
 from . import translate
 from .api import ARTIFACT_REGISTRY
 
+CLEANUP = "untagged-after-90-days"
+
 
 def address(location: str, project: str, repository_id: str) -> str:
     return f"{location}-docker.pkg.dev/{project}/{repository_id}"
@@ -20,9 +22,15 @@ class GcpRegistry:
         resource = RegistryResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region, provider_id=name,
                                     repository=name, address=address(ctx.region, self.api.project, planned.name), immutable_tags=spec.immutable_tags,
                                     size_gb=spec.size_gb, status=ResourceStatus.CREATING, labels=translate.labels(ctx))
-        operation = self.api.post(f"{ARTIFACT_REGISTRY}/{parent}/repositories", json={"format": "DOCKER", "description": f"Images of {ctx.name}"[:256],
-                                                                                         "labels": translate.labels(ctx), "dockerConfig": {"immutableTags": spec.immutable_tags}},
-                                  repositoryId=planned.name)
+        body = {"format": "DOCKER", "description": f"Images of {ctx.name}"[:256], "labels": translate.labels(ctx), "dockerConfig": {"immutableTags": spec.immutable_tags},
+                # untagged images older than ninety days, reported and not deleted: a release may still run one by digest, so
+                # the operator turns the dry run off once the report shows nothing in use (review of 2026-10-30, L10)
+                "cleanupPolicies": {CLEANUP: {"id": CLEANUP, "action": "DELETE", "condition": {"tagState": "UNTAGGED", "olderThan": f"{90 * 86400}s"}}},
+                "cleanupPolicyDryRun": True}
+        key = self.settings.kms_keys.get(ctx.region)
+        if key:
+            body["kmsKeyName"] = key
+        operation = self.api.create(f"{ARTIFACT_REGISTRY}/{parent}/repositories", f"{ARTIFACT_REGISTRY}/{name}", json=body, repositoryId=planned.name)
         ctx.accepted(resource)  # known from here: a failed wait still deletes it
         self.api.wait_longrunning(operation, ARTIFACT_REGISTRY, what="Artifact Registry")
         return resource.model_copy(update={"status": ResourceStatus.READY})

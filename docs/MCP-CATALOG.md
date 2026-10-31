@@ -187,7 +187,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `os` | no | ubuntu (the default without a profile), debian or rocky. |
 | `profile` | no | A software profile the operator defines, such as a GPU image with signed drivers; list_resource_kinds names them. Instead of os. |
 | `boot_disk_gb` | no | Boot disk in GB (default 20; 50 with GPUs, which need at least 40). |
-| `public_ip` | no | Give each machine a public address (default false). |
+| `public_ip` | no | Give each machine a public address (default false); needs the operator's allow_public_exposure. |
 | `network_id` | no | A network this service created earlier (net-…), to join instead of the operator's default network. |
 | `accelerator` | no | GPUs per machine: t4, l4, a100 or h100; the machine family follows the type. Drivers come with a GPU profile (accelerator: required); on any other image the Application Layer installs them. |
 | `accelerator_count` | no | GPUs per machine (default 1); each type offers fixed counts. |
@@ -206,7 +206,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Possible errors.** `INVALID_COMPUTE_CONFIGURATION`, `INVALID_NETWORK_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision, and can_destroy with lifetime_hours. Machines get OS Login (IAM) and no service account; vTPM and integrity monitoring on, and Secure Boot on unless GPUs run an image without their drivers, whose driver installation needs it off. The requester is granted login when the operator maps it to an identity. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision, and can_destroy with lifetime_hours. Machines get OS Login (IAM) and no service account, no project-wide SSH keys, no serial port, and deletion protection lifted only by an explicit delete; vTPM and integrity monitoring on, and Secure Boot on unless GPUs run an image without their drivers, whose driver installation needs it off. The requester is granted login when the operator maps it to an identity. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
 
 **Provider mapping (Google Cloud).** Compute Engine: compute.instances.insert with an E2 machine type (N1, G2, A2 or A3 with a GPU), a public image family or the profile's image, and scheduling.maxRunDuration with instanceTerminationAction STOP for max_run_hours; compute.instances.get after.
 
@@ -325,7 +325,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Possible errors.** `INVALID_STORAGE_CONFIGURATION`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Buckets get uniform access and enforced public-access prevention. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Buckets get uniform access, enforced public-access prevention and seven days of soft delete; disks and buckets the operator's KMS key for the region when set. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
 
 **Provider mapping (Google Cloud).** Compute Engine: compute.disks.insert; Cloud Storage: storage.buckets.insert.
 
@@ -406,7 +406,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 |---|---|---|
 | `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
 | `provider` | no | The cloud provider adapter; gcp (default) is the one implemented. |
-| `public_access` | no | Allow public addresses and open allowed_ports from allowed_sources (default false). |
+| `public_access` | no | Allow public addresses and open allowed_ports from allowed_sources (default false); needs the operator's allow_public_exposure. |
 | `cidr` | no | The subnet's private IPv4 range (default 10.10.0.0/24). |
 | `allowed_ports` | no | Ports opened from allowed_sources when public_access is on (default 80, 443). |
 | `allowed_sources` | no | IPv4 ranges allowed to reach allowed_ports (default 0.0.0.0/0). |
@@ -422,9 +422,9 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Possible errors.** `INVALID_NETWORK_CONFIGURATION`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. No rule ever opens port 22 to the internet; private ranges only for the subnet.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. No rule ever opens 22 or 3389 to a public range; private ranges only for the subnet. Flow logs on the subnet and logging on every rule (the operator's network_logs), a Cloud NAT so machines without public addresses reach the internet, and, when the operator denies egress, only private ranges and Google's private API addresses reachable.
 
-**Provider mapping (Google Cloud).** Compute Engine: compute.networks.insert (custom subnets), compute.subnetworks.insert, compute.firewalls.insert.
+**Provider mapping (Google Cloud).** Compute Engine: compute.networks.insert (custom subnets), compute.subnetworks.insert, compute.firewalls.insert, compute.routers.insert (Cloud NAT); Cloud DNS: responsePolicies.create with egress denied.
 
 ### `get_network`
 
@@ -524,7 +524,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Possible errors.** `INVALID_DATABASE_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Encrypted connections only, automated backups on, deletion protection on until destroy. The password is never logged or kept by this service.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Encrypted connections only, automated backups on, deletion protection on until destroy, the CIS database flags and IAM database authentication on, the operator's KMS key for the region when set, and a default-user password nobody keeps. The password is never logged or kept by this service.
 
 **Provider mapping (Google Cloud).** Cloud SQL Admin: sqladmin.instances.insert, databases.insert, users.insert; Service Networking for a private address; Secret Manager for the password.
 
@@ -744,7 +744,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. No value passes through a request or a response. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. No value passes through a request or a response; with the operator's KMS key for the region, kept in that region under it. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
 
 **Provider mapping (Google Cloud).** Secret Manager: secretmanager.projects.secrets.create, secretmanager.projects.secrets.addVersion.
 
@@ -817,7 +817,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Pushing and pulling are the members' own, with their own identity. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Pushing and pulling are the members' own, with their own identity. A cleanup policy reports untagged images older than ninety days without deleting them (a dry run the operator turns off). Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
 
 **Provider mapping (Google Cloud).** Artifact Registry: artifactregistry.projects.locations.repositories.create (format DOCKER).
 
@@ -881,7 +881,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `node_memory_gb` | no | Memory per node in GB (default 8). |
 | `node_disk_gb` | no | Node disk in GB (default 50). |
 | `kubernetes_version` | no | A version the provider offers; its default channel when omitted. |
-| `private_nodes` | no | Nodes without public addresses (default false). |
+| `private_nodes` | no | Nodes without public addresses (default true); they reach the internet through their network's NAT. |
 | `network_id` | no | A network this service created earlier (net-…), to join instead of the operator's default network. |
 | `registries` | no | Artifact Registry repositories (LOCATION-docker.pkg.dev/PROJECT/REPO) the nodes may pull images from; only ones the operator lists. |
 | `public` | no | A front door: a reserved public address and a Gateway taking routes from the request's namespace (default false). |
@@ -898,7 +898,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Possible errors.** `INVALID_CLUSTER_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. The nodes run as a service account made for the cluster, with the minimum node role on the project and reader on the named registries only, deleted with the cluster; they get the logging, monitoring and read-only storage scopes. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. The nodes run as a service account made for the cluster, with the minimum node role on the project and reader on the named registries only, deleted with the cluster; they get the logging, monitoring and read-only storage scopes. Private nodes by default, Dataplane V2 (network policy), Binary Authorization enforcing the project's policy, the security posture dashboard, the operator's authorized networks for the control plane, Pod Security baseline on the request's namespace, and no LoadBalancer, NodePort, Ingress or Gateway there. The service grants the node role only when its own account may grant that role and no other. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
 
 **Provider mapping (Google Cloud).** Kubernetes Engine: container.projects.locations.clusters.create (zonal, one node pool); IAM: serviceAccounts.create and delete, and the project's setIamPolicy for roles/container.defaultNodeServiceAccount only; Artifact Registry: repositories setIamPolicy; for a front door Compute Engine globalAddresses and sslCertificates insert and delete, and the cluster's Gateway API.
 
@@ -963,7 +963,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `max_instances` | no | At most this many instances (default 10). |
 | `concurrency` | no | Requests one instance serves at once (default 80). |
 | `timeout_seconds` | no | How long a request may take (default 300). |
-| `ingress` | no | all (default), internal, or internal_and_load_balancer. |
+| `ingress` | no | internal_and_load_balancer (default), internal, or all, which needs the operator's allow_public_exposure. |
 | `public` | no | Callable without signing in; only when the operator allows public services (default false). |
 | `network_id` | no | A network this service created earlier (net-…), to join instead of the operator's default network. |
 | `egress` | no | With a network: private_ranges (default) or all. |
@@ -978,9 +978,9 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Possible errors.** `INVALID_SERVICE_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. It runs as a service account made for it, which reads the request's secrets and nothing else, deleted with it. use grants the invoker role on it; admin also the developer role and acting as its runtime account, which deploying a revision needs. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. It runs as a service account made for it, which reads the secrets its block names (service.secrets in a full request) and nothing else, deleted with it; Binary Authorization applies the project's policy to its images. use grants the invoker role on it; admin also the developer role and acting as its runtime account, which deploying a revision needs. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
 
-**Provider mapping (Google Cloud).** Cloud Run: run.services.create, and setIamPolicy for a public service (invoker check off) and for grants; IAM: serviceAccounts.create, delete and setIamPolicy; Secret Manager: the request's secrets' setIamPolicy.
+**Provider mapping (Google Cloud).** Cloud Run: run.services.create, and setIamPolicy for a public service (invoker check off) and for grants; IAM: serviceAccounts.create, delete and setIamPolicy; Secret Manager: the named secrets' setIamPolicy.
 
 ### `get_service`
 
@@ -1058,9 +1058,9 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 
 **Possible errors.** `INVALID_SERVICE_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Its tasks run as a service account made for it, which reads the request's secrets and nothing else; a schedule runs it as a second account that may run this job only. Both go with it. use grants the invoker role (run it); admin also the developer role and acting as its runtime account. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. Its tasks run as a service account made for it, which reads the secrets its block names (job.secrets in a full request) and nothing else; Binary Authorization applies the project's policy to its images; a schedule runs it as a second account that may run this job only. Both go with it. use grants the invoker role (run it); admin also the developer role and acting as its runtime account. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
 
-**Provider mapping (Google Cloud).** Cloud Run: run.jobs.create and setIamPolicy; Cloud Scheduler: jobs.create and delete; IAM: serviceAccounts.create, delete and setIamPolicy; Secret Manager: the request's secrets' setIamPolicy.
+**Provider mapping (Google Cloud).** Cloud Run: run.jobs.create and setIamPolicy; Cloud Scheduler: jobs.create and delete; IAM: serviceAccounts.create, delete and setIamPolicy; Secret Manager: the named secrets' setIamPolicy.
 
 ### `get_job`
 
@@ -1119,22 +1119,23 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `backends` | yes | The machines behind it (cmp-…), all in one zone. |
 | `provider` | no | The cloud provider adapter; gcp (default) is the one implemented. |
 | `type` | no | http (default) or tcp. |
-| `port` | no | The port the machines serve on; the public port is the same (default 80). |
+| `port` | no | The port the machines serve on; without hostnames the public port is the same (default 80). |
 | `health_check_path` | no | The path an http health check requests (default /). |
+| `hostnames` | no | http only: DNS names in domains the operator allows; HTTPS on 443 with a Google-managed certificate, TLS 1.2 or later, and HTTP redirected to it. None, plain HTTP on the port. |
 | `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
 | `labels` | no | Labels for every resource, next to the service's ownership labels. |
 | `wait_seconds` | no | Wait up to this many seconds (0 to 45) for the outcome before answering; 0 answers at once with the operation running. |
 
 **Required fields.** `region`, `backends`.
-**Optional fields.** `provider`, `type`, `port`, `health_check_path`, `name`, `labels`, `wait_seconds`.
+**Optional fields.** `provider`, `type`, `port`, `health_check_path`, `hostnames`, `name`, `labels`, `wait_seconds`.
 
 **Output.** InfrastructureResponse: request_id, status, the resources with ids, names, addresses, states and connect blocks (commands, prerequisites), endpoints, lifecycle (expiry, stop reason, what keeps billing while stopped), access (each member's grants), warnings, operations, the cost estimate, and error when FAILED.
 
 **Possible errors.** `INVALID_LOAD_BALANCER_CONFIGURATION`, `NOT_FOUND`, `INVALID_STATE`, `PERMISSION_DENIED`, `UNSUPPORTED_PROVIDER`, `INVALID_REGION`, `INVALID_RESOURCE_NAME`, `LIMIT_EXCEEDED`, `COST_LIMIT_EXCEEDED`, `QUOTA_EXCEEDED`, `PROVIDER_AUTH_FAILED`, `PROVIDER_PERMISSION_DENIED`, `PROVIDER_CONFLICT`, `PROVIDER_UNAVAILABLE`, `PROVIDER_ERROR`, `OPERATION_TIMEOUT`, `PROVISIONING_FAILED`.
 
-**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision. HTTP only; TLS termination is a later feature. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
+**Security.** Creates or changes cloud resources, which can cost money; needs can_provision. Needs can_provision and the operator's allow_public_exposure. Backends log every request; an http load balancer carries the operator's Cloud Armor policy when one is set. Every resource carries labels managed-by=cloudinfra, cloudinfra-request, cloudinfra-name and cloudinfra-owner, plus the operator's and the request's own.
 
-**Provider mapping (Google Cloud).** Compute Engine: instance group, firewall rule, health check, backend service, URL map and target proxy (http), address and forwarding rule.
+**Provider mapping (Google Cloud).** Compute Engine: instance group, firewall rule, health check, backend service (logged, Cloud Armor), URL map and target proxy (http; with hostnames a managed certificate, an SSL policy, an HTTPS proxy and a redirect), address and forwarding rules.
 
 ### `get_load_balancer`
 

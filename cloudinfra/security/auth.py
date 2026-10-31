@@ -8,6 +8,8 @@ import functools
 import hashlib
 import hmac
 import json
+import logging
+import os
 import threading
 import time
 
@@ -23,10 +25,40 @@ identity = contextvars.ContextVar("cloudinfra_principal")
 client_address = contextvars.ContextVar("cloudinfra_client", default="unknown")
 
 
+PEPPER_ENV = "CLOUDINFRA_TOKEN_PEPPER"
+MIN_PEPPER = 32
+
+
+def pepper() -> bytes | None:
+    """The key for token_hmac_sha256, from the environment only: never in the configuration or the state."""
+    value = os.environ.get(PEPPER_ENV, "")
+    return value.encode() if value else None
+
+
+def keyed(token: str, key: bytes) -> str:
+    return hmac.new(key, token.encode(), hashlib.sha256).hexdigest()
+
+
+def check_pepper(config) -> None:
+    """A configuration with keyed hashes needs the pepper, long enough, before the service takes a call."""
+    key = pepper()
+    if any(principal.token_hmac_sha256 for principal in config.principals) and (key is None or len(key) < MIN_PEPPER):
+        raise ValueError(f"principals use token_hmac_sha256: set {PEPPER_ENV} to the pepper they were made with ({MIN_PEPPER} characters or more)")
+
+
 def find_principal(config, token: str):
-    """The configured principal whose token this is, or None; hashes compared in constant time."""
-    digest = hashlib.sha256(token.encode()).hexdigest()
-    return next((principal for principal in config.principals if token and hmac.compare_digest(digest, principal.token_sha256)), None)
+    """The configured principal whose token this is, or None; hashes compared in constant time, keyed ones with the pepper."""
+    if not token:
+        return None
+    digest, key = hashlib.sha256(token.encode()).hexdigest(), pepper()
+    peppered = keyed(token, key) if key else None
+    for principal in config.principals:
+        if principal.token_hmac_sha256 is not None:
+            if peppered is not None and hmac.compare_digest(peppered, principal.token_hmac_sha256):
+                return principal
+        elif hmac.compare_digest(digest, principal.token_sha256):
+            return principal
+    return None
 
 
 class RateLimiter:
@@ -58,6 +90,7 @@ class Authenticate:
 
     def __init__(self, app, config, state=None, sign_in=None):
         self.app, self.config, self.state, self.sign_in = app, config, state, sign_in
+        check_pepper(config)
         self.identities = RateLimiter(config.rate_limit_per_minute)
         self.failures = RateLimiter(config.auth_failures_per_minute)
         self.public = RateLimiter(config.rate_limit_per_minute)
@@ -71,7 +104,9 @@ class Authenticate:
         token_context = client_address.set(client)
         try:
             if self.sign_in is not None and self.sign_in.is_public(scope["path"]):
-                allowed, retry_after = self.public.allow(client)
+                # a budget per public path and address, so a flood of one (registration, the sign-in page) leaves the rest usable (L4)
+                bucket = "/.well-known" if scope["path"].startswith("/.well-known/") else scope["path"]
+                allowed, retry_after = self.public.allow(f"{bucket} {client}")
                 if allowed and scope["path"] == "/register" and scope.get("method") == "POST":
                     allowed, retry_after = self.registrations.allow(client)
                 if not allowed:
@@ -131,7 +166,8 @@ def invoke(state, kind: str, name: str, fn, subject=None):
         except Exception as exc:
             error = InfrastructureError(ErrorCode.INTERNAL_ERROR, f"The service stopped on an unexpected {type(exc).__name__}; nothing was retried. Check the request's status before asking again.",
                                         {"exception": type(exc).__name__})
-            event("internal_error", exception=type(exc).__name__, detail=str(exc)[:300], tool=name)
+            event("internal_error", exception=type(exc).__name__, tool=name)  # the class only: an exception's text may carry what it was handed
+            event("internal_error_detail", logging.DEBUG, exception=type(exc).__name__, detail=str(exc)[:300], tool=name)
             note("error", f"INTERNAL_ERROR: {type(exc).__name__}")
             return error.to_dict()
     note("ok")

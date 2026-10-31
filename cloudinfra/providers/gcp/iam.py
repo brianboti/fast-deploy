@@ -90,7 +90,7 @@ class GcpIam:
                 lambda policy: self.api.post(f"{IAP}/{name}:setIamPolicy", json={"policy": policy}))
 
     def _secret(self, resource):
-        return (lambda: self.api.get(f"{SECRETS}/{resource.resource_name}:getIamPolicy"),
+        return (lambda: self.api.get(f"{SECRETS}/{resource.resource_name}:getIamPolicy", **{"options.requestedPolicyVersion": 3}),
                 lambda policy: self.api.post(f"{SECRETS}/{resource.resource_name}:setIamPolicy", json={"policy": policy}))
 
     def _bucket(self, resource):

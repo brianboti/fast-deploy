@@ -530,7 +530,7 @@ def test_connect_blocks_name_the_network_and_machine_of_another_request(tmp_path
 
 def test_offline_validation_takes_access_members(tmp_path, capsys):
     path = tmp_path / "request.yaml"
-    path.write_text("region: us-central1\ncompute: {cpu: 2, memory_gb: 4}\ndatabase: {public_access: true}\naccess: [{member: 'user:alice@other.org'}]\n")
+    path.write_text("region: us-central1\ncompute: {cpu: 2, memory_gb: 4}\nnetwork: {}\ndatabase: {}\naccess: [{member: 'user:alice@other.org'}]\n")
     assert cli.main(["plan", str(path)]) == 0
     printed = capsys.readouterr()
     assert json.loads(printed.out)["planned"] and "not checked offline" in printed.err

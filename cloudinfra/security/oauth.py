@@ -24,6 +24,7 @@ from mcp.server.auth.provider import (
     AccessToken,
     AuthorizationCode,
     AuthorizationParams,
+    AuthorizeError,
     RefreshToken,
     RegistrationError,
     TokenError,
@@ -31,7 +32,7 @@ from mcp.server.auth.provider import (
 )
 from mcp.server.auth.routes import build_metadata, build_resource_metadata_url, cors_middleware, create_auth_routes, create_protected_resource_routes
 from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
-from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from mcp.shared.auth import OAuthClientInformationFull, OAuthMetadata, OAuthToken
 from pydantic import AnyHttpUrl
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
@@ -65,6 +66,21 @@ SCHEMA = (
 
 def digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+class Metadata(OAuthMetadata):
+    """The SDK's authorization server metadata with RFC 9207's flag: every authorization response carries `iss`, so a
+    client talking to several servers can tell which one answered (mix-up attacks)."""
+    authorization_response_iss_parameter_supported: bool = True
+
+
+def same_resource(asked: str, resource: str, issuer: str) -> bool:
+    """RFC 8707: the resource a client asks a token for is this server, its MCP endpoint or its origin; scheme and host
+    compared without case, a trailing slash ignored."""
+    def canonical(url: str) -> str:
+        parsed = urlparse(url.strip())
+        return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{parsed.path.rstrip('/')}"
+    return canonical(asked) in {canonical(resource), canonical(issuer)}
 
 
 def is_public(path: str) -> bool:
@@ -177,7 +193,7 @@ class SignIn:
 
     def current(self, name: str, credential: str):
         """The principal a sign-in was made for, while it is configured with the same token."""
-        return next((principal for principal in self.config.principals if principal.name == name and principal.token_sha256 == credential), None)
+        return next((principal for principal in self.config.principals if principal.name == name and principal.credential == credential), None)
 
     def principal_for(self, token: str):
         """The principal behind a live access token, or None; the request gate calls this when no static token matched."""
@@ -215,6 +231,8 @@ class SignIn:
         return None
 
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
+        if params.resource and not same_resource(params.resource, self.resource, self.issuer):  # review of 2026-10-30, L20
+            raise AuthorizeError("invalid_request", f"resource must be this server ({self.resource}); a token here is good for nothing else")
         login = secrets.token_urlsafe(32)
         payload = {"client_id": client.client_id, "client_name": client.client_name, "params": params.model_dump(mode="json")}
         await run_in_threadpool(self.store.put_grant, login, "login", LOGIN_SECONDS, payload)
@@ -320,10 +338,11 @@ input,button{{font:inherit;width:100%;box-sizing:border-box;padding:.6rem;margin
         code = secrets.token_urlsafe(32)
         record = {"scopes": params.scopes or [], "expires_at": time.time() + CODE_SECONDS, "client_id": pending["client_id"], "code_challenge": params.code_challenge,
                   "redirect_uri": str(params.redirect_uri), "redirect_uri_provided_explicitly": params.redirect_uri_provided_explicitly, "resource": params.resource,
-                  "subject": principal.name, "credential": principal.token_sha256}
+                  "subject": principal.name, "credential": principal.credential}
         await run_in_threadpool(self.store.put_grant, code, "code", CODE_SECONDS, record)
         self.note("sign_in", identity=principal.name, client=address, outcome="ok", detail=f"{pending.get('client_name') or 'unnamed'} {pending['client_id']}"[:500])
-        return RedirectResponse(construct_redirect_uri(str(params.redirect_uri), code=code, state=params.state), status_code=302, headers={"Cache-Control": "no-store"})
+        return RedirectResponse(construct_redirect_uri(str(params.redirect_uri), code=code, state=params.state, iss=self.issuer), status_code=302,
+                                headers={"Cache-Control": "no-store"})
 
     def routes(self) -> list[Route]:
         """The SDK's metadata, authorize, token, register and revoke routes, the protected resource metadata (at the path
@@ -334,7 +353,7 @@ input,button{{font:inherit;width:100%;box-sizing:border-box;padding:.6rem;margin
         registration, revocation = ClientRegistrationOptions(enabled=True), RevocationOptions(enabled=True)
         # The SDK's metadata advertises client-secret authentication; this service's clients are public (PKCE), which is also
         # what Claude needs to see before it uses a client id metadata document instead of registering
-        metadata = build_metadata(issuer, None, registration, revocation)
+        metadata = Metadata(**build_metadata(issuer, None, registration, revocation).model_dump())
         metadata.token_endpoint_auth_methods_supported = ["none"]
         own = Route(METADATA_PATH, endpoint=cors_middleware(MetadataHandler(metadata).handle, ["GET", "OPTIONS"]), methods=["GET", "OPTIONS"])
         sdk = [route for route in create_auth_routes(self, issuer, client_registration_options=registration, revocation_options=revocation) if route.path != METADATA_PATH]

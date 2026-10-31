@@ -25,7 +25,9 @@ def test_create_compute_body_is_least_privilege_and_labelled():
     assert body["machineType"] == "zones/us-central1-a/machineTypes/e2-standard-4"
     assert body["disks"][0]["initializeParams"]["sourceImage"].endswith("ubuntu-2404-lts-amd64") and body["disks"][0]["initializeParams"]["diskSizeGb"] == "20"
     assert body["networkInterfaces"][0]["network"].endswith("/global/networks/default") and body["networkInterfaces"][0]["accessConfigs"][0]["type"] == "ONE_TO_ONE_NAT"
-    assert body["metadata"] == {"items": [{"key": "enable-oslogin", "value": "TRUE"}]} and body["serviceAccounts"] == [] and body["shieldedInstanceConfig"]["enableSecureBoot"]
+    assert body["metadata"] == {"items": [{"key": "enable-oslogin", "value": "TRUE"}, {"key": "block-project-ssh-keys", "value": "TRUE"},
+                                          {"key": "serial-port-enable", "value": "FALSE"}]}
+    assert body["serviceAccounts"] == [] and body["shieldedInstanceConfig"]["enableSecureBoot"] and body["deletionProtection"] is True
     assert "startup-script" not in str(body) and body["labels"]["managed-by"] == "cloudinfra" and body["labels"]["team"] == "data" and body["labels"]["cloudinfra-owner"] == "app-layer"
     assert resource.status == ResourceStatus.READY and resource.internal_ip.startswith("10.10.0.") and resource.public_ip.startswith("34.") and resource.machine_type == "e2-standard-4"
     assert resource.cpu == 4 and resource.memory_gb == 16 and resource.os_image == "ubuntu-2404-lts-amd64" and resource.id == planned[0].spec["resource_id"]
@@ -115,10 +117,13 @@ def test_database_private_encrypted_protected_and_password_handed_over_once():
     settings = body["settings"]
     assert body["databaseVersion"] == "POSTGRES_18" and settings["tier"] == "db-custom-2-7680" and settings["deletionProtectionEnabled"] is True
     assert settings["ipConfiguration"] == {"ipv4Enabled": False, "sslMode": "ENCRYPTED_ONLY", "privateNetwork": network.provider_id}
-    assert settings["backupConfiguration"]["enabled"] and settings["userLabels"]["managed-by"] == "cloudinfra" and "rootPassword" not in body
+    assert settings["backupConfiguration"]["enabled"] and settings["userLabels"]["managed-by"] == "cloudinfra"
+    # the default user gets a password nobody keeps (S2, M13): never one without, never the app's
+    assert len(body["rootPassword"]) >= 32 and body["rootPassword"] != "generated-by-the-orchestrator"
     assert password == "generated-by-the-orchestrator" and fake.sql_users["pg-db-aaaaaa"] == [{"name": "app", "password": password}]
     assert database.host == "10.20.0.3" and database.port == 5432 and database.status == ResourceStatus.READY and database.connection_name.endswith(":pg-db-aaaaaa")
     assert password not in database.model_dump_json() and database.password_secret is None  # the orchestrator links the secret it makes
+    assert body["rootPassword"] not in database.model_dump_json()
     provider.delete_database(database, ctx)
     patched = next(call[2] for call in fake.calls if call[0] == "PATCH")
     assert patched == {"settings": {"deletionProtectionEnabled": False}} and provider.get_database(database).status == ResourceStatus.DELETED

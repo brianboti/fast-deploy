@@ -17,7 +17,9 @@ class GcpSecret:
         resource_name = f"projects/{self.api.project}/secrets/{planned.name}"
         resource = SecretResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region, provider_id=resource_name,
                                   resource_name=resource_name, versions=0, status=ResourceStatus.READY, labels=translate.labels(ctx), purpose=planned.spec.get("purpose"))
-        self.api.post(f"{SECRETS}/projects/{self.api.project}/secrets", json={"replication": {"automatic": {}}, "labels": translate.labels(ctx)}, secretId=planned.name)
+        key = self.settings.kms_keys.get(ctx.region)  # with the operator's key the secret is kept in the request's region only, under it
+        replication = {"userManaged": {"replicas": [{"location": ctx.region, "customerManagedEncryption": {"kmsKeyName": key}}]}} if key else {"automatic": {}}
+        self.api.post(f"{SECRETS}/projects/{self.api.project}/secrets", json={"replication": replication, "labels": translate.labels(ctx)}, secretId=planned.name)
         if not spec.generate_value:
             return resource
         ctx.accepted(resource.model_copy(update={"status": ResourceStatus.CREATING}))  # known from here: a failed first version still deletes it

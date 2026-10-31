@@ -2,6 +2,11 @@
 #   CLOUDINFRA_CONFIG=cloudinfra.local.yaml uvicorn cloudinfra.mcp.server:create_app --factory --host 127.0.0.1 --port 8100
 # No credential lives here: on a Google Cloud machine the service uses the attached service account; on a laptop it asks
 # gcloud for a token, impersonating the service account named below when one is.
+#
+# Behind a proxy or load balancer, every caller arrives from the proxy's address, so the per-address budgets (sign-in
+# failures, registrations, the public OAuth paths) are shared by everyone. Start uvicorn with --proxy-headers and set
+# FORWARDED_ALLOW_IPS to the proxy's own address (never "*", which lets any caller pick its address and write it into the
+# audit trail). Directly on the internet, leave both unset.
 database: cloudinfra.db
 allowed_hosts:
   - "127.0.0.1:*"
@@ -13,6 +18,8 @@ allowed_hosts:
 # cleanup_on_failure: true                        # delete what a failed request created; false keeps it for inspection and says so
 # sign_in:                                       # sign-in for Claude chat (docs/INFRASTRUCTURE-ARCHITECTURE.md, "Connect Claude chat")
 #   url: https://infra.example.com                # the public HTTPS address; add its host to allowed_hosts
+# allow_public_exposure: false                   # true lets requests make public things: machine addresses, open networks and firewall rules, load
+#                                                 # balancers, front doors, public databases, Cloud Run open to all traffic. Off, all are refused
 # closed_public_ports: [22, 3389]               # never opened from a public range by a network block or configure_firewall; 22 and 3389 always
 # registrations_per_hour: 10                      # OAuth client registrations one address may make in an hour, with sign-in on
 # max_request_bytes: 65536                        # larger request bodies are refused with 413 before they are read
@@ -51,7 +58,9 @@ providers:
   gcp:
     project_id: your-infrastructure-project
     allowed_regions: [us-central1]
-    default_network: default                      # where machines go when a request has no network block
+    default_network: platform                     # where machines go when a request has no network block: a network the operator made, with
+                                                  # flow logs and no rule open to the internet. Not Google's "default", whose default-allow-ssh
+                                                  # rule admits port 22 from everywhere (CIS GCP 3.1)
     # default_subnet: null                        # needed when default_network is a custom-mode network
     # impersonate_service_account: cloudinfra@your-infrastructure-project.iam.gserviceaccount.com
     # quota_project: your-infrastructure-project   # on a laptop with a person's sign-in: the project Google counts the calls against
@@ -61,6 +70,13 @@ providers:
     #   - us-central1-docker.pkg.dev/your-apps-project/shop
     # public_domains: [apps.example.com]          # DNS domains a cluster's front door may serve over HTTPS
     # allow_public_services: false                # whether a request may make a managed container service callable without signing in
+    # network_logs: true                          # flow logs on every subnet and logging on every firewall rule this service makes
+    # deny_egress: false                          # true: networks reach only private ranges and Google's APIs (private.googleapis.com), no internet
+    # cluster_authorized_networks: [203.0.113.0/24]   # the only ranges that reach a cluster's control plane; include where both services run
+    # binary_authorization: true                  # clusters enforce, and Cloud Run applies, the project's Binary Authorization policy
+    # kms_keys:                                   # Cloud KMS keys by region for disks, databases, buckets, secrets, registries and cluster secrets
+    #   us-central1: projects/your-keys-project/locations/us-central1/keyRings/platform/cryptoKeys/data
+    # cloud_armor_policy: platform-edge           # a Cloud Armor policy you made, put on every application load balancer
     # profiles:                                   # software images the platform team approves; a request names one as compute.profile
     #   gpu-signed:                               # built with Google's cuda_installer.pyz build_image: signed drivers, Secure Boot stays on
     #     image: projects/your-images-project/global/images/family/gpu-signed-cu129
@@ -73,7 +89,7 @@ providers:
     # default_accelerator_profile: gpu-signed     # what GPU machines get when they name no profile and no os
 principals:                                       # the Application Layer systems that may call the service
   - name: app-layer
-    token_sha256: "REPLACE_WITH_THE_HASH_FROM_cloud-infra_token"
+    token_sha256: "REPLACE_WITH_THE_HASH_FROM_cloud-infra_token"   # or token_hmac_sha256, made with CLOUDINFRA_TOKEN_PEPPER set (docs/SETUP.md)
     can_provision: true
     can_destroy: true                             # also needed to set a lifetime, which ends in a destroy
     # identity: serviceAccount:app-layer@your-app-project.iam.gserviceaccount.com   # granted on what this caller creates

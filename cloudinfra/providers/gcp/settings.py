@@ -1,9 +1,10 @@
 """The operator's settings for the Google Cloud adapter: the project, the regions, where machines go by default, and how the
 adapter finds its credential on a laptop. No credential is ever in this model."""
+import ipaddress
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 PROJECT = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
 SERVICE_ACCOUNT = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$")
@@ -12,6 +13,8 @@ SERVICE_ACCOUNT = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28
 # An image the operator names for a profile: a family (the newest image in it) or one pinned image.
 IMAGE = re.compile(r"^projects/[a-z][a-z0-9-]{4,61}[a-z0-9]/global/images/(?:family/)?[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$")
 PROFILE_NAME = re.compile(r"^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$")
+KMS_KEY = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/([a-z0-9-]+)/keyRings/[A-Za-z0-9_-]{1,63}/cryptoKeys/[A-Za-z0-9_-]{1,63}$")
+POLICY_NAME = re.compile(r"^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$")
 
 
 class GcpProfile(BaseModel):
@@ -56,6 +59,48 @@ class GcpSettings(BaseModel):
     public_domains: list[str] = Field(default_factory=list)
     # Whether a request may make a managed container service callable without signing in (Cloud Run's invoker check off).
     allow_public_services: bool = False
+    # The defaults the CIS benchmarks and Google's hardening guides expect (security assessment of 2026-10-30, release S2).
+    # Flow logs on every subnet and logging on every firewall rule the service makes; billed by volume in Cloud Logging.
+    network_logs: bool = True
+    # Refuse egress from the networks the service makes, except to private ranges and to Google's APIs at their private
+    # addresses (private.googleapis.com, through a DNS response policy); nothing on such a network reaches the internet.
+    deny_egress: bool = False
+    # The ranges that may reach a cluster's control plane (authorized networks); empty leaves the endpoint open to any
+    # address, still behind Google's IAM. List where cloudinfra and appdelivery run, or they cannot reach their clusters.
+    cluster_authorized_networks: list[str] = Field(default_factory=list, max_length=50)
+    # Binary Authorization on clusters (enforced) and Cloud Run (the project's default policy): the project's policy, the
+    # operator's, decides which images may run, such as only those built and attested in the trusted project.
+    binary_authorization: bool = True
+    # Customer-managed encryption keys (Cloud KMS) by region, for what requests in it make: disks, databases, buckets,
+    # secrets, registries, and a cluster's node disks and Kubernetes Secrets. Each service's own agent needs
+    # roles/cloudkms.cryptoKeyEncrypterDecrypter on the key (docs/SETUP.md).
+    kms_keys: dict[str, str] = Field(default_factory=dict)
+    # A Cloud Armor policy the operator made, attached to every application load balancer the service makes; one place
+    # for the WAF rules and rate limits a security team keeps.
+    cloud_armor_policy: str | None = Field(default=None, pattern=POLICY_NAME.pattern)
+
+    @field_validator("cluster_authorized_networks")
+    @classmethod
+    def _authorized(cls, value):
+        for cidr in value:
+            try:
+                if "/" not in cidr:
+                    raise ValueError(cidr)
+                ipaddress.IPv4Network(cidr, strict=True)
+            except ValueError:
+                raise ValueError(f"cluster_authorized_networks: {cidr!r} is not an IPv4 range such as 203.0.113.0/24") from None
+        return value
+
+    @field_validator("kms_keys")
+    @classmethod
+    def _keys(cls, value):
+        for region, key in value.items():
+            found = KMS_KEY.fullmatch(key)
+            if not found:
+                raise ValueError(f"kms_keys.{region}: {key!r} is not projects/PROJECT/locations/REGION/keyRings/RING/cryptoKeys/KEY")
+            if found.group(1) != region:
+                raise ValueError(f"kms_keys.{region}: the key is in {found.group(1)}; a key encrypts only resources in its own region")
+        return value
 
     @model_validator(mode="after")
     def _profiles(self):

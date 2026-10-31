@@ -25,6 +25,17 @@ def tenant_namespace(ctx) -> str:
 
 # The label on the namespaces made for requests. `edit` cannot change a namespace, so a team cannot take it off.
 TENANT = {"cloudinfra-tenant": "true"}
+# Pod Security admission on the same namespaces (https://kubernetes.io/docs/concepts/security/pod-security-standards/):
+# baseline refuses privileged, hostNetwork, hostPID, hostPath and added capabilities beyond the default set, which `edit`
+# could otherwise use to reach the node and its account's token; restricted is reported as a warning and in the audit.
+# Labels on the namespace, which `edit` cannot change (found in the review of 2026-10-30, M6).
+POD_SECURITY = {"pod-security.kubernetes.io/enforce": "baseline", "pod-security.kubernetes.io/enforce-version": "latest",
+                "pod-security.kubernetes.io/warn": "restricted", "pod-security.kubernetes.io/audit": "restricted"}
+
+
+def tenant_labels(labels: dict[str, str]) -> dict[str, str]:
+    """The labels a request's namespace carries: the caller's, the tenant mark the admission policy matches, and Pod Security."""
+    return {**labels, **TENANT, **POD_SECURITY}
 ADMISSION = "/apis/admissionregistration.k8s.io/v1"
 NO_PUBLIC_ENTRY = "cloudinfra-no-public-entry"
 
@@ -32,7 +43,8 @@ NO_PUBLIC_ENTRY = "cloudinfra-no-public-entry"
 def no_public_entry(labels: dict[str, str]) -> list[tuple[str, dict]]:
     """A ValidatingAdmissionPolicy and its binding (Kubernetes 1.30 and later, built in) that refuse, in a request's
     namespace, the three things that make a public Google load balancer on GKE: a Service of type LoadBalancer, an
-    Ingress and a Gateway. A public address is the infrastructure layer's to make (docs/DELIVERY-SPEC.md, phase 3)."""
+    Ingress and a Gateway; and a Service of type NodePort, which opens a port on every node. A public address is the
+    infrastructure layer's to make (docs/DELIVERY-SPEC.md, phase 3)."""
     said = "is refused in a namespace the infrastructure layer made for a request: a public address is the infrastructure layer's to make"
     policy = {"apiVersion": "admissionregistration.k8s.io/v1", "kind": "ValidatingAdmissionPolicy", "metadata": {"name": NO_PUBLIC_ENTRY, "labels": labels},
               "spec": {"failurePolicy": "Fail",
@@ -43,6 +55,8 @@ def no_public_entry(labels: dict[str, str]) -> list[tuple[str, dict]]:
                        "validations": [
                            {"expression": "object.kind != 'Service' || !has(object.spec.type) || object.spec.type != 'LoadBalancer'",
                             "message": f"A Service of type LoadBalancer {said}"},
+                           {"expression": "object.kind != 'Service' || !has(object.spec.type) || object.spec.type != 'NodePort'",
+                            "message": f"A Service of type NodePort {said}"},
                            {"expression": "object.kind != 'Ingress'", "message": f"An Ingress {said}"},
                            {"expression": "object.kind != 'Gateway'", "message": f"A Gateway {said}"}]}}
     binding = {"apiVersion": "admissionregistration.k8s.io/v1", "kind": "ValidatingAdmissionPolicyBinding", "metadata": {"name": NO_PUBLIC_ENTRY, "labels": labels},

@@ -38,7 +38,8 @@ def test_a_front_door_with_hostnames_serves_https_on_a_reserved_address(tmp_path
     assert response.error is None, response.error
     [cluster] = response.resources.cluster
     [created] = fake.clusters.values()
-    assert created["networkConfig"] == {"gatewayApiConfig": {"channel": "CHANNEL_STANDARD"}} and created["addonsConfig"]["httpLoadBalancing"] == {"disabled": False}
+    assert created["networkConfig"] == {"datapathProvider": "ADVANCED_DATAPATH", "gatewayApiConfig": {"channel": "CHANNEL_STANDARD"}}
+    assert created["addonsConfig"]["httpLoadBalancing"] == {"disabled": False}
     door = cluster.public
     assert door.address == fake.addresses["shop-cluster-door"]["address"] and door.hostnames == [HOST] and door.gateway == "cloudinfra-gateway/public"
     assert fake.sslCertificates["shop-cluster-door"]["managed"]["domains"] == [HOST] and door.certificate == "PROVISIONING"

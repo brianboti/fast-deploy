@@ -1,3 +1,66 @@
+# Unreleased: the security assessment's second release (S2)
+
+Release S2 of the assessment of 2026-10-30 ([research/RESEARCH-2026-10-30-security-assessment.md](research/RESEARCH-2026-10-30-security-assessment.md),
+section 7): the provider defaults the CIS benchmarks and Google's hardening guides expect, and the Low findings that
+sit in code. Each item has a test in `tests/cloudinfra/test_infra_security_s2.py` or
+`tests/appdelivery/test_delivery_security_s2.py`.
+
+**Before you upgrade.** Several defaults close what was open:
+
+- `allow_public_exposure` is off, so a request for a public machine address, an open network or firewall rule, a load
+  balancer, a front door, a public database or a Cloud Run service taking all traffic is refused until you turn it on.
+- Binary Authorization is on for new clusters and Cloud Run (`providers.gcp.binary_authorization`): enable
+  `binaryauthorization.googleapis.com`. The project's default policy allows every image until you write one.
+- A Cloud Run service or job reads only the secrets its block names (`secrets: [...]`). Before, it read all of the
+  request's. A Cloud Run service's ingress defaults to `internal_and_load_balancer`.
+- Cluster nodes are private by default and reach the internet through the request network's new Cloud NAT. A cluster on
+  the operator's default network needs a NAT there.
+- A machine may run only as an identity at `use`.
+- The service refuses to grant the node role on the project if its account could grant any other role. Set the
+  condition in docs/SETUP.md section 2.
+- `appdelivery`'s `cloudinfra.url` must be `https` unless it is this host.
+- Namespaces made before this release keep their labels: Pod Security applies to clusters made from now on.
+
+Security:
+
+- **Pod Security on tenant namespaces, NodePort refused (M6).** `baseline` enforced, `restricted` warned and audited,
+  on labels `edit` cannot change; the admission policy refuses a Service of type NodePort beside LoadBalancer, Ingress
+  and Gateway.
+- **Clusters (M7).** Private nodes by default, Dataplane V2 (NetworkPolicy), the security posture dashboard, Binary
+  Authorization enforcing the project's policy, and the operator's `cluster_authorized_networks` for the control plane.
+- **Networks (M10).** Flow logs on the subnet (five minutes, half the flows, all metadata) and logging on every rule
+  (`network_logs`), a Cloud Router with Cloud NAT (`network.nat`, on by default), and with `deny_egress` egress refused
+  except to private ranges and private.googleapis.com, with a DNS response policy for `*.googleapis.com`, `*.pkg.dev`
+  and `*.gcr.io`.
+- **One switch over every public path (M11)**, `allow_public_exposure`; the example configuration points
+  `default_network` at a network the operator made, not Google's `default`.
+- **Load balancers (M12).** With `hostnames` in the operator's domains: a managed certificate, an SSL policy (MODERN, TLS
+  1.2 at least), HTTPS on 443 and a 301 from 80. Every backend logs its requests; an http backend carries the
+  operator's `cloud_armor_policy`.
+- **Cloud SQL (M13).** The CIS flags of the engine, IAM database authentication, the operator's KMS key for the region,
+  and a default-user password set at creation and never kept.
+- **Machines (M14).** No serial port, no project-wide SSH keys, deletion protection lifted only by an explicit delete,
+  and no `admin` identity on a machine, whose token every login can read.
+- **The node account's project role (M15)** is granted only when the service's own account holds its IAM-admin role
+  under the granting condition, checked from the policy before the write.
+- **Cloud Run (L9)**: internal and load-balancer ingress by default, Binary Authorization, named secrets only; the
+  delivery plan refuses a binding to a secret the runtime account does not read.
+- **Storage, secrets, registries (L10).** Buckets state seven days of soft delete; Secret Manager policies are read at
+  version 3; registries carry a dry-run cleanup policy for untagged images older than ninety days; one setting,
+  `kms_keys`, puts the operator's key on disks, databases, buckets, secrets, registries and a cluster's Secrets and node
+  disks.
+- **What `appdelivery` reads from `cloudinfra` (L11)** must have the shape of what it names before it reaches gcloud, a
+  TLS endpoint or a Google URL; a run's name is checked before it becomes part of a URL.
+- **A create Google took but never answered (L8)** is looked up by its planned name, recorded and cleaned up, never left
+  an orphan.
+- **Keyed token hashes (L7)**, `token_hmac_sha256` with a pepper in `CLOUDINFRA_TOKEN_PEPPER` or
+  `APPDELIVERY_TOKEN_PEPPER`; the services will not start without it, and the token commands print the keyed hash.
+- **Logs (L6)** redact credential-shaped text in any field; an internal error logs its class, its text only at DEBUG.
+- **Sign-in (L4, L20).** A budget per public path and address; `resource` must name this server; the redirect back
+  carries `iss` and the metadata says so. SETUP.md and both example files say how to run behind a proxy.
+- **One gate, written twice (L13, L14).** The two services' authentication code is the same again (a rate limit is
+  `LIMIT_EXCEEDED` in both) and a test fails when they drift; reading what a target runs now is checked like any action.
+
 # Unreleased: the security assessment's first release (S1)
 
 The security assessment of 2026-10-30 ([research/RESEARCH-2026-10-30-security-assessment.md](research/RESEARCH-2026-10-30-security-assessment.md))

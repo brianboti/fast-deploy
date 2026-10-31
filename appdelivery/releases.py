@@ -9,6 +9,7 @@ stays half on one version and half on another. One release per request and group
 only in the worker's memory, on their way to the machines; a container's log is cleaned of them before it is kept.
 """
 import concurrent.futures
+import re
 import threading
 import time
 
@@ -32,6 +33,7 @@ MAX_WAIT_SECONDS = 45
 POLL_SECONDS = 0.5
 MAX_LOG = 4000
 REDACTED = "[redacted]"
+EXECUTION = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")  # a Cloud Run execution's name
 
 
 class InlineExecutor:
@@ -457,7 +459,7 @@ class Delivery:
 
     def get_run(self, release_id: str, execution: str, principal) -> RunResponse:
         record, release, target, deployer = self._job_release(release_id, principal, None)
-        if not execution.startswith(f"{target.name}-"):
+        if not EXECUTION.fullmatch(execution) or not execution.startswith(f"{target.name}-"):  # it becomes part of a Cloud Run URL (L11)
             raise DeliveryError(ErrorCode.NOT_FOUND, f"{execution} is not a run of {target.name}", {"execution": execution})
         return deployer.execution(target, release_id, execution)
 
@@ -587,13 +589,17 @@ class Delivery:
                 continue
             entry = {"group": record["group"], "release_id": record["release_id"], "image": record["image"], "environment": record["environment"], "machines": []}
             release = ReleaseRequest.model_validate(record["request"])
-            session = self._sessions(release)(record["environment"]) if live else None
+            infra, session = None, None
+            if live:  # the host's status action is an action too: everything checked again first, as before any other (L13)
+                try:
+                    infra, session = self._prepare(record, release)
+                except DeliveryError as exc:
+                    entry["error"] = exc.detail().model_dump(mode="json")
             for target in record["targets"]:
                 machine = {"resource": target["resource_id"], "name": target["name"], "status": target["status"]}
                 if session is not None:
                     try:
                         if release.target.single:
-                            infra = self.infra(record["environment"]).get_request(request_id)
                             report = session.status(self._target(infra, release), release.target.workload)
                         else:
                             report = session.status(Machine(target["name"], target["zone"]))

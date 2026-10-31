@@ -146,7 +146,8 @@ def test_new_adapters_send_the_right_bodies_and_tear_down():
     assert cluster_body["nodePools"][0]["initialNodeCount"] == 2 and cluster_body["nodePools"][0]["config"]["machineType"] == "e2-standard-2"
     assert cluster_body["workloadIdentityConfig"] == {"workloadPool": "test-project.svc.id.goog"} and cluster_body["releaseChannel"] == {"channel": "REGULAR"}
     # GKE takes names only, and refuses a self link as malformed (found on a real project on 2026-10-29)
-    assert cluster_body["network"] == "platform-net" and cluster_body["subnetwork"] == network.subnet.rsplit("/", 1)[-1] and "privateClusterConfig" not in cluster_body
+    assert cluster_body["network"] == "platform-net" and cluster_body["subnetwork"] == network.subnet.rsplit("/", 1)[-1]
+    assert cluster_body["privateClusterConfig"] == {"enablePrivateNodes": True, "enablePrivateEndpoint": False}, "private nodes by default (S2)"
     assert "cloud-platform" not in str(cluster_body["nodePools"][0]["config"]["oauthScopes"])
     assert cluster.endpoint == "35.201.0.7" and cluster.version == "1.31.1-gke.1" and cluster.status == ResourceStatus.READY
     web = [provider.create_compute(request.group("web"), planned[f"compute:platform-web-{index}"], ctx, network) for index in (1, 2)]

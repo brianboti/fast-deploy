@@ -1,4 +1,8 @@
-"""Cloud SQL behind the generic database primitives: one instance, one database, one user with a password returned once."""
+"""Cloud SQL behind the generic database primitives: one instance, one database, one user with a password returned once.
+
+The instance carries the CIS database flags of its engine and IAM database authentication (translate.DB_FLAGS), the
+operator's KMS key for its region when there is one, and a root password nobody knows: Cloud SQL's default user (root on
+MySQL, postgres on PostgreSQL) is never left without one, and an operator who needs it resets it through IAM."""
 import secrets
 
 from ...models.errors import ErrorCode, InfrastructureError
@@ -26,19 +30,24 @@ class GcpDatabase:
             ip_configuration["privateNetwork"] = network.provider_id
         body = {
             "name": planned.name, "region": ctx.region, "databaseVersion": planned.spec["database_version"],
+            "rootPassword": secrets.token_urlsafe(32),  # never kept: no default user without a password (M13)
             "settings": {
+                "databaseFlags": [{"name": name, "value": value} for name, value in translate.DB_FLAGS[spec.engine].items()],
                 "tier": planned.spec["tier"], "edition": "ENTERPRISE", "availabilityType": "REGIONAL" if spec.high_availability else "ZONAL",
                 "dataDiskType": "PD_SSD", "dataDiskSizeGb": str(spec.storage_gb), "storageAutoResize": False,
                 "backupConfiguration": {"enabled": True, **({"pointInTimeRecoveryEnabled": True} if spec.engine == "postgresql" else {"binaryLogEnabled": True})},
                 "ipConfiguration": ip_configuration, "deletionProtectionEnabled": True, "userLabels": translate.labels(ctx),
             },
         }
+        key = self.settings.kms_keys.get(ctx.region)
+        if key:
+            body["diskEncryptionConfiguration"] = {"kmsKeyName": key}
         resource = DatabaseResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region,
                                     engine=spec.engine, version=planned.spec["version"], tier=planned.spec["tier"], storage_gb=spec.storage_gb,
                                     high_availability=spec.high_availability, public_access=spec.public_access, port=translate.DB_PORTS[spec.engine],
                                     database=spec.database_name, username=spec.username, labels=body["settings"]["userLabels"],
                                     provider_id=f"{self._instances()}/{planned.name}", status=ResourceStatus.CREATING)
-        operation = self.api.post(self._instances(), json=body)
+        operation = self.api.create(self._instances(), f"{self._instances()}/{planned.name}", json=body)
         ctx.accepted(resource)  # the instance is known from here: a failure making its database or user still deletes it
         self.api.wait_sql(operation)
         self.api.wait_sql(self.api.post(f"{self._instances()}/{planned.name}/databases", json={"name": spec.database_name}))

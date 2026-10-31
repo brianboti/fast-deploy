@@ -8,6 +8,8 @@ import functools
 import hashlib
 import hmac
 import json
+import logging
+import os
 import threading
 import time
 
@@ -23,10 +25,40 @@ identity = contextvars.ContextVar("appdelivery_principal")
 client_address = contextvars.ContextVar("appdelivery_client", default="unknown")
 
 
+PEPPER_ENV = "APPDELIVERY_TOKEN_PEPPER"
+MIN_PEPPER = 32
+
+
+def pepper() -> bytes | None:
+    """The key for token_hmac_sha256, from the environment only: never in the configuration or the state."""
+    value = os.environ.get(PEPPER_ENV, "")
+    return value.encode() if value else None
+
+
+def keyed(token: str, key: bytes) -> str:
+    return hmac.new(key, token.encode(), hashlib.sha256).hexdigest()
+
+
+def check_pepper(config) -> None:
+    """A configuration with keyed hashes needs the pepper, long enough, before the service takes a call."""
+    key = pepper()
+    if any(principal.token_hmac_sha256 for principal in config.principals) and (key is None or len(key) < MIN_PEPPER):
+        raise ValueError(f"principals use token_hmac_sha256: set {PEPPER_ENV} to the pepper they were made with ({MIN_PEPPER} characters or more)")
+
+
 def find_principal(config, token: str):
-    """The configured principal whose token this is, or None; hashes compared in constant time."""
-    digest = hashlib.sha256(token.encode()).hexdigest()
-    return next((principal for principal in config.principals if token and hmac.compare_digest(digest, principal.token_sha256)), None)
+    """The configured principal whose token this is, or None; hashes compared in constant time, keyed ones with the pepper."""
+    if not token:
+        return None
+    digest, key = hashlib.sha256(token.encode()).hexdigest(), pepper()
+    peppered = keyed(token, key) if key else None
+    for principal in config.principals:
+        if principal.token_hmac_sha256 is not None:
+            if peppered is not None and hmac.compare_digest(peppered, principal.token_hmac_sha256):
+                return principal
+        elif hmac.compare_digest(digest, principal.token_sha256):
+            return principal
+    return None
 
 
 class RateLimiter:
@@ -47,7 +79,7 @@ class RateLimiter:
                 return False, max(1, int(self.window - (now - start)) + 1)
             self.windows[key] = (start, count + 1)
             if len(self.windows) > 10_000:
-                self.windows = {key: value for key, value in self.windows.items() if now - value[0] < self.window}
+                self.windows = {k: v for k, v in self.windows.items() if now - v[0] < self.window}
             return True, 0
 
 
@@ -58,6 +90,7 @@ class Authenticate:
 
     def __init__(self, app, config, state=None, sign_in=None):
         self.app, self.config, self.state, self.sign_in = app, config, state, sign_in
+        check_pepper(config)
         self.identities = RateLimiter(config.rate_limit_per_minute)
         self.failures = RateLimiter(config.auth_failures_per_minute)
         self.public = RateLimiter(config.rate_limit_per_minute)
@@ -68,10 +101,12 @@ class Authenticate:
         if scope["type"] != "http" or scope["path"] == "/healthz":
             return await self.app(scope, receive, send)
         client = (scope.get("client") or ("unknown", 0))[0]
-        address = client_address.set(client)
+        token_context = client_address.set(client)
         try:
             if self.sign_in is not None and self.sign_in.is_public(scope["path"]):
-                allowed, retry_after = self.public.allow(client)
+                # a budget per public path and address, so a flood of one (registration, the sign-in page) leaves the rest usable (L4)
+                bucket = "/.well-known" if scope["path"].startswith("/.well-known/") else scope["path"]
+                allowed, retry_after = self.public.allow(f"{bucket} {client}")
                 if allowed and scope["path"] == "/register" and scope.get("method") == "POST":
                     allowed, retry_after = self.registrations.allow(client)
                 if not allowed:
@@ -94,7 +129,7 @@ class Authenticate:
                                           status_code=401, headers={"WWW-Authenticate": self.challenge})(scope, receive, send)
             allowed, retry_after = self.identities.allow(principal.name)
             if not allowed:
-                return await JSONResponse({"status": "FAILED", "error": {"code": "PERMISSION_DENIED", "message": "Rate limit exceeded for this identity; retry later"}},
+                return await JSONResponse({"status": "FAILED", "error": {"code": "LIMIT_EXCEEDED", "message": "Rate limit exceeded for this identity; retry later"}},
                                           status_code=429, headers={"Retry-After": str(retry_after)})(scope, receive, send)
             context = identity.set(principal)
             try:
@@ -102,7 +137,7 @@ class Authenticate:
             finally:
                 identity.reset(context)
         finally:
-            client_address.reset(address)
+            client_address.reset(token_context)
 
 
 def invoke(state, kind: str, name: str, fn, subject=None):
@@ -131,15 +166,16 @@ def invoke(state, kind: str, name: str, fn, subject=None):
         except Exception as exc:
             error = DeliveryError(ErrorCode.INTERNAL_ERROR, f"The service stopped on an unexpected {type(exc).__name__}; nothing was retried. Check the release before asking again",
                                   {"exception": type(exc).__name__})
-            event("internal_error", exception=type(exc).__name__, tool=name)
+            event("internal_error", exception=type(exc).__name__, tool=name)  # the class only: an exception's text may carry what it was handed
+            event("internal_error_detail", logging.DEBUG, exception=type(exc).__name__, detail=str(exc)[:300], tool=name)
             note("error", f"INTERNAL_ERROR: {type(exc).__name__}")
             return error.to_dict()
     note("ok")
     return result.model_dump(mode="json") if hasattr(result, "model_dump") else result
 
 
-def failed(result) -> bool:
-    return isinstance(result, dict) and result.get("status") == "FAILED" and bool(result.get("error"))
+def failed(result: dict) -> bool:
+    return isinstance(result, dict) and result.get("status") == "FAILED" and "error" in result
 
 
 def as_tool_error(result: dict) -> CallToolResult:
@@ -163,5 +199,6 @@ def audited(state):
                 return invoke(state, "tool", fn.__name__, lambda: fn(*args, **kwargs), subject if isinstance(subject, str) else None)
             result = await run_in_threadpool(call)
             return as_tool_error(result) if failed(result) else result
+        wrapper.appdelivery_audited = True
         return wrapper
     return decorate
