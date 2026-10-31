@@ -15,7 +15,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 from . import __version__, events, tools
-from .auth import Authenticate, as_tool_error, audited, client_address, identity, invoke
+from .auth import Authenticate, as_tool_error, audited, check_pepper, client_address, identity, invoke
 from .catalog import CATALOG, render_markdown
 from .config import load_config
 from .errors import DeliveryError, ErrorCode, problems_from
@@ -34,7 +34,7 @@ INSTRUCTIONS = (
     "Kubernetes on a cluster, and puts the previous release back if it fails; get_release follows it; rollback_release and remove_release act on the "
     "release running on a target. Every result carries status; a FAILED one carries error.code and error.message."
 )
-HTTP_STATUS = {"NOT_FOUND": 404, "PERMISSION_DENIED": 403, "INVALID_STATE": 409, "NOT_GRANTED": 409, "NOT_BUILT_HERE": 409, "BUILD_LIMIT_EXCEEDED": 429,
+HTTP_STATUS = {"NOT_FOUND": 404, "PERMISSION_DENIED": 403, "INVALID_STATE": 409, "NOT_GRANTED": 409, "NOT_BUILT_HERE": 409, "BUILD_LIMIT_EXCEEDED": 429, "LIMIT_EXCEEDED": 429,
                "BUILD_UNAVAILABLE": 502, "INFRA_UNAVAILABLE": 502, "INFRA_AUTH_FAILED": 502,
                "GOOGLE_AUTH_FAILED": 502, "SECRET_UNAVAILABLE": 502, "MACHINE_UNREACHABLE": 502, "CLUSTER_UNREACHABLE": 502, "SERVICE_UNREACHABLE": 502, "INTERNAL_ERROR": 500}
 
@@ -103,6 +103,7 @@ def read_body(raw: bytes, code: ErrorCode = ErrorCode.INVALID_RELEASE) -> dict:
 
 
 def build_app(config, delivery: Delivery | None = None, state: StateManager | None = None, executor=None) -> FastAPI:
+    check_pepper(config)  # keyed token hashes need their pepper before anything starts
     os.umask(0o077)  # the state file, its lock and journal, the log and gcloud's files are the service's alone
     events.configure(path=config.log_file)
     state = state or (delivery.state if delivery is not None else StateManager(config.database))

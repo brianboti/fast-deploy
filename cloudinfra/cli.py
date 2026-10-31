@@ -17,6 +17,7 @@ from .models.request import InfrastructureRequest
 from .orchestration import access, planner, validator
 from .providers import ProviderRegistry
 from .security import validation
+from .security.auth import keyed, pepper
 
 OFFLINE = {"providers": {"gcp": {"project_id": "example-project", "allowed_regions": ["us-central1"]}}, "access": {"allowed_domains": ["example.com"]},
            "principals": [{"name": "offline", "token_sha256": "0" * 64, "can_provision": True}]}
@@ -59,7 +60,11 @@ def main(argv=None) -> int:
     if args.command == "token":
         token = secrets.token_urlsafe(32)
         print(f"token: {token}")
-        print(f"token_sha256: {hashlib.sha256(token.encode()).hexdigest()}")
+        key = pepper()
+        if key:  # keyed with the pepper in the environment: put this line in the configuration instead
+            print(f"token_hmac_sha256: {keyed(token, key)}")
+        else:
+            print(f"token_sha256: {hashlib.sha256(token.encode()).hexdigest()}")
         return 0
     if args.command == "catalog":
         text = render_markdown()

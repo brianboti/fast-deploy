@@ -22,7 +22,9 @@ TOKEN = "test-token"
 def config_dict(**overrides):
     # The sweeper's thread waits a day before its first sweep, so tests drive Sweeper.tick() themselves; lifetimes and idle
     # stop need the sweeper on. Members in example.com may be granted, so a database's password secret can be.
-    base = {"database": ":memory:", "allowed_hosts": ["127.0.0.1:*", "localhost:*", "testserver"], "sweep_interval_seconds": 86400,
+    # Most tests make public things (load balancers, front doors, open networks); the operator's switch is off by default and
+    # test_infra_security_s2.py holds that.
+    base = {"database": ":memory:", "allowed_hosts": ["127.0.0.1:*", "localhost:*", "testserver"], "sweep_interval_seconds": 86400, "allow_public_exposure": True,
             "access": {"allowed_domains": ["example.com"]},
             "providers": {"gcp": {"project_id": PROJECT, "allowed_regions": ["us-central1", "europe-west1"]}},
             "principals": [{"name": "app-layer", "token_sha256": hashlib.sha256(TOKEN.encode()).hexdigest(), "can_provision": True, "can_destroy": True},
@@ -46,12 +48,15 @@ class FakeGcpApi(GcpApi):
         self.now = 0.0  # the fake's own clock: a sleep moves it on, so a wait that never ends runs out instead of hanging a test
         super().__init__(project, token=lambda: "fake-token", sleep=self._sleep, clock=lambda: self.now)
         self.calls = []
+        self.params = []  # (method, url, query parameters) of each call, beside calls
         self.fail_on = []
+        self.lose_answer = []  # (method, path suffix) pairs done by the fake whose answer is then lost, once each
         self.instances, self.disks, self.networks, self.subnets, self.firewalls, self.addresses, self.sql, self.buckets, self.sql_users, self.sql_databases = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
         self.topics, self.subscriptions, self.secrets, self.secret_versions, self.clusters, self.redis, self.instance_groups, self.regional = {}, {}, {}, {}, {}, {}, {}, {}
-        for collection in ("healthChecks", "backendServices", "urlMaps", "targetHttpProxies", "forwardingRules", "sslCertificates"):
+        for collection in ("healthChecks", "backendServices", "urlMaps", "targetHttpProxies", "targetHttpsProxies", "sslPolicies", "forwardingRules", "sslCertificates"):
             setattr(self, collection, {})
         self.bucket_objects = set()
+        self.response_policies: dict[str, dict] = {}  # DNS response policies by name, each with its "rules" by name
         self.peerings = set()
         self.namespaces: dict[str, set[str]] = {}  # cluster endpoint -> namespaces
         self.role_bindings: dict[tuple[str, str, str], dict] = {}  # (endpoint, namespace, name) -> {"role", "member"}
@@ -89,6 +94,7 @@ class FakeGcpApi(GcpApi):
 
     def request(self, method, url, json=None, params=None):
         self.calls.append((method, url, json))
+        self.params.append((method, url, dict(params or {})))
         for fail_method, fragment in self.fail_on:
             if method == fail_method and fragment in url:
                 raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"planted failure on {method} {fragment}", {"http_status": 400, "planted": True})
@@ -125,18 +131,23 @@ class FakeGcpApi(GcpApi):
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instanceGroups$", self._instance_groups),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instanceGroups/([^/]+)$", self._instance_group),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instanceGroups/([^/]+)/(addInstances|setNamedPorts|removeInstances)$", self._instance_group_action),
-            (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/(healthChecks|backendServices|forwardingRules|addresses)$", self._regional_collection),
-            (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/(healthChecks|backendServices|forwardingRules|addresses)/([^/]+)$", self._regional_item),
+            (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/(healthChecks|backendServices|forwardingRules|addresses|routers)$", self._regional_collection),
+            (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/(healthChecks|backendServices|forwardingRules|addresses|routers)/([^/]+)$", self._regional_item),
+            (r"^/dns/v1/projects/[^/]+/responsePolicies$", self._response_policies) if host.startswith("dns") else (r"^$", None),
+            (r"^/dns/v1/projects/[^/]+/responsePolicies/([^/]+)$", self._response_policy) if host.startswith("dns") else (r"^$", None),
+            (r"^/dns/v1/projects/[^/]+/responsePolicies/([^/]+)/rules$", self._response_rules) if host.startswith("dns") else (r"^$", None),
+            (r"^/dns/v1/projects/[^/]+/responsePolicies/([^/]+)/rules/([^/]+)$", self._response_rule) if host.startswith("dns") else (r"^$", None),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances$", self._instances),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances/([^/]+)$", self._instance),
-            (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances/([^/]+)/(stop|start|resume|setMachineType|attachDisk)$", self._instance_action),
+            (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances/([^/]+)/(stop|start|resume|setMachineType|attachDisk|setDeletionProtection)$", self._instance_action),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/instances/([^/]+)/(getIamPolicy|setIamPolicy)$", self._instance_policy),
             (r"^/compute/v1/projects/[^/]+/aggregated/instances$", self._aggregated),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/disks$", self._disks),
             (r"^/compute/v1/projects/[^/]+/zones/([^/]+)/disks/([^/]+)$", self._disk),
-            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses|healthChecks|backendServices|urlMaps|targetHttpProxies|forwardingRules|sslCertificates)$",
+            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses|healthChecks|backendServices|urlMaps|targetHttpProxies|targetHttpsProxies|sslPolicies|forwardingRules|sslCertificates)$",
              self._global_collection),
-            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses|healthChecks|backendServices|urlMaps|targetHttpProxies|forwardingRules|sslCertificates)/([^/]+)$",
+            (r"^/compute/v1/projects/[^/]+/global/backendServices/([^/]+)/setSecurityPolicy$", self._security_policy),
+            (r"^/compute/v1/projects/[^/]+/global/(networks|firewalls|addresses|healthChecks|backendServices|urlMaps|targetHttpProxies|targetHttpsProxies|sslPolicies|forwardingRules|sslCertificates)/([^/]+)$",
              self._global_item),
             (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/subnetworks$", self._subnets),
             (r"^/compute/v1/projects/[^/]+/regions/([^/]+)/subnetworks/([^/]+)$", self._subnet),
@@ -158,7 +169,12 @@ class FakeGcpApi(GcpApi):
         for pattern, handler in handlers:
             found = handler and re.match(pattern, path)
             if found:
-                return handler(found, method, json or {}, params or {})
+                answer = handler(found, method, json or {}, params or {})
+                for lost_method, fragment in list(self.lose_answer):
+                    if method == lost_method and path.endswith(fragment):  # Google did it, and the answer never came back
+                        self.lose_answer.remove((lost_method, fragment))
+                        raise InfrastructureError(ErrorCode.PROVIDER_UNAVAILABLE, "Google Cloud could not be reached (ReadTimeout)", {"url": url, "maybe_done": True})
+                return answer
         raise AssertionError(f"the fake has no handler for {method} {host}{path}")
 
     @staticmethod
@@ -188,6 +204,7 @@ class FakeGcpApi(GcpApi):
         if key not in self.instances:
             raise self._not_found(key[1])
         if method == "DELETE":
+            assert not self.instances[key].get("deletionProtection"), "deletion protection must be turned off before a delete"
             del self.instances[key]
             return self._op()
         return self.instances[key]
@@ -204,6 +221,8 @@ class FakeGcpApi(GcpApi):
         elif action in ("start", "resume"):
             instance["status"] = "RUNNING"
             instance["lastStartTimestamp"] = self.started_at
+        elif action == "setDeletionProtection":
+            instance["deletionProtection"] = params.get("deletionProtection") != "false"
         elif action == "setMachineType":
             assert instance["status"] == "TERMINATED", "a machine type is set on a stopped instance"
             instance["machineType"] = body["machineType"]
@@ -421,6 +440,10 @@ class FakeGcpApi(GcpApi):
             store[body["name"]]["address"] = f"34.120.0.{len(store)}"
         return self._op()
 
+    def _security_policy(self, found, method, body, params):
+        self.backendServices[found.group(1)]["securityPolicy"] = body["securityPolicy"]
+        return self._op()
+
     def _regional_collection(self, found, method, body, params):
         store = self.regional.setdefault(found.group(2), {})
         store[body["name"]] = {**body, "region": found.group(1)}
@@ -436,6 +459,40 @@ class FakeGcpApi(GcpApi):
             del store[name]
             return self._op()
         return store[name]
+
+    # ---- dns
+    def _response_policies(self, found, method, body, params):
+        name = body["responsePolicyName"]
+        if name in self.response_policies:
+            raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, "already exists", {"http_status": 409})
+        self.response_policies[name] = {**body, "rules": {}}
+        return dict(body)
+
+    def _response_policy(self, found, method, body, params):
+        name = found.group(1)
+        if name not in self.response_policies:
+            raise self._not_found(name)
+        if method == "DELETE":
+            policy = self.response_policies[name]
+            assert not policy["rules"] and not policy.get("networks"), "a response policy is deleted only once its rules and networks are gone"
+            del self.response_policies[name]
+            return {}
+        if method == "PATCH":
+            self.response_policies[name].update(body)
+        return self.response_policies[name]
+
+    def _response_rules(self, found, method, body, params):
+        policy = self.response_policies.get(found.group(1))
+        if policy is None:
+            raise self._not_found(found.group(1))
+        policy["rules"][body["ruleName"]] = dict(body)
+        return dict(body)
+
+    def _response_rule(self, found, method, body, params):
+        policy = self.response_policies.get(found.group(1))
+        if policy is None or found.group(2) not in policy["rules"]:
+            raise self._not_found(found.group(2))
+        return policy["rules"].pop(found.group(2)) if method == "DELETE" else policy["rules"][found.group(2)]
 
     def _instance_groups(self, found, method, body, params):
         self.instance_groups[(found.group(1), body["name"])] = {**body, "members": []}

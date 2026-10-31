@@ -29,11 +29,17 @@ export PROJECT=your-infrastructure-project REGION=us-central1
 
 Enable the APIs for the kinds you will offer (Compute Engine, Cloud SQL Admin, Cloud Storage, Service Networking,
 Cloud Resource Manager, Pub/Sub, Secret Manager, Memorystore for Redis, Artifact Registry, Kubernetes Engine, IAM,
-Identity-Aware Proxy, Cloud Run Admin, Cloud Scheduler, Cloud Monitoring, IAM Credentials, OS Login):
+Identity-Aware Proxy, Cloud Run Admin, Cloud Scheduler, Cloud Monitoring, IAM Credentials, OS Login, Binary
+Authorization):
 
 ```bash
-gcloud services enable compute.googleapis.com sqladmin.googleapis.com storage.googleapis.com servicenetworking.googleapis.com cloudresourcemanager.googleapis.com pubsub.googleapis.com secretmanager.googleapis.com redis.googleapis.com artifactregistry.googleapis.com container.googleapis.com iam.googleapis.com iap.googleapis.com run.googleapis.com cloudscheduler.googleapis.com monitoring.googleapis.com iamcredentials.googleapis.com oslogin.googleapis.com --project $PROJECT
+gcloud services enable compute.googleapis.com sqladmin.googleapis.com storage.googleapis.com servicenetworking.googleapis.com cloudresourcemanager.googleapis.com pubsub.googleapis.com secretmanager.googleapis.com redis.googleapis.com artifactregistry.googleapis.com container.googleapis.com iam.googleapis.com iap.googleapis.com run.googleapis.com cloudscheduler.googleapis.com monitoring.googleapis.com iamcredentials.googleapis.com oslogin.googleapis.com binaryauthorization.googleapis.com --project $PROJECT
 ```
+
+Binary Authorization is on for clusters and Cloud Run by default (`providers.gcp.binary_authorization`). The project's
+policy starts by allowing every image, so nothing is refused until you write a policy that requires attestations; turn
+the setting off only if you will never write one. With `providers.gcp.deny_egress`, also enable `dns.googleapis.com`;
+with `providers.gcp.kms_keys`, `cloudkms.googleapis.com`.
 
 Make the infrastructure service's identity:
 
@@ -50,9 +56,27 @@ Artifact Registry repositories. Databases add `roles/cloudsql.admin` and `roles/
 caches `roles/redis.admin`; registries the `artifactregistry.repositories.*` permissions; clusters
 `roles/container.clusterAdmin` and, for node accounts, `roles/iam.serviceAccountCreator`,
 `roles/iam.serviceAccountDeleter`, `roles/iam.serviceAccountUser` and `roles/resourcemanager.projectIamAdmin` limited
-by the condition the architecture document gives; services and jobs `roles/run.admin`,
-`roles/iam.serviceAccountAdmin` and `roles/cloudscheduler.admin`. Put the organisation-policy backstops of
-REQUIREMENTS.md section 6 on the project.
+by the condition below; services and jobs `roles/run.admin`, `roles/iam.serviceAccountAdmin` and
+`roles/cloudscheduler.admin`. An HTTPS load balancer also makes SSL certificates and SSL policies
+(`compute.sslCertificates.*`, `compute.sslPolicies.*`), and with `cloud_armor_policy` it needs
+`compute.securityPolicies.use` on that policy; `deny_egress` adds `roles/dns.admin`. Put the organisation-policy
+backstops of REQUIREMENTS.md section 6 on the project.
+
+The project IAM role for node accounts, limited to granting the one node role. The service reads the project's policy
+before it writes it and refuses to change project IAM when its own account holds this role, `roles/owner` or
+`roles/iam.securityAdmin` without exactly this condition:
+
+```bash
+gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:cloudinfra@$PROJECT.iam.gserviceaccount.com --role roles/resourcemanager.projectIamAdmin --condition='title=node-role-only,expression=api.getAttribute("iam.googleapis.com/modifiedGrantsByRole", []).hasOnly(["roles/container.defaultNodeServiceAccount"])'
+```
+
+With `providers.gcp.kms_keys`, each service's own agent encrypts with the region's key. Grant the Compute Engine,
+Cloud SQL, Cloud Storage, Secret Manager, Artifact Registry and Kubernetes Engine agents
+`roles/cloudkms.cryptoKeyEncrypterDecrypter` on it, for example the Cloud SQL agent:
+
+```bash
+gcloud kms keys add-iam-policy-binding data --keyring platform --location $REGION --project $KEYS_PROJECT --member serviceAccount:service-$PROJECT_NUMBER@gcp-sa-cloud-sql.iam.gserviceaccount.com --role roles/cloudkms.cryptoKeyEncrypterDecrypter
+```
 
 For a laptop, give yourself the right to act as that account and a quota project:
 
@@ -100,6 +124,27 @@ principals:
      identity: "serviceAccount:appdelivery-dev@your-infrastructure-project.iam.gserviceaccount.com"}
   - {name: operator, token_sha256: "<hash>", scope: all}
 ```
+
+**What is closed until you open it.** `allow_public_exposure` is off: a request that asks for a public machine address,
+a network or firewall rule open to a public range, a load balancer, a cluster's front door, a public database or a
+Cloud Run service taking all traffic is refused before any provider call. Turn it on for the services that need it.
+Point `providers.gcp.default_network` at a network you made, with flow logs and no rule open to the internet, not at
+Google's `default`, whose `default-allow-ssh` rule admits port 22 from everywhere. The other defaults of the
+assessment's release S2 (cluster private nodes, Dataplane V2, Binary Authorization, Pod Security, network logs, Cloud
+NAT, HTTPS on load balancers with hostnames) need nothing from you; `kms_keys`, `cluster_authorized_networks`,
+`cloud_armor_policy` and `deny_egress` are yours to set. With `cluster_authorized_networks`, list the addresses both
+services call clusters from, or neither can reach them.
+
+**Behind a proxy.** Every caller then arrives from the proxy's address, so the per-address budgets (wrong tokens,
+registrations, the public OAuth paths) are shared by all. Start uvicorn with `--proxy-headers` and set
+`FORWARDED_ALLOW_IPS` to the proxy's own address. Never set it to `*`: any caller could then name its own address, and
+the audit trail would record it.
+
+**Keyed token hashes.** A copied configuration with plain SHA-256 hashes can be checked against guesses offline. With
+a pepper of 32 characters or more in `CLOUDINFRA_TOKEN_PEPPER`, kept in the host's secret store and never in the
+configuration or the state, `python -m cloudinfra.cli token` prints `token_hmac_sha256` instead of `token_sha256`;
+put that in the principal. The service will not start with keyed hashes and no pepper. Principals can move one at a
+time, and plain and keyed hashes work side by side.
 
 Check the family exists before relying on the profile:
 
@@ -311,6 +356,11 @@ principals:
   - {name: shop-team, token_sha256: "<hash>", infra_owner: shop-team, environments: [dev, prod], can_deploy: true, can_build: true}
   - {name: shop-oncall, token_sha256: "<hash>", infra_owner: shop-team, environments: [prod], can_approve: true}
 ```
+
+`cloudinfra.url` must be `https` unless both services share the host (`localhost` or `127.0.0.1`): each environment's
+token travels on every call. Keyed token hashes work here as in section 3, with the pepper in
+`APPDELIVERY_TOKEN_PEPPER`. A Cloud Run release can bind a secret only when the service's or job's block names it in
+`secrets` on the `cloudinfra` side; the plan says so otherwise.
 
 ```bash
 app-delivery check-config appdelivery.local.yaml

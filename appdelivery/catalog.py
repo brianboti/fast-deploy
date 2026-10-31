@@ -25,6 +25,7 @@ MEANINGS = {
     ErrorCode.NOT_BUILT_HERE: "The image digest is not one a build of this service produced for the team: images are built only in the trusted project.",
     ErrorCode.BUILD_UNAVAILABLE: "Cloud Build could not be reached, or refused the environment's service account (builds.editor, and serviceAccountUser on the build account).",
     ErrorCode.BUILD_FAILED: "Cloud Build refused the build or ended it without success (failure, timeout, cancelled); its log says why.",
+    ErrorCode.LIMIT_EXCEEDED: "The caller made more calls in a minute than the operator allows (rate_limit_per_minute); retry after the Retry-After seconds.",
     ErrorCode.BUILD_LIMIT_EXCEEDED: "The team has as many builds queued or working in this environment as the operator allows at once, or as many in 24 hours; wait, or ask for more.",
     ErrorCode.INFRA_UNAVAILABLE: "The infrastructure layer could not be reached or answered something unexpected; retry later.",
     ErrorCode.INFRA_AUTH_FAILED: "The infrastructure layer refused this service's token for the environment.",

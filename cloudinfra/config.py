@@ -22,7 +22,10 @@ class StrictModel(BaseModel):
 class Principal(StrictModel):
     """One caller of the service: an Application Layer system, identified by a bearer token kept only as its hash."""
     name: str = Field(pattern=r"^[a-z][a-z0-9-]{1,30}$")
-    token_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    token_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$", description="SHA-256 of the token; or token_hmac_sha256.")
+    token_hmac_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$",
+                                          description="HMAC-SHA-256 of the token keyed with the pepper in CLOUDINFRA_TOKEN_PEPPER, kept apart from this file and the state; "
+                                                      "a copied configuration then cannot be checked against guesses (NIST SP 800-63B-4).")
     can_provision: bool = False
     can_destroy: bool = False
     # own: this identity sees and acts on the requests it made; all: every request (an operator identity).
@@ -36,6 +39,17 @@ class Principal(StrictModel):
     @classmethod
     def _identity(cls, value):
         return None if value is None else normal_member(value)
+
+    @model_validator(mode="after")
+    def _one_hash(self):
+        if (self.token_sha256 is None) == (self.token_hmac_sha256 is None):
+            raise ValueError(f"principal {self.name}: give token_sha256 or token_hmac_sha256, one of them")
+        return self
+
+    @property
+    def credential(self) -> str:
+        """The stored hash, whichever kind: a sign-in is bound to it, so a new token ends the sessions made with the old."""
+        return self.token_hmac_sha256 or self.token_sha256
 
 
 class Limits(StrictModel):
@@ -149,6 +163,9 @@ class Config(StrictModel):
     labels: dict[str, str] = Field(default_factory=dict, description="The operator's labels on every resource (cost center, environment).")
     limits: Limits = Field(default_factory=Limits)
     access: AccessSettings = Field(default_factory=AccessSettings)
+    allow_public_exposure: bool = Field(default=False, description="Whether a request may make anything reachable from the internet: a machine's public "
+                                        "address, a network or firewall rule open to a public range, a load balancer, a cluster's front door, a database's public "
+                                        "address, a container service taking traffic from all of the internet. Off, every such path is refused before any provider call.")
     closed_public_ports: list[int] = Field(default_factory=lambda: list(validation.CLOSED_PUBLIC_PORTS),
                                            description="Ports never opened from a public range by a network block or configure_firewall; 22 and 3389 always are.")
     sweep_interval_seconds: int = Field(default=300, ge=0, le=86400, description="How often the sweeper checks expiry and idleness; 0 turns it off, and with "

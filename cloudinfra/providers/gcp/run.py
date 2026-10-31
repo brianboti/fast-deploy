@@ -1,6 +1,6 @@
 """Cloud Run services and jobs behind the generic service and job primitives (docs/DELIVERY-SPEC.md, phase 4): the shell only. A service
 is made with Google's sample image standing in, its limits, scaling, ingress and egress, and an account made for it that
-may read the request's secrets and nothing else; the delivery layer puts releases on it as revisions. Public means the
+may read the secrets its block names and nothing else; the delivery layer puts releases on it as revisions. Public means the
 invoker check is off (`invokerIamDisabled`), Google's recommended way, and only when the operator allows it.
 
 Create and delete are long-running; the service itself says when it is done (`reconciling`) and how it went
@@ -90,13 +90,15 @@ class GcpRun:
                                      "egress": EGRESS[spec.egress]}
         body = {"description": translate.description(ctx), "labels": translate.labels(ctx), "ingress": INGRESS[spec.ingress], "invokerIamDisabled": spec.public,
                 "template": template}
+        if self.settings.binary_authorization:  # the project's policy decides which images run (review of 2026-10-30, L9)
+            body["binaryAuthorization"] = {"useDefault": True}
         url = f"{self._services(region)}/{planned.name}"
         resource = ServiceResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=region, provider_id=url.split("/v2/", 1)[1],
                                    status=ResourceStatus.CREATING, runtime_service_account=email, cpu=spec.cpu, memory_mb=spec.memory_mb, min_instances=spec.min_instances,
                                    max_instances=spec.max_instances, ingress=spec.ingress, public=spec.public, network=network.id if network else None,
                                    secrets=[secret.resource_name for secret in secrets], labels=translate.labels(ctx))
         try:
-            self.api.post(self._services(region), json=body, serviceId=planned.name)
+            self.api.create(self._services(region), url, json=body, serviceId=planned.name)
         except InfrastructureError:
             self._forget(email, secrets)  # Google never took the service, so nothing else will delete its account
             raise
@@ -170,6 +172,8 @@ class GcpRunJob(GcpRun):
         if spec.parallelism:
             execution["parallelism"] = spec.parallelism
         body = {"labels": translate.labels(ctx), "template": execution}
+        if self.settings.binary_authorization:
+            body["binaryAuthorization"] = {"useDefault": True}
         provider_id = f"projects/{self.api.project}/locations/{region}/jobs/{planned.name}"
         resource = JobResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=region, provider_id=provider_id,
                                status=ResourceStatus.CREATING, runtime_service_account=email, cpu=spec.cpu, memory_mb=spec.memory_mb, tasks=spec.tasks,
@@ -177,7 +181,7 @@ class GcpRunJob(GcpRun):
                                network=network.id if network else None, secrets=[secret.resource_name for secret in secrets], labels=translate.labels(ctx),
                                schedule={"cron": spec.schedule.cron, "time_zone": spec.schedule.time_zone} if spec.schedule else None)
         try:
-            self.api.post(self._jobs(region), json=body, jobId=planned.name)
+            self.api.create(self._jobs(region), f"{RUN}/{provider_id}", json=body, jobId=planned.name)
         except InfrastructureError:
             self._forget(email, secrets)
             raise

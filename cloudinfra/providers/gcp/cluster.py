@@ -1,5 +1,6 @@
 """Kubernetes Engine clusters behind the generic cluster primitives: one zonal cluster with one node pool, VPC-native,
-shielded nodes, workload identity on, a release channel for versions. Credentials never come from this service.
+shielded and private nodes, workload identity on, Dataplane V2, Binary Authorization, a release channel for versions.
+Credentials never come from this service.
 
 Each cluster gets one namespace, named after the request and the start of its id (unique per request), and access to what a request created is granted there: a
 member at `use` is bound to the built-in ClusterRole view, at `admin` to edit, through RoleBindings in that namespace
@@ -16,7 +17,7 @@ from ...models.errors import ErrorCode, InfrastructureError
 from ...models.resources import ClusterResource, FrontDoor, ResourceStatus
 from . import translate
 from .api import COMPUTE, CONTAINER
-from .kubernetes import CLUSTER_ROLES, DOOR, DOOR_NAMESPACE, GATEWAYS, ROUTES, TENANT, KubeApi, front_door, no_public_entry, routes_role, tenant_namespace
+from .kubernetes import CLUSTER_ROLES, DOOR, DOOR_NAMESPACE, GATEWAYS, ROUTES, KubeApi, front_door, no_public_entry, routes_role, tenant_labels, tenant_namespace
 from .nodeaccount import NOT_YET, NodeAccounts, account_id
 
 # Gateway API's kinds appear a little after a cluster runs; a Gateway is tried again meanwhile.
@@ -27,6 +28,20 @@ DOOR_CLOSING = (600, 15)
 STATUS = {"PROVISIONING": ResourceStatus.CREATING, "RUNNING": ResourceStatus.READY, "RECONCILING": ResourceStatus.UPDATING, "STOPPING": ResourceStatus.DELETING,
           "ERROR": ResourceStatus.FAILED, "DEGRADED": ResourceStatus.FAILED}
 NODE_SCOPES = ["https://www.googleapis.com/auth/logging.write", "https://www.googleapis.com/auth/monitoring", "https://www.googleapis.com/auth/devstorage.read_only"]
+
+
+def hardening(settings) -> dict:
+    """What the GKE hardening guide and CIS GKE 5.x expect of a new cluster (review of 2026-10-30, M7): Dataplane V2, which
+    enforces Kubernetes NetworkPolicy; the security posture dashboard; Binary Authorization enforcing the project's policy;
+    and, when the operator lists them, the only ranges that may reach the control plane. Private nodes are the request's
+    default (ClusterRequest.private_nodes)."""
+    found = {"networkConfig": {"datapathProvider": "ADVANCED_DATAPATH"}, "securityPostureConfig": {"mode": "BASIC"}}
+    if settings.binary_authorization:
+        found["binaryAuthorization"] = {"evaluationMode": "PROJECT_SINGLETON_POLICY_ENFORCE"}
+    if settings.cluster_authorized_networks:
+        found["masterAuthorizedNetworksConfig"] = {"enabled": True, "gcpPublicCidrsAccessEnabled": False,
+                                                   "cidrBlocks": [{"cidrBlock": cidr, "displayName": "operator"} for cidr in settings.cluster_authorized_networks]}
+    return found
 
 
 def binding_name(member: str, level: str) -> str:
@@ -64,9 +79,14 @@ class GcpCluster:
             cluster["initialClusterVersion"] = spec.kubernetes_version
         if spec.private_nodes:
             cluster["privateClusterConfig"] = {"enablePrivateNodes": True, "enablePrivateEndpoint": False}
+        cluster.update(hardening(self.settings))
+        key = self.settings.kms_keys.get(ctx.region)
+        if key:  # Kubernetes Secrets encrypted at the application layer (CIS GKE 5.3.1) and the nodes' disks, under the operator's key
+            cluster["databaseEncryption"] = {"state": "ENCRYPTED", "keyName": key}
+            cluster["nodePools"][0]["config"]["bootDiskKmsKey"] = key
         door = None
         if spec.public is not None:  # https://docs.cloud.google.com/kubernetes-engine/docs/how-to/deploying-gateways
-            cluster["networkConfig"] = {"gatewayApiConfig": {"channel": "CHANNEL_STANDARD"}}
+            cluster["networkConfig"]["gatewayApiConfig"] = {"channel": "CHANNEL_STANDARD"}
             cluster["addonsConfig"] = {"httpLoadBalancing": {"disabled": False}}
             door = FrontDoor(hostnames=list(spec.public.hostnames), address_name=f"{planned.name}-door",
                              certificate_name=f"{planned.name}-door" if spec.public.hostnames else None)
@@ -97,7 +117,7 @@ class GcpCluster:
         for collection, body in [*no_public_entry(labels), routes_role(labels)]:  # before the namespace, so no moment exists without them
             kube.put(collection, body)
         namespace = tenant_namespace(ctx)
-        kube.ensure_namespace(namespace, {**labels, **TENANT})
+        kube.ensure_namespace(namespace, tenant_labels(labels))
         resource = resource.model_copy(update={"namespace": namespace})
         if door is not None:
             resource = resource.model_copy(update={"public": self._open(door, kube, ctx, labels)})
@@ -172,7 +192,7 @@ class GcpCluster:
         project on 2026-10-29: "failed to check status for ...; Verify if principal exists"); the create is tried again."""
         for attempt in range(NOT_YET[0]):
             try:
-                return self.api.post(self._clusters(location), json={"cluster": cluster})
+                return self.api.create(self._clusters(location), f"{self._clusters(location)}/{cluster['name']}", json={"cluster": cluster})
             except InfrastructureError as exc:
                 if "Verify if principal exists" not in exc.message or attempt == NOT_YET[0] - 1:
                     raise
@@ -225,7 +245,7 @@ class GcpCluster:
         kube = self.kube(resource.endpoint, resource.ca_certificate)
         labels = {"managed-by": "cloudinfra", "cloudinfra-request": resource.request_id}
         if not resource.namespace:  # a cluster made before namespaces were
-            kube.ensure_namespace(namespace, labels)
+            kube.ensure_namespace(namespace, tenant_labels(labels))
         kube.put_role_binding(namespace, binding_name(member, level), CLUSTER_ROLES[level], member, labels)
         for other in CLUSTER_ROLES:
             if other != level:

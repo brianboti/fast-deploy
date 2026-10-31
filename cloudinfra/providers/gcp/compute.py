@@ -41,15 +41,22 @@ class GcpCompute:
                                                                               "diskType": f"zones/{zone}/diskTypes/pd-balanced"}}],
             "networkInterfaces": [self._interface({**shape, "region": ctx.region}, network)],
             "labels": translate.labels(ctx),
-            # OS Login: access through IAM, no key material through this service. The machine runs as the request's identity
-            # its group names, which holds only the request's grants and has no key; otherwise as no account at all.
-            "metadata": {"items": [{"key": "enable-oslogin", "value": "TRUE"}]},
+            # OS Login: access through IAM, no key material through this service; no project-wide keys and no serial port
+            # (CIS GCP 4.3 and 4.5). The machine runs as the request's identity its group names, which holds only the
+            # request's grants at use (never admin: InfrastructureRequest refuses it) and has no key; otherwise as no account at
+            # all. The scope stays cloud-platform, as Google advises: IAM is the bound, and Secret Manager needs that scope.
+            "metadata": {"items": [{"key": "enable-oslogin", "value": "TRUE"}, {"key": "block-project-ssh-keys", "value": "TRUE"},
+                                   {"key": "serial-port-enable", "value": "FALSE"}]},
+            "deletionProtection": True,  # lifted only by an explicit delete, as a database's is
             "serviceAccounts": [{"email": identity_email(self.api.project, ctx.request_id, shape["identity"]), "scopes": ["https://www.googleapis.com/auth/cloud-platform"]}]
             if shape.get("identity") else [],
             # vTPM and integrity monitoring always; Secure Boot as the planned software allows: on, except an image without GPU
             # drivers on a GPU machine, whose drivers Google's installer builds unsigned. A GPU profile with signed drivers keeps it on.
             "shieldedInstanceConfig": {"enableSecureBoot": shape.get("secure_boot", True), "enableVtpm": True, "enableIntegrityMonitoring": True},
         }
+        key = self.settings.kms_keys.get(ctx.region)
+        if key:
+            body["disks"][0]["diskEncryptionKey"] = {"kmsKeyName": key}
         accelerator, scheduling = None, {}
         if shape.get("accelerator"):
             gpu, count = shape["accelerator"]["type"], shape["accelerator"]["count"]
@@ -66,7 +73,7 @@ class GcpCompute:
                                    os_image=shape["image"].rsplit("/", 1)[-1], boot_disk_gb=shape["boot_disk_gb"], accelerator=accelerator, labels=body["labels"],
                                    profile=shape.get("profile"), secure_boot=shape.get("secure_boot", True), max_run_hours=shape.get("max_run_hours"),
                                    autostop_idle_minutes=shape.get("autostop_idle_minutes"), provider_id=f"{self._instances(zone)}/{planned.name}", status=ResourceStatus.CREATING)
-        operation = self.api.post(self._instances(zone), json=body)
+        operation = self.api.create(self._instances(zone), f"{self._instances(zone)}/{planned.name}", json=body)
         ctx.accepted(resource)
         self.api.wait_compute(operation)
         return self.get(resource)
@@ -153,8 +160,11 @@ class GcpCompute:
         return self.get(resource.model_copy(update={"machine_type": machine, "cpu": cpu, "memory_gb": memory_gb}))
 
     def delete(self, resource: ComputeResource, ctx) -> None:
+        base = f"{self._instances(resource.zone)}/{resource.name}"
         try:
-            self.api.wait_compute(self.api.delete(f"{self._instances(resource.zone)}/{resource.name}"))
+            # deletion protection is on from creation; an explicit destroy is the one place it is turned off
+            self.api.wait_compute(self.api.post(f"{base}/setDeletionProtection", deletionProtection="false"))
+            self.api.wait_compute(self.api.delete(base))
         except InfrastructureError as exc:
             if exc.code != ErrorCode.NOT_FOUND:
                 raise

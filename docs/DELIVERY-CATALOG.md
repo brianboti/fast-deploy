@@ -30,6 +30,7 @@ Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DE
 | `INVALID_BINDING` | An environment value with no source or two, a credential given as a literal, or a binding the request does not have. |
 | `UNKNOWN_ENVIRONMENT` | No environment of that name in the service's configuration. |
 | `PERMISSION_DENIED` | The caller may not do this (can_deploy, can_approve, the environment), or did not authenticate. |
+| `LIMIT_EXCEEDED` | The caller made more calls in a minute than the operator allows (rate_limit_per_minute); retry after the Retry-After seconds. |
 | `NOT_FOUND` | No such release, request or group is visible to this caller: another team's are not found either. |
 | `INVALID_STATE` | The request or release is not in a state that allows this: not READY, another release moving, nothing to roll back to. |
 | `NOT_GRANTED` | The request does not name this environment's service account in its access list as admin, GRANTED, on every machine. |

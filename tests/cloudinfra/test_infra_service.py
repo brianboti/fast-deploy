@@ -46,12 +46,14 @@ def test_a_service_is_made_empty_with_its_limits_and_its_own_account(tmp_path):
     assert service.status == "READY" and service.url == "https://shop-service-xyz.a.run.app" and service.revision == "shop-service-00001-abc"
 
 
-def test_the_runtime_account_reads_the_requests_secrets_and_nothing_else(tmp_path):
-    _, fake, _, response = provision(tmp_path, {}, secret=[{"name": "api-key", "generate_value": True}, {"name": "token"}])
+def test_the_runtime_account_reads_the_secrets_it_names_and_nothing_else(tmp_path):
+    _, fake, _, response = provision(tmp_path, {"secrets": ["api-key"]}, secret=[{"name": "api-key", "generate_value": True}, {"name": "token"}])
     [service] = response.resources.service
     member = f"serviceAccount:{service.runtime_service_account}"
-    for secret in response.resources.secret:
-        assert member in fake.members(("secret", secret.resource_name.rsplit("/", 1)[-1]), "roles/secretmanager.secretAccessor")
+    readable = [secret.name.removeprefix("shop-") for secret in response.resources.secret
+                if member in fake.members(("secret", secret.resource_name.rsplit("/", 1)[-1]), "roles/secretmanager.secretAccessor")]
+    assert readable == ["api-key"], "the one it names, not token (S2, L9)"
+    assert service.secrets == [secret.resource_name for secret in response.resources.secret if secret.name.endswith("api-key")]
     assert ("project",) not in fake.policies, "no project role"
 
 

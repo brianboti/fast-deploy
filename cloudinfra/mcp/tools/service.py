@@ -9,7 +9,7 @@ def tools(mcp, orchestrator, wrap, identity):
                        cpu: Annotated[int, field("create_service", "cpu")] = 1, memory_mb: Annotated[int, field("create_service", "memory_mb")] = 512,
                        min_instances: Annotated[int, field("create_service", "min_instances")] = 0, max_instances: Annotated[int, field("create_service", "max_instances")] = 10,
                        concurrency: Annotated[int, field("create_service", "concurrency")] = 80, timeout_seconds: Annotated[int, field("create_service", "timeout_seconds")] = 300,
-                       ingress: Annotated[str, field("create_service", "ingress")] = "all", public: Annotated[bool, field("create_service", "public")] = False,
+                       ingress: Annotated[str, field("create_service", "ingress")] = "internal_and_load_balancer", public: Annotated[bool, field("create_service", "public")] = False,
                        network_id: Annotated[str | None, field("create_service", "network_id")] = None, egress: Annotated[str, field("create_service", "egress")] = "private_ranges",
                        name: Annotated[str | None, field("create_service", "name")] = None, labels: Annotated[dict[str, str] | None, field("create_service", "labels")] = None,
                        wait_seconds: Wait = 0) -> Result:

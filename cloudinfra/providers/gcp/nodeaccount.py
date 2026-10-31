@@ -5,7 +5,10 @@ Artifact Registry repositories the request names, on nothing else. It is deleted
 
 This needs the service's own account to create and delete service accounts, to act as the node accounts, and to grant
 that one role on the project; the operator limits the last with an IAM condition on the roles it may grant
-(https://cloud.google.com/iam/docs/setting-limits-on-granting-roles). Project IAM is touched for that role only."""
+(https://cloud.google.com/iam/docs/setting-limits-on-granting-roles). Project IAM is touched for that role only, and the
+service checks the condition itself before it writes (review of 2026-10-30, M15): when its own account holds a role that
+can set the project's policy with no condition limiting it to that role, it refuses, so a service that could grant
+anything never runs as if it could grant one thing. A person signed in on a laptop is not checked."""
 import re
 
 from ...models.errors import ErrorCode, InfrastructureError
@@ -18,6 +21,21 @@ READER = "roles/artifactregistry.reader"
 REGISTRY = re.compile(r"^([a-z0-9-]+)-docker\.pkg\.dev/([a-z][a-z0-9-]{4,28}[a-z0-9])/([a-z0-9][a-z0-9._-]{0,62})$")
 # A service account just made is unknown to IAM policies for a few seconds; a grant naming it is tried again meanwhile.
 NOT_YET = (12, 5)
+# Roles that can set the project's IAM policy; the service's account may hold one only under the granting condition.
+POLICY_SETTERS = ("roles/owner", "roles/resourcemanager.projectIamAdmin", "roles/iam.securityAdmin")
+CONDITION = f"api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['{NODE_ROLE}'])"
+
+
+def unlimited_roles(policy: dict, member: str) -> list[str]:
+    """The roles in a project policy that let `member` set the policy without the condition that limits it to NODE_ROLE."""
+    found = []
+    for binding in policy.get("bindings", []):
+        if binding.get("role") not in POLICY_SETTERS or not any(item.lower() == member.lower() for item in binding.get("members", [])):
+            continue
+        expression = (binding.get("condition") or {}).get("expression", "").replace('"', "'").replace(" ", "")
+        if expression != CONDITION.replace(" ", ""):
+            found.append(binding["role"])
+    return found
 
 
 def account_id(request_id: str, cluster_name: str) -> str:
@@ -55,12 +73,28 @@ class NodeAccounts:
                 raise
         return f"{account}@{self.api.project}.iam.gserviceaccount.com"
 
+    def _limited(self, policy: dict) -> None:
+        """Refuse to write the project's policy as an account that could grant any role (M15)."""
+        identity = getattr(self.api.token, "identity", None)
+        own = identity() if callable(identity) else None
+        if not own or not own.startswith("serviceAccount:"):
+            return  # a person's own sign-in on a laptop, or a host that cannot tell: not checked
+        roles = unlimited_roles(policy, own)
+        if roles:
+            raise InfrastructureError(ErrorCode.PROVIDER_PERMISSION_DENIED,
+                                      f"This service runs as {own.split(':', 1)[1]}, which holds {', '.join(roles)} on the project without the condition that limits "
+                                      f"it to granting {NODE_ROLE}; it refuses to change project IAM as an account that could grant any role. Add the condition "
+                                      "(docs/SETUP.md, section 2) or set providers.gcp.cluster_node_accounts: false", {"roles": roles, "condition": CONDITION})
+
     def bind(self, email: str, registries: list[str]) -> None:
         member = f"serviceAccount:{email}"
         for endpoint, role in [(self._project(), NODE_ROLE), *[(self._repository(registry), READER) for registry in registries]]:
             for attempt in range(NOT_YET[0]):
                 try:
-                    update_policy(endpoint, lambda policy, role=role: with_member(policy, role, member))
+                    if role == NODE_ROLE:
+                        update_policy(endpoint, lambda policy: self._limited(policy) or with_member(policy, NODE_ROLE, member))
+                    else:
+                        update_policy(endpoint, lambda policy, role=role: with_member(policy, role, member))
                     break
                 except InfrastructureError as exc:
                     if "does not exist" not in exc.message or attempt == NOT_YET[0] - 1:

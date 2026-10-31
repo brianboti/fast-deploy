@@ -1,6 +1,11 @@
 """Load balancers behind the generic primitive: an external application load balancer (http) or a passthrough network
 load balancer (tcp) in front of one instance group. Each is several provider pieces; they are recorded in creation order
-on the resource and torn down in reverse."""
+on the resource and torn down in reverse.
+
+What Google's load balancing security guide and CIS ask of a public one (review of 2026-10-30, M12): with hostnames in
+the operator's domains, HTTPS on 443 with a Google-managed certificate, an SSL policy (MODERN, TLS 1.2 at least) and HTTP
+on 80 redirected to it with a 301, as a cluster's front door already does; every backend logs its requests; and an http
+backend carries the operator's Cloud Armor policy, one place for WAF rules and rate limits, when the operator names it."""
 from ...models.errors import ErrorCode, InfrastructureError
 from ...models.resources import LoadBalancerResource, ResourceStatus
 from . import translate
@@ -11,6 +16,8 @@ from .api import COMPUTE
 # 130.211.0.0/22; a backend-service passthrough network load balancer probes from 35.191.0.0/16, 209.85.204.0/22 and 209.85.152.0/22.
 HEALTH_CHECK_RANGES = {"http": ["130.211.0.0/22", "35.191.0.0/16"], "tcp": ["35.191.0.0/16", "209.85.204.0/22", "209.85.152.0/22"]}
 PORT_NAME = "app"
+SSL_POLICY = {"profile": "MODERN", "minTlsVersion": "TLS_1_2"}
+LOGGED = {"enable": True, "sampleRate": 1.0}
 
 
 class GcpLoadBalancer:
@@ -31,7 +38,7 @@ class GcpLoadBalancer:
         components = []
         shape = {"id": planned.spec["resource_id"], "name": name, "request_id": ctx.request_id, "provider": "gcp", "region": region, "zone": zone, "type": spec.type,
                  "port": spec.port, "backend_group": planned.spec["backend_group"], "backends": [machine.id for machine in backends],
-                 "health_check_path": spec.health_check_path if spec.type == "http" else None, "labels": translate.labels(ctx)}
+                 "health_check_path": spec.health_check_path if spec.type == "http" else None, "hostnames": list(spec.hostnames), "labels": translate.labels(ctx)}
 
         def taken(kind, component_name, url):
             # each piece is known as soon as Google has taken its create, so a failure further on deletes every one made so far
@@ -55,23 +62,53 @@ class GcpLoadBalancer:
             health = piece("health_check", self._global("healthChecks"), {"name": f"{name}-health", "type": "HTTP", "checkIntervalSec": 10, "timeoutSec": 5,
                                                                           "httpHealthCheck": {"port": spec.port, "requestPath": spec.health_check_path}})
             backend = piece("backend_service", self._global("backendServices"), {"name": f"{name}-backend", "protocol": "HTTP", "portName": PORT_NAME, "timeoutSec": 30,
-                                                                                 "loadBalancingScheme": "EXTERNAL_MANAGED", "healthChecks": [health],
+                                                                                 "loadBalancingScheme": "EXTERNAL_MANAGED", "healthChecks": [health], "logConfig": dict(LOGGED),
                                                                                  "backends": [{"group": group, "balancingMode": "UTILIZATION"}]})
+            if self.settings.cloud_armor_policy:  # a backend service's policy is set by its own call, never in the insert
+                self.api.wait_compute(self.api.post(f"{backend}/setSecurityPolicy",
+                                                    json={"securityPolicy": f"projects/{self.api.project}/global/securityPolicies/{self.settings.cloud_armor_policy}"}))
             url_map = piece("url_map", self._global("urlMaps"), {"name": f"{name}-map", "defaultService": backend})
-            proxy = piece("target_proxy", self._global("targetHttpProxies"), {"name": f"{name}-proxy", "urlMap": url_map})
-            address = piece("address", self._global("addresses"), {"name": f"{name}-address", "ipVersion": "IPV4", "networkTier": "PREMIUM"})
-            piece("forwarding_rule", self._global("forwardingRules"), {"name": f"{name}-rule", "IPAddress": address, "IPProtocol": "TCP", "portRange": str(spec.port), "target": proxy,
-                                                                        "loadBalancingScheme": "EXTERNAL_MANAGED", "networkTier": "PREMIUM"})
+            if spec.hostnames:
+                certificate = piece("certificate", self._global("sslCertificates"), {"name": f"{name}-cert", "type": "MANAGED", "managed": {"domains": list(spec.hostnames)},
+                                                                                     "description": translate.description(ctx)})
+                policy = piece("ssl_policy", self._global("sslPolicies"), {"name": f"{name}-tls", "description": translate.description(ctx), **SSL_POLICY})
+                proxy = piece("target_proxy", self._global("targetHttpsProxies"), {"name": f"{name}-https", "urlMap": url_map, "sslCertificates": [certificate],
+                                                                                   "sslPolicy": policy})
+                redirect = piece("url_map", self._global("urlMaps"), {"name": f"{name}-redirect",
+                                                                     "defaultUrlRedirect": {"httpsRedirect": True, "redirectResponseCode": "MOVED_PERMANENTLY_DEFAULT"}})
+                plain = piece("target_proxy", self._global("targetHttpProxies"), {"name": f"{name}-proxy", "urlMap": redirect})
+                address = piece("address", self._global("addresses"), {"name": f"{name}-address", "ipVersion": "IPV4", "networkTier": "PREMIUM"})
+                piece("forwarding_rule", self._global("forwardingRules"), {"name": f"{name}-http-rule", "IPAddress": address, "IPProtocol": "TCP", "portRange": "80",
+                                                                            "target": plain, "loadBalancingScheme": "EXTERNAL_MANAGED", "networkTier": "PREMIUM"})
+                piece("forwarding_rule", self._global("forwardingRules"), {"name": f"{name}-rule", "IPAddress": address, "IPProtocol": "TCP", "portRange": "443",
+                                                                            "target": proxy, "loadBalancingScheme": "EXTERNAL_MANAGED", "networkTier": "PREMIUM"})
+            else:
+                proxy = piece("target_proxy", self._global("targetHttpProxies"), {"name": f"{name}-proxy", "urlMap": url_map})
+                address = piece("address", self._global("addresses"), {"name": f"{name}-address", "ipVersion": "IPV4", "networkTier": "PREMIUM"})
+                piece("forwarding_rule", self._global("forwardingRules"), {"name": f"{name}-rule", "IPAddress": address, "IPProtocol": "TCP", "portRange": str(spec.port),
+                                                                            "target": proxy, "loadBalancingScheme": "EXTERNAL_MANAGED", "networkTier": "PREMIUM"})
         else:
             health = piece("health_check", self._regional(region, "healthChecks"), {"name": f"{name}-health", "type": "TCP", "checkIntervalSec": 10, "timeoutSec": 5,
                                                                                     "tcpHealthCheck": {"port": spec.port}})
             backend = piece("backend_service", self._regional(region, "backendServices"), {"name": f"{name}-backend", "protocol": "TCP", "loadBalancingScheme": "EXTERNAL",
-                                                                                           "healthChecks": [health], "backends": [{"group": group}]})
+                                                                                           "healthChecks": [health], "backends": [{"group": group}], "logConfig": dict(LOGGED)})
             address = piece("address", self._regional(region, "addresses"), {"name": f"{name}-address", "networkTier": "PREMIUM"})
             piece("forwarding_rule", self._regional(region, "forwardingRules"), {"name": f"{name}-rule", "IPAddress": address, "IPProtocol": "TCP", "ports": [str(spec.port)],
                                                                                  "backendService": backend, "loadBalancingScheme": "EXTERNAL", "networkTier": "PREMIUM"})
         public = self.api.get(address).get("address")
-        return LoadBalancerResource(**shape, provider_id=components[-1]["url"], address=public, components=components, status=ResourceStatus.READY)
+        made = LoadBalancerResource(**shape, provider_id=components[-1]["url"], address=public, components=components, status=ResourceStatus.READY)
+        return self._certificate(made)
+
+    def _certificate(self, resource: LoadBalancerResource) -> LoadBalancerResource:
+        url = next((item["url"] for item in resource.components if item["kind"] == "certificate"), None)
+        if url is None:
+            return resource
+        try:
+            return resource.model_copy(update={"certificate": (self.api.get(url).get("managed") or {}).get("status")})
+        except InfrastructureError as exc:
+            if exc.code != ErrorCode.NOT_FOUND:
+                raise
+            return resource
 
     def get(self, resource: LoadBalancerResource) -> LoadBalancerResource:
         try:
@@ -80,7 +117,7 @@ class GcpLoadBalancer:
             if exc.code == ErrorCode.NOT_FOUND:
                 return resource.model_copy(update={"status": ResourceStatus.DELETED, "address": None})
             raise
-        return resource.model_copy(update={"status": ResourceStatus.READY})
+        return self._certificate(resource.model_copy(update={"status": ResourceStatus.READY}))
 
     def delete(self, resource: LoadBalancerResource, ctx) -> None:
         for component in reversed(resource.components):

@@ -37,8 +37,17 @@ class KeylessSigner(StrictModel):
 
 
 class InfraSettings(StrictModel):
-    url: str = Field(pattern=r"^https?://[A-Za-z0-9.-]+(?::[0-9]{1,5})?$", description="The infrastructure layer's base address, without a path.")
+    url: str = Field(pattern=r"^https?://[A-Za-z0-9.-]+(?::[0-9]{1,5})?$", description="The infrastructure layer's base address, without a path: "
+                                                                                       "https, or http to localhost only.")
     timeout_seconds: int = Field(default=30, ge=1, le=300)
+
+    @field_validator("url")
+    @classmethod
+    def _https(cls, value):
+        parsed = urlparse(value)  # the environment's token travels on every call (review of 2026-10-30, L11)
+        if parsed.scheme != "https" and parsed.hostname not in ("localhost", "127.0.0.1"):
+            raise ValueError("cloudinfra.url must be https: the environment's token travels on every call; plain http only to localhost")
+        return value
 
 
 class GcpSettings(StrictModel):
@@ -138,12 +147,26 @@ class Environment(StrictModel):
 class Principal(StrictModel):
     """One caller: an application team, identified by a bearer token kept only as its hash."""
     name: str = Field(pattern=r"^[a-z][a-z0-9-]{1,30}$")
-    token_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    token_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$", description="SHA-256 of the token; or token_hmac_sha256.")
+    token_hmac_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$",
+                                          description="HMAC-SHA-256 of the token keyed with the pepper in APPDELIVERY_TOKEN_PEPPER, kept apart from this file and the state; "
+                                                      "a copied configuration then cannot be checked against guesses (NIST SP 800-63B-4).")
     infra_owner: str = Field(pattern=r"^[a-z][a-z0-9-]{1,30}$", description="The cloudinfra principal whose requests this caller may deploy onto.")
     environments: list[str] = Field(min_length=1)
     can_deploy: bool = False
     can_approve: bool = False
     can_build: bool = False
+
+    @model_validator(mode="after")
+    def _one_hash(self):
+        if (self.token_sha256 is None) == (self.token_hmac_sha256 is None):
+            raise ValueError(f"principal {self.name}: give token_sha256 or token_hmac_sha256, one of them")
+        return self
+
+    @property
+    def credential(self) -> str:
+        """The stored hash, whichever kind: a sign-in is bound to it, so a new token ends the sessions made with the old."""
+        return self.token_hmac_sha256 or self.token_sha256
 
 
 CLAUDE_CALLBACKS = ("https://claude.ai/api/mcp/auth_callback", "https://claude.com/api/mcp/auth_callback")

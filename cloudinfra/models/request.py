@@ -232,7 +232,8 @@ class ClusterRequest(StrictModel):
     node_disk_gb: int = Field(default=50, ge=10, le=2000)
     kubernetes_version: str | None = Field(default=None, pattern=r"^[0-9]+\.[0-9]+(?:\.[0-9]+(?:-[a-z]+\.[0-9]+)?)?$",
                                            description="A version the provider offers (1.31); the provider's default channel when omitted.")
-    private_nodes: bool = Field(default=False, description="Nodes without public addresses (the Application Layer then needs the provider's NAT for egress).")
+    private_nodes: bool = Field(default=True, description="Nodes without public addresses, the default; they reach the internet through the request "
+                                                          "network's NAT, and Google's APIs privately. false gives each node a public address.")
     network_id: str | None = Field(default=None, description="A network this service created earlier (net-…); the operator's default network when omitted.")
     public: PublicRequest | None = Field(default=None, description="A front door: a public address and a Gateway for the request's workloads.")
     registries: list[str] = Field(default_factory=list, max_length=10, description="Artifact Registry repositories (LOCATION-docker.pkg.dev/PROJECT/REPO) the nodes "
@@ -270,13 +271,18 @@ class ServiceRequest(StrictModel):
     max_instances: int = Field(default=10, ge=1, le=1000)
     concurrency: int = Field(default=80, ge=1, le=1000, description="Requests one instance serves at once.")
     timeout_seconds: int = Field(default=300, ge=1, le=3600, description="How long a request may take.")
-    ingress: Literal["all", "internal", "internal_and_load_balancer"] = Field(default="all", description="Where requests may come from: the internet, the "
-                                                                                                         "project's networks only, or those and a load balancer.")
+    ingress: Literal["all", "internal", "internal_and_load_balancer"] = Field(default="internal_and_load_balancer",
+                                                                              description="Where requests may come from: the project's networks and a load balancer "
+                                                                                          "(default), the networks only, or all of the internet, which needs the "
+                                                                                          "operator's allow_public_exposure.")
     public: bool = Field(default=False, description="Callable without signing in; only when the operator allows public services. Otherwise callers need the "
                                                     "invoker role, which use grants.")
     network_id: str | None = Field(default=None, description="A network this service created earlier (net-…) for egress to private addresses; the request's "
                                                              "own network when it has one.")
     egress: Literal["private_ranges", "all"] = Field(default="private_ranges", description="With a network: send only private addresses through it, or everything.")
+
+    secrets: list[str] = Field(default_factory=list, max_length=MAX_SECRETS + 2, description="The request's secrets its runtime account may read, by "
+                                                                                    "name (db-password and cache-auth for the database's and cache's own); none by default.")
 
     @field_validator("network_id")
     @classmethod
@@ -317,6 +323,8 @@ class JobRequest(StrictModel):
                                                              "own network when it has one.")
     egress: Literal["private_ranges", "all"] = Field(default="private_ranges", description="With a network: send only private addresses through it, or everything.")
     schedule: ScheduleRequest | None = Field(default=None, description="When it runs by itself; it runs only when asked otherwise.")
+    secrets: list[str] = Field(default_factory=list, max_length=MAX_SECRETS + 2, description="The request's secrets its runtime account may read, by "
+                                                                                    "name (db-password and cache-auth for the database's and cache's own); none by default.")
 
     @field_validator("network_id")
     @classmethod
@@ -343,6 +351,25 @@ class LoadBalancerRequest(StrictModel):
     backend_group: str | None = Field(default=None, pattern=GROUP, description="The compute group behind it; the request's only group when omitted.")
     health_check_path: str = Field(default="/", pattern=r"^/[A-Za-z0-9/_.-]*$", max_length=200, description="The path an http health check requests.")
     backends: list[str] | None = Field(default=None, description="Machines this service created earlier (cmp-…), instead of a compute group of the same request.")
+    hostnames: list[str] = Field(default_factory=list, max_length=5, description="http only: DNS names in domains the operator allows. The load balancer then "
+                                                                                "serves HTTPS on 443 with a Google-managed certificate and redirects HTTP to it; "
+                                                                                "none, plain HTTP on the port.")
+
+    @field_validator("hostnames")
+    @classmethod
+    def _hostnames(cls, value):
+        for hostname in value:
+            if not HOSTNAME.fullmatch(hostname):
+                raise ValueError(f"load_balancer.hostnames: {hostname!r} is not a lowercase DNS name (no wildcard)")
+        if len(set(value)) != len(value):
+            raise ValueError("load_balancer.hostnames: each name once")
+        return value
+
+    @model_validator(mode="after")
+    def _https(self):
+        if self.hostnames and self.type != "http":
+            raise ValueError("load_balancer.hostnames: only an http load balancer terminates TLS; a tcp one passes it through")
+        return self
 
     @field_validator("backends")
     @classmethod
@@ -362,6 +389,8 @@ class NetworkRequest(StrictModel):
     allowed_ports: list[int] = Field(default_factory=lambda: [80, 443], description="Ports opened from allowed_sources when public_access is true.")
     allowed_sources: list[str] = Field(default_factory=lambda: ["0.0.0.0/0"], description="IPv4 ranges allowed to reach allowed_ports.")
     iap_ssh: bool = Field(default=True, description="Allow SSH on port 22 from the provider's identity-aware proxy range only; never from the internet.")
+    nat: bool = Field(default=True, description="A NAT for the network, so machines and cluster nodes without public addresses reach the internet; "
+                                                "none when the operator denies egress.")
 
     @field_validator("cidr")
     @classmethod
@@ -466,6 +495,16 @@ class InfrastructureRequest(StrictModel):
         for group in groups:
             if group.identity is not None and group.identity not in names:
                 raise ValueError(f"compute.identity names {group.identity!r}, which is not an identity of this request")
+            if group.identity is not None and self.identity_named(group.identity).level == "admin":
+                # anyone who signs in to a machine reads its account's token from the metadata server (review of 2026-10-30, M14)
+                raise ValueError(f"compute.identity names {group.identity!r}, an admin identity: everyone who signs in to the machines could act as it, "
+                                 "so machines run only as an identity at use")
+        readable = {secret.name for secret in self.secrets()} | {name for name, owner in RESERVED_SECRETS.items() if getattr(self, owner) is not None}
+        for kind, items in (("service", self.services()), ("job", self.jobs())):
+            for item in items:
+                unknown = [name for name in item.secrets if name not in readable]
+                if unknown:
+                    raise ValueError(f"{kind}.secrets names {', '.join(unknown)}, not a secret of this request; its secrets: {', '.join(sorted(readable)) or 'none'}")
         if self.storage and self.storage.group and self.storage.group not in {group.group_name for group in groups}:
             raise ValueError(f"storage.group names {self.storage.group!r}, which is not a compute group of this request")
         if self.load_balancer and self.load_balancer.backends:

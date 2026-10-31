@@ -139,7 +139,7 @@ CATALOG: tuple[ToolSpec, ...] = (
               Input("count", "How many identical machines (default 1)."), Input("os", "ubuntu (the default without a profile), debian or rocky."),
               Input("profile", "A software profile the operator defines, such as a GPU image with signed drivers; list_resource_kinds names them. Instead of os."),
               Input("boot_disk_gb", "Boot disk in GB (default 20; 50 with GPUs, which need at least 40)."),
-              Input("public_ip", "Give each machine a public address (default false)."), NETWORK_ID,
+              Input("public_ip", "Give each machine a public address (default false); needs the operator's allow_public_exposure."), NETWORK_ID,
               Input("accelerator", "GPUs per machine: t4, l4, a100 or h100; the machine family follows the type. Drivers come with a GPU profile (accelerator: required); "
                     "on any other image the Application Layer installs them."),
               Input("accelerator_count", "GPUs per machine (default 1); each type offers fixed counts."),
@@ -148,9 +148,9 @@ CATALOG: tuple[ToolSpec, ...] = (
               Input("lifetime_hours", "Hours until the request expires and stops (1 to 8760); the operator's default when omitted, if there is one. A lifetime ends "
                     "in a destroy, so it needs can_destroy."), ZONE, NAME, LABELS, WAIT),
              RESPONSE, ("INVALID_COMPUTE_CONFIGURATION", "INVALID_NETWORK_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
-             f"Needs can_provision, and can_destroy with lifetime_hours. Machines get OS Login (IAM) and no service account; vTPM and integrity monitoring on, and Secure "
-             f"Boot on unless GPUs run an image without their drivers, whose driver installation needs it off. The requester is granted login when the operator maps "
-             f"it to an identity. {OWNERSHIP}",
+             f"Needs can_provision, and can_destroy with lifetime_hours. Machines get OS Login (IAM) and no service account, no project-wide SSH keys, no serial "
+             f"port, and deletion protection lifted only by an explicit delete; vTPM and integrity monitoring on, and Secure Boot on unless GPUs run an image "
+             f"without their drivers, whose driver installation needs it off. The requester is granted login when the operator maps it to an identity. {OWNERSHIP}",
              "Compute Engine: compute.instances.insert with an E2 machine type (N1, G2, A2 or A3 with a GPU), a public image family or the profile's image, and "
              "scheduling.maxRunDuration with instanceTerminationAction STOP for max_run_hours; compute.instances.get after."),
     ToolSpec("get_compute", "Compute", "Get a machine", "One machine's live state: status, addresses, machine type, attached disks.",
@@ -174,7 +174,8 @@ CATALOG: tuple[ToolSpec, ...] = (
     ToolSpec("create_storage", "Storage", "Create storage", "Create block storage (a persistent disk, to attach to a machine) or an object bucket.",
              (REGION, Input("size_gb", "Disk size in GB; for a bucket, the expected capacity used only in the estimate.", True), PROVIDER,
               Input("type", "persistent (default): a block disk; object: a bucket."), Input("performance", "Disk class: standard, balanced (default) or ssd."), ZONE, NAME, LABELS, WAIT),
-             RESPONSE, ("INVALID_STORAGE_CONFIGURATION", *COMMON_ERRORS), f"Needs can_provision. Buckets get uniform access and enforced public-access prevention. {OWNERSHIP}",
+             RESPONSE, ("INVALID_STORAGE_CONFIGURATION", *COMMON_ERRORS), f"Needs can_provision. Buckets get uniform access, enforced public-access prevention and seven days of soft delete; "
+             f"disks and buckets the operator's KMS key for the region when set. {OWNERSHIP}",
              "Compute Engine: compute.disks.insert; Cloud Storage: storage.buckets.insert."),
     ToolSpec("attach_storage", "Storage", "Attach a disk", "Attach a persistent disk to a machine in the same zone. Formatting and mounting are the Application Layer's.",
              (Input("storage_id", "The disk (sto-…).", True), Input("compute_id", "The machine (cmp-…).", True)), RESOURCE,
@@ -187,12 +188,16 @@ CATALOG: tuple[ToolSpec, ...] = (
     # ---- network
     ToolSpec("create_network", "Network", "Create a network", "Create a private network with one subnet in the region and the firewall rules the switches imply: internal traffic, "
              "SSH from the provider's identity-aware proxy only, and the public ports when public_access is on.",
-             (REGION, PROVIDER, Input("public_access", "Allow public addresses and open allowed_ports from allowed_sources (default false)."),
+             (REGION, PROVIDER, Input("public_access", "Allow public addresses and open allowed_ports from allowed_sources (default false); needs the operator's "
+                                      "allow_public_exposure."),
               Input("cidr", "The subnet's private IPv4 range (default 10.10.0.0/24)."), Input("allowed_ports", "Ports opened from allowed_sources when public_access is on (default 80, 443)."),
               Input("allowed_sources", "IPv4 ranges allowed to reach allowed_ports (default 0.0.0.0/0)."), Input("iap_ssh", "SSH on port 22 from the identity-aware proxy range (default true)."),
               NAME, LABELS, WAIT), RESPONSE, ("INVALID_NETWORK_CONFIGURATION", *COMMON_ERRORS),
-             "Needs can_provision. No rule ever opens port 22 to the internet; private ranges only for the subnet.",
-             "Compute Engine: compute.networks.insert (custom subnets), compute.subnetworks.insert, compute.firewalls.insert."),
+             "Needs can_provision. No rule ever opens 22 or 3389 to a public range; private ranges only for the subnet. Flow logs on the subnet and logging on "
+             "every rule (the operator's network_logs), a Cloud NAT so machines without public addresses reach the internet, and, when the operator denies "
+             "egress, only private ranges and Google's private API addresses reachable.",
+             "Compute Engine: compute.networks.insert (custom subnets), compute.subnetworks.insert, compute.firewalls.insert, compute.routers.insert (Cloud NAT); "
+             "Cloud DNS: responsePolicies.create with egress denied."),
     ToolSpec("get_network", "Network", "Get a network", "A network's subnet, range, firewall rules and state.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only.",
              "Compute Engine: compute.networks.get."),
     ToolSpec("configure_firewall", "Network", "Add a firewall rule", "Add one ingress rule (TCP ports from source ranges) to a network this service created.",
@@ -210,7 +215,9 @@ CATALOG: tuple[ToolSpec, ...] = (
               Input("public_access", "A public address instead of a private one (default false; private needs network_id)."), Input("database_name", "The database to create (default app)."),
               Input("username", "The user to create (default app)."), Input("network_id", "For a private database: a network this service created (net-…)."), NAME, LABELS, WAIT),
              RESPONSE + " Plus credentials naming the password's secret.", ("INVALID_DATABASE_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
-             "Needs can_provision. Encrypted connections only, automated backups on, deletion protection on until destroy. The password is never logged or kept by this service.",
+             "Needs can_provision. Encrypted connections only, automated backups on, deletion protection on until destroy, the CIS database flags and IAM "
+             "database authentication on, the operator's KMS key for the region when set, and a default-user password nobody keeps. The password is never "
+             "logged or kept by this service.",
              "Cloud SQL Admin: sqladmin.instances.insert, databases.insert, users.insert; Service Networking for a private address; Secret Manager for the password."),
     ToolSpec("get_database", "Database", "Get a database", "Host, port, state, version, tier and storage of one database instance.", (RESOURCE_ID,), RESOURCE, READ_ERRORS,
              "Read-only; never returns a password.", "Cloud SQL Admin: sqladmin.instances.get."),
@@ -245,7 +252,8 @@ CATALOG: tuple[ToolSpec, ...] = (
              "logged or kept by this service, and the Application Layer reads and writes versions with its own identity.",
              (REGION, Input("secret_name", "The secret's short name, part of its resource name.", True), PROVIDER,
               Input("generate_value", "Write a generated random value as the first version (default false)."), NAME, LABELS, WAIT),
-             RESPONSE, ("NOT_FOUND", *COMMON_ERRORS), f"Needs can_provision. No value passes through a request or a response. {OWNERSHIP}",
+             RESPONSE, ("NOT_FOUND", *COMMON_ERRORS), f"Needs can_provision. No value passes through a request or a response; with the operator's KMS key for the region, kept in "
+             f"that region under it. {OWNERSHIP}",
              "Secret Manager: secretmanager.projects.secrets.create, secretmanager.projects.secrets.addVersion."),
     ToolSpec("get_secret", "Secret", "Get a secret", "A secret's resource name, how many versions this service wrote, and its state. Never a value.", (RESOURCE_ID,), RESOURCE,
              READ_ERRORS, "Read-only; never returns a value.", "Secret Manager: secretmanager.projects.secrets.get."),
@@ -258,7 +266,8 @@ CATALOG: tuple[ToolSpec, ...] = (
              (REGION, Input("registry_name", "The repository's short name, part of its provider name.", True), PROVIDER,
               Input("immutable_tags", "Refuse to move a tag once pushed (default false)."),
               Input("size_gb", "The images it is expected to hold, in GB, for the cost estimate only (default 10)."), NAME, LABELS, WAIT),
-             RESPONSE, ("NOT_FOUND", *COMMON_ERRORS), f"Needs can_provision. Pushing and pulling are the members' own, with their own identity. {OWNERSHIP}",
+             RESPONSE, ("NOT_FOUND", *COMMON_ERRORS), f"Needs can_provision. Pushing and pulling are the members' own, with their own identity. A cleanup policy reports "
+             f"untagged images older than ninety days without deleting them (a dry run the operator turns off). {OWNERSHIP}",
              "Artifact Registry: artifactregistry.projects.locations.repositories.create (format DOCKER)."),
     ToolSpec("get_registry", "Registry", "Get an image registry", "A repository's address (where images are pushed and pulled), its settings and state.", (RESOURCE_ID,),
              RESOURCE, READ_ERRORS, "Read-only.", "Artifact Registry: artifactregistry.projects.locations.repositories.get."),
@@ -271,14 +280,17 @@ CATALOG: tuple[ToolSpec, ...] = (
              (REGION, PROVIDER, Input("node_count", "Nodes in the pool (default 1)."), Input("node_cpu", "Virtual CPUs per node (default 2)."),
               Input("node_memory_gb", "Memory per node in GB (default 8)."), Input("node_disk_gb", "Node disk in GB (default 50)."),
               Input("kubernetes_version", "A version the provider offers; its default channel when omitted."),
-              Input("private_nodes", "Nodes without public addresses (default false)."), NETWORK_ID,
+              Input("private_nodes", "Nodes without public addresses (default true); they reach the internet through their network's NAT."), NETWORK_ID,
               Input("registries", "Artifact Registry repositories (LOCATION-docker.pkg.dev/PROJECT/REPO) the nodes may pull images from; only ones the operator lists."),
               Input("public", "A front door: a reserved public address and a Gateway taking routes from the request's namespace (default false)."),
               Input("hostnames", "The front door's DNS names, in domains the operator allows: HTTPS with a Google-managed certificate; none, plain HTTP."),
               ZONE, NAME, LABELS, WAIT),
              RESPONSE, ("INVALID_CLUSTER_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
              "Needs can_provision. The nodes run as a service account made for the cluster, with the minimum node role on the project and reader on the named "
-             f"registries only, deleted with the cluster; they get the logging, monitoring and read-only storage scopes. {OWNERSHIP}",
+             "registries only, deleted with the cluster; they get the logging, monitoring and read-only storage scopes. Private nodes by default, Dataplane V2 "
+             "(network policy), Binary Authorization enforcing the project's policy, the security posture dashboard, the operator's authorized networks for the "
+             "control plane, Pod Security baseline on the request's namespace, and no LoadBalancer, NodePort, Ingress or Gateway there. The service grants the "
+             f"node role only when its own account may grant that role and no other. {OWNERSHIP}",
              "Kubernetes Engine: container.projects.locations.clusters.create (zonal, one node pool); IAM: serviceAccounts.create and delete, and the project's "
              "setIamPolicy for roles/container.defaultNodeServiceAccount only; Artifact Registry: repositories setIamPolicy; for a front door Compute Engine "
              "globalAddresses and sslCertificates insert and delete, and the cluster's Gateway API."),
@@ -292,14 +304,15 @@ CATALOG: tuple[ToolSpec, ...] = (
              (REGION, PROVIDER, Input("cpu", "Virtual CPUs per instance: 1, 2, 4 or 8 (default 1)."), Input("memory_mb", "Memory per instance in MiB (default 512)."),
               Input("min_instances", "Instances kept warm (default 0)."), Input("max_instances", "At most this many instances (default 10)."),
               Input("concurrency", "Requests one instance serves at once (default 80)."), Input("timeout_seconds", "How long a request may take (default 300)."),
-              Input("ingress", "all (default), internal, or internal_and_load_balancer."),
+              Input("ingress", "internal_and_load_balancer (default), internal, or all, which needs the operator's allow_public_exposure."),
               Input("public", "Callable without signing in; only when the operator allows public services (default false)."), NETWORK_ID,
               Input("egress", "With a network: private_ranges (default) or all."), NAME, LABELS, WAIT),
              RESPONSE, ("INVALID_SERVICE_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
-             "Needs can_provision. It runs as a service account made for it, which reads the request's secrets and nothing else, deleted with it. use grants the "
+             "Needs can_provision. It runs as a service account made for it, which reads the secrets its block names (service.secrets in a full request) and "
+             "nothing else, deleted with it; Binary Authorization applies the project's policy to its images. use grants the "
              f"invoker role on it; admin also the developer role and acting as its runtime account, which deploying a revision needs. {OWNERSHIP}",
              "Cloud Run: run.services.create, and setIamPolicy for a public service (invoker check off) and for grants; IAM: serviceAccounts.create, delete and "
-             "setIamPolicy; Secret Manager: the request's secrets' setIamPolicy."),
+             "setIamPolicy; Secret Manager: the named secrets' setIamPolicy."),
     ToolSpec("get_service", "Service", "Get a service", "Address, limits, state and the revision serving now of one managed container service.", (RESOURCE_ID,), RESOURCE,
              READ_ERRORS, "Read-only.", "Cloud Run: run.services.get."),
     ToolSpec("delete_service", "Service", "Delete a service", "Delete the service, every revision and its runtime account.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
@@ -326,11 +339,12 @@ CATALOG: tuple[ToolSpec, ...] = (
               Input("schedule", "Five unix-cron fields, such as '0 2 * * *'; it runs only when asked without one."),
               Input("time_zone", "The schedule's IANA time zone (default UTC)."), NAME, LABELS, WAIT),
              RESPONSE, ("INVALID_SERVICE_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
-             "Needs can_provision. Its tasks run as a service account made for it, which reads the request's secrets and nothing else; a schedule runs it as a "
+             "Needs can_provision. Its tasks run as a service account made for it, which reads the secrets its block names (job.secrets in a full request) and "
+             "nothing else; Binary Authorization applies the project's policy to its images; a schedule runs it as a "
              f"second account that may run this job only. Both go with it. use grants the invoker role (run it); admin also the developer role and acting as "
              f"its runtime account. {OWNERSHIP}",
              "Cloud Run: run.jobs.create and setIamPolicy; Cloud Scheduler: jobs.create and delete; IAM: serviceAccounts.create, delete and setIamPolicy; "
-             "Secret Manager: the request's secrets' setIamPolicy."),
+             "Secret Manager: the named secrets' setIamPolicy."),
     ToolSpec("get_job", "Job", "Get a job", "Limits, schedule and state of one managed job.", (RESOURCE_ID,), RESOURCE, READ_ERRORS, "Read-only.", "Cloud Run: run.jobs.get."),
     ToolSpec("delete_job", "Job", "Delete a job", "Delete its schedule, the job with its runs, and its accounts.", (RESOURCE_ID, WAIT), RESOURCE, DELETE_ERRORS,
              "Needs can_destroy.", "Cloud Scheduler: jobs.delete; Cloud Run: run.jobs.delete; IAM: serviceAccounts.delete."),
@@ -338,11 +352,16 @@ CATALOG: tuple[ToolSpec, ...] = (
     ToolSpec("create_load_balancer", "Load balancer", "Create a load balancer", "Put a public load balancer in front of machines this service created: http (an application load "
              "balancer with a health check on a path) or tcp (a passthrough network load balancer). Health checkers are allowed through the firewall on the backend port.",
              (REGION, Input("backends", "The machines behind it (cmp-…), all in one zone.", True), PROVIDER, Input("type", "http (default) or tcp."),
-              Input("port", "The port the machines serve on; the public port is the same (default 80)."), Input("health_check_path", "The path an http health check requests (default /)."),
+              Input("port", "The port the machines serve on; without hostnames the public port is the same (default 80)."),
+              Input("health_check_path", "The path an http health check requests (default /)."),
+              Input("hostnames", "http only: DNS names in domains the operator allows; HTTPS on 443 with a Google-managed certificate, TLS 1.2 or later, "
+                                 "and HTTP redirected to it. None, plain HTTP on the port."),
               NAME, LABELS, WAIT),
              RESPONSE, ("INVALID_LOAD_BALANCER_CONFIGURATION", "NOT_FOUND", "INVALID_STATE", *COMMON_ERRORS),
-             f"Needs can_provision. HTTP only; TLS termination is a later feature. {OWNERSHIP}",
-             "Compute Engine: instance group, firewall rule, health check, backend service, URL map and target proxy (http), address and forwarding rule."),
+             f"Needs can_provision and the operator's allow_public_exposure. Backends log every request; an http load balancer carries the operator's Cloud Armor "
+             f"policy when one is set. {OWNERSHIP}",
+             "Compute Engine: instance group, firewall rule, health check, backend service (logged, Cloud Armor), URL map and target proxy (http; with hostnames a "
+             "managed certificate, an SSL policy, an HTTPS proxy and a redirect), address and forwarding rules."),
     ToolSpec("get_load_balancer", "Load balancer", "Get a load balancer", "Public address, port, backends and state of one load balancer.", (RESOURCE_ID,), RESOURCE, READ_ERRORS,
              "Read-only.", "Compute Engine: compute.globalForwardingRules.get or compute.forwardingRules.get."),
     ToolSpec("delete_load_balancer", "Load balancer", "Delete a load balancer", "Delete every piece of the load balancer in reverse order; the machines behind it stay.",

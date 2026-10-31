@@ -21,6 +21,14 @@ EXTENDED_SUPPORT = {"postgresql": ("13",), "mysql": ("5.7",)}
 # small: shared core, the cheapest instance Cloud SQL offers; medium and large: dedicated vCPUs with Google's custom tiers.
 DB_TIERS = {"small": "db-f1-micro", "medium": "db-custom-2-7680", "large": "db-custom-4-15360"}
 DB_PORTS = {"postgresql": 5432, "mysql": 3306}
+# The database flags CIS GCP section 6 expects, per engine (review of 2026-10-30, M13), and IAM database authentication on,
+# so people and workloads can sign in with their Google identity instead of a password
+# (https://cloud.google.com/sql/docs/postgres/flags, https://cloud.google.com/sql/docs/mysql/flags).
+DB_FLAGS = {
+    "postgresql": {"cloudsql.iam_authentication": "on", "cloudsql.enable_pgaudit": "on", "log_connections": "on", "log_disconnections": "on",
+                   "log_statement": "ddl", "log_min_messages": "warning", "log_min_error_statement": "error", "log_min_duration_statement": "-1"},
+    "mysql": {"cloudsql_iam_authentication": "on", "local_infile": "off", "skip_show_database": "on"},
+}
 IAP_RANGE = "35.235.240.0/20"  # Google's Identity-Aware Proxy TCP forwarding range
 E2_SIZES = (2, 4, 8, 16, 32)
 SHARED_CORE = {1: "e2-micro", 2: "e2-small", 4: "e2-medium"}  # one CPU's worth, by memory in GB

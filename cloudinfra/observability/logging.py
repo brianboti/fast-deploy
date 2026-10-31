@@ -9,6 +9,7 @@ import contextvars
 import datetime
 import json
 import logging
+import re
 from logging.handlers import RotatingFileHandler
 
 log = logging.getLogger("cloudinfra")
@@ -20,12 +21,33 @@ SECRET_KEYS = frozenset({"password", "root_password", "rootpassword", "database_
 REDACTED = "[redacted]"
 
 
+# Credentials by their shape, wherever they appear in a value (review of 2026-10-30, L6): a Google access token, a bearer
+# header, a PEM block, and a long run of token characters that mixes cases and digits (a hex digest, all one case, stays).
+CREDENTIAL_SHAPES = (re.compile(r"ya29\.[A-Za-z0-9._-]+"), re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),
+                     re.compile(r"-----BEGIN [A-Z ]+-----[\s\S]*?(?:-----END [A-Z ]+-----|$)"))
+TOKEN_RUN = re.compile(r"[A-Za-z0-9+_-]{40,}={0,2}")
+
+
+def redact_text(text: str) -> str:
+    """A string with every credential-shaped part replaced."""
+    for shape in CREDENTIAL_SHAPES:
+        text = shape.sub(REDACTED, text)
+    return TOKEN_RUN.sub(lambda found: REDACTED if _mixed(found.group(0)) else found.group(0), text)
+
+
+def _mixed(run: str) -> bool:
+    return any(c.islower() for c in run) and any(c.isupper() for c in run) and any(c.isdigit() for c in run)
+
+
 def redact(value):
-    """A copy with every value under a secret-looking key replaced; nested dicts and lists included."""
+    """A copy with every value under a secret-looking key replaced, and credential-shaped text replaced in every other
+    string; nested dicts and lists included."""
     if isinstance(value, dict):
         return {key: (REDACTED if str(key).lower() in SECRET_KEYS else redact(item)) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [redact(item) for item in value]
+    if isinstance(value, str):
+        return redact_text(value)
     return value
 
 

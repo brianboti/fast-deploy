@@ -9,6 +9,14 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from .errors import DeliveryError, ErrorCode
 
 IAP_RANGE = "35.235.240.0/20"  # Google's Identity-Aware Proxy TCP forwarding range
+# What a value read from cloudinfra's answer may look like before it reaches gcloud's arguments, a TLS endpoint or a
+# Google URL (review of 2026-10-30, L11): an answer is data, and a value of another shape is refused, not passed on.
+RESOURCE_NAME = r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+ZONE = r"^[a-z]+-[a-z]+[0-9]+-[a-z]$"
+REGION = r"^(?:[a-z]+-[a-z]+[0-9]+)?$"
+ENDPOINT = r"^(?:[0-9]{1,3}(?:\.[0-9]{1,3}){3}|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63})$"
+BASE64 = r"^[A-Za-z0-9+/]+={0,2}$"
+RUN_NAME = r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/(?:services|jobs)/[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
 
 
 class View(BaseModel):
@@ -23,6 +31,8 @@ class Grant(View):
 
 
 class FirewallRule(View):
+    direction: str = "ingress"
+    deny: bool = False
     ports: list[int] = Field(default_factory=list)
     sources: list[str] = Field(default_factory=list)
 
@@ -32,22 +42,26 @@ class Network(View):
     name: str
     status: str
     cidr: str | None = None
+    nat: bool = False
     firewall_rules: list[FirewallRule] = Field(default_factory=list)
 
+    def _ingress(self) -> list[FirewallRule]:
+        return [rule for rule in self.firewall_rules if rule.direction == "ingress" and not rule.deny]
+
     def admits(self, port: int, source: str) -> bool:
-        return any(source in rule.sources and (not rule.ports or port in rule.ports) for rule in self.firewall_rules)
+        return any(source in rule.sources and (not rule.ports or port in rule.ports) for rule in self._ingress())
 
     def opens_beyond_subnet(self, port: int) -> bool:
         """Some rule opens the port to sources other than the network's own subnet and the IAP range."""
-        return any((not rule.ports or port in rule.ports) and set(rule.sources) - {self.cidr, IAP_RANGE} for rule in self.firewall_rules)
+        return any((not rule.ports or port in rule.ports) and set(rule.sources) - {self.cidr, IAP_RANGE} for rule in self._ingress())
 
 
 class Machine(View):
     id: str
-    name: str
+    name: str = Field(pattern=RESOURCE_NAME)
     status: str
     group: str = "vm"
-    zone: str | None = None
+    zone: str | None = Field(default=None, pattern=ZONE)
     os_image: str = ""
     profile: str | None = None
     network: str | None = None
@@ -75,36 +89,38 @@ class FrontDoor(View):
 
 class Cluster(View):
     id: str
-    name: str
+    name: str = Field(pattern=RESOURCE_NAME)
     status: str
-    location: str = ""
-    endpoint: str | None = None
-    ca_certificate: str | None = None
-    namespace: str | None = None
+    location: str = Field(default="", pattern=r"^(?:[a-z]+-[a-z]+[0-9]+(?:-[a-z])?)?$")
+    endpoint: str | None = Field(default=None, pattern=ENDPOINT)
+    ca_certificate: str | None = Field(default=None, pattern=BASE64)
+    namespace: str | None = Field(default=None, pattern=RESOURCE_NAME)
     public: FrontDoor | None = None
 
 
 class Service(View):
     """A managed container service (Cloud Run): where it is, its address, the account it runs as, and what serves now."""
     id: str
-    name: str
+    name: str = Field(pattern=RESOURCE_NAME)
     status: str
-    provider_id: str | None = None
-    region: str = ""
+    provider_id: str | None = Field(default=None, pattern=RUN_NAME)
+    region: str = Field(default="", pattern=REGION)
     url: str | None = None
     runtime_service_account: str | None = None
     revision: str | None = None
+    secrets: list[str] = Field(default_factory=list, description="The secrets (resource names) its runtime account may read.")
 
 
 class Job(View):
     """A managed job (Cloud Run job): where it is, and the account its tasks run as."""
     id: str
-    name: str
+    name: str = Field(pattern=RESOURCE_NAME)
     status: str
-    provider_id: str | None = None
-    region: str = ""
+    provider_id: str | None = Field(default=None, pattern=RUN_NAME)
+    region: str = Field(default="", pattern=REGION)
     runtime_service_account: str | None = None
     schedule: dict[str, str] | None = None
+    secrets: list[str] = Field(default_factory=list, description="The secrets (resource names) its runtime account may read.")
 
 
 class Resources(View):

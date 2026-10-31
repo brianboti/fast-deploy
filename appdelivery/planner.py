@@ -31,7 +31,7 @@ def _problem(code: ErrorCode, message: str, **details) -> ErrorDetail:
 def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tuple[list[ErrorDetail], list[str]]:
     """(problems, warnings) of a release against the request it names."""
     environment = config.environments[release.environment]
-    problems, warnings = [], []
+    problems, warnings, runtime = [], [], None
     if infra.owner != principal.infra_owner:
         # the same answer cloudinfra gives another caller: whether someone else's request exists is not this caller's to learn
         return [_problem(ErrorCode.NOT_FOUND, f"Request {release.request_id} is not one of {principal.infra_owner}'s", request_id=release.request_id)], []
@@ -70,7 +70,7 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
             if release.target.expose is not None:
                 _check_exposure(release, cluster, problems, warnings)
     elif release.target.service:
-        service = infra.service(release.target.service)
+        service = runtime = infra.service(release.target.service)
         names = sorted(infra.cluster_name(item) for item in infra.services())
         if service is None and not names:
             problems.append(_problem(ErrorCode.NOT_FOUND, "The request has no service; ask cloudinfra for one with a service block", field="target.service"))
@@ -91,7 +91,7 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
         if "PORT" in release.env:
             problems.append(_problem(ErrorCode.INVALID_BINDING, "env.PORT: Cloud Run sets PORT to the release's port itself", field="env.PORT"))
     elif release.target.job:
-        job = infra.job(release.target.job)
+        job = runtime = infra.job(release.target.job)
         names = sorted(infra.cluster_name(item) for item in infra.jobs())
         if job is None and not names:
             problems.append(_problem(ErrorCode.NOT_FOUND, "The request has no job; ask cloudinfra for one with a job block", field="target.job"))
@@ -134,8 +134,8 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
                                          "with configure_firewall", resource=machine.id))
             elif not network.opens_beyond_subnet(release.port):
                 warnings.append(f"Port {release.port} is open only inside {network.name}: add a firewall rule or a load balancer to reach it from elsewhere")
-            if not release.registry().endswith(ARTIFACT_REGISTRY_SUFFIX) and machine.public_ip is None:
-                problems.append(_problem(ErrorCode.UNREACHABLE_TARGET, f"{machine.name} has no public address and the infrastructure layer offers no NAT, so it can pull only "
+            if not release.registry().endswith(ARTIFACT_REGISTRY_SUFFIX) and machine.public_ip is None and not (network is not None and network.nat):
+                problems.append(_problem(ErrorCode.UNREACHABLE_TARGET, f"{machine.name} has no public address and its network no NAT, so it can pull only "
                                          f"from Artifact Registry (*{ARTIFACT_REGISTRY_SUFFIX})", resource=machine.id, registry=release.registry()))
         if any(machine.autostop_idle_minutes for machine in machines):
             warnings.append(f"Group {release.target.group} stops itself when idle (autostop): a quiet service is idle to it; ask for keep_awake or a group without autostop")
@@ -156,6 +156,9 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
                                          f"{', '.join(infra.secret_names()) or 'none'}", field=f"env.{name}"))
             elif secret.status != "READY":
                 problems.append(_problem(ErrorCode.INVALID_BINDING, f"env.{name}: secret {binding.secret} is {secret.status}", field=f"env.{name}"))
+            elif runtime is not None and secret.resource_name not in runtime.secrets:  # Cloud Run reads it as the runtime account, which reads only what it names
+                problems.append(_problem(ErrorCode.INVALID_BINDING, f"env.{name}: {runtime.name}'s runtime account may not read secret {binding.secret}; ask cloudinfra "
+                                         f"to name it in the block's secrets", field=f"env.{name}"))
     return problems, list(dict.fromkeys(warnings))  # machines on one network warn once
 
 

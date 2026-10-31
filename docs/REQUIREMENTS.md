@@ -156,6 +156,9 @@ endpoints):
 | Cloud Build `cloudbuild.googleapis.com` | builds of a linked source in the trusted project; 2nd-gen repository connections |
 | Container Analysis `containeranalysis.googleapis.com` | the signed SLSA provenance Cloud Build records for each image it pushes |
 | OS Login and IAP TCP forwarding | SSH to machines as a service account (`gcloud compute ssh`) |
+| Binary Authorization `binaryauthorization.googleapis.com` | the project policy clusters enforce and Cloud Run applies (`providers.gcp.binary_authorization`, on by default) |
+| Cloud DNS `dns.googleapis.com` | with `providers.gcp.deny_egress`: the response policy that sends Google's API names to private.googleapis.com |
+| Cloud KMS `cloudkms.googleapis.com` | with `providers.gcp.kms_keys`: the operator's keys, used by each service's own agent |
 
 **The infrastructure service's identity.** A keyless, single-purpose service account with roles on the project it
 provisions in, and nothing elsewhere. The roles the documents name, by what they are for (shrink later with the IAM
@@ -170,6 +173,7 @@ recommender):
 | queues | `roles/pubsub.editor` |
 | secrets | `roles/secretmanager.admin` |
 | clusters | `roles/container.clusterAdmin` (which also lets it create namespaces, RoleBindings and policies in the clusters it made) |
+| HTTPS load balancers, Cloud Armor, egress control | `compute.sslCertificates.*` and `compute.sslPolicies.*`; `compute.securityPolicies.use` on the operator's `cloud_armor_policy`; `roles/dns.admin` with `deny_egress` |
 | image registries | `artifactregistry.repositories.{create,get,delete,getIamPolicy,setIamPolicy}` |
 | access grants (release A) | a custom role with exactly `getIamPolicy` and `setIamPolicy` on Compute Engine instances, IAP tunnel instances, secrets, buckets, topics, subscriptions and Artifact Registry repositories |
 | a workload identity per request | nothing beyond the node-account roles below |
@@ -226,7 +230,7 @@ The `cloudinfra` operator also defines the profile the delivery service needs fo
 |---|---|
 | SSH through IAP to a machine | a firewall rule from `35.235.240.0/20` on port 22: a request's own network has it with `iap_ssh: true` (the default); the operator's default network only if `gcp.default_network_iap: true` says so |
 | Google's load balancer health checks | `130.211.0.0/22` and `35.191.0.0/16` to the backend port (the adapter opens it) |
-| image pulls from a machine without a public address | Private Google Access on the request's subnet (set by the adapter); Artifact Registry (`*-docker.pkg.dev`) only, since the service offers no NAT |
+| image pulls from a machine without a public address | Private Google Access on the request's subnet (set by the adapter) for Artifact Registry (`*-docker.pkg.dev`); other registries through the network's Cloud NAT, which a request's network has unless the operator denies egress |
 | image pulls by cluster nodes | the node account's `roles/artifactregistry.reader` on repositories the operator lists in `providers.gcp.registries` |
 | Claude chat | a public HTTPS address reachable from Claude's servers; callbacks `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback` |
 | a cluster's front door with HTTPS | hostnames under `providers.gcp.public_domains`, DNS pointed at the reserved address before the Google-managed certificate becomes ACTIVE (not yet run on a real domain) |
@@ -286,6 +290,11 @@ groups, queues, secrets, registries, clusters, services and jobs up to 12 charac
 Per release, by the delivery contract: an image by digest only; port 1 to 65535 except 22; health timeout 5 to 600
 seconds (60 by default); up to 64 environment values of up to 4096 characters, one line each, with no credential as a
 literal; replicas 1 to 20 on a cluster; a note up to 300 characters.
+
+The Google adapter's defaults since the assessment's release S2: `allow_public_exposure` false, `network_logs` true,
+`deny_egress` false, `binary_authorization` true, `cluster_authorized_networks` empty (the control plane open to any
+address, behind IAM), `kms_keys` empty (Google's own keys), `cloud_armor_policy` none; a request's network has a NAT
+(`nat: true`), a cluster private nodes, a Cloud Run service `internal_and_load_balancer` ingress and no secrets.
 
 Server settings, both services: `max_request_bytes` 65,536 (413 above it), `registrations_per_hour` 10 per client address with sign-in on, `rate_limit_per_minute` 120 per identity, `auth_failures_per_minute` 20 per client
 address, `workers` 4 (1 to 32), `allowed_hosts` `127.0.0.1:*` and `localhost:*` by default. The infrastructure

@@ -253,7 +253,7 @@ The service's own identity then needs, once, from the platform team:
 |---|---|---|
 | make and delete the node accounts | `roles/iam.serviceAccountCreator`, `roles/iam.serviceAccountDeleter` | the project |
 | run a node pool as them | `roles/iam.serviceAccountUser` | the project: it can then act as any service account there, so run the service in a project of its own, with no other accounts worth taking |
-| give a node account its project role | `roles/resourcemanager.projectIamAdmin` | an IAM condition, so it can grant that one role and no other: `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])` ([limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)) |
+| give a node account its project role | `roles/resourcemanager.projectIamAdmin` | an IAM condition, so it can grant that one role and no other: `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])` ([limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)). The service checks it: before it writes the project's policy it reads it, and refuses when its own account holds this role, `roles/owner` or `roles/iam.securityAdmin` without exactly this condition (a person's own sign-in on a laptop is not checked) |
 | let a node account read a repository | `roles/artifactregistry.admin` | each repository listed in `providers.gcp.registries`, granted on the repository |
 
 ### A workload identity
@@ -262,6 +262,8 @@ The service's own identity then needs, once, from the platform team:
 made for it. It joins the request's access list at its level and is granted on the request's resources like any member,
 on nothing outside the request; it is made first and deleted last. A compute group that names it (`compute.identity`)
 runs its machines as it, with the `cloud-platform` scope and IAM deciding the rest; otherwise machines run as no account.
+Everyone who signs in to a machine can read its account's token from the metadata server, so a group may name only an
+identity at `use`; one at `admin` is refused.
 When the request has clusters, the Kubernetes service account of the identity's name in the request's namespace may act
 as it through Workload Identity Federation for GKE (`roles/iam.workloadIdentityUser` on the account), so pods need no key
 either; the connect block gives the two `kubectl` commands. Ranked first among the missing kinds by the research of
@@ -272,10 +274,12 @@ than a year. The service's identity needs nothing beyond the node-account roles 
 
 `service: {cpu, memory_mb, min_instances, max_instances, concurrency, timeout_seconds, ingress, public, network_id, egress}`
 makes a Cloud Run service, empty: Google's sample image stands in until the delivery layer puts a release on it. It runs
-as an account made for it (`run-<request id>-<name>`) that may read the request's secrets and nothing else, and both go
-when the request is destroyed. `ingress` says where requests may come from (`all`, `internal`, or
-`internal_and_load_balancer`); every caller needs the invoker role, which `use` grants, unless `public` turns Cloud Run's
-invoker check off, which the operator must allow (`providers.gcp.allow_public_services`, off by default). With a network
+as an account made for it (`run-<request id>-<name>`) that may read the secrets its block names (`secrets: [api-key,
+db-password]`, none by default) and nothing else, and both go when the request is destroyed. `ingress` says where
+requests may come from: `internal_and_load_balancer` (the default), `internal`, or `all`, which needs the operator's
+`allow_public_exposure`; every caller needs the invoker role, which `use` grants, unless `public` turns Cloud Run's
+invoker check off, which the operator must also allow (`providers.gcp.allow_public_services`, off by default). Binary
+Authorization applies the project's policy to its images (`providers.gcp.binary_authorization`). With a network
 (the request's own or `network_id`) the service sends private traffic through it (Direct VPC egress). CPU and memory are
 checked against Cloud Run's pairs. Idle cost is warm instances only (`min_instances`); requests are billed by use.
 
@@ -288,7 +292,8 @@ already covers the secrets' policies.
 
 `job: {cpu, memory_mb, tasks, parallelism, max_retries, task_timeout_seconds, network_id, egress, schedule}` makes a Cloud
 Run job that runs to completion, empty: Google's sample job image stands in until the delivery layer puts a release on
-it. Its tasks run as an account made for it (`run-<request id>-<name>`) that reads the request's secrets and nothing else.
+it. Its tasks run as an account made for it (`run-<request id>-<name>`) that reads the secrets its block names and
+nothing else.
 With `schedule: {cron, time_zone}` the service also makes a Cloud Scheduler job that calls the job's run endpoint as a
 second account (`sch-<request id>-<name>`), which holds `roles/run.invoker` on this job only. On destroy the schedule goes
 first, so nothing starts the job while it is deleted, then the job, then both accounts. A job costs only while it runs.
@@ -305,6 +310,18 @@ hostnames it serves plain HTTP on the address. A hostname must be in one of the 
 The cluster reports `public.address`, the hostnames and the certificate's state; the operator points DNS at the address,
 and the certificate becomes ACTIVE after that. A namespace with `edit` may write HTTPRoutes and GKE's HealthCheckPolicies (a
 ClusterRole aggregated into `edit`) and attach them to that Gateway; Gateways stay out of `edit`.
+
+### A cluster's defaults
+
+What GKE's hardening guide and CIS GKE ask of a new cluster, on unless a request or the operator says otherwise:
+private nodes (`private_nodes: true`; they reach Google's APIs privately and the internet through the request network's
+Cloud NAT), Dataplane V2, which enforces Kubernetes NetworkPolicy, the security posture dashboard, and Binary
+Authorization enforcing the project's policy (`providers.gcp.binary_authorization`). With
+`providers.gcp.cluster_authorized_networks`, only those ranges reach the control plane. With a KMS key for the region,
+Kubernetes Secrets are encrypted at the application layer and the nodes' disks under it. The request's namespace
+carries Pod Security `baseline` (enforced) and `restricted` (warned and audited), labels `edit` cannot change, so a
+team cannot run a privileged pod, use the host's network or mount a host path; the admission policy also refuses a
+Service of type NodePort.
 
 GKE makes the Gateway's load balancer and deletes it with the Gateway, so the service deletes the Gateway first, waits
 until no forwarding rule uses the address (ten minutes at most), then deletes the cluster, the certificate and the
@@ -370,13 +387,14 @@ database was created and finds no trace of the password.
 
 | Boundary | How |
 |---|---|
-| Caller identity | Bearer token per principal, stored as a SHA-256 hash, compared in constant time; identity comes from the credential, never a parameter |
-| Sign-in for Claude chat | Off unless `sign_in` is set (`security/oauth.py`): the service is its own OAuth 2.1 server for claude.ai, which cannot send a fixed token. A person pastes their principal's token on the service's own page, never in the chat; Claude gets a one-hour access token and a thirty-day refresh token standing for that principal, with its rights. PKCE, registration only for the configured callbacks (Claude's) and only for public clients (no client secret or key set is accepted), small and forgotten after a day without a sign-in, a few per address an hour; codes and tokens kept as hashes, a refresh token used once (a second use, even at the same moment, ends the sign-in), and a principal removed or given a new token ends its sign-ins |
+| Caller identity | Bearer token per principal, stored as a SHA-256 hash or, with a pepper kept outside the configuration (`CLOUDINFRA_TOKEN_PEPPER`), an HMAC-SHA-256, compared in constant time; identity comes from the credential, never a parameter |
+| Sign-in for Claude chat | Off unless `sign_in` is set (`security/oauth.py`): the service is its own OAuth 2.1 server for claude.ai, which cannot send a fixed token. A person pastes their principal's token on the service's own page, never in the chat; Claude gets a one-hour access token and a thirty-day refresh token standing for that principal, with its rights. PKCE, registration only for the configured callbacks (Claude's) and only for public clients (no client secret or key set is accepted), small and forgotten after a day without a sign-in, a few per address an hour; codes and tokens kept as hashes, a refresh token used once (a second use, even at the same moment, ends the sign-in), and a principal removed or given a new token ends its sign-ins; a token is asked only for this server (RFC 8707 `resource`), and the answer names its issuer (RFC 9207 `iss`) |
 | Authorization | `can_provision` for tools that create or change, `can_destroy` for deletes and for a lifetime, which ends in one; `scope: own` sees only its own requests (another caller's request is NOT_FOUND, not merely forbidden); `scope: all` for an operator identity |
-| Budgets | Per-identity request budget, per-address failed-login budget (429 with Retry-After); a request body above `max_request_bytes` (64 KiB) is refused with 413 before anything reads it; a resize is held to the same cost ceiling as a provisioning |
+| Budgets | Per-identity request budget, per-address failed-login budget, a budget per public OAuth path and address (429 with Retry-After); a request body above `max_request_bytes` (64 KiB) is refused with 413 before anything reads it; a resize is held to the same cost ceiling as a provisioning |
 | Provider credential | Taken by the adapter from the host (metadata server, or gcloud with optional impersonation); never configured in a file, never accepted from a caller, never visible to the Application Layer |
 | Access to what is created | Grants only on the resources a request created, through each resource's own policy, never on the project (one exception: a cluster's node account is granted `roles/container.defaultNodeServiceAccount` on the project, under the IAM condition REQUIREMENTS.md names); members limited to the operator's domains and count; only a fixed list of roles is ever granted or removed |
-| Least privilege on what is created | Machines get OS Login (IAM) and no service account unless the group names a workload identity (`compute.identity`, whose token any OS Login member of the machine can then read), vTPM and integrity monitoring, and Secure Boot except on a GPU machine whose image has no GPU drivers, whose installation needs it off; SSH only from the identity-aware proxy range, and 22 and 3389 (`closed_public_ports`) never opened from a public range by a network block or `configure_firewall`; subnets only in private ranges; buckets with uniform access and public-access prevention; databases encrypted-only with deletion protection and backups, turned off only by an explicit destroy; caches private with AUTH and TLS; cluster nodes with logging, monitoring and read-only storage scopes only, shielded, workload identity on; load balancers open only the backend port to the provider's health checkers |
+| Least privilege on what is created | Machines get OS Login (IAM) and no service account unless the group names a workload identity at `use` (`compute.identity`, whose token any OS Login member of the machine can then read; `admin` is refused), no project-wide SSH keys, no serial port, deletion protection lifted only by an explicit destroy, vTPM and integrity monitoring, and Secure Boot except on a GPU machine whose image has no GPU drivers, whose installation needs it off; SSH only from the identity-aware proxy range, and 22 and 3389 (`closed_public_ports`) never opened from a public range by a network block or `configure_firewall`; subnets only in private ranges, with flow logs, logged rules and a Cloud NAT, and with `deny_egress` no way out but private ranges and Google's private API addresses; buckets with uniform access, public-access prevention and seven days of soft delete; databases encrypted-only with deletion protection and backups, turned off only by an explicit destroy, the CIS flags of their engine, IAM database authentication and a default-user password nobody keeps; caches private with AUTH and TLS; cluster nodes private, with logging, monitoring and read-only storage scopes only, shielded, workload identity on, Dataplane V2 and Binary Authorization, namespaces under Pod Security baseline; Cloud Run internal and load-balancer traffic only by default, reading only the secrets it names; load balancers open only the backend port to the provider's health checkers, log every request, serve HTTPS with a modern TLS policy and a redirect when given hostnames, and carry the operator's Cloud Armor policy; the operator's KMS key for the region on disks, databases, buckets, secrets, registries and cluster secrets |
+| Public exposure | One switch, `allow_public_exposure` (off): a public machine address, a network or firewall rule open to a public range, a load balancer, a front door, a public database or a Cloud Run service open to all traffic is refused before any provider call unless the operator turns it on |
 | No command execution | The contract carries no script, command, key or provider structure; names, ranges, ports and labels are validated (`security/validation.py`); strict models refuse unknown fields; the server refuses unknown arguments by name before a tool runs |
 | Structured errors | Provider exceptions never escape; every error has a code; provider messages are kept in `details`, truncated |
 | Cost controls | Limits on counts and sizes, a monthly cost ceiling per service and per caller, a cap on live requests per caller, quota checks, labels `managed-by`, `cloudinfra-request`, `cloudinfra-name`, `cloudinfra-owner` on every resource plus the operator's own, cleanup on failure, destroy on request, and estimates on every plan |
@@ -392,7 +410,7 @@ the lifecycle is a JSON line on the `cloudinfra` logger carrying `request_id`, `
 `access_grant_failed`, `access_revoked`, `access_revoke_failed`, `stop_started`, `stop_completed`, `stop_failed`,
 `start_started`, `start_completed`, `start_failed`, `resource_stopped`, `resource_started`, `lifetime_extended`,
 `idle_stop_suspended`, `expiry_warning`, `request_expired`, `machine_idle`, `sweep_completed`, `sweep_failed`,
-`internal_error`, and `provider_call` for each provider request (method, URL, HTTP status). Fields under secret-looking keys are redacted before a line is written.
+`internal_error`, and `provider_call` for each provider request (method, URL, HTTP status). Fields under secret-looking keys are redacted before a line is written, and so is credential-shaped text in any other field (a Google access token, a bearer header, a PEM block, a long mixed-case token); an `internal_error` names the exception's class, and its text goes only to the DEBUG level.
 
 ## No Terraform
 

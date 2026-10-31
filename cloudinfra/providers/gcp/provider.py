@@ -25,6 +25,7 @@ from .storage import GcpStorage
 QUOTA_METRICS = ("CPUS", "INSTANCES", "DISKS_TOTAL_GB", "SSD_TOTAL_GB", "IN_USE_ADDRESSES")
 HTTP_LB_MAPPING = ("compute.instanceGroups.insert, compute.firewalls.insert, compute.healthChecks.insert, compute.backendServices.insert, compute.urlMaps.insert, "
                    "compute.targetHttpProxies.insert, compute.globalAddresses.insert, compute.globalForwardingRules.insert")
+HTTPS_LB_MAPPING = ", compute.sslCertificates.insert, compute.sslPolicies.insert, compute.targetHttpsProxies.insert, compute.urlMaps.insert (redirect)"
 TCP_LB_MAPPING = ("compute.instanceGroups.insert, compute.firewalls.insert, compute.regionHealthChecks.insert, compute.regionBackendServices.insert, compute.addresses.insert, "
                   "compute.forwardingRules.insert")
 
@@ -84,8 +85,7 @@ class GCPProvider(CloudProvider):
                 problems.append(version)
         for cluster in request.clusters():
             problems.extend(translate.cluster_problems(cluster))
-            outside = [name for name in (cluster.public.hostnames if cluster.public else [])
-                       if not any(name == domain or name.endswith("." + domain) for domain in self.settings.public_domains)]
+            outside = [name for name in (cluster.public.hostnames if cluster.public else []) if not self._in_public_domains(name)]
             if outside:
                 problems.append(Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, f"Not in a domain the operator lets a front door serve: {', '.join(outside)}; "
                                         f"allowed: {', '.join(self.settings.public_domains) or 'none (plain HTTP on the address only)'}", "cluster.public.hostnames"))
@@ -95,6 +95,11 @@ class GCPProvider(CloudProvider):
             elif unknown := [registry for registry in cluster.registries if registry not in self.settings.registries]:
                 problems.append(Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, f"Not a registry the operator lets requests name: {', '.join(unknown)}; allowed: "
                                         f"{', '.join(self.settings.registries) or 'none'}", "cluster.registries"))
+        if request.load_balancer is not None and request.load_balancer.hostnames:
+            outside = [name for name in request.load_balancer.hostnames if not self._in_public_domains(name)]
+            if outside:
+                problems.append(Problem(ErrorCode.INVALID_LOAD_BALANCER_CONFIGURATION, f"Not in a domain the operator lets a load balancer serve: {', '.join(outside)}; "
+                                        f"allowed: {', '.join(self.settings.public_domains) or 'none'}", "load_balancer.hostnames"))
         for service in request.services():
             problems.extend(translate.service_problems(service))
             if service.public and not self.settings.allow_public_services:
@@ -103,6 +108,9 @@ class GCPProvider(CloudProvider):
         for job in request.jobs():
             problems.extend(translate.service_problems(job, "job"))
         return problems
+
+    def _in_public_domains(self, name: str) -> bool:
+        return any(name == domain or name.endswith("." + domain) for domain in self.settings.public_domains)
 
     def plan(self, request: InfrastructureRequest, ctx: ProvisionContext) -> list[PlannedResource]:
         prefix, zone, planned = ctx.name, ctx.zone or self.zones(request.region)[0], []
@@ -115,9 +123,15 @@ class GCPProvider(CloudProvider):
         private_database = request.database is not None and not request.database.public_access
         if request.network:
             rules = [f"{prefix}-net-allow-internal"] + ([f"{prefix}-net-allow-iap-ssh"] if request.network.iap_ssh else []) + ([f"{prefix}-net-allow-public"] if request.network.public_access else [])
-            planned.append(PlannedResource(kind="network", name=own_network, provider_mapping="compute.networks.insert, compute.subnetworks.insert, compute.firewalls.insert",
+            deny_egress = self.settings.deny_egress
+            rules += [f"{prefix}-net-allow-egress-private", f"{prefix}-net-deny-egress"] if deny_egress else []
+            nat = request.network.nat and not deny_egress
+            mapping = "compute.networks.insert, compute.subnetworks.insert, compute.firewalls.insert" + (", compute.routers.insert (Cloud NAT)" if nat else "") \
+                + (", dns.responsePolicies.create (private.googleapis.com)" if deny_egress else "")
+            planned.append(PlannedResource(kind="network", name=own_network, provider_mapping=mapping,
                                            spec={"subnet": f"{prefix}-subnet", "cidr": request.network.cidr, "public_access": request.network.public_access,
-                                                 "firewall_rules": rules, "private_services": False}))
+                                                 "firewall_rules": rules, "private_services": False, "nat": nat, "deny_egress": deny_egress,
+                                                 "flow_logs": self.settings.network_logs}))
         if request.storage and request.storage.type == "persistent":
             targets = [group for group in groups if request.storage.group in (None, group.group_name)]
             machines = [(f"{prefix}-{group.group_name}-disk-{index}", f"{prefix}-{group.group_name}-{index}") for group in targets for index in range(1, group.count + 1)]
@@ -199,9 +213,12 @@ class GCPProvider(CloudProvider):
             balancer = request.load_balancer
             group = request.group(balancer.backend_group)
             backends = [f"{prefix}-{group.group_name}-{index}" for index in range(1, group.count + 1)] if group else list(balancer.backends or [])
-            planned.append(PlannedResource(kind="load_balancer", name=f"{prefix}-lb", provider_mapping=HTTP_LB_MAPPING if balancer.type == "http" else TCP_LB_MAPPING,
+            mapping = (HTTP_LB_MAPPING + (HTTPS_LB_MAPPING if balancer.hostnames else "")) if balancer.type == "http" else TCP_LB_MAPPING
+            if self.settings.cloud_armor_policy and balancer.type == "http":
+                mapping += ", compute.backendServices.setSecurityPolicy"
+            planned.append(PlannedResource(kind="load_balancer", name=f"{prefix}-lb", provider_mapping=mapping,
                                            spec={"type": balancer.type, "port": balancer.port, "backend_group": group.group_name if group else "external", "backends": backends,
-                                                 "health_check_path": balancer.health_check_path if balancer.type == "http" else None}))
+                                                 "health_check_path": balancer.health_check_path if balancer.type == "http" else None, "hostnames": list(balancer.hostnames)}))
         return planned
 
     def estimate_cost(self, planned: list[PlannedResource]) -> CostEstimate:

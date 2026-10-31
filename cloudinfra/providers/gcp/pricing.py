@@ -113,8 +113,9 @@ def line(planned: PlannedResource) -> CostLine:
         monthly = 0.0
         basis = "billed by run only: CPU and memory for each task's running time" + (f", on the schedule {spec['schedule']['cron']}" if spec.get("schedule") else "")
     elif planned.kind == "load_balancer":
-        monthly = PRICING["forwarding_rule_hour"] * HOURS_PER_MONTH
-        basis = "one forwarding rule; data processed is billed by the GB on top"
+        rules = 2 if spec.get("hostnames") else 1  # HTTPS and the HTTP redirect
+        monthly = rules * PRICING["forwarding_rule_hour"] * HOURS_PER_MONTH
+        basis = f"{'two forwarding rules (HTTPS and the redirect)' if rules == 2 else 'one forwarding rule'}; data processed is billed by the GB on top"
     elif planned.kind == "secret":
         monthly = PRICING["secret_version_month"] * spec.get("versions", 0)
         basis = f"{spec.get('versions', 0)} active versions; accesses are billed per 10,000 on top"
@@ -123,8 +124,14 @@ def line(planned: PlannedResource) -> CostLine:
         basis = f"{spec.get('size_gb', 0)} GB of images, if stored; a registry bills by what it holds, and egress out of the region on top"
     elif planned.kind == "queue":
         monthly, basis = 0.0, "message delivery is billed by volume after the account's free allowance; nothing while idle"
-    else:
+    elif planned.kind == "network":
         monthly, basis = 0.0, "a network, its subnet and firewall rules cost nothing while idle"
+        if spec.get("nat"):
+            basis += "; its NAT bills about a dollar a month for each machine or node that uses it, and data it carries by the GB"
+        if spec.get("flow_logs"):
+            basis += "; flow and firewall logs bill by volume in Cloud Logging"
+    else:
+        monthly, basis = 0.0, "nothing while idle"
     return CostLine(resource=planned.name, kind=planned.kind, monthly_usd=round(monthly, 2), basis=basis, stopped_usd=stopped(planned, round(monthly, 2)))
 
 
@@ -154,6 +161,8 @@ def as_planned(resource) -> PlannedResource:
         spec = {"cpu": resource.cpu, "memory_mb": resource.memory_mb, "min_instances": resource.min_instances}
     elif kind == "job":
         spec = {"cpu": resource.cpu, "memory_mb": resource.memory_mb, "schedule": resource.schedule}
+    elif kind == "load_balancer":
+        spec = {"hostnames": resource.hostnames}
     return PlannedResource(kind=kind, name=resource.name, provider_mapping="existing", spec=spec)
 
 

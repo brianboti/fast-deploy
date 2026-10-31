@@ -24,6 +24,7 @@ IAM = "https://iam.googleapis.com/v1"
 ARTIFACT_REGISTRY = "https://artifactregistry.googleapis.com/v1"
 RUN = "https://run.googleapis.com/v2"
 SCHEDULER = "https://cloudscheduler.googleapis.com/v1"
+DNS = "https://dns.googleapis.com/dns/v1"
 LONG_POLL_SECONDS = 10
 RETRIES = 4  # attempts of a call Google rate limited, or of a read it answered 5xx
 RETRY_PAUSE_SECONDS = 1.0  # doubled after each attempt, unless Google says how long in Retry-After
@@ -101,7 +102,10 @@ class GcpApi:
             try:
                 response = self.client.request(method, url, json=json, params=params, headers=headers)
             except httpx.RequestError as exc:
-                raise InfrastructureError(ErrorCode.PROVIDER_UNAVAILABLE, f"Google Cloud could not be reached ({type(exc).__name__})", {"url": url}) from None
+                # a write whose request left but whose answer never came may have been done (review of 2026-10-30, L8)
+                unsent = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+                raise InfrastructureError(ErrorCode.PROVIDER_UNAVAILABLE, f"Google Cloud could not be reached ({type(exc).__name__})",
+                                          {"url": url, **({} if unsent or method == "GET" else {"maybe_done": True})}) from None
             event("provider_call", provider="gcp", method=method, url=url, status=response.status_code)
             if response.status_code == 401 and not refreshed and hasattr(self.token, "invalidate"):
                 refreshed = True
@@ -129,6 +133,23 @@ class GcpApi:
 
     def post(self, url, json=None, **params):
         return self.request("POST", url, json=json, params=params or None)
+
+    def create(self, url, lookup: str, json=None, **params):
+        """POST a create whose answer may be lost: a write that timed out or met a 5xx may have been done, and an adapter
+        records a resource only once Google answered, so such a create would be an orphan nothing deletes (review of
+        2026-10-30, L8). The planned name is looked up once; found, the create counts as taken and the adapter records it
+        and waits on the resource itself. Not found, the first error stands."""
+        try:
+            return self.post(url, json=json, **params)
+        except InfrastructureError as exc:
+            if not (exc.details.get("maybe_done") or exc.details.get("http_status") in (500, 502, 503, 504)):
+                raise
+            try:
+                self.get(lookup)
+            except InfrastructureError:
+                raise exc from None
+            event("provider_create_found", provider="gcp", url=lookup, after=exc.code.value)
+            return {"status": "DONE", "done": True, "found_after": exc.code.value}
 
     def patch(self, url, json=None):
         return self.request("PATCH", url, json=json)

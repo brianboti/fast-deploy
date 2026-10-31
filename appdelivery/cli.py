@@ -11,6 +11,7 @@ import pydantic
 import yaml
 
 from . import __version__, planner
+from .auth import keyed, pepper
 from .catalog import render_markdown
 from .config import load_config
 from .errors import DeliveryError, problems_from
@@ -44,7 +45,11 @@ def main(argv=None) -> int:
     if args.command == "token":
         token = secrets.token_urlsafe(32)
         print(f"token: {token}")
-        print(f"token_sha256: {hashlib.sha256(token.encode()).hexdigest()}")
+        key = pepper()
+        if key:  # keyed with the pepper in the environment: put this line in the configuration instead
+            print(f"token_hmac_sha256: {keyed(token, key)}")
+        else:
+            print(f"token_sha256: {hashlib.sha256(token.encode()).hexdigest()}")
         return 0
     if args.command == "catalog":
         text = render_markdown()

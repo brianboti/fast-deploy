@@ -49,7 +49,7 @@ def test_a_schedule_runs_the_job_as_an_account_that_may_run_it_only(tmp_path):
 
 
 def test_the_runtime_account_reads_the_requests_secrets(tmp_path):
-    _, fake, _, response = provision(tmp_path, {}, secret=[{"name": "api-key", "generate_value": True}])
+    _, fake, _, response = provision(tmp_path, {"secrets": ["api-key"]}, secret=[{"name": "api-key", "generate_value": True}])
     [job], [secret] = response.resources.job, response.resources.secret
     assert f"serviceAccount:{job.runtime_service_account}" in fake.members(("secret", secret.resource_name.rsplit("/", 1)[-1]), "roles/secretmanager.secretAccessor")
 

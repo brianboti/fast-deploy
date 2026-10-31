@@ -4,6 +4,7 @@ from ...models.resources import ComputeResource, ResourceStatus, StorageResource
 from . import translate
 from .api import COMPUTE, STORAGE
 
+SOFT_DELETE_SECONDS = 7 * 86400
 DISK_STATUS = {"CREATING": ResourceStatus.CREATING, "RESTORING": ResourceStatus.CREATING, "READY": ResourceStatus.READY, "DELETING": ResourceStatus.DELETING,
                "FAILED": ResourceStatus.FAILED}
 
@@ -20,15 +21,24 @@ class GcpStorage:
             zone = planned.spec["zone"]
             body = {"name": planned.name, "description": translate.description(ctx), "sizeGb": str(spec.size_gb),
                     "type": f"zones/{zone}/diskTypes/{planned.spec['disk_type']}", "labels": translate.labels(ctx)}
+            key = self.settings.kms_keys.get(ctx.region)
+            if key:
+                body["diskEncryptionKey"] = {"kmsKeyName": key}
             resource = StorageResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region, zone=zone,
                                        type="persistent", size_gb=spec.size_gb, performance=spec.performance, labels=body["labels"],
                                        provider_id=f"{self._disks(zone)}/{planned.name}", status=ResourceStatus.CREATING)
-            operation = self.api.post(self._disks(zone), json=body)
+            operation = self.api.create(self._disks(zone), f"{self._disks(zone)}/{planned.name}", json=body)
             ctx.accepted(resource)
             self.api.wait_compute(operation)
             return self.get(resource)
+        # Uniform access, public access prevented, deleted objects kept seven days (soft delete, stated rather than left to
+        # Google's default), and the operator's KMS key for the region when there is one (review of 2026-10-30, L10).
         body = {"name": planned.name, "location": ctx.region.upper(), "storageClass": "STANDARD", "labels": translate.labels(ctx),
-                "iamConfiguration": {"uniformBucketLevelAccess": {"enabled": True}, "publicAccessPrevention": "enforced"}}
+                "iamConfiguration": {"uniformBucketLevelAccess": {"enabled": True}, "publicAccessPrevention": "enforced"},
+                "softDeletePolicy": {"retentionDurationSeconds": str(SOFT_DELETE_SECONDS)}}
+        key = self.settings.kms_keys.get(ctx.region)
+        if key:
+            body["encryption"] = {"defaultKmsKeyName": key}
         bucket = self.api.post(f"{STORAGE}/b", json=body, project=self.api.project)
         return StorageResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region, type="object",
                                size_gb=spec.size_gb, labels=body["labels"], provider_id=bucket.get("id", planned.name), url=f"gs://{planned.name}",

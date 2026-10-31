@@ -26,6 +26,8 @@ def validate(request: InfrastructureRequest, config, provider: CloudProvider) ->
     if request.lifetime and config.sweep_interval_seconds == 0:
         problems.append(Problem(ErrorCode.INVALID_REQUEST, "This service applies no lifetimes: the operator turned its sweeper off (sweep_interval_seconds: 0)",
                                 "lifetime"))
+    if not config.allow_public_exposure:
+        problems.extend(exposure(request))
     if request.network is not None and request.network.public_access:
         try:
             validation.check_public_rule(request.network.allowed_ports, request.network.allowed_sources, config.closed_public_ports)
@@ -84,6 +86,31 @@ def validate(request: InfrastructureRequest, config, provider: CloudProvider) ->
         if request.database.network_id and request.network is not None:
             problems.append(Problem(ErrorCode.INVALID_DATABASE_CONFIGURATION, "database.network_id and a network block in the same request: choose one", "database.network_id"))
     return problems
+
+
+def exposure(request: InfrastructureRequest) -> list[Problem]:
+    """Every path in a request that makes something reachable from the internet, as problems: the operator's
+    allow_public_exposure is off (review of 2026-10-30, M11). One switch over all of them, so none is gated by a different
+    rule than the others."""
+    said = "which this operator does not allow (allow_public_exposure); ask the operator, or keep it private"
+    found = []
+    if request.network is not None and request.network.public_access:
+        found.append(Problem(ErrorCode.INVALID_NETWORK_CONFIGURATION, f"network.public_access opens the network to public ranges, {said}", "network.public_access"))
+    for group in request.compute_groups():
+        if group.public_ip:
+            found.append(Problem(ErrorCode.INVALID_NETWORK_CONFIGURATION, f"compute group {group.group_name} asks for public addresses, {said}", "compute.public_ip"))
+    if request.load_balancer is not None:
+        found.append(Problem(ErrorCode.INVALID_LOAD_BALANCER_CONFIGURATION, f"a load balancer takes a public address, {said}", "load_balancer"))
+    for cluster in request.clusters():
+        if cluster.public is not None:
+            found.append(Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, f"cluster {cluster.cluster_name}'s front door takes a public address, {said}", "cluster.public"))
+    if request.database is not None and request.database.public_access:
+        found.append(Problem(ErrorCode.INVALID_DATABASE_CONFIGURATION, f"database.public_access gives the database a public address, {said}", "database.public_access"))
+    for service in request.services():
+        if service.ingress == "all" or service.public:
+            found.append(Problem(ErrorCode.INVALID_SERVICE_CONFIGURATION, f"service {service.service_name} takes traffic from all of the internet, {said}",
+                                 "service.ingress"))
+    return found
 
 
 def raise_first(problems: list[Problem]) -> None:

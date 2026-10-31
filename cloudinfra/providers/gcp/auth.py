@@ -10,6 +10,7 @@ import time
 import httpx
 
 METADATA = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+METADATA_EMAIL = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email"
 
 
 class GoogleToken:
@@ -46,6 +47,30 @@ class GoogleToken:
         # gcloud may hand back a token it already holds, with only minutes left; a 401 calls invalidate() and asks again
         self.cached, self.until = token, self.clock() + 300
         return token
+
+    def identity(self) -> str | None:
+        """The member Google sees on this host's calls (serviceAccount:… or user:…), or None when it cannot be told: the
+        attached account on a Google Cloud machine, the impersonated one on a laptop, else gcloud's signed-in account."""
+        if getattr(self, "_identity", None):
+            return self._identity
+        found = None
+        try:
+            response = self.client.get(METADATA_EMAIL, headers={"Metadata-Flavor": "Google"}, timeout=0.5)
+            if response.status_code == 200 and "@" in response.text:
+                found = f"serviceAccount:{response.text.strip()}"
+        except httpx.HTTPError:
+            pass
+        if found is None and self.impersonate:
+            found = f"serviceAccount:{self.impersonate}"
+        if found is None:
+            try:
+                account = self.runner(["gcloud", "config", "get-value", "account"])
+            except (subprocess.CalledProcessError, OSError, subprocess.SubprocessError):
+                account = ""
+            if "@" in account:
+                found = f"{'serviceAccount' if account.endswith('.gserviceaccount.com') else 'user'}:{account}"
+        self._identity = found
+        return found
 
     def invalidate(self) -> None:
         """Forget the token: Google refused it (it expired sooner than this class assumed)."""
