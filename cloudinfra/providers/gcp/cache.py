@@ -2,7 +2,7 @@
 from ...models.errors import ErrorCode, InfrastructureError
 from ...models.resources import CacheResource, ResourceStatus
 from . import translate
-from .api import REDIS
+from .api import REDIS, settled
 
 STATE = {"CREATING": ResourceStatus.CREATING, "READY": ResourceStatus.READY, "UPDATING": ResourceStatus.UPDATING, "DELETING": ResourceStatus.DELETING,
          "REPAIRING": ResourceStatus.UPDATING, "MAINTENANCE": ResourceStatus.UPDATING, "IMPORTING": ResourceStatus.UPDATING, "FAILING_OVER": ResourceStatus.UPDATING}
@@ -25,7 +25,8 @@ class GcpCache:
         resource = CacheResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region,
                                  provider_id=f"{self._instances(ctx.region)}/{planned.name}", version=planned.spec["version"], tier=tier, memory_gb=spec.memory_gb,
                                  high_availability=spec.high_availability, network=network.id, labels=body["labels"], status=ResourceStatus.CREATING)
-        operation = self.api.create(self._instances(ctx.region), f"{self._instances(ctx.region)}/{planned.name}", json=body, instanceId=planned.name)
+        operation = self.api.create(self._instances(ctx.region), f"{self._instances(ctx.region)}/{planned.name}", json=body, instanceId=planned.name,
+                                    ready=settled("state", ("CREATING",)))
         ctx.accepted(resource)
         self.api.wait_longrunning(operation, REDIS, what="Memorystore")
         return self.get(resource)

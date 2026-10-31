@@ -51,11 +51,23 @@ def tags(infra_owner: str, environment: str, build_id: str) -> list[str]:
     return ["appdelivery", infra_owner, environment, build_id]
 
 
+def composed(body: dict) -> dict:
+    """The step and tags of a composed Build, kept on the build's record so its provenance is held to what was sent."""
+    return {"builder": body["steps"][0]["name"], "args": list(body["steps"][0]["args"]), "tags": list(body["tags"])}
+
+
 def expected(record: dict, builder: str) -> dict:
-    """What a recorded build's signed provenance must say it ran: this service's step and tags, nothing a caller composed."""
+    """What a recorded build's signed provenance must say it ran: this service's step and tags, nothing a caller composed.
+    The step kept on the record when there is one; a build recorded before it was kept is composed again, with the
+    context as sent before builds anchored it (release S1) accepted too."""
     request = record["request"]
-    return {"builder": builder, "args": args(record["image"], request.get("dockerfile", "Dockerfile"), request.get("context", ".")),
-            "tags": tags(record["infra_owner"], record["environment"], record["build_id"])}
+    if request.get("composed"):
+        return dict(request["composed"])
+    dockerfile, context = request.get("dockerfile", "Dockerfile"), request.get("context", ".")
+    found = {"builder": builder, "args": args(record["image"], dockerfile, context), "tags": tags(record["infra_owner"], record["environment"], record["build_id"])}
+    if context != ".":
+        found["also_args"] = [[*found["args"][:-1], context]]
+    return found
 
 
 def compose(request: BuildRequest, source: BuildSource, settings: BuildSettings, build_id: str, infra_owner: str) -> dict:

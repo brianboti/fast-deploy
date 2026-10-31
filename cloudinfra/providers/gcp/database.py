@@ -8,7 +8,7 @@ import secrets
 from ...models.errors import ErrorCode, InfrastructureError
 from ...models.resources import DatabaseResource, ResourceStatus
 from . import translate
-from .api import SQL
+from .api import SQL, settled
 
 STATE = {"PENDING_CREATE": ResourceStatus.CREATING, "RUNNABLE": ResourceStatus.READY, "SUSPENDED": ResourceStatus.STOPPED, "PENDING_DELETE": ResourceStatus.DELETING,
          "MAINTENANCE": ResourceStatus.UPDATING, "FAILED": ResourceStatus.FAILED, "ONLINE_MAINTENANCE": ResourceStatus.UPDATING, "STOPPED": ResourceStatus.STOPPED}
@@ -47,7 +47,7 @@ class GcpDatabase:
                                     high_availability=spec.high_availability, public_access=spec.public_access, port=translate.DB_PORTS[spec.engine],
                                     database=spec.database_name, username=spec.username, labels=body["settings"]["userLabels"],
                                     provider_id=f"{self._instances()}/{planned.name}", status=ResourceStatus.CREATING)
-        operation = self.api.create(self._instances(), f"{self._instances()}/{planned.name}", json=body)
+        operation = self.api.create(self._instances(), f"{self._instances()}/{planned.name}", json=body, ready=settled("state", ("PENDING_CREATE",)))
         ctx.accepted(resource)  # the instance is known from here: a failure making its database or user still deletes it
         self.api.wait_sql(operation)
         self.api.wait_sql(self.api.post(f"{self._instances()}/{planned.name}/databases", json={"name": spec.database_name}))

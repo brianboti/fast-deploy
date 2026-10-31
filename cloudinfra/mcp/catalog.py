@@ -280,7 +280,8 @@ CATALOG: tuple[ToolSpec, ...] = (
              (REGION, PROVIDER, Input("node_count", "Nodes in the pool (default 1)."), Input("node_cpu", "Virtual CPUs per node (default 2)."),
               Input("node_memory_gb", "Memory per node in GB (default 8)."), Input("node_disk_gb", "Node disk in GB (default 50)."),
               Input("kubernetes_version", "A version the provider offers; its default channel when omitted."),
-              Input("private_nodes", "Nodes without public addresses (default true); they reach the internet through their network's NAT."), NETWORK_ID,
+              Input("private_nodes", "Nodes without public addresses (default true); they reach the internet through their network's NAT. false needs the operator's "
+                    "allow_public_exposure."), NETWORK_ID,
               Input("registries", "Artifact Registry repositories (LOCATION-docker.pkg.dev/PROJECT/REPO) the nodes may pull images from; only ones the operator lists."),
               Input("public", "A front door: a reserved public address and a Gateway taking routes from the request's namespace (default false)."),
               Input("hostnames", "The front door's DNS names, in domains the operator allows: HTTPS with a Google-managed certificate; none, plain HTTP."),

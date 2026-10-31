@@ -1286,18 +1286,19 @@ class Orchestrator:
         problem = provider.resize_problem(resource, cpu, memory_gb)  # refused now, before the machine is touched
         if problem is not None:
             raise InfrastructureError(problem.code, problem.message, {"field": problem.field, "cpu": cpu, "memory_gb": memory_gb})
-        # The ceiling holds after a resize as at provisioning: the request priced as it would be, with this machine in its new shape
-        preview = provider.resize_preview(resource, cpu, memory_gb)
-        existing = [preview if item.id == resource.id else item for item in self._live_resources(record["request_id"])]
-        too_much = planner.cost_problem(provider.estimate_resources(existing), self.config, principal)
-        if too_much is not None:
-            raise InfrastructureError(too_much.code, too_much.message, {"resource_id": resource_id, "cpu": cpu, "memory_gb": memory_gb})
         with self.lock(record["request_id"]):
             record, resource = self.state.get_request(record["request_id"]), self.state.get_resource(resource_id)
             self._refuse_if_busy(record)  # never under a stop, a start or a destroy of its request, nor another change
             if resource.status not in (ResourceStatus.READY, ResourceStatus.STOPPED):
                 raise InfrastructureError(ErrorCode.INVALID_STATE, f"{resource_id} is {resource.status.value}; a machine is resized when READY or STOPPED",
                                           {"status": resource.status.value})
+            # The ceiling holds after a resize as at provisioning: the request priced as it would be, with this machine in its new
+            # shape. Under the request's lock, so two resizes of one request never each pass it against the other's old shape.
+            preview = provider.resize_preview(resource, cpu, memory_gb)
+            existing = [preview if item.id == resource.id else item for item in self._live_resources(record["request_id"])]
+            too_much = planner.cost_problem(provider.estimate_resources(existing), self.config, principal)
+            if too_much is not None:
+                raise InfrastructureError(too_much.code, too_much.message, {"resource_id": resource_id, "cpu": cpu, "memory_gb": memory_gb})
             operation_id = self.state.start_operation(record["request_id"], "resize_compute", resource_id=resource_id, identity=principal.name)
             self.state.save_resource(resource.model_copy(update={"status": ResourceStatus.UPDATING}))
 

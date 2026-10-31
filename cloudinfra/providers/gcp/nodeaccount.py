@@ -8,7 +8,10 @@ that one role on the project; the operator limits the last with an IAM condition
 (https://cloud.google.com/iam/docs/setting-limits-on-granting-roles). Project IAM is touched for that role only, and the
 service checks the condition itself before it writes (review of 2026-10-30, M15): when its own account holds a role that
 can set the project's policy with no condition limiting it to that role, it refuses, so a service that could grant
-anything never runs as if it could grant one thing. A person signed in on a laptop is not checked."""
+anything never runs as if it could grant one thing. The project's own policy is what it reads: a predefined role that sets
+it, or a custom role with resourcemanager.projects.setIamPolicy, bound to the account itself. A grant through a group, or
+on a folder or the organization, is not visible there and is the operator's to keep away (docs/SETUP.md, section 2). A
+person signed in on a laptop is not checked."""
 import re
 
 from ...models.errors import ErrorCode, InfrastructureError
@@ -22,15 +25,22 @@ REGISTRY = re.compile(r"^([a-z0-9-]+)-docker\.pkg\.dev/([a-z][a-z0-9-]{4,28}[a-z
 # A service account just made is unknown to IAM policies for a few seconds; a grant naming it is tried again meanwhile.
 NOT_YET = (12, 5)
 # Roles that can set the project's IAM policy; the service's account may hold one only under the granting condition.
-POLICY_SETTERS = ("roles/owner", "roles/resourcemanager.projectIamAdmin", "roles/iam.securityAdmin")
+POLICY_SETTERS = ("roles/owner", "roles/resourcemanager.projectIamAdmin", "roles/iam.securityAdmin", "roles/resourcemanager.organizationAdmin",
+                  "roles/resourcemanager.folderAdmin", "roles/resourcemanager.folderIamAdmin")
+SET_POLICY = "resourcemanager.projects.setIamPolicy"
 CONDITION = f"api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['{NODE_ROLE}'])"
 
 
-def unlimited_roles(policy: dict, member: str) -> list[str]:
-    """The roles in a project policy that let `member` set the policy without the condition that limits it to NODE_ROLE."""
+def unlimited_roles(policy: dict, member: str, permissions=None) -> list[str]:
+    """The roles in a project policy that let `member` set the policy without the condition that limits it to NODE_ROLE.
+    `permissions` reads a custom role's permissions (None when it cannot be read); without it custom roles are not looked at."""
     found = []
     for binding in policy.get("bindings", []):
-        if binding.get("role") not in POLICY_SETTERS or not any(item.lower() == member.lower() for item in binding.get("members", [])):
+        role = binding.get("role", "")
+        if not any(item.lower() == member.lower() for item in binding.get("members", [])):
+            continue
+        custom = role.startswith(("projects/", "organizations/"))
+        if role not in POLICY_SETTERS and not (custom and permissions is not None and SET_POLICY in (permissions(role) or ())):
             continue
         expression = (binding.get("condition") or {}).get("expression", "").replace('"', "'").replace(" ", "")
         if expression != CONDITION.replace(" ", ""):
@@ -79,12 +89,20 @@ class NodeAccounts:
         own = identity() if callable(identity) else None
         if not own or not own.startswith("serviceAccount:"):
             return  # a person's own sign-in on a laptop, or a host that cannot tell: not checked
-        roles = unlimited_roles(policy, own)
+        roles = unlimited_roles(policy, own, self._permissions)
         if roles:
             raise InfrastructureError(ErrorCode.PROVIDER_PERMISSION_DENIED,
                                       f"This service runs as {own.split(':', 1)[1]}, which holds {', '.join(roles)} on the project without the condition that limits "
                                       f"it to granting {NODE_ROLE}; it refuses to change project IAM as an account that could grant any role. Add the condition "
                                       "(docs/SETUP.md, section 2) or set providers.gcp.cluster_node_accounts: false", {"roles": roles, "condition": CONDITION})
+
+    def _permissions(self, role: str) -> list[str] | None:
+        """A custom role's permissions, or None when the service may not read it (it is then not counted)."""
+        try:
+            return self.api.get(f"{IAM}/{role}").get("includedPermissions") or []
+        except InfrastructureError as exc:
+            event("node_role_check_unread", role=role, code=exc.code.value)
+            return None
 
     def bind(self, email: str, registries: list[str]) -> None:
         member = f"serviceAccount:{email}"

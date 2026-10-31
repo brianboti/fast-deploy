@@ -267,7 +267,8 @@ class Delivery:
                     if build is None:
                         raise DeliveryError(ErrorCode.NOT_BUILT_HERE, f"{release.image} was not built by this service", {"image": release.image})
                     found = provenance.occurrences(self.http, self.tokens(environment.service_account), release.image)
-                    settings = self.config.environments[build["environment"]].build
+                    built_in = self.config.environments.get(build["environment"])  # an environment since removed keeps its builds verifiable
+                    settings = built_in.build if built_in is not None else None
                     builder = settings.builder if settings is not None else BuildSettings.model_fields["builder"].default
                     event("provenance_verified", **provenance.verify(release.image, build, found, expected=cloudbuild.expected(build, builder)))
                 if environment.require_attestation:

@@ -2,7 +2,7 @@
 from ...models.errors import ErrorCode, InfrastructureError
 from ...models.resources import ComputeResource, ResourceStatus, StorageResource
 from . import translate
-from .api import COMPUTE, STORAGE
+from .api import COMPUTE, STORAGE, settled
 
 SOFT_DELETE_SECONDS = 7 * 86400
 DISK_STATUS = {"CREATING": ResourceStatus.CREATING, "RESTORING": ResourceStatus.CREATING, "READY": ResourceStatus.READY, "DELETING": ResourceStatus.DELETING,
@@ -27,7 +27,7 @@ class GcpStorage:
             resource = StorageResource(id=planned.spec["resource_id"], name=planned.name, request_id=ctx.request_id, provider="gcp", region=ctx.region, zone=zone,
                                        type="persistent", size_gb=spec.size_gb, performance=spec.performance, labels=body["labels"],
                                        provider_id=f"{self._disks(zone)}/{planned.name}", status=ResourceStatus.CREATING)
-            operation = self.api.create(self._disks(zone), f"{self._disks(zone)}/{planned.name}", json=body)
+            operation = self.api.create(self._disks(zone), f"{self._disks(zone)}/{planned.name}", json=body, ready=settled("status", ("CREATING", "RESTORING")))
             ctx.accepted(resource)
             self.api.wait_compute(operation)
             return self.get(resource)

@@ -18,6 +18,8 @@ PRIVATE_RANGES = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
 # https://cloud.google.com/vpc/docs/configure-private-google-access#domain-options: private.googleapis.com
 PRIVATE_GOOGLE_RANGE = "199.36.153.8/30"
 PRIVATE_GOOGLE_ADDRESSES = ["199.36.153.8", "199.36.153.9", "199.36.153.10", "199.36.153.11"]
+# A subnet asked for on a network still being made is tried again this many times, this many seconds apart.
+NOT_READY = (12, 5)
 GOOGLE_DOMAINS = {"googleapis": "*.googleapis.com.", "pkg-dev": "*.pkg.dev.", "gcr-io": "*.gcr.io."}
 
 
@@ -89,7 +91,16 @@ class GcpNetwork:
         subnet_body = {"name": subnet, "description": translate.description(ctx), "network": network_link, "ipCidrRange": spec.cidr, "privateIpGoogleAccess": True}
         if self.settings.network_logs:
             subnet_body["logConfig"] = dict(FLOW_LOGS)
-        self.api.wait_compute(self.api.post(f"{COMPUTE}/projects/{self.api.project}/regions/{region}/subnetworks", json=subnet_body))
+        subnets = f"{COMPUTE}/projects/{self.api.project}/regions/{region}/subnetworks"
+        for attempt in range(NOT_READY[0]):
+            try:
+                self.api.wait_compute(self.api.post(subnets, json=subnet_body))
+                break
+            except InfrastructureError as exc:
+                # a network found after a lost answer carries no state to wait on; Google says resourceNotReady until it is made
+                if not operation.get("found_after") or exc.details.get("reason") != "resourceNotReady" or attempt == NOT_READY[0] - 1:
+                    raise
+                self.api.sleep(NOT_READY[1])
         for rule in rules:
             self._add_rule(network_link, rule.name, ctx, rule.ports, rule.sources, direction=rule.direction, deny=rule.deny)
         if nat:
