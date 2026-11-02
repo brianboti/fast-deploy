@@ -72,6 +72,10 @@ class Machine(View):
     max_run_hours: int | None = None
 
 
+# the secrets cloudinfra makes for a request's own credentials, by purpose, and the short names a release binds them by
+OWN_SECRETS = {"database_password": "db-password", "cache_auth": "cache-auth"}
+
+
 class Secret(View):
     id: str
     name: str
@@ -184,14 +188,18 @@ class InfraRequest(View):
     def network(self, network_id: str | None) -> Network | None:
         return next((network for network in self.resources.network if network.id == network_id), None)
 
+    def _short_name(self, secret: Secret) -> str:
+        """The name a release uses: cloudinfra names a secret <request name>-<its block's name>, and the database's and cache's
+        own <request name>-db-password-<6 hex> and <request name>-cache-auth-<6 hex> (since 1.37.0), known by their purpose;
+        the delivery service still looked for <request name>-db-password, so the documented binding failed (2026-11-02)."""
+        return OWN_SECRETS.get(secret.purpose or "") or secret.name.removeprefix(f"{self.name}-")
+
     def secret(self, short_name: str) -> Secret | None:
-        """The request's secret by the short name a release uses: cloudinfra names it <request name>-<short name>."""
-        full = f"{self.name}-{short_name}"
-        return next((secret for secret in self.resources.secret if secret.name == full and secret.status != "DELETED"), None)
+        """The request's secret by the short name a release uses (db-password, cache-auth, or one the request named)."""
+        return next((secret for secret in self.resources.secret if self._short_name(secret) == short_name and secret.status != "DELETED"), None)
 
     def secret_names(self) -> list[str]:
-        prefix = f"{self.name}-"
-        return sorted(secret.name.removeprefix(prefix) for secret in self.resources.secret if secret.status != "DELETED")
+        return sorted(self._short_name(secret) for secret in self.resources.secret if secret.status != "DELETED")
 
     def grant_of(self, member: str) -> Grant | None:
         return next((grant for grant in self.access if grant.member.lower() == member.lower()), None)

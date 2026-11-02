@@ -19,7 +19,7 @@ from .errors import DeliveryError, ErrorCode
 from .models import ReleaseRequest
 
 SCRIPT = "host/release.sh"
-SCRIPT_SHA256 = "2e4b8cfb61d09bca9d67b65f218f496d119baf82861a36bdfb2a88d587291568"
+SCRIPT_SHA256 = "210d9a6223381b9a33df9e0ffd7385e1a3275b7b441db5741a8f23cd32937a08"
 ACTIONS = ("deploy", "rollback", "remove", "status")
 INPUTS = ("RELEASE", "IMAGE", "PORT", "HEALTH_PATH", "TIMEOUT", "REGISTRY", "TOKEN", "ENV", "CPUS", "MEMORY_MB", "PIDS")
 RELEASE_ID = re.compile(r"^rel-[a-f0-9]{12}$")

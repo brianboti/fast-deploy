@@ -538,3 +538,58 @@ repository at a commit through its connection (docs/SETUP.md section 3), as the 
 Everything was deleted afterwards: the repository with both images, the source bucket, the build account and its
 binding, and the local copies.
 
+
+## 16. Releases S1 and S2 of the security assessment, on Google Cloud
+
+Run on 2026-11-02 between 16:45 and 21:30 UTC by Claude for the operator, in the same sandbox project, from branch
+`real-run-s1-s2` (from `main` at `54c4ee2`, with S1 and S2 merged), with the setup of [SETUP.md](SETUP.md) done by hand
+([research/RESEARCH-2026-10-30-security-assessment.md](research/RESEARCH-2026-10-30-security-assessment.md)). Both
+services ran on the operator's laptop: `cloudinfra` as its own `cloudinfra` account, the delivery service as
+`appdelivery-dev`, whose `pull-dev` account the machines pull with and whose `build-dev` account Cloud Build ran as.
+The operator authorised and installed the Cloud Build GitHub App on `brianboti/fast-deploy`. The application released
+is `examples/hello` at `437d6f9`, a standard-library server that reports its user, its effective capabilities and the
+names of its variables. Every fix the run called for is listed in [CHANGES.md](CHANGES.md); the requests that failed
+on the way are in the second table.
+
+**Refused before any call to Google** (`allow_public_exposure` off): a machine with a public address, a network open to
+`0.0.0.0/0` and a firewall rule for port 22, a cluster with `private_nodes: false`, and a Cloud Run service with
+`ingress: all`.
+
+| Step | Result |
+|---|---|
+| machine `m1-web-1` (S1 H4, S2) | no service account, no external address, Shielded VM, `serial-port-enable` false, deletion protection on. Subnet flow logs (5-minute interval), firewall rule logging and NAT logging on; port 22 open only to IAP's range |
+| build of `437d6f9` (`./examples/hello/Dockerfile`, context `./examples/hello`) | `SUCCEEDED` in 90 seconds inside Google, as `build-dev`; the release's provenance check read the build, the commit and `git+https://github.com/brianboti/fast-deploy.git` and passed |
+| release onto `m1` with no `containeranalysis.occurrences.viewer` for `appdelivery-dev` (missed in the setup; SETUP.md has it) | `PROVENANCE_FAILED` before any machine was touched, naming the role |
+| release onto `m1` while `pull-dev` may not read `apps` (S1 H1) | `PULL_FAILED`, nothing changed on the machine. Docker's words, kept on the target since this run: `downloadArtifacts` denied on `apps`, an authenticated refusal, so the machine had pulled as `pull-dev` with the short-lived token |
+| the same release once `pull-dev` is a reader | `RUNNING`, the machine `HEALTHY` |
+| the container on the machine (S1 M4) | user `65532:65532`, `--cap-drop ALL` with the eight default capabilities added back, `no-new-privileges`, 1 GiB, one CPU, 512 processes, `json-file` logs of 3 × 50 MB, restart `always`. The application reports effective capabilities `0000000000000000` and sees `API_KEY` (a secret) by name. No docker login and no file of the service's are left in `/run` |
+| the delivery account's OS Login keys (S1 M3) | one key, expiring 15 minutes after the session that registered it |
+| cluster `k5-blue` (S2) | private nodes, Dataplane V2 (`ADVANCED_DATAPATH`), Binary Authorization `PROJECT_SINGLETON_POLICY_ENFORCE`, security posture `BASIC`, authorized networks set to the laptop's address, shielded nodes, Workload Identity, a node account of its own |
+| the team's namespace (S2) | Pod Security `enforce=baseline`, `warn` and `audit` `restricted`; the admission policy `cloudinfra-no-public-entry` with `failurePolicy: Fail`. Dry runs: a `LoadBalancer` and a `NodePort` Service refused (422), a `ClusterIP` Service allowed, a privileged pod and a `hostNetwork` pod refused (403) |
+| release of two replicas onto `k5` | `FAILED`: one node, and the second replica's 1 GiB found no room. The message said only "has timed out progressing"; since this run it also says "found no node: 0/1 nodes are available: 1 Insufficient memory" (seen live) |
+| release of one replica onto `k5` | `RUNNING`. The pod: seccomp `RuntimeDefault`, `drop: [ALL]` with the eight added back, `allowPrivilegeEscalation: false`, no service account token, limits of one CPU and 1 GiB; the application reports uid 65532 and effective capabilities `0` |
+| Binary Authorization on `k5` | the project's policy was Google's default, `ALWAYS_ALLOW`; writing the rule is the operator's (S3). Set to `ALWAYS_DENY` for a minute, a pod of the same image was refused by `imagepolicywebhook` (`VIOLATES_POLICY`); the policy was put back as it was |
+| database and Cloud Run `d3` (S2) | `READY` in 21 minutes. MySQL with `cloudsql_iam_authentication` on, `local_infile` off, `skip_show_database` on, no public address, `ENCRYPTED_ONLY`, backups and binary logs on, deletion protection on. Its users are `app` and Google's `root@%`, whose password is a random value nobody keeps |
+| a service release binding `DB_PASSWORD: {secret: db-password}`, which the service's block does not name | first refused for the wrong reason, "the request has no secret 'db-password'" (fixed, below); then refused for the right one, "d3-api's runtime account may not read secret db-password" |
+| release onto the service `api` with `API_KEY` (named in its block) and `DB_HOST` | `RUNNING`, its revision with all traffic. The service: ingress `internal_and_load_balancer` (a call from the internet gets Cloud Run's 404), Binary Authorization `useDefault`, egress to private ranges through `d3-net`, its own runtime account, which reads `d3-api-key` and not the database's password |
+
+What the run found, request by request. Each fix is in [CHANGES.md](CHANGES.md) with a test that fails without it.
+
+| Request | What happened | Fix |
+|---|---|---|
+| `k1`, a cluster | GKE ended the create with an `INTERNAL` error after five minutes; the request cleaned up after itself | none; Google's, and the next cluster with the same settings went through |
+| `d1`, a database | the first private-address instance took 27 minutes and the request failed at the 15-minute operation timeout. Its cleanup could not turn deletion protection off while the instance was being made (409), and a later destroy met Service Networking still holding the connection for about two minutes | the create waits up to 40 minutes, a cleanup waits for an instance still being made, and the connection's delete is tried again, then the peering is removed from the network's side |
+| `k2`, a cluster | with private nodes and no `cluster_authorized_networks`, GKE turned authorized networks on with none listed; neither service could reach the control plane | refused before any call while the list is empty |
+| `k3`, a cluster | one connect timeout while the operation was read failed the request | a read, or a call that never connected, is tried again |
+| `k4`, a cluster | 403 on the admission policy: `container.clusterAdmin` gives no right inside the cluster, and no IAM permission covers admission policies | the documents say `roles/container.admin` |
+| the node-role check | it could not read the service's own custom role without `iam.roles.get`, and the log redacted the role's URL whole | the permission is in the custom role of SETUP.md; paths made of names stay in the logs |
+| `d2`, a database and a service | Cloud Run refused the service seconds after its runtime account was made (`actAs` denied, "or it may not exist"), and the finished database went with the request | the create is tried again while Cloud Run does not know the account (on `d3` it was accepted at once, so the retry was not exercised here) |
+| a release onto `m1` refused its pull | the target said only "could not pull the image" | docker's last lines are kept on the target |
+| two replicas onto `k5` | "has timed out progressing", with no word of the node that had no room | the scheduler's reason is added |
+| a binding of `db-password` | refused: cloudinfra has named the database's secret `<name>-db-password-<6 hex>` since 1.37.0, and the delivery service still looked for `<name>-db-password`, so the binding DELIVERY-SPEC.md shows failed against any real request. The fakes still had the old name, which is why no test saw it | the request's own credentials are found by their purpose; the fakes use the real name |
+| destroy of `m1` | `DESTROY_FAILED`: deleting the machine took over a minute, and Compute Engine's operation `wait`, which Google holds up to two minutes, timed out at the client's 60 seconds; as a POST that lost its answer it was not tried again | an operation's `wait` is a read, with 150 seconds; the second destroy went through |
+| destroy of `d3` | everything went but the network: Cloud Run keeps a deleted service's Direct VPC egress address (`serverless-ipv4-cloudrun-…`) on the subnet, and Google says to wait 1-2 hours before deleting the subnet. Nobody may delete that address | none possible on our side; the error now says so and when to call destroy again (`retry_after_seconds`) |
+
+Setup steps the documents had wrong, fixed in [SETUP.md](SETUP.md): the conditional `projectIamAdmin` grant with
+`--condition` (gcloud splits its expression at the commas; it is now read from a file), `iam.roles.get`, and
+`roles/container.admin`.

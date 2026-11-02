@@ -27,6 +27,15 @@ and Google advises that scope with IAM as the bound, so an `admin` identity is r
 "default Cloud Armor policy" is the operator's own policy (`cloud_armor_policy`), attached to every application load
 balancer, so one team keeps the WAF rules. Still not run against a real Google project; S3 is the operator's.
 
+**Status, 2026-11-02.** S1 and S2, merged (brianboti/fast-deploy#233, brianboti/fast-deploy#234), were run on the
+sandbox project ([DELIVERY-SPIKE.md](../DELIVERY-SPIKE.md) section 16): a machine, a cluster, a database and a Cloud Run
+service made, an image built inside Google, and releases onto each. What S1 and S2 set held on Google: the pull account
+and its short-lived token (H1), the 15-minute SSH key (M3), the container's bounds on a machine and in a pod (M4), the
+public paths refused, private nodes, Dataplane V2, Binary Authorization enforced, Pod Security and the admission policy
+in the team's namespace, Cloud Run's ingress and named secrets, and the MySQL flags. The run found twelve problems on the
+way, none in what S1 and S2 set; each is fixed with a test. S3 is still the operator's: the project's Binary
+Authorization policy was Google's default, which allows every image.
+
 ## 1. The short answer
 
 **The design is right and most of its claims hold.** Tokens are hashed and compared in constant time; the OAuth

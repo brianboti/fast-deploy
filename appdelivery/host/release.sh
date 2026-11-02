@@ -53,26 +53,34 @@ healthy() {
     return 1
 }
 
+# docker's own last lines on a failed login or pull (a 403 and an unreachable registry read alike otherwise); the token
+# went on standard input, so they cannot hold it
 pull() {
+    local errors
+    errors=$(mktemp "$RUN_DIR/appdelivery-XXXXXX")
     if [ -n "${IN_TOKEN:-}" ]; then
         local config
         config=$(mktemp -d "$RUN_DIR/appdelivery-XXXXXX")
         # the token goes on standard input, never on a command line; the login is gone when this function returns
-        if ! decode "$IN_TOKEN" | DOCKER_CONFIG="$config" docker login -u oauth2accesstoken --password-stdin "https://$REGISTRY" >/dev/null 2>&1; then
+        if ! decode "$IN_TOKEN" | DOCKER_CONFIG="$config" docker login -u oauth2accesstoken --password-stdin "https://$REGISTRY" >/dev/null 2>"$errors"; then
             rm -rf "$config"
-            say result=pull_failed reason=login
+            say result=pull_failed reason=login log="$(tail -n 3 "$errors" | base64 | tr -d '\n')"
+            rm -f "$errors"
             exit 0
         fi
-        if ! DOCKER_CONFIG="$config" docker pull --quiet "$IMAGE" >/dev/null 2>&1; then
+        if ! DOCKER_CONFIG="$config" docker pull --quiet "$IMAGE" >/dev/null 2>"$errors"; then
             rm -rf "$config"
-            say result=pull_failed reason=pull
+            say result=pull_failed reason=pull log="$(tail -n 3 "$errors" | base64 | tr -d '\n')"
+            rm -f "$errors"
             exit 0
         fi
         rm -rf "$config"
-    elif ! docker pull --quiet "$IMAGE" >/dev/null 2>&1; then
-        say result=pull_failed reason=pull
+    elif ! docker pull --quiet "$IMAGE" >/dev/null 2>"$errors"; then
+        say result=pull_failed reason=pull log="$(tail -n 3 "$errors" | base64 | tr -d '\n')"
+        rm -f "$errors"
         exit 0
     fi
+    rm -f "$errors"
 }
 
 # Start the previous container again as the current one, with the restart policy that brings it back after a reboot.

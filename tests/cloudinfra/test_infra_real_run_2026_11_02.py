@@ -109,3 +109,44 @@ def test_a_cleanup_that_meets_an_instance_still_being_made_waits_for_it_and_dele
     response = orchestrator.provision(InfrastructureRequest.model_validate({"region": "us-central1", "name": "shop", "network": {}, "database": {}}), who, wait_seconds=45)
     assert orchestrator.status(response.request_id, who, refresh=False).status.value == "FAILED"
     assert not fake.sql and not fake.networks
+
+
+@pytest.mark.parametrize("block", [{"service": {}}, {"job": {}}])
+def test_a_service_or_job_made_before_cloud_run_knows_its_new_account_is_tried_again(tmp_path, block):
+    # Cloud Run refused the service seconds after its runtime account was made ("Permission 'iam.serviceaccounts.actAs'
+    # denied on service account run-... (or it may not exist)"), and the request's database, made for 21 minutes, went with it.
+    orchestrator, fake, _, who = orchestrated(tmp_path)
+    fake.run_account_unknown = 3
+    provision(orchestrator, who, {"name": "shop", **block})
+    assert fake.run_account_unknown == 0 and (fake.run_services or fake.run_jobs)
+
+
+def test_an_operations_wait_is_a_read_given_the_two_minutes_google_holds_it():
+    # Deleting m1-web-1 took over a minute; the operation's wait timed out at the client's 60 seconds and, as a POST that
+    # lost its answer, was not tried again, so the destroy failed. A wait changes nothing and is now read as such.
+    timeouts = []
+
+    def handle(request):
+        timeouts.append(request.extensions["timeout"]["read"])
+        if len(timeouts) == 1:
+            raise httpx.ReadTimeout("held", request=request)
+        return httpx.Response(200, json={"status": "DONE"})
+    api = GcpApi("test-project", token=lambda: "t", client=httpx.Client(timeout=60, transport=httpx.MockTransport(handle)), sleep=lambda seconds: None)
+    link = "https://compute.googleapis.com/compute/v1/projects/p/zones/z/operations/o"
+    assert api.wait_compute({"status": "RUNNING", "selfLink": link}) == {"status": "DONE"}
+    assert timeouts == [150, 150]
+    api.post("https://compute.googleapis.com/compute/v1/projects/p/global/networks", json={})
+    assert timeouts[-1] == 60
+
+
+def test_a_network_cloud_run_still_holds_says_when_to_destroy_it_again(tmp_path):
+    # The service was deleted, then its subnet was refused: Cloud Run keeps Direct VPC egress addresses 1-2 hours after.
+    orchestrator, fake, _, who = orchestrated(tmp_path)
+    response = provision(orchestrator, who, {"name": "shop", "network": {}, "service": {}})
+    fake.serverless_address = True
+    failed = orchestrator.destroy(response.request_id, who)
+    remaining = failed.error.details["remaining"]
+    assert failed.status.value == "DESTROY_FAILED" and [item["name"] for item in remaining] == ["shop-net"] and not fake.run_services
+    assert "1-2 hours" in remaining[0]["error"]["message"] and remaining[0]["error"]["details"]["retry_after_seconds"] == 7200
+    fake.serverless_address = False
+    assert orchestrator.destroy(response.request_id, who).status.value == "DESTROYED"

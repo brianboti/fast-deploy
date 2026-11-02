@@ -1,3 +1,43 @@
+# Unreleased: fixes from the run of releases S1 and S2 on Google Cloud (2026-11-02)
+
+Releases S1 and S2 were run on the sandbox project ([DELIVERY-SPIKE.md](DELIVERY-SPIKE.md) section 16). Each problem
+the run found is fixed with a test that fails without it, in `tests/cloudinfra/test_infra_real_run_2026_11_02.py` or
+`tests/appdelivery/test_delivery_real_run_2026_11_02.py`.
+
+**Before you upgrade.** A request for a cluster with private nodes (the default) is refused until
+`providers.gcp.cluster_authorized_networks` lists the ranges both services reach the control plane from. Clusters need
+`roles/container.admin`, not `roles/container.clusterAdmin`, and the custom role of docs/SETUP.md section 2 gains
+`iam.roles.get`.
+
+- cloudinfra: a cluster with private nodes and no `cluster_authorized_networks` is refused before any call. GKE turned
+  authorized networks on with none listed, so neither service could reach the control plane and the request failed
+  after five minutes.
+- cloudinfra: a read, or a call that never connected, is tried again after a network error; one connect timeout while a
+  cluster was waited on had failed its request. A write whose answer was lost is still never sent twice.
+- cloudinfra: a Cloud SQL create waits at least 40 minutes (the first instance on a private network took 27), and a
+  cleanup that meets an instance still being made waits for it before turning off its deletion protection.
+- cloudinfra: a network whose private services connection Cloud SQL still holds after its instance is gone is deleted
+  again for up to ten minutes, then the peering is removed from the network's side.
+- cloudinfra: a Cloud Run service or job is created again while Cloud Run does not yet know the runtime account made for
+  it seconds before; the refusal (`actAs` denied, "or it may not exist") had failed the request and thrown away its
+  finished database.
+- cloudinfra: Compute Engine's operation `wait`, which Google holds up to two minutes, is a read given 150 seconds; it
+  timed out at the client's 60 while a machine was deleted, and the destroy failed.
+- cloudinfra: a destroy that meets a subnet Cloud Run still holds for a deleted service's Direct VPC egress says so, and
+  that Google releases it 1-2 hours later (`retry_after_seconds`), instead of Google's bare "already being used".
+- appdelivery: a release binds the request's own credentials as `db-password` and `cache-auth` again. cloudinfra has
+  named them `<name>-db-password-<6 hex>` and `<name>-cache-auth-<6 hex>` since 1.37.0, and the delivery service still
+  looked for `<name>-db-password`, so the binding DELIVERY-SPEC.md shows was refused against any real request; they are
+  now found by their purpose. The test fakes had kept the old name and now use the real one.
+- appdelivery: a machine that cannot log in to the registry or pull the image sends docker's last lines, kept on the
+  release's target. A refused pull account and an unreachable registry read alike before.
+- appdelivery: a cluster rollout that timed out says why a new pod found no node, from the scheduler ("0/1 nodes are
+  available: 1 Insufficient memory").
+- Both: resource and URL paths made of names (`roles/cloudinfraGrants`, `setDeletionProtection`) stay in the logs; a
+  custom role's URL was redacted whole.
+- Docs: `roles/container.admin` for clusters; `iam.roles.get` for the node-account check; the IAM condition from a file,
+  since `--condition` splits its expression at the commas.
+
 # Unreleased: fixes from the code review of 2026-10-31
 
 A review of everything releases S1 and S2 changed found eight problems; each is fixed with a test in

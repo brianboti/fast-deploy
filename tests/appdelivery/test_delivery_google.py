@@ -68,7 +68,7 @@ def test_a_host_that_may_not_act_as_the_environment_is_told_which_role_it_needs(
 
 def secret_manager(value=SECRET_VALUE, status=200):
     def handle(request):
-        assert request.url.path == "/v1/projects/infra-project/secrets/shop-db-password/versions/latest:access"
+        assert request.url.path == "/v1/projects/infra-project/secrets/shop-db-password-1a2b3c/versions/latest:access"
         assert request.headers["Authorization"] == "Bearer env-token"
         if status != 200:
             return httpx.Response(status, json={})
@@ -77,12 +77,12 @@ def secret_manager(value=SECRET_VALUE, status=200):
 
 
 def test_a_secret_is_read_as_the_environment():
-    assert read_secret(secret_manager(), "env-token", "projects/infra-project/secrets/shop-db-password") == SECRET_VALUE
+    assert read_secret(secret_manager(), "env-token", "projects/infra-project/secrets/shop-db-password-1a2b3c") == SECRET_VALUE
 
 
 def test_a_secret_this_environment_may_not_read_names_the_grant():
     with pytest.raises(DeliveryError) as caught:
-        read_secret(secret_manager(status=403), "env-token", "projects/infra-project/secrets/shop-db-password")
+        read_secret(secret_manager(status=403), "env-token", "projects/infra-project/secrets/shop-db-password-1a2b3c")
     assert caught.value.code == ErrorCode.SECRET_UNAVAILABLE and "access grant" in caught.value.message
 
 

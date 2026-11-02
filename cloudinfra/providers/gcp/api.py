@@ -29,6 +29,7 @@ LONG_POLL_SECONDS = 10
 RETRIES = 4  # attempts of a call Google rate limited, or of a read it answered 5xx
 RETRY_PAUSE_SECONDS = 1.0  # doubled after each attempt, unless Google says how long in Retry-After
 MAX_RETRY_PAUSE_SECONDS = 30
+WAIT_SECONDS = 150  # the client timeout of an operation's `wait`, which Google holds up to two minutes
 SQL_POLL_SECONDS = 5
 SERVICE_NETWORKING_POLL_SECONDS = 5
 def settled(field: str, moving: tuple[str, ...]):
@@ -107,28 +108,32 @@ class GcpApi:
             headers = {"Authorization": "Bearer " + token}
             if self.quota_project:
                 headers["X-Goog-User-Project"] = self.quota_project
+            # an operation's `wait` is a read that Google holds up to two minutes, past the client's 60 seconds: deleting a
+            # machine with it timed out and failed the destroy (the run of 2026-11-02)
+            waiting = method == "POST" and url.endswith("/wait")
+            reading = method == "GET" or waiting
             try:
-                response = self.client.request(method, url, json=json, params=params, headers=headers)
+                response = self.client.request(method, url, json=json, params=params, headers=headers, **({"timeout": WAIT_SECONDS} if waiting else {}))
             except httpx.RequestError as exc:
                 # a write whose request left but whose answer never came may have been done (review of 2026-10-30, L8)
                 unsent = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
                 # one that never left, or a read, is tried again: a single connect timeout while a cluster was being waited
                 # on failed its request after five minutes (the run of 2026-11-02)
-                if (unsent or method == "GET") and attempt < RETRIES - 1:
+                if (unsent or reading) and attempt < RETRIES - 1:
                     pause = min(RETRY_PAUSE_SECONDS * 2 ** attempt, MAX_RETRY_PAUSE_SECONDS)
                     event("provider_retry", provider="gcp", method=method, url=url, reason=type(exc).__name__, attempt=attempt + 1, pause_seconds=pause)
                     self.sleep(pause)
                     attempt += 1
                     continue
                 raise InfrastructureError(ErrorCode.PROVIDER_UNAVAILABLE, f"Google Cloud could not be reached ({type(exc).__name__})",
-                                          {"url": url, **({} if unsent or method == "GET" else {"maybe_done": True})}) from None
+                                          {"url": url, **({} if unsent or reading else {"maybe_done": True})}) from None
             event("provider_call", provider="gcp", method=method, url=url, status=response.status_code)
             if response.status_code == 401 and not refreshed and hasattr(self.token, "invalidate"):
                 refreshed = True
                 self.token.invalidate()
                 event("provider_retry", provider="gcp", method=method, url=url, status=401, reason="token refreshed")
                 continue
-            retryable = response.status_code == 429 or (method == "GET" and response.status_code in (500, 502, 503, 504))
+            retryable = response.status_code == 429 or (reading and response.status_code in (500, 502, 503, 504))
             if not retryable or attempt == RETRIES - 1:
                 break
             pause = retry_pause(response, attempt)

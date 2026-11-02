@@ -45,7 +45,7 @@ def test_a_release_becomes_what_the_job_runs_and_nothing_else_of_the_job_changes
     container = world.run_job.job["template"]["template"]["containers"][0]
     assert world.run_job.image() == V1 and "ports" not in container and "startupProbe" not in container, "a job serves nothing"
     assert container["resources"] == {"limits": {"cpu": "1", "memory": "512Mi"}}
-    assert world.run_job.env() == {"MODE": "nightly", "API_KEY": {"secretKeyRef": {"secret": "projects/infra-project/secrets/shop-db-password", "version": "7"}}}
+    assert world.run_job.env() == {"MODE": "nightly", "API_KEY": {"secretKeyRef": {"secret": "projects/infra-project/secrets/shop-db-password-1a2b3c", "version": "7"}}}
     assert world.run_job.job["template"]["labels"][RELEASE_LABEL] == done.release_id
 
 

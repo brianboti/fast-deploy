@@ -60,6 +60,8 @@ class FakeGcpApi(GcpApi):
         self.response_policies: dict[str, dict] = {}  # DNS response policies by name, each with its "rules" by name
         self.peerings = set()
         self.sql_create_seconds = 0  # how long a Cloud SQL instance takes to make, on the fake's clock (27 minutes on 2026-11-02)
+        self.run_account_unknown = 0  # how many more times Cloud Run does not yet know a runtime account just made (2026-11-02)
+        self.serverless_address = False  # Cloud Run still holds an address on every subnet, as for 1-2 hours after a service (2026-11-02)
         self.peering_in_use = 0  # how many more times Service Networking refuses to delete a connection a deleted Cloud SQL instance still holds (2026-11-02)
         self.namespaces: dict[str, set[str]] = {}  # cluster endpoint -> namespaces
         self.role_bindings: dict[tuple[str, str, str], dict] = {}  # (endpoint, namespace, name) -> {"role", "member"}
@@ -263,12 +265,19 @@ class FakeGcpApi(GcpApi):
             raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, "Google Cloud refused the request: already exists", {"http_status": 409})
         account = body["template"].get("serviceAccount")
         assert account in self.service_accounts, "a service runs as an account that exists"
+        self._run_knows(account)
         revision = f"{name}-00001-abc"
         self.run_services[name] = {**body, "name": f"projects/{self.project}/locations/{found.group(1)}/services/{name}", "uri": f"https://{name}-xyz.a.run.app",
                                    "reconciling": False, "terminalCondition": {"type": "Ready", "state": "CONDITION_SUCCEEDED"}, "createTime": "2026-10-29T10:00:00Z",
                                    "latestReadyRevision": f"projects/{self.project}/locations/{found.group(1)}/services/{name}/revisions/{revision}",
                                    "trafficStatuses": [{"type": "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST", "percent": 100, "revision": revision}]}
         return {"name": f"operations/run-{self.counter}", "done": False}
+
+    def _run_knows(self, account):
+        if self.run_account_unknown:  # the 403 Google returned on 2026-11-02, a few seconds after the account was made
+            self.run_account_unknown -= 1
+            raise InfrastructureError(ErrorCode.PROVIDER_PERMISSION_DENIED, "The service's identity is not allowed to do this in Google Cloud: Permission "
+                                      f"'iam.serviceaccounts.actAs' denied on service account {account} (or it may not exist).", {"http_status": 403})
 
     def _run_service(self, found, method, body, params):
         name = found.group(1)
@@ -291,6 +300,7 @@ class FakeGcpApi(GcpApi):
         if name in self.run_jobs:
             raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, "Google Cloud refused the request: already exists", {"http_status": 409})
         assert body["template"]["template"]["serviceAccount"] in self.service_accounts, "a job runs as an account that exists"
+        self._run_knows(body["template"]["template"]["serviceAccount"])
         self.run_jobs[name] = {**body, "name": f"projects/{self.project}/locations/{found.group(1)}/jobs/{name}", "reconciling": False,
                                "terminalCondition": {"type": "Ready", "state": "CONDITION_SUCCEEDED"}, "createTime": "2026-10-29T10:00:00Z"}
         return {"name": f"operations/job-{self.counter}", "done": False}
@@ -630,6 +640,11 @@ class FakeGcpApi(GcpApi):
         if key not in self.subnets:
             raise self._not_found(key[1])
         if method == "DELETE":
+            if self.serverless_address:
+                raise InfrastructureError(ErrorCode.PROVIDER_ERROR, "Google Cloud refused the request: The subnetwork resource is already being used",
+                                          {"http_status": 400, "reason": "resourceInUseByAnotherResource", "provider_message":
+                                           f"The subnetwork resource 'projects/{self.project}/regions/{key[0]}/subnetworks/{key[1]}' is already being used by "
+                                           f"'projects/{self.project}/regions/{key[0]}/addresses/serverless-ipv4-cloudrun-1793652486760702315'"})
             del self.subnets[key]
             return self._op()
         return self.subnets[key]

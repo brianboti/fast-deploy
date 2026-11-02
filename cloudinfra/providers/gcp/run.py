@@ -67,6 +67,18 @@ class GcpRun:
                         raise
                     self.api.sleep(NOT_YET[1])
 
+    def _create(self, make):
+        """Cloud Run checks that the service may act as the runtime account, and for some seconds after IAM made it, it
+        does not know it (found on a real project on 2026-11-02: "Permission 'iam.serviceaccounts.actAs' denied on service
+        account run-... (or it may not exist)"); the create is tried again."""
+        for attempt in range(NOT_YET[0]):
+            try:
+                return make()
+            except InfrastructureError as exc:
+                if "may not exist" not in exc.message or attempt == NOT_YET[0] - 1:
+                    raise
+                self.api.sleep(NOT_YET[1])
+
     def _forget(self, email: str, secrets) -> None:
         try:
             self._read_secrets(email, secrets, give=False)
@@ -98,7 +110,7 @@ class GcpRun:
                                    max_instances=spec.max_instances, ingress=spec.ingress, public=spec.public, network=network.id if network else None,
                                    secrets=[secret.resource_name for secret in secrets], labels=translate.labels(ctx))
         try:
-            self.api.create(self._services(region), url, json=body, serviceId=planned.name, ready=lambda found: not found.get("reconciling"))
+            self._create(lambda: self.api.create(self._services(region), url, json=body, serviceId=planned.name, ready=lambda found: not found.get("reconciling")))
         except InfrastructureError:
             self._forget(email, secrets)  # Google never took the service, so nothing else will delete its account
             raise
@@ -181,7 +193,7 @@ class GcpRunJob(GcpRun):
                                network=network.id if network else None, secrets=[secret.resource_name for secret in secrets], labels=translate.labels(ctx),
                                schedule={"cron": spec.schedule.cron, "time_zone": spec.schedule.time_zone} if spec.schedule else None)
         try:
-            self.api.create(self._jobs(region), f"{RUN}/{provider_id}", json=body, jobId=planned.name, ready=lambda found: not found.get("reconciling"))
+            self._create(lambda: self.api.create(self._jobs(region), f"{RUN}/{provider_id}", json=body, jobId=planned.name, ready=lambda found: not found.get("reconciling")))
         except InfrastructureError:
             self._forget(email, secrets)
             raise

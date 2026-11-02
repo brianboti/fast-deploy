@@ -16,6 +16,8 @@ SERVICE = "servicenetworking.googleapis.com"
 PEERING = "servicenetworking-googleapis-com"
 STILL_IN_USE = "FLOW_SN_DC_RESOURCE_PREVENTING_DELETE_CONNECTION"
 CONNECTION_RELEASE_SECONDS, CONNECTION_RETRY_SECONDS = 600, 30
+# the addresses Cloud Run reserves on a subnet for Direct VPC egress, named serverless-ipv4-cloudrun-<number>
+SERVERLESS_ADDRESS = "/addresses/serverless-ipv4-"
 # https://cloud.google.com/vpc/docs/flow-logs: a five-minute interval, half the flows, every metadata field
 FLOW_LOGS = {"enable": True, "aggregationInterval": "INTERVAL_5_MIN", "flowSampling": 0.5, "metadata": "INCLUDE_ALL_METADATA"}
 PRIVATE_RANGES = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
@@ -206,5 +208,14 @@ class GcpNetwork:
             self._disconnect_services(resource.name)
             self._delete_quietly(f"{self._global('addresses')}/{resource.private_services_range}")
         if resource.subnet:
-            self._delete_quietly(resource.subnet)
+            try:
+                self._delete_quietly(resource.subnet)
+            except InfrastructureError as exc:
+                if SERVERLESS_ADDRESS not in exc.details.get("provider_message", exc.message):
+                    raise
+                # Cloud Run keeps a deleted service's or job's Direct VPC egress addresses on the subnet 1-2 hours, and no one
+                # may delete them (found on the run of 2026-11-02; https://docs.cloud.google.com/run/docs/configuring/vpc-direct-vpc)
+                raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"Cloud Run still holds addresses on {resource.subnet.rsplit('/', 1)[-1]} for a service or "
+                                          "job of this request it has deleted; Google releases them 1-2 hours later. Call destroy_infrastructure again "
+                                          "after that: the network is all that is left", {**exc.details, "retry_after_seconds": 7200}) from None
         self._delete_quietly(f"{self._global('networks')}/{resource.name}")

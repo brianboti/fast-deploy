@@ -28,9 +28,11 @@ case "$cmd" in
     [ -n "$DOCKER_CONFIG" ] && [ -d "$DOCKER_CONFIG" ] || exit 3
     echo "$DOCKER_CONFIG" > "$S/login_config"
     cat > "$S/login_password"
-    [ -e "$S/fail_login" ] && exit 1
+    [ -e "$S/fail_login" ] && { echo "Error response from daemon: login attempt failed with status: 401 Unauthorized" >&2; exit 1; }
     touch "$DOCKER_CONFIG/config.json"; exit 0 ;;
-  pull) [ -e "$S/fail_pull" ] && exit 1; echo "${DOCKER_CONFIG:-none}" > "$S/pull_config"; exit 0 ;;
+  pull)
+    [ -e "$S/fail_pull" ] && { echo "Error response from daemon: denied: Permission \"artifactregistry.repositories.downloadArtifacts\" denied" >&2; exit 1; }
+    echo "${DOCKER_CONFIG:-none}" > "$S/pull_config"; exit 0 ;;
   rm) for name in "$@"; do [ "$name" = "-f" ] || rm -rf "${c:?}/$name"; done ;;
   update) policy=${1#--restart=}; echo "$policy" > "$c/$2/restart" ;;
   stop) echo false > "$c/$1/running" ;;

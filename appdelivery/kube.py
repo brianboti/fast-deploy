@@ -199,12 +199,12 @@ class ClusterDeployer:
             # previous release back (found on a real cluster on 2026-10-29), so it counts only for the generation now wanted
             for condition in status.get("conditions", []) if current else []:
                 if condition.get("type") == "Progressing" and condition.get("reason") == "ProgressDeadlineExceeded":
-                    return False, condition.get("message") or "Kubernetes gave up: the progress deadline passed"
+                    return False, (condition.get("message") or "Kubernetes gave up: the progress deadline passed") + self._unscheduled(kube, where, release_id)
             stuck = self._stuck(kube, where, release_id)
             if stuck:
                 return False, stuck
             if self.clock() >= deadline:
-                return False, reason
+                return False, reason + self._unscheduled(kube, where, release_id)
             self.sleep(POLL_SECONDS)
 
     @staticmethod
@@ -219,6 +219,15 @@ class ClusterDeployer:
                 waiting = (container.get("state") or {}).get("waiting") or {}
                 if waiting.get("reason") in STUCK:
                     return f"{pod['metadata']['name']}: {waiting['reason']}" + (f" ({waiting.get('message')[:200]})" if waiting.get("message") else "")
+        return ""
+
+    def _unscheduled(self, kube, where: dict, release_id: str) -> str:
+        """Why a new pod found no node, from the scheduler (" pod: 0/1 nodes are available: 1 Insufficient memory..."), or
+        nothing: a rollout that timed out says only that, though no node had room (found on a real cluster on 2026-11-02)."""
+        for pod in self._pods(kube, where, release_id):
+            for condition in pod.get("status", {}).get("conditions", []) or []:
+                if condition.get("type") == "PodScheduled" and condition.get("status") == "False":
+                    return f"; {pod['metadata']['name']} found no node: {(condition.get('message') or condition.get('reason') or 'no reason given')[:300]}"
         return ""
 
     def _log(self, kube, where: dict, release_id: str) -> str | None:

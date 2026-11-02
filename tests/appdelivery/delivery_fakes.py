@@ -97,7 +97,7 @@ def infra_response(**overrides):
                                         {"name": "shop-net-allow-iap-ssh", "direction": "ingress", "ports": [22], "sources": ["35.235.240.0/20"], "provider_id": None},
                                         {"name": "shop-net-allow-public", "direction": "ingress", "ports": [8080], "sources": ["0.0.0.0/0"], "provider_id": None}])
     machines = [machine("cmp-111111111111", "shop-web-1"), machine("cmp-222222222222", "shop-web-2", internal_ip="10.10.0.3", instance_id="1234567891")]
-    secret = _resource("secret", "sec-333333333333", "shop-db-password", resource_name="projects/infra-project/secrets/shop-db-password", versions=1,
+    secret = _resource("secret", "sec-333333333333", "shop-db-password-1a2b3c", resource_name="projects/infra-project/secrets/shop-db-password-1a2b3c", versions=1,
                        purpose="database_password")
     data = {
         "request_id": REQUEST_ID, "name": "shop", "provider": "gcp", "region": "us-central1", "zone": "us-central1-a", "status": "READY", "owner": "shop-team",
@@ -105,7 +105,7 @@ def infra_response(**overrides):
                                     "cluster": [], "load_balancer": []},
         "endpoints": {"public_ips": [], "internal_ips": ["10.10.0.2", "10.10.0.3"], "database_host": "10.20.0.5", "database_port": 5432, "bucket_urls": [],
                       "load_balancer_address": None, "cache_host": None, "cache_port": None, "cluster_endpoint": None, "queue_topics": [],
-                      "secret_names": ["projects/infra-project/secrets/shop-db-password"]},
+                      "secret_names": ["projects/infra-project/secrets/shop-db-password-1a2b3c"]},
         "credentials": None, "lifecycle": None,
         "access": [{"member": f"serviceAccount:{PROD_SA}", "level": "admin", "status": "GRANTED",
                     "resources": ["cmp-111111111111", "cmp-222222222222", "sec-333333333333"], "error": None, "updated_at": "2026-10-29T10:00:00Z"}],
@@ -184,7 +184,7 @@ SERVICE_ID = "svc-555555555555"
 SERVICE_NAME = "projects/acme-infra/locations/us-central1/services/shop-service"
 
 
-DB_PASSWORD = "projects/infra-project/secrets/shop-db-password"  # the request's db-password secret, which the runtime accounts name
+DB_PASSWORD = "projects/infra-project/secrets/shop-db-password-1a2b3c"  # the request's db-password secret, which the runtime accounts name
 
 
 def service_resource(rid=SERVICE_ID, name="shop-service", **fields):
