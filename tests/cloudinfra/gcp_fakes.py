@@ -59,6 +59,7 @@ class FakeGcpApi(GcpApi):
         self.bucket_objects = set()
         self.response_policies: dict[str, dict] = {}  # DNS response policies by name, each with its "rules" by name
         self.peerings = set()
+        self.abandoned = set()  # connections whose network side was removed while Service Networking still held them
         self.sql_create_seconds = 0  # how long a Cloud SQL instance takes to make, on the fake's clock (27 minutes on 2026-11-02)
         self.run_account_unknown = 0  # how many more times Cloud Run does not yet know a runtime account just made (2026-11-02)
         self.serverless_address = False  # Cloud Run still holds an address on every subnet, as for 1-2 hours after a service (2026-11-02)
@@ -713,8 +714,8 @@ class FakeGcpApi(GcpApi):
         return self._op("sn")
 
     def _unpeer(self, found, method, body, params):
-        if self.peering_in_use:  # the operation Google returned on 2026-11-02, after the database was deleted
-            self.peering_in_use -= 1
+        if self.peering_in_use or body["consumerNetwork"] in self.abandoned:  # the operation Google returned on 2026-11-02, after the database was deleted
+            self.peering_in_use = max(self.peering_in_use - 1, 0)
             return {"name": "operations/sn-in-use", "done": True, "error": {"code": 9, "message": "Failed to delete connection; Producer services are still using this connection.",
                     "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "FLOW_SN_DC_RESOURCE_PREVENTING_DELETE_CONNECTION", "domain": "servicenetworking.googleapis.com"}]}}
         self.peerings.discard(body["consumerNetwork"])
@@ -722,7 +723,13 @@ class FakeGcpApi(GcpApi):
 
     def _remove_peering(self, found, method, body, params):
         assert method == "POST" and body == {"name": "servicenetworking-googleapis-com"}
-        self.peerings = {network for network in self.peerings if not network.endswith(f"/networks/{found.group(1)}")}
+        mine = {network for network in self.peerings if network.endswith(f"/networks/{found.group(1)}")}
+        if not mine:  # what Google said on 2026-11-02 to the second destroy of a network the first had abandoned
+            message = f"There is no peering (servicenetworking-googleapis-com) for the network (GLOBAL:global/PROJECT:1/NETWORK:{found.group(1)})."
+            raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"Google Cloud refused the request: {message}",
+                                      {"http_status": 400, "reason": "badRequest", "provider_message": message})
+        self.peerings -= mine
+        self.abandoned |= mine  # Service Networking still lists the connection, and still refuses to delete it
         return self._op()
 
 

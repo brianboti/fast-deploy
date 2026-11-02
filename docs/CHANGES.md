@@ -25,6 +25,9 @@ the run found is fixed with a test that fails without it, in `tests/cloudinfra/t
   timed out at the client's 60 while a machine was deleted, and the destroy failed.
 - cloudinfra: a destroy that meets a subnet Cloud Run still holds for a deleted service's Direct VPC egress says so, and
   that Google releases it 1-2 hours later (`retry_after_seconds`), instead of Google's bare "already being used".
+- cloudinfra: the destroy after that goes through. Its first try had let the database's connection go from the network's
+  side, Service Networking still refused to delete it, and Compute then refused to remove a peering that was no longer
+  there ("There is no peering"), so the network could never be deleted; a peering already gone now counts as removed.
 - appdelivery: a release binds the request's own credentials as `db-password` and `cache-auth` again. cloudinfra has
   named them `<name>-db-password-<6 hex>` and `<name>-cache-auth-<6 hex>` since 1.37.0, and the delivery service still
   looked for `<name>-db-password`, so the binding DELIVERY-SPEC.md shows was refused against any real request; they are

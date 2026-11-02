@@ -150,3 +150,18 @@ def test_a_network_cloud_run_still_holds_says_when_to_destroy_it_again(tmp_path)
     assert "1-2 hours" in remaining[0]["error"]["message"] and remaining[0]["error"]["details"]["retry_after_seconds"] == 7200
     fake.serverless_address = False
     assert orchestrator.destroy(response.request_id, who).status.value == "DESTROYED"
+
+
+def test_a_second_destroy_of_a_network_whose_connection_was_let_go_passes_the_missing_peering(tmp_path):
+    # d3's first destroy let the connection go from the network's side, then Cloud Run's addresses held the subnet. On the
+    # second, Service Networking still refused to delete the connection, and Compute refused to remove a peering that was
+    # no longer there: "There is no peering (servicenetworking-googleapis-com) for the network".
+    orchestrator, fake, _, who = orchestrated(tmp_path)
+    response = provision(orchestrator, who, {"name": "shop", "network": {}, "database": {"engine": "mysql", "version": "8.0"}, "service": {}})
+    fake.peering_in_use, fake.serverless_address = 1000, True
+    failed = orchestrator.destroy(response.request_id, who)
+    assert failed.status.value == "DESTROY_FAILED" and [item["name"] for item in failed.error.details["remaining"]] == ["shop-net"]
+    assert fake.abandoned and not fake.peerings
+    fake.serverless_address = False
+    assert orchestrator.destroy(response.request_id, who).status.value == "DESTROYED"
+    assert not fake.networks and not fake.subnets

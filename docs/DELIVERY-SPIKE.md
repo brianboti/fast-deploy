@@ -541,7 +541,7 @@ binding, and the local copies.
 
 ## 16. Releases S1 and S2 of the security assessment, on Google Cloud
 
-Run on 2026-11-02 between 16:45 and 21:30 UTC by Claude for the operator, in the same sandbox project, from branch
+Run on 2026-11-02 between 16:45 and 22:47 UTC by Claude for the operator, in the same sandbox project, from branch
 `real-run-s1-s2` (from `main` at `54c4ee2`, with S1 and S2 merged), with the setup of [SETUP.md](SETUP.md) done by hand
 ([research/RESEARCH-2026-10-30-security-assessment.md](research/RESEARCH-2026-10-30-security-assessment.md)). Both
 services ran on the operator's laptop: `cloudinfra` as its own `cloudinfra` account, the delivery service as
@@ -589,7 +589,16 @@ What the run found, request by request. Each fix is in [CHANGES.md](CHANGES.md) 
 | a binding of `db-password` | refused: cloudinfra has named the database's secret `<name>-db-password-<6 hex>` since 1.37.0, and the delivery service still looked for `<name>-db-password`, so the binding DELIVERY-SPEC.md shows failed against any real request. The fakes still had the old name, which is why no test saw it | the request's own credentials are found by their purpose; the fakes use the real name |
 | destroy of `m1` | `DESTROY_FAILED`: deleting the machine took over a minute, and Compute Engine's operation `wait`, which Google holds up to two minutes, timed out at the client's 60 seconds; as a POST that lost its answer it was not tried again | an operation's `wait` is a read, with 150 seconds; the second destroy went through |
 | destroy of `d3` | everything went but the network: Cloud Run keeps a deleted service's Direct VPC egress address (`serverless-ipv4-cloudrun-…`) on the subnet, and Google says to wait 1-2 hours before deleting the subnet. Nobody may delete that address | none possible on our side; the error now says so and when to call destroy again (`retry_after_seconds`) |
+| destroy of `d3` again, two hours later | Google had released the address, but the destroy failed again: the first had let the database's connection go from the network's side after ten minutes of "still in use"; Service Networking still refused to delete it, and Compute refused to remove a peering that was gone ("There is no peering"). Every second destroy of a network with a database would have failed this way | a peering already gone counts as removed; the third destroy went through |
 
 Setup steps the documents had wrong, fixed in [SETUP.md](SETUP.md): the conditional `projectIamAdmin` grant with
 `--condition` (gcloud splits its expression at the commas; it is now read from a file), `iam.roles.get`, and
 `roles/container.admin`.
+
+Everything was deleted afterwards. The three requests left went through cloudinfra's own destroy: `k5` at once, `m1` on
+the second try, and `d3` on the third, after Google released Cloud Run's address and with the peering fix above. Then
+the setup made by hand for the run: the four service accounts and their 24 project bindings, the two custom roles,
+the `apps` repository, the Cloud Build connection with its linked repository, and the Cloud Build agent's
+`secretmanager.admin`. The project was left as it was found: the `default` network, Compute Engine's default account
+and Google's own agents, with Binary Authorization back on Google's default policy. The Cloud Build GitHub App stays
+installed on the GitHub account until its owner removes it.
