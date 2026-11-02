@@ -32,7 +32,7 @@ sandbox project ([DELIVERY-SPIKE.md](../DELIVERY-SPIKE.md) section 16): a machin
 service made, an image built inside Google, and releases onto each. What S1 and S2 set held on Google: the pull account
 and its short-lived token (H1), the 15-minute SSH key (M3), the container's bounds on a machine and in a pod (M4), the
 public paths refused, private nodes, Dataplane V2, Binary Authorization enforced, Pod Security and the admission policy
-in the team's namespace, Cloud Run's ingress and named secrets, and the MySQL flags. The run found twelve problems on the
+in the team's namespace, Cloud Run's ingress and named secrets, and the MySQL flags. The run found thirteen problems on the
 way, none in what S1 and S2 set; each is fixed with a test. S3 is still the operator's: the project's Binary
 Authorization policy was Google's default, which allows every image.
 

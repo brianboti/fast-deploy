@@ -15,6 +15,7 @@ SERVICE = "servicenetworking.googleapis.com"
 # the peering Service Networking adds to a network, and the reason it gives for refusing to delete a connection still in use
 PEERING = "servicenetworking-googleapis-com"
 STILL_IN_USE = "FLOW_SN_DC_RESOURCE_PREVENTING_DELETE_CONNECTION"
+NO_PEERING = f"There is no peering ({PEERING})"  # Compute's answer once an earlier destroy removed the network's side
 CONNECTION_RELEASE_SECONDS, CONNECTION_RETRY_SECONDS = 600, 30
 # the addresses Cloud Run reserves on a subnet for Direct VPC egress, named serverless-ipv4-cloudrun-<number>
 SERVERLESS_ADDRESS = "/addresses/serverless-ipv4-"
@@ -176,7 +177,11 @@ class GcpNetwork:
                 if exc.details.get("reason") != STILL_IN_USE:
                     raise
             if self.api.clock() > deadline:
-                self.api.wait_compute(self.api.post(f"{self._global('networks')}/{network}/removePeering", json={"name": PEERING}))
+                try:
+                    self.api.wait_compute(self.api.post(f"{self._global('networks')}/{network}/removePeering", json={"name": PEERING}))
+                except InfrastructureError as exc:  # Service Networking still lists the connection after an abandoned destroy
+                    if NO_PEERING not in exc.details.get("provider_message", exc.message):
+                        raise
                 return
             self.api.sleep(CONNECTION_RETRY_SECONDS)
 
