@@ -8,7 +8,11 @@ import secrets
 from ...models.errors import ErrorCode, InfrastructureError
 from ...models.resources import DatabaseResource, ResourceStatus
 from . import translate
-from .api import SQL, settled
+from .api import SQL, SQL_POLL_SECONDS, settled
+
+# A first instance on a private network took 27 minutes to make on 2026-11-02, past the 15-minute operation timeout: a
+# create (and a cleanup that meets one still under way) waits at least this long.
+CREATE_SECONDS = 2400
 
 STATE = {"PENDING_CREATE": ResourceStatus.CREATING, "RUNNABLE": ResourceStatus.READY, "SUSPENDED": ResourceStatus.STOPPED, "PENDING_DELETE": ResourceStatus.DELETING,
          "MAINTENANCE": ResourceStatus.UPDATING, "FAILED": ResourceStatus.FAILED, "ONLINE_MAINTENANCE": ResourceStatus.UPDATING, "STOPPED": ResourceStatus.STOPPED}
@@ -49,7 +53,7 @@ class GcpDatabase:
                                     provider_id=f"{self._instances()}/{planned.name}", status=ResourceStatus.CREATING)
         operation = self.api.create(self._instances(), f"{self._instances()}/{planned.name}", json=body, ready=settled("state", ("PENDING_CREATE",)))
         ctx.accepted(resource)  # the instance is known from here: a failure making its database or user still deletes it
-        self.api.wait_sql(operation)
+        self.api.wait_sql(operation, timeout=max(self.api.operation_timeout, CREATE_SECONDS))
         self.api.wait_sql(self.api.post(f"{self._instances()}/{planned.name}/databases", json={"name": spec.database_name}))
         password = ctx.database_password or secrets.token_urlsafe(24)
         self.api.wait_sql(self.api.post(f"{self._instances()}/{planned.name}/users", json={"name": spec.username, "password": password}))
@@ -82,10 +86,17 @@ class GcpDatabase:
         self.api.wait_sql(self.api.patch(f"{self._instances()}/{resource.name}", json={"settings": {"activationPolicy": "ALWAYS"}}))
         return self.get(resource)
 
+    def _wait_made(self, url: str) -> None:
+        deadline = self.api.clock() + max(self.api.operation_timeout, CREATE_SECONDS)
+        while self.api.get(url).get("state") == "PENDING_CREATE" and self.api.clock() < deadline:
+            self.api.sleep(SQL_POLL_SECONDS * 6)
+
     def delete(self, resource: DatabaseResource, ctx) -> None:
         url = f"{self._instances()}/{resource.name}"
         try:
-            # Deletion protection is on from creation; an explicit destroy is the one place it is turned off.
+            # Deletion protection is on from creation; an explicit destroy is the one place it is turned off. An instance
+            # still being made refuses the change (409), so a cleanup after a create's wait ran out waits for it first.
+            self._wait_made(url)
             self.api.wait_sql(self.api.patch(url, json={"settings": {"deletionProtectionEnabled": False}}))
             self.api.wait_sql(self.api.delete(url))
         except InfrastructureError as exc:

@@ -17,6 +17,7 @@ class FakeKube:
         self.objects: dict[str, dict] = {}  # "/…/deployments/web" -> object
         self.bad_images: set[str] = set()
         self.slow_images: set[str] = set()
+        self.unschedulable_images: set[str] = set()  # pods no node has room for (a one-node cluster on 2026-11-02)
         self.lagging = False
         self.stale: dict[str, dict] = {}  # path -> the status the next read still shows
         self.calls: list[tuple[str, str]] = []
@@ -95,10 +96,10 @@ class FakeKube:
         found = copy.deepcopy(deployment)
         replicas = found["spec"]["replicas"]
         image = found["spec"]["template"]["spec"]["containers"][0]["image"]
-        good = image not in self.bad_images and image not in self.slow_images
+        good = image not in self.bad_images and image not in self.slow_images and image not in self.unschedulable_images
         found["status"] = {"observedGeneration": found["metadata"]["generation"], "replicas": replicas,
                            "updatedReplicas": replicas if good else 1, "availableReplicas": replicas if good else 0}
-        if image in self.slow_images:  # the old replicas keep serving; the new one never gets ready
+        if image in self.slow_images or image in self.unschedulable_images:  # the old replicas keep serving; the new one never gets ready
             found["status"].update(replicas=replicas + 1, availableReplicas=replicas, conditions=[
                 {"type": "Progressing", "status": "False", "reason": "ProgressDeadlineExceeded", "message": 'ReplicaSet "web-7bb8c84649" has timed out progressing.'}])
         return found
@@ -113,6 +114,8 @@ class FakeKube:
             release = template["metadata"]["labels"][RELEASE_LABEL]
             state = {"waiting": {"reason": "CrashLoopBackOff", "message": "back-off restarting failed container"}} if image in self.bad_images else {"running": {}}
             pods.append({"metadata": {"name": f"{item['metadata']['name']}-{release}-0", "labels": {NAME_LABEL: item["metadata"]["name"], RELEASE_LABEL: release}},
-                         "status": {"containerStatuses": [{"name": "app", "state": state}]},
+                         "status": {"containerStatuses": [{"name": "app", "state": state}]} if image not in self.unschedulable_images else
+                         {"conditions": [{"type": "PodScheduled", "status": "False", "reason": "Unschedulable",
+                                          "message": "0/1 nodes are available: 1 Insufficient memory. preemption: 0/1 nodes are available: 1 No preemption victims found for incoming pod."}]},
                          "secret": template["spec"]["containers"][0]["envFrom"][0]["secretRef"]["name"]})
         return pods

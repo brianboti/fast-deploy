@@ -23,10 +23,11 @@ def config_dict(**overrides):
     # The sweeper's thread waits a day before its first sweep, so tests drive Sweeper.tick() themselves; lifetimes and idle
     # stop need the sweeper on. Members in example.com may be granted, so a database's password secret can be.
     # Most tests make public things (load balancers, front doors, open networks); the operator's switch is off by default and
-    # test_infra_security_s2.py holds that.
+    # test_infra_security_s2.py holds that. Clusters need the ranges both services call them from, as on a real project
+    # (test_infra_real_run_2026_11_02.py).
     base = {"database": ":memory:", "allowed_hosts": ["127.0.0.1:*", "localhost:*", "testserver"], "sweep_interval_seconds": 86400, "allow_public_exposure": True,
             "access": {"allowed_domains": ["example.com"]},
-            "providers": {"gcp": {"project_id": PROJECT, "allowed_regions": ["us-central1", "europe-west1"]}},
+            "providers": {"gcp": {"project_id": PROJECT, "allowed_regions": ["us-central1", "europe-west1"], "cluster_authorized_networks": ["198.51.100.0/24"]}},
             "principals": [{"name": "app-layer", "token_sha256": hashlib.sha256(TOKEN.encode()).hexdigest(), "can_provision": True, "can_destroy": True},
                            {"name": "reader", "token_sha256": hashlib.sha256(b"reader-token").hexdigest()},
                            {"name": "operator", "token_sha256": hashlib.sha256(b"operator-token").hexdigest(), "can_provision": True, "can_destroy": True, "scope": "all"}]}
@@ -58,6 +59,10 @@ class FakeGcpApi(GcpApi):
         self.bucket_objects = set()
         self.response_policies: dict[str, dict] = {}  # DNS response policies by name, each with its "rules" by name
         self.peerings = set()
+        self.sql_create_seconds = 0  # how long a Cloud SQL instance takes to make, on the fake's clock (27 minutes on 2026-11-02)
+        self.run_account_unknown = 0  # how many more times Cloud Run does not yet know a runtime account just made (2026-11-02)
+        self.serverless_address = False  # Cloud Run still holds an address on every subnet, as for 1-2 hours after a service (2026-11-02)
+        self.peering_in_use = 0  # how many more times Service Networking refuses to delete a connection a deleted Cloud SQL instance still holds (2026-11-02)
         self.namespaces: dict[str, set[str]] = {}  # cluster endpoint -> namespaces
         self.role_bindings: dict[tuple[str, str, str], dict] = {}  # (endpoint, namespace, name) -> {"role", "member"}
         self.namespace_labels: dict[tuple[str, str], dict] = {}  # (endpoint, namespace) -> its labels
@@ -156,12 +161,13 @@ class FakeGcpApi(GcpApi):
             (r"^/v1/projects/[^/]+/instances$", self._sql_instances),
             (r"^/v1/projects/[^/]+/instances/([^/]+)$", self._sql_instance),
             (r"^/v1/projects/[^/]+/instances/([^/]+)/(databases|users)$", self._sql_children),
-            (r"^/v1/projects/[^/]+/operations/([^/]+)$", lambda m, *a: {"name": m.group(1), "status": "DONE"}),
+            (r"^/v1/projects/[^/]+/operations/([^/]+)$", self._sql_operation),
             (r"^/storage/v1/b$", self._buckets),
             (r"^/storage/v1/b/([^/]+)$", self._bucket),
             (r"^/storage/v1/b/([^/]+)/iam$", self._bucket_policy),
             (r"^/v1/services/servicenetworking\.googleapis\.com/connections$", self._peering),
             (r"^/v1/services/servicenetworking\.googleapis\.com/connections/[^:]+:deleteConnection$", self._unpeer),
+            (r"^/compute/v1/projects/[^/]+/global/networks/([^/]+)/removePeering$", self._remove_peering),
             (r"^/v1/operations/[^/]+$", lambda m, *a: {"name": "operations/x", "done": True}),
             (r"^/v1/projects/[^/]+$", lambda m, *a: {"projectNumber": "123456789"}),
             (r"^/v3/projects/[^/]+/timeSeries$", self._time_series),
@@ -259,12 +265,19 @@ class FakeGcpApi(GcpApi):
             raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, "Google Cloud refused the request: already exists", {"http_status": 409})
         account = body["template"].get("serviceAccount")
         assert account in self.service_accounts, "a service runs as an account that exists"
+        self._run_knows(account)
         revision = f"{name}-00001-abc"
         self.run_services[name] = {**body, "name": f"projects/{self.project}/locations/{found.group(1)}/services/{name}", "uri": f"https://{name}-xyz.a.run.app",
                                    "reconciling": False, "terminalCondition": {"type": "Ready", "state": "CONDITION_SUCCEEDED"}, "createTime": "2026-10-29T10:00:00Z",
                                    "latestReadyRevision": f"projects/{self.project}/locations/{found.group(1)}/services/{name}/revisions/{revision}",
                                    "trafficStatuses": [{"type": "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST", "percent": 100, "revision": revision}]}
         return {"name": f"operations/run-{self.counter}", "done": False}
+
+    def _run_knows(self, account):
+        if self.run_account_unknown:  # the 403 Google returned on 2026-11-02, a few seconds after the account was made
+            self.run_account_unknown -= 1
+            raise InfrastructureError(ErrorCode.PROVIDER_PERMISSION_DENIED, "The service's identity is not allowed to do this in Google Cloud: Permission "
+                                      f"'iam.serviceaccounts.actAs' denied on service account {account} (or it may not exist).", {"http_status": 403})
 
     def _run_service(self, found, method, body, params):
         name = found.group(1)
@@ -287,6 +300,7 @@ class FakeGcpApi(GcpApi):
         if name in self.run_jobs:
             raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, "Google Cloud refused the request: already exists", {"http_status": 409})
         assert body["template"]["template"]["serviceAccount"] in self.service_accounts, "a job runs as an account that exists"
+        self._run_knows(body["template"]["template"]["serviceAccount"])
         self.run_jobs[name] = {**body, "name": f"projects/{self.project}/locations/{found.group(1)}/jobs/{name}", "reconciling": False,
                                "terminalCondition": {"type": "Ready", "state": "CONDITION_SUCCEEDED"}, "createTime": "2026-10-29T10:00:00Z"}
         return {"name": f"operations/job-{self.counter}", "done": False}
@@ -626,6 +640,11 @@ class FakeGcpApi(GcpApi):
         if key not in self.subnets:
             raise self._not_found(key[1])
         if method == "DELETE":
+            if self.serverless_address:
+                raise InfrastructureError(ErrorCode.PROVIDER_ERROR, "Google Cloud refused the request: The subnetwork resource is already being used",
+                                          {"http_status": 400, "reason": "resourceInUseByAnotherResource", "provider_message":
+                                           f"The subnetwork resource 'projects/{self.project}/regions/{key[0]}/subnetworks/{key[1]}' is already being used by "
+                                           f"'projects/{self.project}/regions/{key[0]}/addresses/serverless-ipv4-cloudrun-1793652486760702315'"})
             del self.subnets[key]
             return self._op()
         return self.subnets[key]
@@ -638,13 +657,25 @@ class FakeGcpApi(GcpApi):
         name = body["name"]
         private = body["settings"]["ipConfiguration"].get("privateNetwork")
         addresses = [{"type": "PRIVATE", "ipAddress": "10.20.0.3"}] if private else [{"type": "PRIMARY", "ipAddress": "35.0.0.9"}]
-        self.sql[name] = {**body, "state": "RUNNABLE", "ipAddresses": addresses, "connectionName": f"{self.project}:{body['region']}:{name}", "createTime": "2026-10-28T10:00:00Z"}
-        return self._op("sql")
+        self.sql[name] = {**body, "state": "RUNNABLE", "ipAddresses": addresses, "connectionName": f"{self.project}:{body['region']}:{name}", "createTime": "2026-10-28T10:00:00Z",
+                          "made_at": self.now + self.sql_create_seconds}
+        return self._op("sql") if not self.sql_create_seconds else {"name": f"sql-create-{name}", "status": "RUNNING"}
+
+    def _sql_operation(self, found, method, body, params):
+        name = found.group(1)
+        if name.startswith("sql-create-") and self.now < self.sql.get(name.removeprefix("sql-create-"), {}).get("made_at", 0):
+            return {"name": name, "status": "RUNNING"}
+        return {"name": name, "status": "DONE"}
 
     def _sql_instance(self, found, method, body, params):
         name = found.group(1)
         if name not in self.sql:
             raise self._not_found(name)
+        making = self.now < self.sql[name].get("made_at", 0)
+        if making and method == "PATCH":  # Google's answer to a change while the instance is being made
+            raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, "Operation failed because another operation was already in progress.", {"http_status": 409})
+        if making and method == "GET":
+            return {**self.sql[name], "state": "PENDING_CREATE"}
         if method == "DELETE":
             assert self.sql[name]["settings"].get("deletionProtectionEnabled") is False, "deletion protection must be turned off before a delete"
             del self.sql[name]
@@ -682,8 +713,17 @@ class FakeGcpApi(GcpApi):
         return self._op("sn")
 
     def _unpeer(self, found, method, body, params):
+        if self.peering_in_use:  # the operation Google returned on 2026-11-02, after the database was deleted
+            self.peering_in_use -= 1
+            return {"name": "operations/sn-in-use", "done": True, "error": {"code": 9, "message": "Failed to delete connection; Producer services are still using this connection.",
+                    "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "FLOW_SN_DC_RESOURCE_PREVENTING_DELETE_CONNECTION", "domain": "servicenetworking.googleapis.com"}]}}
         self.peerings.discard(body["consumerNetwork"])
         return self._op("sn")
+
+    def _remove_peering(self, found, method, body, params):
+        assert method == "POST" and body == {"name": "servicenetworking-googleapis-com"}
+        self.peerings = {network for network in self.peerings if not network.endswith(f"/networks/{found.group(1)}")}
+        return self._op()
 
 
 class FakeKubeApi:

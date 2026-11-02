@@ -96,7 +96,7 @@ def test_a_release_is_a_revision_named_after_it_that_gets_all_traffic_once_ready
     container = first["template"]["containers"][0]
     assert container["ports"] == [{"containerPort": 8080}] and container["startupProbe"]["httpGet"] == {"path": "/healthz", "port": 8080}
     assert container["resources"] == {"limits": {"cpu": "1", "memory": "512Mi"}}, "the limits the infrastructure layer set"
-    assert world.run.env() == {"GREETING": "hello", "API_KEY": {"secretKeyRef": {"secret": "projects/infra-project/secrets/shop-db-password", "version": "7"}}}
+    assert world.run.env() == {"GREETING": "hello", "API_KEY": {"secretKeyRef": {"secret": "projects/infra-project/secrets/shop-db-password-1a2b3c", "version": "7"}}}
     assert world.run.patches[1] == ("traffic", {"traffic": [{"type": REVISION, "revision": revision(done.release_id), "percent": 100}]})
 
 

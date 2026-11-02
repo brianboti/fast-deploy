@@ -29,6 +29,8 @@ CREDENTIAL_SHAPES = (re.compile(r"ya29\.[A-Za-z0-9._-]+"), re.compile(r"(?i)\bbe
 TOKEN_RUN = re.compile(r"[A-Za-z0-9+/_-]{40,}={0,2}")
 HEX = re.compile(r"^[a-f0-9]+$")
 ALPHANUMERIC = re.compile(r"^[A-Za-z0-9]+$")
+# a segment of a resource or URL path: a name, lowercase with hyphens, or camelCase letters (roles/cloudinfraGrants, getIamPolicy)
+PATH_SEGMENT = re.compile(r"[a-z0-9][a-z0-9-]*|[a-z]+(?:[A-Z][a-z]+)+")
 
 
 def redact_text(text: str) -> str:
@@ -40,10 +42,23 @@ def redact_text(text: str) -> str:
 
 def _secret_like(run: str) -> bool:
     run = run.rstrip("=")
+    if _path(run):
+        return False
     if any(c.islower() for c in run) and any(c.isupper() for c in run) and any(c.isdigit() for c in run):
         return True
-    # one case of letters and digits, unbroken: an API key, not a digest (hex) and not a name (it would carry hyphens)
+    return any(len(part) >= 20 and _one_case_key(part) for part in run.split("/"))
+
+
+def _one_case_key(run: str) -> bool:
+    """One case of letters and digits, unbroken: an API key, not a digest (hex) and not a name (it would carry hyphens)."""
     return bool(ALPHANUMERIC.fullmatch(run)) and not HEX.fullmatch(run.lower()) and any(c.isdigit() for c in run) and any(c.isalpha() for c in run)
+
+
+def _path(run: str) -> bool:
+    """Names joined by slashes, none of them key-shaped: a resource or URL path, kept so a log still says what was called (a
+    custom role's URL was redacted whole in the run of 2026-11-02). Random base64 almost never splits into such names."""
+    parts = [part for part in run.split("/") if part]
+    return len(parts) > 1 and all(PATH_SEGMENT.fullmatch(part) and not (len(part) >= 20 and _one_case_key(part)) for part in parts)
 
 
 def redact(value):

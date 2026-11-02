@@ -52,9 +52,11 @@ networks, secrets, buckets, queues and access grants that is `roles/compute.inst
 `roles/compute.networkAdmin`, `roles/compute.securityAdmin`, `roles/secretmanager.admin`, `roles/storage.admin`,
 `roles/pubsub.editor`, `roles/monitoring.viewer`, `roles/browser`, and a custom role with exactly the `getIamPolicy`
 and `setIamPolicy` permissions of instances, IAP tunnel instances, secrets, buckets, topics, subscriptions and
-Artifact Registry repositories. Databases add `roles/cloudsql.admin` and `roles/servicenetworking.networksAdmin`;
+Artifact Registry repositories, and `iam.roles.get`, so the node-account check below can read the custom roles its own
+account holds (without it, it cannot count them). Databases add `roles/cloudsql.admin` and `roles/servicenetworking.networksAdmin`;
 caches `roles/redis.admin`; registries the `artifactregistry.repositories.*` permissions; clusters
-`roles/container.clusterAdmin` and, for node accounts, `roles/iam.serviceAccountCreator`,
+`roles/container.admin` (`clusterAdmin` gives no right inside a cluster, where the service writes the namespace, its
+bindings and the admission policy) and, for node accounts, `roles/iam.serviceAccountCreator`,
 `roles/iam.serviceAccountDeleter`, `roles/iam.serviceAccountUser` and `roles/resourcemanager.projectIamAdmin` limited
 by the condition below; services and jobs `roles/run.admin`, `roles/iam.serviceAccountAdmin` and
 `roles/cloudscheduler.admin`. An HTTPS load balancer also makes SSL certificates and SSL policies
@@ -68,8 +70,16 @@ before it writes it and refuses to change project IAM when its own account holds
 `resourcemanager.projects.setIamPolicy`, without exactly this condition. It sees only what is bound to its own account
 in the project's policy: keep it out of groups that hold such roles, and grant it nothing on the folder or organization.
 
+The condition's expression holds commas, which `--condition` would read as separators (found on 2026-11-02), so it
+goes in a file, `node-role-only.yaml`:
+
+```yaml
+title: node-role-only
+expression: api.getAttribute("iam.googleapis.com/modifiedGrantsByRole", []).hasOnly(["roles/container.defaultNodeServiceAccount"])
+```
+
 ```bash
-gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:cloudinfra@$PROJECT.iam.gserviceaccount.com --role roles/resourcemanager.projectIamAdmin --condition='title=node-role-only,expression=api.getAttribute("iam.googleapis.com/modifiedGrantsByRole", []).hasOnly(["roles/container.defaultNodeServiceAccount"])'
+gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:cloudinfra@$PROJECT.iam.gserviceaccount.com --role roles/resourcemanager.projectIamAdmin --condition-from-file=node-role-only.yaml
 ```
 
 With `providers.gcp.kms_keys`, each service's own agent encrypts with the region's key. Grant the Compute Engine,
@@ -133,9 +143,10 @@ database or a Cloud Run service taking all traffic is refused before any provide
 Point `providers.gcp.default_network` at a network you made, with flow logs and no rule open to the internet, not at
 Google's `default`, whose `default-allow-ssh` rule admits port 22 from everywhere. The other defaults of the
 assessment's release S2 (cluster private nodes, Dataplane V2, Binary Authorization, Pod Security, network logs, Cloud
-NAT, HTTPS on load balancers with hostnames) need nothing from you; `kms_keys`, `cluster_authorized_networks`,
-`cloud_armor_policy` and `deny_egress` are yours to set. With `cluster_authorized_networks`, list the addresses both
-services call clusters from, or neither can reach them.
+NAT, HTTPS on load balancers with hostnames) need nothing from you; `kms_keys`, `cloud_armor_policy` and `deny_egress`
+are yours to set. To offer clusters, set `cluster_authorized_networks` to the addresses both services call clusters
+from: GKE turns authorized networks on, with none listed, for a cluster with private nodes, so without them no address
+outside the cluster's network reaches its control plane, and a cluster request is refused (found on 2026-11-02).
 
 **Behind a proxy.** Every caller then arrives from the proxy's address, so the per-address budgets (wrong tokens,
 registrations, the public OAuth paths) are shared by all. Start uvicorn with `--proxy-headers` and set

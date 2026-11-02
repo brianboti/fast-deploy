@@ -72,7 +72,7 @@ providers:
     # allow_public_services: false                # whether a request may make a managed container service callable without signing in
     # network_logs: true                          # flow logs on every subnet and logging on every firewall rule this service makes
     # deny_egress: false                          # true: networks reach only private ranges and Google's APIs (private.googleapis.com), no internet
-    # cluster_authorized_networks: [203.0.113.0/24]   # the only ranges that reach a cluster's control plane; include where both services run
+    # cluster_authorized_networks: [203.0.113.0/24]   # the only ranges that reach a cluster's control plane: where both services run; needed for clusters
     # binary_authorization: true                  # clusters enforce, and Cloud Run applies, the project's Binary Authorization policy
     # kms_keys:                                   # Cloud KMS keys by region for disks, databases, buckets, secrets, registries and cluster secrets
     #   us-central1: projects/your-keys-project/locations/us-central1/keyRings/platform/cryptoKeys/data

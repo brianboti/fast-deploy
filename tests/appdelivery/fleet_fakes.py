@@ -18,6 +18,9 @@ from appdelivery.remote import Completed
 from appdelivery.run import JobDeployer, RunDeployer
 from appdelivery.state import StateManager
 
+# what docker said on a machine whose pull account could not read the registry (2026-11-02)
+PULL_DENIED = 'Error response from daemon: denied: Permission "artifactregistry.repositories.downloadArtifacts" denied on resource\n'
+
 SECRET_VALUE = "s3cr3t-Value-Never-Kept"
 V1 = "us-central1-docker.pkg.dev/acme-apps/shop/web@sha256:" + "1" * 64
 V2 = "us-central1-docker.pkg.dev/acme-apps/shop/web@sha256:" + "2" * 64
@@ -52,7 +55,7 @@ class FakeSession:
         self._reach(machine, "deploy", release_id=release_id, image=release.image, env_text=env_text, token=token, limits=limits)
         fleet, name = self.fleet, machine.name
         if release.image in fleet.pull_fails:
-            return HostReport("pull_failed", {"reason": "pull"})
+            return HostReport("pull_failed", {"reason": "pull", "log": base64.b64encode(PULL_DENIED.encode()).decode()})
         old = fleet.app.get(name)
         if release.image in fleet.unhealthy:
             # the new container is removed and the running one becomes current again; the older previous is gone

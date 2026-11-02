@@ -367,8 +367,10 @@ class Delivery:
             else:
                 error = DeliveryError(ErrorCode.PULL_FAILED if report.result == "pull_failed" else ErrorCode.MACHINE_ERROR,
                                       f"{machine.name} could not {'log in to the registry' if report.fields.get('reason') == 'login' else 'pull the image'}; nothing changed there"
-                                      if report.result == "pull_failed" else f"{machine.name} answered {report.result}", {"machine": machine.name, **report.fields})
-                self.state.set_target(release_id, target["resource_id"], "FAILED", error.detail().model_dump(mode="json"), finished=True)
+                                      if report.result == "pull_failed" else f"{machine.name} answered {report.result}",
+                                      {"machine": machine.name, **{k: v for k, v in report.fields.items() if k != "log"}})
+                # docker's own words on a failed pull: a refused account and an unreachable registry read alike otherwise
+                self.state.set_target(release_id, target["resource_id"], "FAILED", error.detail().model_dump(mode="json"), scrub(report.log(), secret_values), finished=True)
             failure = (machine.name, error.detail().model_dump(mode="json"))
             # an unhealthy machine was demoted and restored, and the script may have stopped anywhere: its previous container is spent
             touched = report.result != "pull_failed"

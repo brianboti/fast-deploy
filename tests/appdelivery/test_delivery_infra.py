@@ -41,7 +41,7 @@ def test_a_request_is_read_with_the_environment_token_and_kept_to_what_a_release
     request = infra.get_request(REQUEST_ID)
     assert seen[0].url == f"https://infra.example.com/infrastructure/{REQUEST_ID}" and seen[0].headers["Authorization"] == "Bearer infra-token"
     assert request.owner == "shop-team" and [machine.name for machine in request.group("web")] == ["shop-web-1", "shop-web-2"]
-    assert request.secret("db-password").resource_name == "projects/infra-project/secrets/shop-db-password"
+    assert request.secret("db-password").resource_name == "projects/infra-project/secrets/shop-db-password-1a2b3c"
     assert request.secret_names() == ["db-password"] and request.network("net-aaaaaaaaaaaa").admits(22, "35.235.240.0/20")
 
 
