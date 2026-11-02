@@ -172,10 +172,10 @@ recommender):
 | caches | `roles/redis.admin` |
 | queues | `roles/pubsub.editor` |
 | secrets | `roles/secretmanager.admin` |
-| clusters | `roles/container.clusterAdmin` (which also lets it create namespaces, RoleBindings and policies in the clusters it made) |
+| clusters | `roles/container.admin`: the clusters themselves, and inside them the namespace, RoleBindings, ClusterRole, Gateway and ValidatingAdmissionPolicy it writes. `roles/container.clusterAdmin` gives no right inside a cluster, and IAM has no permission a custom role could hold for admission policies (found on 2026-11-02); the service makes every cluster in this project, so the project-wide role reaches only its own |
 | HTTPS load balancers, Cloud Armor, egress control | `compute.sslCertificates.*` and `compute.sslPolicies.*`; `compute.securityPolicies.use` on the operator's `cloud_armor_policy`; `roles/dns.admin` with `deny_egress` |
 | image registries | `artifactregistry.repositories.{create,get,delete,getIamPolicy,setIamPolicy}` |
-| access grants (release A) | a custom role with exactly `getIamPolicy` and `setIamPolicy` on Compute Engine instances, IAP tunnel instances, secrets, buckets, topics, subscriptions and Artifact Registry repositories |
+| access grants (release A) | a custom role with exactly `getIamPolicy` and `setIamPolicy` on Compute Engine instances, IAP tunnel instances, secrets, buckets, topics, subscriptions and Artifact Registry repositories, and `iam.roles.get` (the node-account check reads the custom roles the service's account holds) |
 | a workload identity per request | nothing beyond the node-account roles below |
 | a node account per cluster | `roles/iam.serviceAccountCreator`, `roles/iam.serviceAccountDeleter`, `roles/iam.serviceAccountUser` (the project), `roles/resourcemanager.projectIamAdmin` limited by the IAM condition `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])`, and `roles/artifactregistry.admin` on each repository in `providers.gcp.registries` |
 | managed services and jobs | `roles/run.admin`, `roles/iam.serviceAccountAdmin` (limited as the node accounts' role is), `roles/cloudscheduler.admin` |
@@ -292,8 +292,8 @@ seconds (60 by default); up to 64 environment values of up to 4096 characters, o
 literal; replicas 1 to 20 on a cluster; a note up to 300 characters.
 
 The Google adapter's defaults since the assessment's release S2: `allow_public_exposure` false, `network_logs` true,
-`deny_egress` false, `binary_authorization` true, `cluster_authorized_networks` empty (the control plane open to any
-address, behind IAM), `kms_keys` empty (Google's own keys), `cloud_armor_policy` none; a request's network has a NAT
+`deny_egress` false, `binary_authorization` true, `cluster_authorized_networks` empty (a cluster with private nodes is
+then refused: GKE would let no address outside its network reach the control plane), `kms_keys` empty (Google's own keys), `cloud_armor_policy` none; a request's network has a NAT
 (`nat: true`), a cluster private nodes, a Cloud Run service `internal_and_load_balancer` ingress and no secrets.
 
 Server settings, both services: `max_request_bytes` 65,536 (413 above it), `registrations_per_hour` 10 per client address with sign-in on, `rate_limit_per_minute` 120 per identity, `auth_failures_per_minute` 20 per client

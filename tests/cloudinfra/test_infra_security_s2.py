@@ -41,7 +41,7 @@ def test_a_cluster_is_private_with_dataplane_v2_posture_and_binary_authorization
     assert body["privateClusterConfig"] == {"enablePrivateNodes": True, "enablePrivateEndpoint": False}
     assert body["networkConfig"]["datapathProvider"] == "ADVANCED_DATAPATH" and body["securityPostureConfig"] == {"mode": "BASIC"}
     assert body["binaryAuthorization"] == {"evaluationMode": "PROJECT_SINGLETON_POLICY_ENFORCE"}
-    assert "masterAuthorizedNetworksConfig" not in body, "no ranges listed: the endpoint stays reachable, behind IAM"
+    assert body["masterAuthorizedNetworksConfig"]["cidrBlocks"] == [{"cidrBlock": "198.51.100.0/24", "displayName": "operator"}]
 
 
 def test_the_operator_lists_who_reaches_the_control_plane_and_may_turn_binary_authorization_off(tmp_path):

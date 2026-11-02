@@ -12,6 +12,10 @@ from . import translate
 from .api import COMPUTE, DNS, SERVICE_NETWORKING
 
 SERVICE = "servicenetworking.googleapis.com"
+# the peering Service Networking adds to a network, and the reason it gives for refusing to delete a connection still in use
+PEERING = "servicenetworking-googleapis-com"
+STILL_IN_USE = "FLOW_SN_DC_RESOURCE_PREVENTING_DELETE_CONNECTION"
+CONNECTION_RELEASE_SECONDS, CONNECTION_RETRY_SECONDS = 600, 30
 # https://cloud.google.com/vpc/docs/flow-logs: a five-minute interval, half the flows, every metadata field
 FLOW_LOGS = {"enable": True, "aggregationInterval": "INTERVAL_5_MIN", "flowSampling": 0.5, "metadata": "INCLUDE_ALL_METADATA"}
 PRIVATE_RANGES = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
@@ -152,6 +156,28 @@ class GcpNetwork:
         return resource.model_copy(update={"status": ResourceStatus.READY, "provider_id": network.get("selfLink", resource.provider_id),
                                            "created_at": resource.created_at or network.get("creationTimestamp")})
 
+    def _disconnect_services(self, network: str) -> None:
+        """Delete the network's private services connection. Cloud SQL keeps it in use for a while after its instance is
+        deleted (found on a real project on 2026-11-02: refused at once, accepted two minutes later), so a refusal for that
+        reason is tried again; if it outlasts the wait, the network's own side of the peering is removed, as Terraform's
+        ABANDON policy does, so the range and the network can still go."""
+        consumer = f"projects/{self.api.project_number()}/global/networks/{network}"
+        deadline = self.api.clock() + CONNECTION_RELEASE_SECONDS
+        while True:
+            try:
+                operation = self.api.post(f"{SERVICE_NETWORKING}/services/{SERVICE}/connections/{SERVICE.replace('.', '-')}:deleteConnection", json={"consumerNetwork": consumer})
+                self.api.wait_service_networking(operation)
+                return
+            except InfrastructureError as exc:
+                if exc.code == ErrorCode.NOT_FOUND:
+                    return
+                if exc.details.get("reason") != STILL_IN_USE:
+                    raise
+            if self.api.clock() > deadline:
+                self.api.wait_compute(self.api.post(f"{self._global('networks')}/{network}/removePeering", json={"name": PEERING}))
+                return
+            self.api.sleep(CONNECTION_RETRY_SECONDS)
+
     def _delete_quietly(self, url, wait=True):
         try:
             operation = self.api.delete(url)
@@ -177,13 +203,7 @@ class GcpNetwork:
                     raise
             self._delete_quietly(policy, wait=False)
         if resource.private_services_range:
-            consumer = f"projects/{self.api.project_number()}/global/networks/{resource.name}"
-            try:
-                operation = self.api.post(f"{SERVICE_NETWORKING}/services/{SERVICE}/connections/{SERVICE.replace('.', '-')}:deleteConnection", json={"consumerNetwork": consumer})
-                self.api.wait_service_networking(operation)
-            except InfrastructureError as exc:
-                if exc.code != ErrorCode.NOT_FOUND:
-                    raise
+            self._disconnect_services(resource.name)
             self._delete_quietly(f"{self._global('addresses')}/{resource.private_services_range}")
         if resource.subnet:
             self._delete_quietly(resource.subnet)

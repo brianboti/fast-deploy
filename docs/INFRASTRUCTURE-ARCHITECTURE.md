@@ -316,8 +316,9 @@ ClusterRole aggregated into `edit`) and attach them to that Gateway; Gateways st
 What GKE's hardening guide and CIS GKE ask of a new cluster, on unless a request or the operator says otherwise:
 private nodes (`private_nodes: true`; they reach Google's APIs privately and the internet through the request network's
 Cloud NAT), Dataplane V2, which enforces Kubernetes NetworkPolicy, the security posture dashboard, and Binary
-Authorization enforcing the project's policy (`providers.gcp.binary_authorization`). With
-`providers.gcp.cluster_authorized_networks`, only those ranges reach the control plane. With a KMS key for the region,
+Authorization enforcing the project's policy (`providers.gcp.binary_authorization`). Only the ranges in
+`providers.gcp.cluster_authorized_networks` reach the control plane; with none listed, a cluster with private nodes is
+refused, since GKE would then let nothing outside its network reach it. With a KMS key for the region,
 Kubernetes Secrets are encrypted at the application layer and the nodes' disks under it. The request's namespace
 carries Pod Security `baseline` (enforced) and `restricted` (warned and audited), labels `edit` cannot change, so a
 team cannot run a privileged pod, use the host's network or mount a host path; the admission policy also refuses a

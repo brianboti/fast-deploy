@@ -85,6 +85,12 @@ class GCPProvider(CloudProvider):
                 problems.append(version)
         for cluster in request.clusters():
             problems.extend(translate.cluster_problems(cluster))
+            if cluster.private_nodes and not self.settings.cluster_authorized_networks:
+                # GKE turns authorized networks on, with none listed, for a cluster with private nodes: nothing outside the
+                # cluster's own network reaches its control plane, so neither service could set it up (the run of 2026-11-02)
+                problems.append(Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, f"cluster {cluster.cluster_name}: this operator lists no "
+                                        "providers.gcp.cluster_authorized_networks, and a cluster with private nodes then lets no address outside its "
+                                        "network reach its control plane; ask the operator to list where both services run", "cluster"))
             outside = [name for name in (cluster.public.hostnames if cluster.public else []) if not self._in_public_domains(name)]
             if outside:
                 problems.append(Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, f"Not in a domain the operator lets a front door serve: {', '.join(outside)}; "

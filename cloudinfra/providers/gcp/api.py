@@ -94,7 +94,8 @@ class GcpApi:
     # ---- plain requests
     def request(self, method: str, url: str, json=None, params=None) -> dict:
         """One call. A call Google rate limited (429: refused before it ran) is tried again, and so is a read Google answered
-        with a 5xx; a write that met a 5xx is not, since it may have been done. A 401 (the token expired: Google refused it
+        with a 5xx or did not answer, and any call that could not connect; a write that met a 5xx or lost its answer is not,
+        since it may have been done. A 401 (the token expired: Google refused it
         before anything ran) is tried once more with a fresh token. Each retry is a provider_retry event."""
         refreshed = False
         attempt = 0
@@ -111,6 +112,14 @@ class GcpApi:
             except httpx.RequestError as exc:
                 # a write whose request left but whose answer never came may have been done (review of 2026-10-30, L8)
                 unsent = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+                # one that never left, or a read, is tried again: a single connect timeout while a cluster was being waited
+                # on failed its request after five minutes (the run of 2026-11-02)
+                if (unsent or method == "GET") and attempt < RETRIES - 1:
+                    pause = min(RETRY_PAUSE_SECONDS * 2 ** attempt, MAX_RETRY_PAUSE_SECONDS)
+                    event("provider_retry", provider="gcp", method=method, url=url, reason=type(exc).__name__, attempt=attempt + 1, pause_seconds=pause)
+                    self.sleep(pause)
+                    attempt += 1
+                    continue
                 raise InfrastructureError(ErrorCode.PROVIDER_UNAVAILABLE, f"Google Cloud could not be reached ({type(exc).__name__})",
                                           {"url": url, **({} if unsent or method == "GET" else {"maybe_done": True})}) from None
             event("provider_call", provider="gcp", method=method, url=url, status=response.status_code)
@@ -251,8 +260,10 @@ class GcpApi:
         while True:
             if operation.get("done"):
                 if operation.get("error"):
-                    raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"Service Networking operation failed: {str(operation['error'].get('message', 'no detail'))[:300]}",
-                                              {"operation": operation.get("name")})
+                    error = operation["error"]
+                    reasons = [item.get("reason") for item in error.get("details") or [] if isinstance(item, dict) and item.get("reason")]
+                    raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"Service Networking operation failed: {str(error.get('message', 'no detail'))[:300]}",
+                                              {"operation": operation.get("name"), **({"reason": reasons[0]} if reasons else {})})
                 return operation
             if self.clock() > deadline:
                 raise InfrastructureError(ErrorCode.OPERATION_TIMEOUT, "A Service Networking operation did not finish in time", {"operation": operation.get("name")})
