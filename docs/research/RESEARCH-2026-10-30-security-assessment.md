@@ -36,6 +36,13 @@ in the team's namespace, Cloud Run's ingress and named secrets, and the MySQL fl
 way, none in what S1 and S2 set; each is fixed with a test. S3 is still the operator's: the project's Binary
 Authorization policy was Google's default, which allows every image.
 
+**Status, 2026-11-03.** S3's repository side is built: items 5 and 6 of section 7 (CodeQL, Scorecard, dependency review,
+the image scan, the credential sweep, the dependency pin, property tests; the reporting time frames, scope and
+identifiers in SECURITY.md, signed tags and Releases), recorded in docs/CHANGES.md. The property tests found one more
+weakness, fixed there: the delivery service's checks accepted a trailing newline. Item 6's stale `infra/` tree was never
+tracked; it is a local leftover, ignored by git and docker. Items 1 to 4 are the operator's, in the Google Cloud project;
+item 7 is recorded, not built.
+
 ## 1. The short answer
 
 **The design is right and most of its claims hold.** Tokens are hashed and compared in constant time; the OAuth

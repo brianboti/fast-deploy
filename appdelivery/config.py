@@ -117,7 +117,7 @@ class Environment(StrictModel):
     @classmethod
     def _registries(cls, value):
         for prefix in value:
-            if not REGISTRY_PREFIX.match(prefix):
+            if not REGISTRY_PREFIX.fullmatch(prefix):
                 raise ValueError(f"allowed_registries: {prefix!r} is not a registry host or host/path")
         return value
 
@@ -125,7 +125,7 @@ class Environment(StrictModel):
     @classmethod
     def _signers(cls, value):
         for signer in value:
-            if isinstance(signer, str) and not SIGNER_KEY.match(signer):
+            if isinstance(signer, str) and not SIGNER_KEY.fullmatch(signer):
                 raise ValueError(f"trusted_signers: {signer!r} is neither a gcpkms:// key nor the absolute path of a .pub file")
         return value
 
@@ -222,7 +222,7 @@ class Config(StrictModel):
     @classmethod
     def _environment_names(cls, value):
         for name in value:
-            if not re.match(ENVIRONMENT, name):
+            if not re.fullmatch(ENVIRONMENT, name):
                 raise ValueError(f"environment name {name!r}: lowercase letters, digits and dashes")
         return value
 
@@ -239,7 +239,7 @@ class Config(StrictModel):
         if len(set(accounts)) != len(accounts):
             raise ValueError("each environment needs its own service_account")
         for name, source in self.sources.items():
-            if not re.match(SOURCE_NAME, name):
+            if not re.fullmatch(SOURCE_NAME, name):
                 raise ValueError(f"source name {name!r}: lowercase letters, digits and dashes")
             if source.project != self.gcp.project_id:
                 raise ValueError(f"source {name}: its repository is in {source.project}; builds run only in the trusted project {self.gcp.project_id}")

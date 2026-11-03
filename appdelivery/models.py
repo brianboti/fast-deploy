@@ -63,7 +63,7 @@ class Binding(StrictModel):
             raise DeliveryError(ErrorCode.INVALID_BINDING, f"an environment value comes from exactly one of value, endpoint or secret; got {', '.join(given) or 'none'}")
         if self.value is not None and ("\n" in self.value or "\r" in self.value or "\0" in self.value):
             raise DeliveryError(ErrorCode.INVALID_BINDING, "a value cannot hold a line break or a NUL: Docker's env file takes one line per variable")
-        if self.secret is not None and not SECRET_NAME.match(self.secret):
+        if self.secret is not None and not SECRET_NAME.fullmatch(self.secret):
             raise DeliveryError(ErrorCode.INVALID_BINDING, f"{self.secret!r} is not a secret name of a request")
         return self
 
@@ -113,14 +113,14 @@ class Target(StrictModel):
     @field_validator("group")
     @classmethod
     def _group(cls, value):
-        if value is not None and not GROUP.match(value):
+        if value is not None and not GROUP.fullmatch(value):
             raise DeliveryError(ErrorCode.INVALID_RELEASE, f"{value!r} is not a group name: lowercase, up to 12 characters")
         return value
 
     @field_validator("cluster", "service", "job")
     @classmethod
     def _named(cls, value, info):
-        if isinstance(value, str) and not GROUP.match(value):
+        if isinstance(value, str) and not GROUP.fullmatch(value):
             raise DeliveryError(ErrorCode.INVALID_RELEASE, f"{value!r} is not a {info.field_name} name: lowercase, up to 12 characters, as the request's "
                                 f"{info.field_name} block names it")
         return value
@@ -128,7 +128,7 @@ class Target(StrictModel):
     @field_validator("workload")
     @classmethod
     def _workload(cls, value):
-        if value is not None and not WORKLOAD.match(value):
+        if value is not None and not WORKLOAD.fullmatch(value):
             raise DeliveryError(ErrorCode.INVALID_RELEASE, f"{value!r} is not a workload name: lowercase letters, digits and dashes, up to 40 characters")
         return value
 
@@ -169,7 +169,7 @@ class Health(StrictModel):
     @field_validator("path")
     @classmethod
     def _path(cls, value):
-        if not HEALTH_PATH.match(value):
+        if not HEALTH_PATH.fullmatch(value):
             raise DeliveryError(ErrorCode.INVALID_RELEASE, f"health.path {value!r}: an absolute path of letters, digits and ._~/- with an optional simple query")
         return value
 
@@ -187,7 +187,7 @@ class ReleaseRequest(StrictModel):
     @field_validator("request_id")
     @classmethod
     def _request_id(cls, value):
-        if not REQUEST_ID.match(value):
+        if not REQUEST_ID.fullmatch(value):
             raise DeliveryError(ErrorCode.INVALID_RELEASE, "request_id is the 32 hexadecimal characters cloudinfra issued")
         return value
 
@@ -196,7 +196,7 @@ class ReleaseRequest(StrictModel):
     def _image(cls, value):
         if "@sha256:" not in value:
             raise DeliveryError(ErrorCode.INVALID_RELEASE, "image must name a digest (host/path@sha256:…): a tag can change after it is checked")
-        if not IMAGE.match(value):
+        if not IMAGE.fullmatch(value):
             raise DeliveryError(ErrorCode.INVALID_RELEASE, f"{value!r} is not host/path@sha256:<64 hex characters>")
         return value
 
@@ -213,7 +213,7 @@ class ReleaseRequest(StrictModel):
         if len(value) > MAX_ENV:
             raise DeliveryError(ErrorCode.INVALID_BINDING, f"at most {MAX_ENV} environment values")
         for name, binding in value.items():
-            if not ENV_NAME.match(name):
+            if not ENV_NAME.fullmatch(name):
                 raise DeliveryError(ErrorCode.INVALID_BINDING, f"{name!r}: environment names are uppercase letters, digits and underscores")
             if binding.value is not None and looks_like_credential(name):
                 raise DeliveryError(ErrorCode.INVALID_BINDING, f"{name} looks like a credential: put it in a secret of the request and bind {{secret: NAME}}",
@@ -243,28 +243,28 @@ class BuildRequest(StrictModel):
     @field_validator("source")
     @classmethod
     def _source(cls, value):
-        if not re.match(r"^[a-z][a-z0-9-]{1,40}$", value):
+        if not re.fullmatch(r"^[a-z][a-z0-9-]{1,40}$", value):
             raise DeliveryError(ErrorCode.INVALID_BUILD, f"{value!r} is not a source name: lowercase letters, digits and dashes")
         return value
 
     @field_validator("revision")
     @classmethod
     def _revision(cls, value):
-        if not COMMIT.match(value):
+        if not COMMIT.fullmatch(value):
             raise DeliveryError(ErrorCode.INVALID_BUILD, "revision is a full commit SHA, 40 lowercase hexadecimal characters: a branch or a tag can move after the build")
         return value
 
     @field_validator("image")
     @classmethod
     def _image(cls, value):
-        if len(value) > 128 or not IMAGE_NAME.match(value):
+        if len(value) > 128 or not IMAGE_NAME.fullmatch(value):
             raise DeliveryError(ErrorCode.INVALID_BUILD, f"{value!r} is not an image name: lowercase letters and digits, parts joined by . _ - or /")
         return value
 
     @field_validator("dockerfile", "context")
     @classmethod
     def _path(cls, value, info):
-        if not SOURCE_PATH.match(value):
+        if not SOURCE_PATH.fullmatch(value):
             raise DeliveryError(ErrorCode.INVALID_BUILD, f"{info.field_name} {value!r}: a path inside the source, relative, without .. or a leading -")
         if GIT_LOOKING.search(value):
             raise DeliveryError(ErrorCode.INVALID_BUILD, f"{info.field_name} {value!r} reads as a git address, not a path in the source: the build fetches only the linked "

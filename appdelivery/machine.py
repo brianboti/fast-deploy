@@ -148,6 +148,6 @@ class MachineSession:
 
     @staticmethod
     def _release_id(value: str) -> str:
-        if not RELEASE_ID.match(value):
+        if not RELEASE_ID.fullmatch(value):
             raise ValueError(f"release id {value!r} is not rel-<12 hex>")
         return value

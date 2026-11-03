@@ -15,4 +15,5 @@ tests
 examples
 .pytest_cache
 .ruff_cache
+.hypothesis
 __pycache__

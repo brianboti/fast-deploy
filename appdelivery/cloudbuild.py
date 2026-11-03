@@ -96,7 +96,7 @@ def outcome(found: dict, tag: str) -> tuple[str, str | None, dict | None]:
     if status != "SUCCEEDED":
         return status, None, None
     digest = next((item.get("digest") for item in found.get("results", {}).get("images", []) if item.get("name") == tag), None)
-    if not digest or not DIGEST.match(digest):
+    if not digest or not DIGEST.fullmatch(digest):
         error = DeliveryError(ErrorCode.BUILD_FAILED, f"Cloud Build reported success but no digest for {tag}", {"cloud_status": "SUCCESS"})
         return "FAILED", None, error.detail().model_dump(mode="json")
     return "SUCCEEDED", digest, None
