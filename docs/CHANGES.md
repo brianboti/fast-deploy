@@ -2,7 +2,24 @@ Each entry lists what changed for an operator, then, after a `Security:` line, e
 weakness, each with the finding it closes (H1, M6, a review's own name) and its test. A security fix is never folded
 into another line. Fixes reported privately are listed here when their advisory is published (SECURITY.md).
 
-# Unreleased: the security assessment's third release (S3), the repository's side
+# 1.38.0: the delivery service on every target, builds only in the trusted project, and the security releases
+
+Everything since 1.37.1, which `cloudinfra` 1.38.0 and `appdelivery` 0.2.0 ship together (`appdelivery` 0.1.0 was the
+plan-only service of 2026-10-29). In order of arrival, newest first: the repository side of the security assessment's
+third release (S3); the fixes from running S1 and S2 on Google Cloud on 2026-11-02 and from the code review of
+2026-10-31; S2, the provider defaults the benchmarks expect; S1, the four High findings closed; a workload identity with
+no key; images built only in the trusted project by Cloud Build, so that teams request builds and release digests; the
+registry kind and the retired workflow removed; managed container services and jobs (Cloud Run) in both services;
+the Claude chat sign-in; a cluster's front door, private images, node accounts and several clusters per request;
+releases on a cluster; and calls to Google counted against the operator's project. Each section below is one of those
+changes as it was recorded, with its `Security:` lines where it has them.
+
+**Before you upgrade.** Read the "Before you upgrade" paragraphs of the S2 section and of the real-run fixes: public
+exposure is off by default, Binary Authorization is on for new clusters and Cloud Run, a private cluster needs
+`cluster_authorized_networks`, clusters need `roles/container.admin`, and a Cloud Run service reads only the secrets it
+names.
+
+## The security assessment's third release (S3), the repository's side
 
 The part of S3 (docs/research/RESEARCH-2026-10-30-security-assessment.md, section 7) that lives in this repository:
 checks on every change, and the rules a release and a report follow. The rest of S3 (organisation policies, audit logs,
@@ -35,7 +52,7 @@ Security:
   from its checksums file. The gcloud archive's bundled Python 3.14.9: removed, and gcloud runs on the image's Python
   (`CLOUDSDK_PYTHON`), so the base digest is the one Python to keep current.
 
-# Unreleased: fixes from the run of releases S1 and S2 on Google Cloud (2026-11-02)
+## Fixes from the run of releases S1 and S2 on Google Cloud (2026-11-02)
 
 Releases S1 and S2 were run on the sandbox project ([DELIVERY-SPIKE.md](DELIVERY-SPIKE.md) section 16). Each problem
 the run found is fixed with a test that fails without it, in `tests/cloudinfra/test_infra_real_run_2026_11_02.py` or
@@ -78,7 +95,7 @@ the run found is fixed with a test that fails without it, in `tests/cloudinfra/t
 - Docs: `roles/container.admin` for clusters; `iam.roles.get` for the node-account check; the IAM condition from a file,
   since `--condition` splits its expression at the commas.
 
-# Unreleased: fixes from the code review of 2026-10-31
+## Fixes from the code review of 2026-10-31
 
 A review of everything releases S1 and S2 changed found eight problems; each is fixed with a test in
 `tests/cloudinfra/test_infra_review_fixes.py` or `tests/appdelivery/test_delivery_review_fixes.py`.
@@ -103,7 +120,7 @@ A review of everything releases S1 and S2 changed found eight problems; each is 
 - appdelivery: one team's build order waits only on that team's other orders in the same environment, never on another
   team's call to Cloud Build.
 
-# Unreleased: the security assessment's second release (S2)
+## The security assessment's second release (S2)
 
 Release S2 of the assessment of 2026-10-30 ([research/RESEARCH-2026-10-30-security-assessment.md](research/RESEARCH-2026-10-30-security-assessment.md),
 section 7): the provider defaults the CIS benchmarks and Google's hardening guides expect, and the Low findings that
@@ -166,7 +183,7 @@ Security:
 - **One gate, written twice (L13, L14).** The two services' authentication code is the same again (a rate limit is
   `LIMIT_EXCEEDED` in both) and a test fails when they drift; reading what a target runs now is checked like any action.
 
-# Unreleased: the security assessment's first release (S1)
+## The security assessment's first release (S1)
 
 The security assessment of 2026-10-30 ([research/RESEARCH-2026-10-30-security-assessment.md](research/RESEARCH-2026-10-30-security-assessment.md))
 measured both services against the MCP specification of 2026-07-28, OAuth 2.1 and RFC 9700, SLSA v1.2, OWASP ASVS 5.0,
@@ -208,7 +225,7 @@ Security:
 - **Documents corrected** where they said more than the code did: machines' service accounts, the node account's project
   role, the SSH key's expiry, the token the machine receives, CODEOWNERS' review claim.
 
-# Unreleased: a workload identity with no key
+## A workload identity with no key
 
 The first of the kinds the coverage research ranks highest (docs/RESEARCH-2026-10-28-infrastructure-layer.md section 7;
 docs/INFRASTRUCTURE-ARCHITECTURE.md, "A workload identity"):
@@ -222,7 +239,7 @@ docs/INFRASTRUCTURE-ARCHITECTURE.md, "A workload identity"):
   request's namespace gets Workload Identity on it.
 - **Tools**: `create_identity`, `get_identity`, `delete_identity` (57 tools).
 
-# Unreleased: images are built only in the trusted project
+## Images are built only in the trusted project
 
 Decided 2026-10-30, for security: no developer, CI job, local machine or other outside system builds a container image
 and uploads it into the trusted Google Cloud project. A team asks for a build; the project fetches the source and builds
@@ -266,7 +283,7 @@ Build service agent to hold Secret Manager Admin (docs/SETUP.md). After the run,
   the files the Dockerfiles copy. The docker builder is pinned by digest there and as the delivery service's default
   `builder`. A local `docker build` is for development only. Run in the sandbox (docs/DELIVERY-SPIKE.md section 15).
 
-# Unreleased: the repository is the two services, and the documents say so
+## The repository is the two services, and the documents say so
 
 The Fast Deploy workflow (`labdeploy`), retired on 2026-10-29, is removed with everything that existed only for it: the
 package, its tests, Terraform, workflow templates, eleven GitHub workflows, scripts, the operator skill, the schema,
@@ -291,7 +308,7 @@ contracts, examples and twenty-four documents. Git history keeps them. The repos
 Upgrading: nothing changes for a caller of either service. An operator who built the old `Dockerfile` builds
 `Dockerfile.cloudinfra` instead; its state path and port are new.
 
-# Unreleased: a managed job, Cloud Run jobs, with its schedule
+## A managed job, Cloud Run jobs, with its schedule
 
 Phase 4, step 3 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECTURE.md, "A managed job"):
 
@@ -307,7 +324,7 @@ Phase 4, step 3 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECT
 - **Fixed on a real project** (docs/DELIVERY-SPIKE.md section 13): a Cloud Run service whose newest revision failed while
   an earlier one serves all traffic is READY, not FAILED.
 
-# Unreleased: a managed container service (Cloud Run)
+## A managed container service (Cloud Run)
 
 Phase 4, step 1 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECTURE.md, "A managed container service"):
 
@@ -324,7 +341,7 @@ Phase 4, step 1 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECT
 - **Tools**: `create_service`, `get_service`, `delete_service` (48 tools). Priced as warm instances at the idle rate.
 - `list_resource_kinds` now marks clusters as several per request too, which phase 3 had left out.
 
-# Unreleased: Claude chat can sign in to cloudinfra and appdelivery
+## Claude chat can sign in to cloudinfra and appdelivery
 
 claude.ai adds an MCP server only with OAuth; it cannot send the fixed bearer token both services take. The OAuth
 sign-in Claude chat used lived in labdeploy, which is retired, so Claude chat had no way in. Each service can now be its
@@ -343,7 +360,7 @@ OAuth routes):
   OAuth paths have a per-address budget and wrong tokens on the page the failed-sign-in budget; the page cannot be
   framed and is never cached. Static tokens keep working for systems and Claude Code.
 
-# Unreleased: a cluster's front door
+## A cluster's front door
 
 Phase 3, step 5 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECTURE.md, "A cluster's front door"):
 
@@ -361,7 +378,7 @@ Phase 3, step 5 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECT
 - **Priced:** a forwarding rule per listener. The plan says DNS must point at the address before the certificate is
   ACTIVE.
 
-# Unreleased: a request's namespace cannot open a public address of its own
+## A request's namespace cannot open a public address of its own
 
 Phase 3, step 4 (docs/DELIVERY-SPEC.md, section 4). `edit` lets a namespace make a Service of type `LoadBalancer`, an
 Ingress or a Gateway, each a public Google load balancer the platform team never sees. Every new cluster now gets a
@@ -370,7 +387,7 @@ all three in the namespaces made for requests, which carry the label `cloudinfra
 namespace's labels. The policy is put in before the namespace exists; a cluster that will not take it fails the request
 and is deleted. Clusters made before keep no such policy.
 
-# Unreleased: each cluster's nodes run as their own account, and may pull from private registries
+## Each cluster's nodes run as their own account, and may pull from private registries
 
 Phase 3, step 3 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECTURE.md, "A cluster's nodes"):
 
@@ -386,7 +403,7 @@ Phase 3, step 3 (docs/DELIVERY-SPEC.md, section 4; docs/INFRASTRUCTURE-ARCHITECT
   keeps the Compute Engine default account and refuses registries.
 - `ClusterResource` reports `node_service_account` and `registries`.
 
-# Unreleased: a request may carry several clusters
+## A request may carry several clusters
 
 Phase 3, step 1 of the delivery service (docs/DELIVERY-SPEC.md, section 4). `cluster` takes one cluster or a list, as
 `compute`, `queue` and `secret` do:
@@ -398,7 +415,7 @@ Phase 3, step 1 of the delivery service (docs/DELIVERY-SPEC.md, section 4). `clu
   request deletes them all.
 - **Limits.** `max_cluster_nodes` now counts the nodes of every cluster of the request.
 
-# Unreleased: a resource Google accepted is deleted even when the wait for it fails
+## A resource Google accepted is deleted even when the wait for it fails
 
 Found on 2026-10-29 in a run on Google Kubernetes Engine (docs/DELIVERY-SPIKE.md section 11): Google accepted a
 cluster's create, the request then failed while waiting on the operation, and the cluster was saved `FAILED` with no
@@ -417,7 +434,7 @@ request was destroyed, until it was deleted by hand.
   The error now says that only a resource whose create call had not yet been answered at the restart can exist at the
   provider without an id here.
 
-# Unreleased: clusters take grants, as RoleBindings in one namespace
+## Clusters take grants, as RoleBindings in one namespace
 
 The first step of the delivery service's phase 2 (docs/DELIVERY-SPEC.md, section 4). IAM's Kubernetes roles cannot be
 limited to one cluster, so a cluster's access lives in the cluster:
@@ -435,7 +452,7 @@ limited to one cluster, so a cluster's access lives in the cluster:
   self link; a token from `gcloud auth print-access-token` is kept 5 minutes, not 30, and a call Google answers with 401
   is tried once more with a fresh one.
 
-# Unreleased: calls to Google are counted against the operator's project and tried again when rate limited
+## Calls to Google are counted against the operator's project and tried again when rate limited
 
 Found while running the delivery service against `cloudinfra` on a laptop (docs/DELIVERY-SPIKE.md section 8): an access
 grant failed with HTTP 429 from Resource Manager, because Google counted the calls of a person's gcloud sign-in against

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "infrastructure-layer"
-version = "1.37.1"
+version = "1.38.0"
 description = "A provider-independent Cloud Infrastructure MCP (cloudinfra) and the application delivery service above it (appdelivery)"
 license = "MIT"
 license-files = ["LICENSE"]

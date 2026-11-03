@@ -42,7 +42,7 @@ packaging 26.3, pluggy 1.6.0, pygments 2.21.0 and sortedcontainers 2.4.0 to the 
 
 | Package | Version | Used for |
 |---|---|---|
-| `pytest` | 9.1.1 | The test suite (`tests/`), 611 tests on 2026-10-30, none touching a cloud |
+| `pytest` | 9.1.1 | The test suite (`tests/`), 937 tests on 2026-11-03, none touching a cloud |
 | `ruff` | 0.17.0 | Lint: correctness, imports, bug-prone patterns, modern syntax and the bandit security rules, line length 200 |
 | `zizmor` | 1.30.1 | Lint of the GitHub workflows and the Dependabot file |
 | `hypothesis` | 6.170.12 | Property tests of the validators and the redaction over generated input (`test_infra_properties.py`, `test_delivery_properties.py`) |
