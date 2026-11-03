@@ -4,8 +4,42 @@
 
 Use GitHub's private vulnerability reporting on this repository (Security tab, "Report a vulnerability"). Do not open
 a public issue for security problems, and never include principal tokens, service-account keys, secret values or cloud
-identifiers in a report. Maintainers acknowledge reports as quickly as they can and coordinate a fix and disclosure
-with the reporter.
+identifiers in a report.
+
+What a reporter can expect, in calendar days from the report:
+
+| Step | Within |
+|---|---|
+| Acknowledgement | 3 days |
+| A first assessment: accepted or not, and its severity (CVSS v4) | 7 days |
+| A fix on `main` for a critical finding | 14 days |
+| A fix for a high finding | 30 days |
+| A fix for a medium finding | 90 days |
+| A low finding | the next release that touches its code |
+
+Disclosure is coordinated with the reporter: a GitHub security advisory is published with the fix, crediting the
+reporter unless they ask otherwise, and no later than 90 days after the report unless both sides agree to wait. Fixes are
+listed under "Security" in `docs/CHANGES.md`.
+
+## Scope
+
+In scope:
+
+- the two services on `main`: `cloudinfra/` and `appdelivery/`, their HTTP and MCP interfaces and the Claude chat
+  sign-in;
+- the images built from `Dockerfile.cloudinfra` and `Dockerfile.appdelivery`, and the host script
+  `appdelivery/host/release.sh`;
+- what the services create in a cloud project, against the defaults this file and the documents promise;
+- this repository's workflows, locks and pins.
+
+Out of scope:
+
+- Google Cloud itself, and an operator's project beyond what `docs/SETUP.md` asks for;
+- an attack that needs the operator's own accounts, the services' host, or a principal token already;
+- volume-based denial of service;
+- a vulnerability in a dependency that does not reach this code (report it upstream; `pip-audit` and the image scan in
+  CI follow the published ones);
+- `examples/`, which only shows the contracts.
 
 ## Supported versions
 
@@ -47,5 +81,14 @@ and `docs/DELIVERY-SPEC.md` (sections 2 and 10). In short:
   service composed, with an optional Cosign attestation check per environment; the host script is checked against its
   recorded hash before it is sent, and runs every container without privilege escalation, with a reduced capability set
   and CPU, memory and process bounds; Kubernetes workloads get the same. A team's builds are bounded at once and per day.
-- Dependencies are hash-locked and audited weekly; actions are pinned to commits; the images' inputs are pinned by
-  digest or checksum.
+- Dependencies are hash-locked and audited weekly, and both images are scanned as built; actions are pinned to
+  commits; the images' inputs are pinned by digest or checksum. CodeQL, OpenSSF Scorecard and a dependency review run on
+  the repository, and property tests generate input for the contracts' validators.
+
+## Identifiers in this repository
+
+The test fixtures name one Google Cloud project, `project-3e2167e6-db58-4ab7-a22` (number `1071494834779`), and its
+build account. It is a sandbox used only for the recorded runs on a real project (`docs/DELIVERY-SPIKE.md`), emptied
+after each, and its identifiers are published on purpose, so that the fixtures are Google's own output. An identifier
+is not a credential: nothing in this repository grants access to that project. No tracked file holds a credential; a
+test sweeps every tracked file for the published shapes of keys and tokens (`tests/test_repository.py`).

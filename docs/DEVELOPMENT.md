@@ -91,8 +91,9 @@ role, API, limit or tool, `docs/SETUP.md` for a new operator step.
   `audit.lock` from `audit.in` and `pip.lock` from `pip.in` the same way (with `--upgrade --refresh` to move past a
   cached index). Run the tests and `python -m pip_audit --require-hashes -r <lock>` on every lock after.
 - The Python image digest is the same in both Dockerfiles; the gcloud and Cosign pins in `Dockerfile.appdelivery` are
-  moved as its header describes. CI's hadolint and the actions are pinned by commit or checksum in
-  `.github/workflows/ci.yml`; Dependabot proposes action updates weekly.
+  moved as its header describes. CI's hadolint and grype and the actions are pinned by checksum or commit in
+  `.github/workflows/`; Dependabot proposes action updates weekly. A new package is listed in REQUIREMENTS.md section 2
+  in the same change, or `tests/test_repository.py` fails.
 - [REQUIREMENTS.md](REQUIREMENTS.md) lists every pin with its source; update it in the same change.
 
 ## Versions and releases
@@ -105,3 +106,8 @@ role, API, limit or tool, `docs/SETUP.md` for a new operator step.
   status checks on the merged base (`strict`) and conversation resolution; checked with
   `gh api repos/{owner}/{repo}/branches/main/protection` and `gh api repos/{owner}/{repo}/vulnerability-alerts`. Stacked pull requests are retargeted to `main` before each is merged, or a squash merge
   lands in the stack's base instead of `main` (seen twice on 2026-10-29 and 2026-10-30).
+- A release is tagged `vX.Y.Z` on its merge commit, signed (`git tag -s vX.Y.Z -m vX.Y.Z` with a GPG or SSH key the
+  maintainer registered on GitHub, so the tag shows as Verified; `git tag -v vX.Y.Z` checks it), and gets a GitHub
+  Release from that tag. The Release's notes are the version's `CHANGES.md` entry and the two images it ships by digest,
+  as Cloud Build pushed them in the trusted project (`gcloud artifacts docker images describe <image>:<tag>
+  --format='value(image_summary.fully_qualified_digest)'`), so an operator runs exactly what the release names.

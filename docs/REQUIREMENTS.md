@@ -38,13 +38,14 @@ python-multipart 0.0.32, referencing 0.37.0, rpds-py 2026.9.1, sse-starlette 3.5
 typing-extensions 4.16.0, typing-inspection 0.4.4.
 
 Development extras (`pip install -e .[dev]`, or `requirements-dev.lock` with hashes, which CI installs; it adds iniconfig 2.3.1,
-packaging 26.3, pluggy 1.6.0 and pygments 2.21.0 to the list above):
+packaging 26.3, pluggy 1.6.0, pygments 2.21.0 and sortedcontainers 2.4.0 to the list above):
 
 | Package | Version | Used for |
 |---|---|---|
 | `pytest` | 9.1.1 | The test suite (`tests/`), 611 tests on 2026-10-30, none touching a cloud |
 | `ruff` | 0.17.0 | Lint: correctness, imports, bug-prone patterns, modern syntax and the bandit security rules, line length 200 |
-| `zizmor` | 1.30.1 | Lint of the GitHub workflow and the Dependabot file |
+| `zizmor` | 1.30.1 | Lint of the GitHub workflows and the Dependabot file |
+| `hypothesis` | 6.170.12 | Property tests of the validators and the redaction over generated input (`test_infra_properties.py`, `test_delivery_properties.py`) |
 
 Dependency audit (`audit.in` → `audit.lock`, installed by CI only): pip-audit 2.10.1 with its own locked dependencies
 (cachecontrol 0.14.4, cyclonedx-python-lib 11.12.0, packageurl-python 0.17.6, pip 26.2.1, pip-api 0.0.35,
@@ -80,7 +81,7 @@ on a builder without BuildKit (Cloud Build's docker step). The delivery image se
 
 | Tool | Version | Pinned how | Runs |
 |---|---|---|---|
-| GitHub Actions runner | `ubuntu-24.04` | label | `.github/workflows/ci.yml`, on push, pull request and weekly (Monday 06:19 UTC) |
+| GitHub Actions runner | `ubuntu-24.04` | label | every workflow; `.github/workflows/ci.yml` on push, pull request and weekly (Monday 06:19 UTC) |
 | `actions/checkout` | v7.0.1 | commit `3d3c42e5aac5ba805825da76410c181273ba90b1` | |
 | `actions/setup-python` | v7.1.0 | commit `6d4fd22b20465ccc0f7354476588e8df7c9ca0e0` (Dependabot moves it) | Python 3.12 |
 | ruff | 0.17.0 | `requirements-dev.lock` | `python -m ruff check .` |
@@ -88,9 +89,14 @@ on a builder without BuildKit (Cloud Build's docker step). The delivery image se
 | hadolint | v2.15.1 | downloaded by version, SHA-256 `c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507` | both Dockerfiles, failing on errors |
 | pip-audit | 2.10.1 | `audit.lock` | every lock: `requirements.lock`, `requirements-dev.lock`, `audit.lock` itself and `pip.lock` |
 | pip | 26.2.2 | `pip.lock` (from `pip.in`) | installed first in both images, by hash: the base image's pip is older than the 2026 advisories fixed in 26.x |
-| pytest | 9.1.1 | `requirements-dev.lock` | `python -m pytest -q` |
+| pytest | 9.1.1 | `requirements-dev.lock` | `python -m pytest -q`, with `tests/test_repository.py`: no credential in a tracked file, every lock hashed, the dependency set exactly section 2's |
+| hypothesis | 6.170.12 | `requirements-dev.lock` | property tests of both contracts' validators and the redaction, inside `pytest` |
+| grype | v0.121.0 | downloaded by version, SHA-256 `64e07133d3486115de647a66581461dccf5c732748a0a3119077395565f15519` (linux amd64, from the release's checksums file) | both images built in CI (`images` job of `ci.yml`), failing on a high or critical vulnerability that has a fix; its database is fetched current on each run |
+| `github/codeql-action` | v4.39.1 | commit `9b3254085494b55a0f7c4c2b3d2d52cc712ce370` | `.github/workflows/codeql.yml`: `security-extended` over Python and the workflows, on push to `main`, pull request and weekly (Monday 06:41 UTC); `upload-sarif` for Scorecard |
+| `ossf/scorecard-action` | v2.5.0 | commit `fa7117db83c52d787ae5a89f350999701505d78e` | `.github/workflows/scorecard.yml`: on push to `main`, a branch-protection change and weekly (Monday 05:07 UTC); results published to the Scorecard API and the Security tab |
+| `actions/dependency-review-action` | v5.0.0 | commit `a1d282b36b6f3519aa1f3fc636f609c47dddb294` | `.github/workflows/dependency-review.yml`: each pull request, failing on a dependency it adds with a known vulnerability of moderate severity or above |
 | `cloud-infra validate` and `plan` | the package | | `examples/infrastructure-request.yaml`, offline |
-| Dependabot | | `.github/dependabot.yml` | weekly, the workflow's actions and the Dockerfiles' base image digest, releases at least 7 days old; Dependabot alerts are expected to be on in the repository's settings |
+| Dependabot | | `.github/dependabot.yml` | weekly, the workflows' actions and the Dockerfiles' base image digest, releases at least 7 days old; Dependabot alerts are expected to be on in the repository's settings |
 | pre-commit (optional) | ruff-pre-commit v0.17.0, zizmor-pre-commit v1.30.1 | `.pre-commit-config.yaml` | the same two lints locally |
 
 Docker is needed only for a local development build of the images (Docker Desktop built both for amd64 and arm64 on
@@ -323,7 +329,7 @@ client; the sign-in page and Claude's client send one.
 | The Python image digest | both Dockerfiles (must match; a test checks) | `docker buildx imagetools inspect python:3.12-slim`, after review |
 | gcloud and Cosign versions and sums | `Dockerfile.appdelivery` | as its header describes; a test checks the shape of every pin |
 | Google's key for Cloud Build provenance | `appdelivery/provenance.py` (`GOOGLE_KEYS`, read 2026-10-30) | `gcloud kms keys versions get-public-key VERSION --location global --keyring attestor --key google-hosted-worker --project verified-builder` when a release is refused naming a key id it does not trust |
-| CI tools and action commits | `.github/workflows/ci.yml`, `.pre-commit-config.yaml` | Dependabot for the actions; the rest by hand |
+| CI tools and action commits | `.github/workflows/*.yml`, `.pre-commit-config.yaml` | Dependabot for the actions; hadolint and grype by hand, with the checksum from the release's own checksums file, at least a week old |
 | Resource kinds, fields, tools, error codes | `cloudinfra/mcp/catalog.py` and `cloudinfra/models/` → `docs/MCP-CATALOG.md`; `appdelivery/catalog.py` → `docs/DELIVERY-CATALOG.md` | `python -m cloudinfra.cli catalog --write docs/MCP-CATALOG.md`; `app-delivery catalog --write docs/DELIVERY-CATALOG.md`; a test fails while either is stale |
 | Limits and defaults | `cloudinfra/config.py`, `cloudinfra/models/request.py`, `appdelivery/config.py`, `appdelivery/models.py` | with the code |
 | Google product versions and mappings | `cloudinfra/providers/gcp/translate.py`, `cluster.py`, `run.py`, `settings.py` | with the adapter |

@@ -1,3 +1,35 @@
+Each entry lists what changed for an operator, then, after a `Security:` line, every fix of a vulnerability or a
+weakness, each with the finding it closes (H1, M6, a review's own name) and its test. A security fix is never folded
+into another line. Fixes reported privately are listed here when their advisory is published (SECURITY.md).
+
+# Unreleased: the security assessment's third release (S3), the repository's side
+
+The part of S3 (docs/research/RESEARCH-2026-10-30-security-assessment.md, section 7) that lives in this repository:
+checks on every change, and the rules a release and a report follow. The rest of S3 (organisation policies, audit logs,
+the Binary Authorization policy, least-privilege roles) is the operator's, in the Google Cloud project.
+
+- CI: CodeQL's `security-extended` queries over the Python and the workflows (`codeql.yml`); OpenSSF Scorecard, published
+  (`scorecard.yml`); a dependency review on each pull request, failing on a known vulnerability of moderate severity or
+  above (`dependency-review.yml`); both images built and scanned with grype, pinned by checksum, failing on a high or
+  critical vulnerability that has a fix (`images` job of `ci.yml`). Every action is pinned to a commit at least a week
+  old.
+- Tests: `tests/test_repository.py` sweeps every tracked file for the published shapes of keys and tokens, checks that
+  every lock is hashed, and holds the dependency set to docs/REQUIREMENTS.md section 2, so a package arrives only on
+  purpose. `hypothesis` 6.170.12 joins the development extras for property tests of both contracts' validators and of
+  the redaction (`test_infra_properties.py`, `test_delivery_properties.py`).
+- SECURITY.md gives a reporter time frames (acknowledgement in 3 days, assessment in 7, a critical fix in 14), a scope,
+  and states the sandbox project's identifiers in the fixtures as published on purpose. docs/DEVELOPMENT.md: a release
+  is a signed tag and a GitHub Release naming the two images by digest.
+
+Security:
+
+- **`appdelivery`: a value with a trailing newline is refused (found by the new property tests).** Every check of the
+  delivery service's contracts and configuration used `re.match` with `$`, which also matches before a final newline:
+  `"shop\n"`, a commit followed by `"\n"`, an image with `"\n"` after its digest, or `"FOO\n"` as an environment name were
+  accepted. Inputs reach a machine base64-encoded and quoted, so this ran nothing, but such an environment name would
+  have reached the machine's env file as a bare name (which docker fills from its own environment) and a line with no
+  name. The checks now match the whole value, as cloudinfra's always did.
+
 # Unreleased: fixes from the run of releases S1 and S2 on Google Cloud (2026-11-02)
 
 Releases S1 and S2 were run on the sandbox project ([DELIVERY-SPIKE.md](DELIVERY-SPIKE.md) section 16). Each problem
