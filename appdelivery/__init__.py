@@ -10,4 +10,4 @@ no build step or command from a caller, and never creates or deletes infrastruct
 over HTTP. See docs/DELIVERY-SPEC.md.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
