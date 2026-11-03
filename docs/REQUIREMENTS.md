@@ -62,7 +62,7 @@ configuration mounted at `/config` and the state under `/data`.
 
 | Image | File | Base | Adds | Port | Command |
 |---|---|---|---|---|---|
-| Infrastructure service | `Dockerfile.cloudinfra` | `python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1` (resolved 2026-10-11) | nothing but the package | 8100 | `uvicorn cloudinfra.mcp.server:create_app --factory` |
+| Infrastructure service | `Dockerfile.cloudinfra` | `python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30` (resolved 2026-11-03, Python 3.12.16) | nothing but the package | 8100 | `uvicorn cloudinfra.mcp.server:create_app --factory` |
 | Delivery service | `Dockerfile.appdelivery` | the same digest | gcloud CLI, Cosign, `openssh-client`, `ca-certificates` | 8200 | `uvicorn appdelivery.server:create_app --factory` |
 
 Pinned inputs of the delivery image, each checked by SHA-256 at build time:
@@ -70,11 +70,13 @@ Pinned inputs of the delivery image, each checked by SHA-256 at build time:
 | Input | Version | SHA-256 (amd64) | SHA-256 (arm64) | Source |
 |---|---|---|---|---|
 | Google Cloud CLI | 591.0.0 | `78c570f5fcfe58a9311bd98c06b75530595e3cae6277aad75a676a39e6ee7b63` | `f5e5df0433f77c0e7f5df9fd4bce2e46c7b7967e79cf66e31b1164d3d4c86546` | `storage.googleapis.com/cloud-sdk-release/google-cloud-cli-591.0.0-linux-{x86_64,arm}.tar.gz` |
-| Cosign | v3.1.3 | `4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71` | `c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a` | `github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-{amd64,arm64}` |
+| Cosign | v3.1.4 | `424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa` | `ade83b7aac62e131cacfe96d958948b2150cc9efec46a570a2649b8e27dedad2` | `github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-{amd64,arm64}` |
 
 The gcloud sums were derived on 2026-10-29 as the Dockerfile's header describes (Google publishes a SHA-256 only for the
 unversioned archive); repeat that check when moving the version. The build needs `--build-arg TARGETARCH=amd64|arm64`
-on a builder without BuildKit (Cloud Build's docker step). The delivery image sets
+on a builder without BuildKit (Cloud Build's docker step). gcloud runs on the image's Python: the archive's bundled
+interpreter (`platform/bundledpythonunix`) is removed and `CLOUDSDK_PYTHON=/usr/local/bin/python3` set, so the base
+image's digest is the one Python to keep current. The delivery image sets
 `CLOUDSDK_CORE_DISABLE_FILE_LOGGING=1`, `CLOUDSDK_CONFIG=/data/gcloud` and `HOME=/data`.
 
 ## 4. Continuous integration and local checks

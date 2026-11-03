@@ -29,6 +29,11 @@ Security:
   accepted. Inputs reach a machine base64-encoded and quoted, so this ran nothing, but such an environment name would
   have reached the machine's env file as a bare name (which docker fills from its own environment) and a line with no
   name. The checks now match the whole value, as cloudinfra's always did.
+- **Both images: the image scan's first run found known vulnerabilities with fixes, now taken.** Python 3.12.15 in the
+  base image (CVE-2026-115557, critical): the base digest moves to Python 3.12.16, in both images and `examples/hello`.
+  Cosign v3.1.3, built with Go 1.26.4 and older `x/net`, `grpc` and `go-jose`: moved to v3.1.4 (Go 1.27.3), its sums
+  from its checksums file. The gcloud archive's bundled Python 3.14.9: removed, and gcloud runs on the image's Python
+  (`CLOUDSDK_PYTHON`), so the base digest is the one Python to keep current.
 
 # Unreleased: fixes from the run of releases S1 and S2 on Google Cloud (2026-11-02)
 

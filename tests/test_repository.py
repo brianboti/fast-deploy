@@ -57,7 +57,7 @@ def test_no_tracked_file_holds_a_credential():
 
 def test_the_sweep_catches_each_shape_it_names():
     samples = {"a private key": "-----BEGIN PRIVATE KEY-----\n" + "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7" * 2,
-               "a service account key file": '{"private_key": "-----BEGIN PRIVATE KEY-----', "a Google API key": "AIza" + "Sy" + "A1b2C3d4" * 4 + "e",
+               "a service account key file": '{"private_' + 'key": "-----BEGIN PRIVATE KEY-----', "a Google API key": "AIza" + "Sy" + "A1b2C3d4" * 4 + "e",
                "a Google access token": "ya29." + "a0AfB_byC1" * 4, "a Google OAuth client secret": "GOCSPX-" + "Ab1_" * 7,
                "a GitHub token": "ghp_" + "A1b2C3d4E5" * 4, "an AWS access key": "AKIA" + "ABCDEFGH23456789", "a Slack token": "xoxb-" + "1234567890-abc",
                "an Anthropic API key": "sk-ant-" + "api03-" + "Ab1" * 10}

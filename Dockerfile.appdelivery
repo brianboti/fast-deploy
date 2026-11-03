@@ -14,17 +14,19 @@
 #   docker step has no BuildKit and so passes --build-arg TARGETARCH=amd64. A local
 #   docker build -f Dockerfile.appdelivery -t appdelivery .
 # is for development; such an image is never pushed to the platform's repository.
-FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+FROM python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
 # set by the builder from --platform; no default, so an image is never built with another architecture's binaries
 ARG TARGETARCH
 ARG GCLOUD_VERSION=591.0.0
 ARG GCLOUD_SHA256_AMD64=78c570f5fcfe58a9311bd98c06b75530595e3cae6277aad75a676a39e6ee7b63
 ARG GCLOUD_SHA256_ARM64=f5e5df0433f77c0e7f5df9fd4bce2e46c7b7967e79cf66e31b1164d3d4c86546
-ARG COSIGN_VERSION=v3.1.3
-ARG COSIGN_SHA256_AMD64=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
-ARG COSIGN_SHA256_ARM64=c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a
-# No file logs: gcloud otherwise writes one per command under HOME, and the service runs one per machine action, for ever
-ENV PATH=/opt/google-cloud-sdk/bin:$PATH CLOUDSDK_CORE_DISABLE_PROMPTS=1 CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK=1 CLOUDSDK_CORE_DISABLE_USAGE_REPORTING=1 \
+ARG COSIGN_VERSION=v3.1.4
+ARG COSIGN_SHA256_AMD64=424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa
+ARG COSIGN_SHA256_ARM64=ade83b7aac62e131cacfe96d958948b2150cc9efec46a570a2649b8e27dedad2
+# No file logs: gcloud otherwise writes one per command under HOME, and the service runs one per machine action, for ever.
+# gcloud runs on the image's own Python (it supports 3.10 to 3.15): the archive's bundled interpreter is removed, so one
+# Python is kept patched, by the base image's digest (the image scan of 2026-11-03 found the bundled 3.14.9 behind).
+ENV PATH=/opt/google-cloud-sdk/bin:$PATH CLOUDSDK_PYTHON=/usr/local/bin/python3 CLOUDSDK_CORE_DISABLE_PROMPTS=1 CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK=1 CLOUDSDK_CORE_DISABLE_USAGE_REPORTING=1 \
     CLOUDSDK_CORE_DISABLE_FILE_LOGGING=1
 RUN set -eux; \
     case "$TARGETARCH" in \
@@ -37,6 +39,7 @@ RUN set -eux; \
     curl -fsSL -o /tmp/gcloud.tar.gz "https://storage.googleapis.com/cloud-sdk-release/google-cloud-cli-${GCLOUD_VERSION}-linux-${gcloud_arch}.tar.gz"; \
     echo "${gcloud_sum}  /tmp/gcloud.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/gcloud.tar.gz -C /opt; \
+    rm -rf /opt/google-cloud-sdk/platform/bundledpythonunix; \
     curl -fsSL -o /usr/local/bin/cosign "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-${TARGETARCH}"; \
     echo "${cosign_sum}  /usr/local/bin/cosign" | sha256sum -c -; \
     chmod 0755 /usr/local/bin/cosign; \
