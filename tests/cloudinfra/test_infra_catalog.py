@@ -66,7 +66,7 @@ def test_import_boundary_the_core_never_imports_the_application_layer():
             assert not any(module == forbidden or module.startswith(forbidden + ".") for module in modules), f"{path.relative_to(ROOT)} imports {forbidden}"
         relative = str(path.relative_to(PACKAGE))
         if "subprocess" in modules:
-            assert relative == "providers/gcp/auth.py", f"{relative} runs commands; only the token helper may"
+            assert relative in ("providers/gcp/auth.py", "providers/azure/auth.py"), f"{relative} runs commands; only the token helpers may"
         if "yaml" in modules:
             assert relative in ("config.py", "cli.py"), relative
 
@@ -79,6 +79,22 @@ def test_google_cloud_is_named_only_inside_its_adapter():
             continue
         text = path.read_text().lower()
         for word in ("googleapis", "gcloud", "compute engine", "cloud sql", "google cloud"):
+            assert word not in text, f"{relative} mentions {word}"
+
+
+def test_azure_is_named_only_inside_its_adapter():
+    """The same line for Azure: its endpoints, resource providers and tools appear only under providers/azure (the core
+    names the adapter, never what it calls), and Google's only under providers/gcp, never in the Azure adapter."""
+    for path in PACKAGE.rglob("*.py"):
+        relative = str(path.relative_to(PACKAGE))
+        text = path.read_text().lower()
+        if relative.startswith("providers/azure/"):
+            for word in ("googleapis", "gcloud", "google cloud"):
+                assert word not in text, f"{relative} mentions {word}"
+            continue
+        if relative == "mcp/catalog.py":
+            continue
+        for word in ("management.azure.com", "microsoft.compute", "microsoft.network", "169.254.169.254", "az account", "azure resource manager", "entra id"):
             assert word not in text, f"{relative} mentions {word}"
 
 

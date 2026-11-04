@@ -1,0 +1,37 @@
+{
+  "appInsightsResourceId": "https://api.applicationinsights.azure.cn",
+  "appInsightsTelemetryChannelResourceId": "https://dc.applicationinsights.azure.cn/v2/track",
+  "appServiceResourceId": "https://appservice.azure.cn",
+  "authentication": {
+    "audiences": [
+      "https://management.core.chinacloudapi.cn",
+      "https://management.chinacloudapi.cn"
+    ],
+    "identityProvider": "AAD",
+    "loginEndpoint": "https://login.chinacloudapi.cn",
+    "tenant": "common"
+  },
+  "batch": "https://batch.chinacloudapi.cn",
+  "graph": "https://graph.chinacloudapi.cn/",
+  "graphAudience": "https://graph.chinacloudapi.cn/",
+  "logAnalyticsResourceId": "https://api.loganalytics.azure.cn",
+  "media": "https://rest.media.chinacloudapi.cn",
+  "microsoftGraphResourceId": "https://microsoftgraph.chinacloudapi.cn",
+  "name": "AzureChinaCloud",
+  "ossrDbmsResourceId": "https://ossrdbms-aad.database.chinacloudapi.cn",
+  "portal": "https://portal.azure.cn",
+  "resourceManager": "https://management.chinacloudapi.cn",
+  "sqlManagement": "https://management.core.chinacloudapi.cn:8443",
+  "suffixes": {
+    "acrLoginServer": "azurecr.cn",
+    "keyVaultDns": "vault.azure.cn",
+    "mhsmDns": "managedhsm.azure.cn",
+    "mysqlServerEndpoint": "mysql.database.chinacloudapi.cn",
+    "postgresqlServerEndpoint": "postgres.database.chinacloudapi.cn",
+    "sqlServerHostname": "database.chinacloudapi.cn",
+    "storage": "core.chinacloudapi.cn",
+    "synapseAnalytics": "dev.azuresynapse.azure.cn"
+  },
+  "synapseAnalyticsResourceId": "https://dev.azuresynapse.azure.cn",
+  "vmImageAliasDoc": "https://raw.githubusercontent.com/Azure/azure-rest-api-specs/master/arm-compute/quickstart-templates/aliases.json"
+}

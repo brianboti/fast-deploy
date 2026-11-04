@@ -79,6 +79,10 @@ class GcpSettings(BaseModel):
     # for the WAF rules and rate limits a security team keeps.
     cloud_armor_policy: str | None = Field(default=None, pattern=POLICY_NAME.pattern)
 
+    def described(self) -> dict:
+        """What the service's status says about this provider's account."""
+        return {"project": self.project_id}
+
     @field_validator("cluster_authorized_networks")
     @classmethod
     def _authorized(cls, value):

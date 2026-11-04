@@ -244,4 +244,4 @@ def test_service_status_names_providers_and_limits(tmp_path):
     orchestrator, _ = make_orchestrator(tmp_path)
     status = orchestrator.service_status("1.35.0")
     assert status["providers"] == {"gcp": {"project": "test-project", "allowed_regions": ["us-central1", "europe-west1"], "planned": False}}
-    assert status["planned_providers"] == ["aws", "azure", "jetstream"] and status["limits"]["max_monthly_cost_usd"] == 500.0
+    assert status["planned_providers"] == ["aws", "jetstream"] and status["limits"]["max_monthly_cost_usd"] == 500.0

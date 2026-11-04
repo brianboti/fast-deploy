@@ -129,13 +129,39 @@ Google API; a test fails if any other module of the core does.
 | `database.high_availability` | `availabilityType: REGIONAL` |
 | ownership | labels `managed-by=cloudinfra`, `cloudinfra-request`, `cloudinfra-name`, `cloudinfra-owner`; a description on resources without labels |
 
+## AzureProvider (being built)
+
+`cloudinfra/providers/azure/` is the Microsoft Azure adapter, built in the steps of
+[research/RESEARCH-2026-11-03-azure.md](research/RESEARCH-2026-11-03-azure.md), section 10. Only this package names an
+Azure endpoint or resource provider; a test fails if any other module of the core does. The first step is in place: the
+adapter has its credential, its client, the clouds, the regions and the quota read, and **provides no kind yet**. The
+validator refuses every block of an `azure` request before any call ("it provides no kinds yet"), and every primitive
+of the interface it has not written is refused with `UNSUPPORTED_RESOURCE_KIND` (`provider.NOT_YET`). Each kind lands
+with its own change and adds itself to `supported_kinds`.
+
+| Module | Holds |
+|---|---|
+| `settings.py` | `AzureSettings`: the subscription and its directory (tenant), the cloud (`public`, `usgovernment`, `china`), the allowed regions, zones the adapter's table leaves out, and which user-assigned identity of the host to use. No credential. |
+| `clouds.py` | Each cloud's Resource Manager, sign-in host and token audiences (Resource Manager, Graph, Key Vault, the database sign-in, and for the public cloud the metrics plane, Storage and Service Bus), as each cloud's own metadata document gave them on 2026-11-03; the documents are test fixtures, compared with the table. |
+| `auth.py` | `AzureToken`: a token per audience from the host, the first of an AKS pod's workload identity (its federated token exchanged with Entra ID), a Container Apps or App Service identity endpoint, a machine's instance metadata service, or the Azure CLI on a laptop; the one that answered is remembered. Kept in memory per audience until a minute before it ends. |
+| `api.py` | `AzureApi`: one REST client. A 429 and a call another operation held are tried again after Retry-After (reported instead when Azure asks for more than a minute); a PUT, DELETE or GET is tried again after a 5xx or a lost answer, a POST is not; a 401 once with a fresh token. Writes wait for their long-running operation through `Azure-AsyncOperation`, then `Location`, then the resource's `provisioningState`, and follow those addresses only on the host the call went to. Azure's error code (`RequestDisallowedByPolicy`, `AnotherOperationInProgress`, `SkuNotAvailable`, `ScopeLocked`…) decides the service's. The single seam `tests/cloudinfra/azure_fakes.py` replaces. |
+| `naming.py` | Each resource type's naming rule, the resource group of a request (`<prefix>-<8 hex of the request id>`), and names unique across all of Azure (storage accounts, key vaults, registries, Service Bus namespaces, flexible servers, Redis) salted with the same eight hex digits. |
+| `regions.py` | The public cloud's regions and their numbered zones (`1`, `2`, `3`), from Microsoft's region list of 2026-10-27; regions with restricted access or zones in preview are left to the operator. |
+| `provider.py` | `AzureProvider(CloudProvider)`: regions, zones, the region and zone checks, and `quota`: regional vCPUs and machines (`CPUS`, `INSTANCES`, the names the orchestrator checks) and every VM family's vCPUs under Azure's names, from the Compute usages API. |
+
+Zones on Azure are logical and numbered per subscription: a request's `zone` is `1`, `2` or `3`, and a region without
+zones takes none. The contract's region and zone rules accept Azure's names (`eastus2`, `1`) beside Google's.
+
 ## Adding a provider
 
 1. `cloudinfra/providers/<name>/provider.py` with a class implementing every abstract method above; keep the provider's
-   API client in one module so tests can replace it, as `tests/cloudinfra/gcp_fakes.py` replaces `GcpApi`.
+   API client in one module so tests can replace it, as `tests/cloudinfra/gcp_fakes.py` replaces `GcpApi` and
+   `azure_fakes.py` replaces `AzureApi`. A command may run only in the adapter's token helper (`auth.py`).
 2. A settings model in `cloudinfra/config.py` under `Providers` (project or account, allowed regions, whatever the
    credential discovery needs; never the credential itself).
-3. `register("<name>", factory)` in `cloudinfra/providers/__init__.py`, and the name removed from `PLANNED_PROVIDERS`.
+3. `register("<name>", factory)` in `cloudinfra/providers/__init__.py`, and the name removed from `PLANNED_PROVIDERS`;
+   `<Name>Settings.described()` says what the status shows about the account (Google: the project; Azure: the subscription
+   and cloud).
 4. Tests against a fake of the provider's API: the bodies sent, the resources read back, the error translation, and the
    lifecycle through `Orchestrator` (the orchestration tests take any adapter).
 

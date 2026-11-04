@@ -2,6 +2,32 @@ Each entry lists what changed for an operator, then, after a `Security:` line, e
 weakness, each with the finding it closes (H1, M6, a review's own name) and its test. A security fix is never folded
 into another line. Fixes reported privately are listed here when their advisory is published (SECURITY.md).
 
+# Unreleased
+
+## Azure, step 1: the adapter's credential, client, clouds, regions and quota
+
+The first step of the Azure adapter planned in docs/research/RESEARCH-2026-11-03-azure.md (section 10). It provides
+no kind yet: an operator may configure it and read its status and quota, and every request for it is refused before
+any call, saying so.
+
+- A `providers.azure` block: the subscription, its directory (`tenant_id`), the cloud (`public`, `usgovernment`,
+  `china`), the allowed regions, zones for regions the adapter's table leaves out, and which user-assigned identity of
+  the host to use (`identity_client_id`). No credential: the service takes a token from the host, the first of an AKS
+  pod's workload identity, a Container Apps or App Service identity endpoint, a machine's metadata service, or the
+  Azure CLI on a laptop, one token per audience, kept in memory. A configuration may name Azure alone.
+- `azure` is a registered provider and no longer among `planned_providers`. `get_service_status` names its
+  subscription and cloud; `list_resource_kinds` lists it under no kind. A request for it is `UNSUPPORTED_RESOURCE_KIND`
+  ("it provides no kinds yet"); `plan` with `check_quota` reads regional vCPUs, machines and each VM family's vCPUs.
+- The contract takes Azure's region names (`eastus2`) and numbered zones (`1`, `2`, `3`) beside Google's. A region of
+  four or more lowercase letters and digits is now well formed, and is refused by the operator's `allowed_regions`
+  when it is not one of them (`INVALID_REGION` either way).
+- The Azure client follows a long-running operation's addresses only on the host it called, over https, so a token is
+  never sent elsewhere; it honours Azure's Retry-After, and reports one longer than a minute instead of sleeping on it.
+- Tests: `tests/cloudinfra/test_infra_azure.py` with the fake `azure_fakes.py`; the boundary test now holds Azure to
+  its adapter as it holds Google to its own, and lets a command run in either token helper.
+
+**Before you upgrade.** Nothing to do: a configuration without an `azure` block behaves as before.
+
 # 1.38.0: the delivery service on every target, builds only in the trusted project, and the security releases
 
 Everything since 1.37.1, which `cloudinfra` 1.38.0 and `appdelivery` 0.2.0 ship together (`appdelivery` 0.1.0 was the

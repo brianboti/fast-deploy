@@ -42,7 +42,7 @@ packaging 26.3, pluggy 1.6.0, pygments 2.21.0 and sortedcontainers 2.4.0 to the 
 
 | Package | Version | Used for |
 |---|---|---|
-| `pytest` | 9.1.1 | The test suite (`tests/`), 937 tests on 2026-11-03, none touching a cloud |
+| `pytest` | 9.1.1 | The test suite (`tests/`), 1,000 tests on 2026-11-03, none touching a cloud |
 | `ruff` | 0.17.0 | Lint: correctness, imports, bug-prone patterns, modern syntax and the bandit security rules, line length 200 |
 | `zizmor` | 1.30.1 | Lint of the GitHub workflows and the Dependabot file |
 | `hypothesis` | 6.170.12 | Property tests of the validators and the redaction over generated input (`test_infra_properties.py`, `test_delivery_properties.py`) |
@@ -118,6 +118,13 @@ docker step is pinned by digest (`gcr.io/cloud-builders/docker@sha256:f772ab45â€
   (seen 2026-10-29); the person needs `serviceusage.services.use` on that project.
 - Network reach to `*.googleapis.com`, and to each cluster's API endpoint it made (for namespaces, RoleBindings, the
   admission policy and the front door).
+- With an `azure` block (its adapter is being built and provides no kind yet): an Azure identity, the first the host
+  offers: an AKS pod's workload identity (`AZURE_FEDERATED_TOKEN_FILE`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, which
+  AKS's webhook sets), a Container Apps or App Service managed identity (`IDENTITY_ENDPOINT`, `IDENTITY_HEADER`), a
+  machine's managed identity through the metadata service at `169.254.169.254` (reached directly, never through a
+  proxy), or on a laptop the Azure CLI signed in (`az login`; 2.54.0 or newer, which reports `expires_on`). No client
+  secret or certificate is read, ever. Network reach to the cloud's Resource Manager (`management.azure.com` on the
+  public cloud) and, for workload identity, to Entra ID's sign-in host.
 - A writable directory for the state file, its lock file and, if set, the log file.
 - A configuration file (`cloudinfra.example.yaml` is the template) named by `CLOUDINFRA_CONFIG`.
 
@@ -243,6 +250,19 @@ The `cloudinfra` operator also defines the profile the delivery service needs fo
 | Claude chat | a public HTTPS address reachable from Claude's servers; callbacks `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback` |
 | a cluster's front door with HTTPS | hostnames under `providers.gcp.public_domains`, DNS pointed at the reserved address before the Google-managed certificate becomes ACTIVE (not yet run on a real domain) |
 
+### The Azure subscription, while its adapter is being built
+
+The first step reads quota and nothing else ([research/RESEARCH-2026-11-03-azure.md](research/RESEARCH-2026-11-03-azure.md),
+section 10); section 4.2 of that note is the role the later steps need, and this table grows with them.
+
+| Need | Value |
+|---|---|
+| The subscription | `providers.azure.subscription_id`, in the directory `tenant_id`, in the cloud `cloud` (`public`, `usgovernment`, `china`) |
+| Resource provider registered | `Microsoft.Compute`, registered once by the operator; the service's own role does not hold `register/action` |
+| The service's identity | `Reader` on the subscription covers this step (`Microsoft.Compute/locations/usages/read`) |
+| API versions | Compute `2026-04-01` (usages); the instance metadata service `2018-02-01`; the identity endpoint `2019-08-01`; Entra ID's v2 token endpoint for workload identity; each cloud's metadata document `2022-09-01` (read once, kept as test fixtures) |
+| Regions and zones | Microsoft's region list of 2026-10-27 (`cloudinfra/providers/azure/regions.py`); others, and every sovereign cloud's, under `providers.azure.zones` |
+
 ## 7. Product versions the adapter offers
 
 | Kind | What a request may ask for | Provider mapping |
@@ -336,4 +356,6 @@ client; the sign-in page and Claude's client send one.
 | Limits and defaults | `cloudinfra/config.py`, `cloudinfra/models/request.py`, `appdelivery/config.py`, `appdelivery/models.py` | with the code |
 | Google product versions and mappings | `cloudinfra/providers/gcp/translate.py`, `cluster.py`, `run.py`, `settings.py` | with the adapter |
 | Roles and APIs | `docs/INFRASTRUCTURE-ARCHITECTURE.md`, `docs/DELIVERY-SPEC.md` section 9, `docs/DELIVERY-SPIKE.md`, `cloudinfra/providers/gcp/api.py`, `iam.py` | when a kind is added or a run on a real project finds a missing one |
+| Azure clouds' endpoints and token audiences | `cloudinfra/providers/azure/clouds.py`, compared by a test with `tests/cloudinfra/fixtures/azure-cloud-*.json` | for each cloud, `curl https://<resource manager>/metadata/endpoints?api-version=2022-09-01`, write the fixture, run the tests |
+| Azure regions, zones and api-versions | `cloudinfra/providers/azure/regions.py`, `api.py` (`API_VERSIONS`) | with the adapter, from Microsoft's region list and each service's REST reference |
 | Versions | `pyproject.toml` and `cloudinfra/__init__.py` (tied by a test); `appdelivery/__init__.py` on its own | with `docs/CHANGES.md` |

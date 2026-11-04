@@ -22,8 +22,14 @@ def _gcp(config):
     return GCPProvider(config.providers.gcp)
 
 
+def _azure(config):
+    from .azure.provider import AzureProvider
+    return AzureProvider(config.providers.azure, operation_timeout=config.limits.operation_timeout_seconds)
+
+
 register("gcp", _gcp)
-PLANNED_PROVIDERS = ("aws", "azure", "jetstream")  # named in the design; adapters not written yet
+register("azure", _azure)
+PLANNED_PROVIDERS = ("aws", "jetstream")  # named in the design; adapters not written yet
 
 
 class ProviderRegistry:

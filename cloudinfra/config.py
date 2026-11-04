@@ -1,7 +1,7 @@
 """The operator's configuration of the infrastructure service: who may call it, what it may create, and the provider.
 
 The provider project, the allowed regions, the limits and the credentials are the operator's; a request never names them.
-Credentials are not in this file either: the Google adapter takes a token from the host it runs on (see providers/gcp/auth.py).
+Credentials are not in this file either: each adapter takes a token from the host it runs on (providers/gcp/auth.py, providers/azure/auth.py).
 """
 from pathlib import Path
 from typing import Literal
@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .providers.azure.settings import AzureSettings
 from .providers.gcp.settings import GcpSettings
 from .security import validation
 from .security.validation import MEMBER, normal_member
@@ -148,6 +149,7 @@ def host_allowed(host: str, allowed_hosts: list[str]) -> bool:
 class Providers(StrictModel):
     """One optional settings block per adapter; a provider the operator leaves out is refused with UNSUPPORTED_PROVIDER."""
     gcp: GcpSettings | None = None
+    azure: AzureSettings | None = None
 
 
 class Config(StrictModel):
@@ -187,8 +189,8 @@ class Config(StrictModel):
         names = [principal.name for principal in self.principals]
         if len(set(names)) != len(names):
             raise ValueError("principal names must be unique")
-        if not any((self.providers.gcp,)):
-            raise ValueError("providers: configure at least one provider (gcp)")
+        if not self.configured_providers():
+            raise ValueError(f"providers: configure at least one provider ({', '.join(Providers.model_fields)})")
         timed = [name for name in ("default_lifetime_hours", "max_lifetime_hours", "default_autostop_idle_minutes") if getattr(self.limits, name)]
         if timed and self.sweep_interval_seconds == 0:
             raise ValueError(f"limits.{timed[0]} needs the sweeper, which sweep_interval_seconds: 0 turns off")
@@ -197,7 +199,7 @@ class Config(StrictModel):
         return self
 
     def configured_providers(self) -> list[str]:
-        return [name for name in ("gcp",) if getattr(self.providers, name) is not None]
+        return [name for name in Providers.model_fields if getattr(self.providers, name) is not None]
 
 
 def load_config(path: str | Path) -> Config:

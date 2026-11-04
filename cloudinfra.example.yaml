@@ -1,7 +1,8 @@
 # The Cloud Infrastructure MCP's configuration. Copy to cloudinfra.local.yaml (ignored by git) and start the server with
 #   CLOUDINFRA_CONFIG=cloudinfra.local.yaml uvicorn cloudinfra.mcp.server:create_app --factory --host 127.0.0.1 --port 8100
 # No credential lives here: on a Google Cloud machine the service uses the attached service account; on a laptop it asks
-# gcloud for a token, impersonating the service account named below when one is.
+# gcloud for a token, impersonating the service account named below when one is. On Azure it uses the host's managed
+# identity (a machine's, a Container Apps app's, or an AKS pod's workload identity); on a laptop, the Azure CLI sign-in.
 #
 # Behind a proxy or load balancer, every caller arrives from the proxy's address, so the per-address budgets (sign-in
 # failures, registrations, the public OAuth paths) are shared by everyone. Start uvicorn with --proxy-headers and set
@@ -87,6 +88,13 @@ providers:
     #     image: projects/your-images-project/global/images/family/hardened-ubuntu-2404
     #     accelerator: none
     # default_accelerator_profile: gpu-signed     # what GPU machines get when they name no profile and no os
+  # azure:                                      # being built (docs/research/RESEARCH-2026-11-03-azure.md): no kind yet, quota and status only
+  #   subscription_id: 00000000-0000-0000-0000-000000000000
+  #   tenant_id: 00000000-0000-0000-0000-000000000000   # the subscription's Entra ID directory; the Azure CLI asks for tokens in it
+  #   cloud: public                             # public, usgovernment or china
+  #   allowed_regions: [eastus2]
+  #   zones: {taiwannorth: ["1", "2", "3"]}       # regions the adapter's own table leaves out; [] for a region without zones
+  #   identity_client_id: null                  # the user-assigned managed identity to use when the host has several
 principals:                                       # the Application Layer systems that may call the service
   - name: app-layer
     token_sha256: "REPLACE_WITH_THE_HASH_FROM_cloud-infra_token"   # or token_hmac_sha256, made with CLOUDINFRA_TOKEN_PEPPER set (docs/SETUP.md)

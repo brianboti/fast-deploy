@@ -14,7 +14,8 @@ def validate(request: InfrastructureRequest, config, provider: CloudProvider) ->
         problems.append(Problem(ErrorCode.INVALID_REGION, f"Region {request.region} is not allowed by this service; allowed: {', '.join(allowed)}", "region"))
     for kind in request.kinds():
         if kind not in provider.supported_kinds:
-            problems.append(Problem(ErrorCode.UNSUPPORTED_RESOURCE_KIND, f"The {provider.name} adapter does not provide {kind}; it provides {', '.join(provider.supported_kinds)}", kind))
+            provided = ", ".join(provider.supported_kinds) or "no kinds yet"
+            problems.append(Problem(ErrorCode.UNSUPPORTED_RESOURCE_KIND, f"The {provider.name} adapter does not provide {kind}; it provides {provided}", kind))
     problems.extend(provider.validate(request))
     limits = config.limits
     groups = request.compute_groups()
