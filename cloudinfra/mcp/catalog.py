@@ -111,7 +111,7 @@ def hint_of(name: str) -> str:
 
 # ---- shared inputs
 REGION = Input("region", "The provider's region (us-central1); must be in the service's allowed regions.", True)
-PROVIDER = Input("provider", "The cloud provider adapter; gcp (default) is the one implemented.")
+PROVIDER = Input("provider", "The cloud provider adapter; gcp (default) is the one implemented; azure is being built and provides no kinds yet.")
 ZONE = Input("zone", "A zone of the region; the provider picks the first when omitted.")
 NAME = Input("name", "A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted.")
 LABELS = Input("labels", "Labels for every resource, next to the service's ownership labels.")

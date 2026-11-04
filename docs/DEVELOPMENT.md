@@ -31,8 +31,8 @@ docs/                       MCP-CATALOG.md and DELIVERY-CATALOG.md are generated
 ## Rules the tests hold
 
 - **The infrastructure service never imports the delivery service, GitHub, Docker or any application code**; a
-  command runs only in `providers/gcp/auth.py`; Google Cloud is named only under `providers/gcp/` and in the catalog's
-  mapping column; the catalog has no tool named after deploying, building, repositories or images; the contract has
+  command runs only in the token helpers (`providers/gcp/auth.py`, `providers/azure/auth.py`); Google Cloud is named only
+  under `providers/gcp/` and Azure only under `providers/azure/`, besides the catalog's mapping column; the catalog has no tool named after deploying, building, repositories or images; the contract has
   no field that could carry a script, command, key or image (`tests/cloudinfra/test_infra_catalog.py`,
   `test_infra_models.py`).
 - **The delivery service imports neither `cloudinfra` nor anything of the removed workflow**; it speaks to
@@ -70,7 +70,8 @@ role, API, limit or tool, `docs/SETUP.md` for a new operator step.
 ## Conventions
 
 - Python 3.12, ruff with line length 200 and the bandit rules; every subprocess call is a fixed argument list.
-- New infrastructure tests go in `tests/cloudinfra/` as `test_infra_<topic>.py`, using and extending `gcp_fakes.py`;
+- New infrastructure tests go in `tests/cloudinfra/` as `test_infra_<topic>.py`, using and extending `gcp_fakes.py`
+  (or `azure_fakes.py` for the Azure adapter);
   new delivery tests in `tests/appdelivery/` as `test_delivery_<topic>.py` with the fakes there. Neither directory
   takes a `conftest.py`.
 - A real-cloud test goes in `tests/integration/`, marked `integration`, creates the smallest thing that proves the

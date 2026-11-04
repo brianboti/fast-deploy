@@ -1425,7 +1425,7 @@ class Orchestrator:
         providers = {}
         for name in self.registry.names():
             settings = getattr(self.config.providers, name)
-            providers[name] = {"project": getattr(settings, "project_id", None), "allowed_regions": list(settings.allowed_regions), "planned": False}
+            providers[name] = {**settings.described(), "allowed_regions": list(settings.allowed_regions), "planned": False}
         from ..providers import PLANNED_PROVIDERS
         return {"version": version, "providers": providers, "planned_providers": list(PLANNED_PROVIDERS), "limits": self.config.limits.model_dump(),
                 "cleanup_on_failure": self.config.cleanup_on_failure, "workers": self.config.workers, "labels": self.config.labels, "access": self.config.access.model_dump(),

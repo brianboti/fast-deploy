@@ -11,8 +11,9 @@ from ..models.errors import ErrorCode, InfrastructureError
 # A request name: the prefix of every resource name, so it stays short enough for every provider's own limits (the common
 # limit is 63 characters for a resource name, and the longest suffix this service adds is "-net-allow-internal").
 NAME = re.compile(r"^[a-z](?:[a-z0-9-]{0,18}[a-z0-9])?$")
-REGION = re.compile(r"^[a-z]{2,20}-[a-z]{2,20}[0-9]{1,2}(?:-[0-9]{1,2})?$")  # us-central1 (Google), us-east-1 (AWS)
-ZONE = re.compile(r"^[a-z0-9-]{3,32}$")
+# us-central1 (Google), us-east-1 (AWS), eastus2 (Azure's programmatic names: lowercase letters and digits, no dash)
+REGION = re.compile(r"^(?:[a-z]{2,20}-[a-z]{2,20}[0-9]{1,2}(?:-[0-9]{1,2})?|[a-z][a-z0-9]{3,30})$")
+ZONE = re.compile(r"^(?:[a-z0-9-]{3,32}|[1-9])$")  # us-central1-a (Google), or Azure's numbered zone: 1, 2, 3
 LABEL_KEY = re.compile(r"^[a-z][a-z0-9_-]{0,62}$")
 LABEL_VALUE = re.compile(r"^[a-z0-9_-]{0,63}$")
 RESERVED_LABEL_PREFIXES = ("cloudinfra", "managed-by")

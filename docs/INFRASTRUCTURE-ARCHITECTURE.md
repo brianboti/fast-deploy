@@ -31,8 +31,9 @@ Application Layer            any system: Claude, a CI job, another service, the 
                                        │  CloudProvider
                  ┌─────────────────────┼─────────────────────┬──────────────────────┐
                  ▼                     ▼                     ▼                      ▼
-       providers/gcp/            AWSProvider           AzureProvider        JetstreamProvider
-       GCPProvider               (later)               (later)              (later)
+       providers/gcp/            providers/azure/      AWSProvider          JetstreamProvider
+       GCPProvider               AzureProvider         (later)              (later)
+                                 (being built: no kind yet)
                  │  REST: compute, sqladmin, storage, servicenetworking, redis, pubsub, secretmanager, artifactregistry, container, iam, iap, run, cloudscheduler, monitoring
                  ▼
             Google Cloud
@@ -58,8 +59,8 @@ The infrastructure layer does not clone a repository, run a test, build anything
 application's architecture, decide when or what to release, or scale an application. A request that names an image, a
 script, a command or a key is refused by the contract (`InfrastructureRequest` forbids unknown fields). A test holds the
 line: `tests/cloudinfra/test_infra_catalog.py` fails if any module of `cloudinfra` imports the delivery service, GitHub,
-Docker or any application code, if a command runs anywhere but the token helper, or if Google Cloud is named outside its
-adapter.
+Docker or any application code, if a command runs anywhere but the token helpers, or if Google Cloud or Azure is named
+outside its adapter.
 
 ## The contract
 

@@ -1,0 +1,39 @@
+{
+  "appInsightsResourceId": "https://api.applicationinsights.us",
+  "appInsightsTelemetryChannelResourceId": "https://dc.applicationinsights.us/v2/track",
+  "appServiceResourceId": "https://appservice.azure.us",
+  "authentication": {
+    "audiences": [
+      "https://management.core.usgovcloudapi.net",
+      "https://management.usgovcloudapi.net"
+    ],
+    "identityProvider": "AAD",
+    "loginEndpoint": "https://login.microsoftonline.us",
+    "tenant": "common"
+  },
+  "batch": "https://batch.core.usgovcloudapi.net",
+  "graph": "https://graph.windows.net/",
+  "graphAudience": "https://graph.windows.net/",
+  "logAnalyticsResourceId": "https://api.loganalytics.us",
+  "media": "https://rest.media.usgovcloudapi.net",
+  "microsoftGraphResourceId": "https://graph.microsoft.us/",
+  "name": "AzureUSGovernment",
+  "ossrDbmsResourceId": "https://ossrdbms-aad.database.usgovcloudapi.net",
+  "portal": "https://portal.azure.us",
+  "resourceManager": "https://management.usgovcloudapi.net",
+  "sqlManagement": "https://management.core.usgovcloudapi.net:8443",
+  "suffixes": {
+    "acrLoginServer": "azurecr.us",
+    "keyVaultDns": "vault.usgovcloudapi.net",
+    "mariadbServerEndpoint": "mariadb.database.usgovcloudapi.net",
+    "mhsmDns": "managedhsm.usgovcloudapi.net",
+    "mysqlServerEndpoint": "mysql.database.usgovcloudapi.net",
+    "postgresqlServerEndpoint": "postgres.database.usgovcloudapi.net",
+    "sqlServerHostname": "database.usgovcloudapi.net",
+    "storage": "core.usgovcloudapi.net",
+    "storageSyncEndpointSuffix": "afs.azure.us",
+    "synapseAnalytics": "dev.azuresynapse.usgovcloudapi.net"
+  },
+  "synapseAnalyticsResourceId": "https://dev.azuresynapse.usgovcloudapi.net",
+  "vmImageAliasDoc": "https://raw.githubusercontent.com/Azure/azure-rest-api-specs/master/arm-compute/quickstart-templates/aliases.json"
+}

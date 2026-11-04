@@ -49,7 +49,7 @@ def test_contract_refusals_carry_a_code_and_a_sentence(bad, code, text):
 
 def test_every_problem_is_reported_not_only_the_first():
     with pytest.raises(pydantic.ValidationError) as caught:
-        InfrastructureRequest.model_validate({"region": "nope", "compute": {"cpu": 4, "memory_gb": 16, "extra": 1}, "network": {"cidr": "1.2.3.4/32"}})
+        InfrastructureRequest.model_validate({"region": "US Central", "compute": {"cpu": 4, "memory_gb": 16, "extra": 1}, "network": {"cidr": "1.2.3.4/32"}})
     codes = sorted(item.code.value for item in problems_from(caught.value))
     assert codes == ["INVALID_NETWORK_CONFIGURATION", "INVALID_REGION", "INVALID_REQUEST"]
 
