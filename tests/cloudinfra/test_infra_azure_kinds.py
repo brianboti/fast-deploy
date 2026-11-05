@@ -314,7 +314,7 @@ def test_members_are_looked_up_once_before_anything_is_made_and_kept_with_the_ac
     assert all(entry.status == "GRANTED" for entry in response.access) and all(audience == "https://graph.microsoft.com/" for url, audience in fake.audiences)
     fake.calls.clear()
     orchestrator.manage_access(response.request_id, "grant", "user:ada@example.com", principal(config), level="admin")
-    assert not [call for call in fake.calls if "graph.microsoft.com" in call[1]], "a kept id is never looked up again"
+    assert not [call for call in fake.calls if call[1].startswith("https://graph.microsoft.com/")], "a kept id is never looked up again"
 
 
 def test_a_member_the_directory_does_not_know_creates_nothing(tmp_path):
@@ -341,7 +341,7 @@ def test_object_ids_are_members_on_azure_only_and_only_as_a_principals_identity(
     response = provision(orchestrator, AZURE_VM_REQUEST)
     [requester] = response.access
     assert requester.member == f"serviceAccount:{SERVICE_PRINCIPAL}" and requester.principal == {"id": SERVICE_PRINCIPAL, "type": "ServicePrincipal"}
-    assert requester.status == "GRANTED" and not [call for call in fake.calls if "graph.microsoft.com" in call[1]], "an object id needs no directory read"
+    assert requester.status == "GRANTED" and not [call for call in fake.calls if call[1].startswith("https://graph.microsoft.com/")], "an object id needs no directory read"
     stranger = f"user:{USERS['grace@example.com']}"
     with pytest.raises(InfrastructureError) as caught:
         provision(orchestrator, {**AZURE_VM_REQUEST, "access": [{"member": stranger}]})

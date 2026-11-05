@@ -47,6 +47,13 @@ Azure, tested against a fake of Azure; nothing has run against a real subscripti
 the resource providers, give the service its role and its conditioned grant right, and either grant it Graph's
 `User.Read.All` and `Group.Read.All` or name members by object id.
 
+Security:
+
+- **Both images: `apt` 3.0.3 in the base image (CVE-2026-109518, High).** The image scan in CI found it on 2026-11-05 in
+  the `python:3.12-slim` image pinned on 2026-11-03; both Dockerfiles (and `examples/hello`) now pin the image Docker
+  rebuilt on 2026-11-05 (`sha256:e695ab18…`, still Python 3.12.16), which carries the fixed `apt`. The CI image scan is
+  its test; the repository test that holds both Dockerfiles to one digest still passes.
+
 ## Azure, step 1: the adapter's credential, client, clouds, regions and quota
 
 The first step of the Azure adapter planned in docs/research/RESEARCH-2026-11-03-azure.md (section 10). It provides

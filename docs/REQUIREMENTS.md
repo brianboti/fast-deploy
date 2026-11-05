@@ -62,7 +62,7 @@ configuration mounted at `/config` and the state under `/data`.
 
 | Image | File | Base | Adds | Port | Command |
 |---|---|---|---|---|---|
-| Infrastructure service | `Dockerfile.cloudinfra` | `python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30` (resolved 2026-11-03, Python 3.12.16) | nothing but the package | 8100 | `uvicorn cloudinfra.mcp.server:create_app --factory` |
+| Infrastructure service | `Dockerfile.cloudinfra` | `python:3.12-slim@sha256:e695ab189fa2d082b1c61c69a6b888a5adeca61ceeccad107b1ed2a125721a9e` (resolved 2026-11-05, Python 3.12.16; the image of 2026-11-03 carried apt 3.0.3, CVE-2026-109518) | nothing but the package | 8100 | `uvicorn cloudinfra.mcp.server:create_app --factory` |
 | Delivery service | `Dockerfile.appdelivery` | the same digest | gcloud CLI, Cosign, `openssh-client`, `ca-certificates` | 8200 | `uvicorn appdelivery.server:create_app --factory` |
 
 Pinned inputs of the delivery image, each checked by SHA-256 at build time:
