@@ -1,7 +1,9 @@
-"""The command line: a caller token, the catalog document, and offline validation and planning of a request file."""
+"""The command line: a caller token, the catalog document, offline validation and planning of a request file, and the
+operator's snapshot of Azure's list prices."""
 import argparse
 import hashlib
 import json
+import os
 import secrets
 import sys
 from pathlib import Path
@@ -19,7 +21,9 @@ from .providers import ProviderRegistry
 from .security import validation
 from .security.auth import keyed, pepper
 
-OFFLINE = {"providers": {"gcp": {"project_id": "example-project", "allowed_regions": ["us-central1"]}}, "access": {"allowed_domains": ["example.com"]},
+OFFLINE = {"providers": {"gcp": {"project_id": "example-project", "allowed_regions": ["us-central1"]},
+                         "azure": {"subscription_id": "00000000-0000-4000-8000-000000000000", "allowed_regions": ["eastus2"]}},
+           "access": {"allowed_domains": ["example.com"]},
            "principals": [{"name": "offline", "token_sha256": "0" * 64, "can_provision": True}]}
 
 
@@ -36,14 +40,32 @@ def read_request(path: str) -> InfrastructureRequest | list:
 def config_or_offline(path: str | None, request: InfrastructureRequest | None = None) -> Config:
     if path and Path(path).exists():
         return load_config(path)
-    print("No configuration file: validating against an example project with the default limits", file=sys.stderr)
+    print("No configuration file: validating against an example project and subscription with the default limits", file=sys.stderr)
     config = Config.model_validate(OFFLINE)
     if request is not None and request.access:
         # offline, nobody knows the operator's allowed domains: the members' own are taken, and that is said
-        domains = sorted({validation.member_domain(entry.member) for entry in request.access})
+        domains = sorted({validation.member_domain(entry.member) for entry in request.access} - {""})  # an object id has no domain
         config = config.model_copy(update={"access": config.access.model_copy(update={"allowed_domains": domains})})
         print("Access members are not checked offline: the operator's access.allowed_domains decides who may be granted", file=sys.stderr)
     return config
+
+
+def write_prices(config_path: str | None, path: str) -> int:
+    """Read the list prices of every region the operator allows on Azure and write them, dated, where prices_file reads them.
+    The Retail Prices API needs no sign-in; nothing else is called."""
+    if not config_path or not Path(config_path).exists():
+        print("prices needs the service configuration: --config, or CLOUDINFRA_CONFIG", file=sys.stderr)
+        return 1
+    settings = load_config(config_path).providers.azure
+    if settings is None:
+        print("The configuration has no providers.azure block: nothing to price", file=sys.stderr)
+        return 1
+    from .providers.azure import pricing
+    snapshot = pricing.snapshot(list(settings.allowed_regions))
+    Path(path).write_text(json.dumps(snapshot, indent=1, sort_keys=True) + "\n")
+    missing = sum(len(names) for names in snapshot["missing"].values())
+    print(f"wrote {path}: {', '.join(snapshot['regions'])} on {snapshot['verified']}; {missing} figures not found, kept from the built-in table", file=sys.stderr)
+    return 0
 
 
 def main(argv=None) -> int:
@@ -56,7 +78,12 @@ def main(argv=None) -> int:
         command = commands.add_parser(name, help=f"{name} a request file (YAML or JSON) offline, without any provider call")
         command.add_argument("file")
         command.add_argument("--config", default=None, help="the service configuration (default: CLOUDINFRA_CONFIG or an example project)")
+    prices = commands.add_parser("prices", help="write a snapshot of Azure's list prices for the operator's allowed regions, for providers.azure.prices_file")
+    prices.add_argument("--write", metavar="PATH", required=True, help="the snapshot file to write")
+    prices.add_argument("--config", default=None, help="the service configuration (default: CLOUDINFRA_CONFIG)")
     args = parser.parse_args(argv)
+    if args.command == "prices":
+        return write_prices(args.config or os.environ.get("CLOUDINFRA_CONFIG"), args.write)
     if args.command == "token":
         token = secrets.token_urlsafe(32)
         print(f"token: {token}")

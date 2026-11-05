@@ -23,6 +23,11 @@ MAX_SOURCES = 16
 # Who may be granted access to what a request creates: a person, a group or a service account, by email address. Never
 # allUsers, allAuthenticatedUsers or a whole domain.
 MEMBER = re.compile(r"^(user|group|serviceAccount):[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$")
+# On a provider whose grants name a directory object id (Azure's), a member may also be written as that id, for an
+# operator who does not let the service read the directory, and for a service principal, which has no address.
+OBJECT_ID_MEMBER = re.compile(r"^(user|group|serviceAccount):[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
+ANY_MEMBER = re.compile(rf"^(?:{MEMBER.pattern[1:-1]}|{OBJECT_ID_MEMBER.pattern[1:-1]})$")
+OBJECT_ID_PROVIDERS = ("azure",)  # the adapters that take a member written as an object id
 IDENTIFIER = re.compile(r"^[a-z]{2,8}-[a-f0-9]{12}$")  # a resource id this service issued (cmp-…, sto-…, net-…, db-…)
 REQUEST_ID = re.compile(r"^[a-f0-9]{32}$")
 PRIVATE_RANGES = [ipaddress.ip_network(cidr) for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
@@ -124,14 +129,23 @@ def check_labels(labels: dict[str, str]) -> dict[str, str]:
     return dict(labels)
 
 
-def check_member(value: str, field: str = "access.member") -> str:
-    """A member as it is compared and stored: its kind as written, its email address in lowercase, as Google accounts and
-    groups do not tell case apart. A CI job's federated identity (principal://, principalSet://) is not a member: images
-    are built only in the trusted project, so nothing outside pushes to a registry (decided 2026-10-30)."""
-    if not isinstance(value, str) or not MEMBER.fullmatch(value):
-        raise InfrastructureError(ErrorCode.INVALID_ACCESS, f"{value!r} is not a member: write user:, group: or serviceAccount: and an email address",
-                                  {"field": field, "value": value})
-    return normal_member(value)
+def check_member(value: str, field: str = "access.member", provider: str | None = None) -> str:
+    """A member as it is compared and stored: its kind as written, its email address (or object id) in lowercase, as
+    Google accounts, Entra users and groups do not tell case apart. An object id is taken for a provider that grants by
+    one (OBJECT_ID_PROVIDERS), and for no provider named yet: a request checks the pair once it knows its provider. A CI
+    job's federated identity (principal://, principalSet://) is not a member: images are built only in the trusted
+    project, so nothing outside pushes to a registry (decided 2026-10-30)."""
+    ids = provider is None or provider in OBJECT_ID_PROVIDERS
+    if isinstance(value, str) and (MEMBER.fullmatch(value) or (ids and OBJECT_ID_MEMBER.fullmatch(value))):
+        return normal_member(value)
+    form = "an email address, or a directory object id" if ids else "an email address"
+    raise InfrastructureError(ErrorCode.INVALID_ACCESS, f"{value!r} is not a member: write user:, group: or serviceAccount: and {form}",
+                              {"field": field, "value": value})
+
+
+def is_object_id(member: str) -> bool:
+    """A member written as a directory object id (user:<guid>), not an email address."""
+    return bool(OBJECT_ID_MEMBER.fullmatch(member))
 
 
 def normal_member(value: str) -> str:
@@ -140,7 +154,8 @@ def normal_member(value: str) -> str:
 
 
 def member_domain(member: str) -> str:
-    return member.rsplit("@", 1)[-1].lower()
+    """The domain of a member's email address; empty for a member written as an object id, which no domain admits."""
+    return member.rsplit("@", 1)[-1].lower() if "@" in member else ""
 
 
 def check_identifier(value: str, what: str = "resource_id") -> str:

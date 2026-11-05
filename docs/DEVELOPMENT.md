@@ -71,7 +71,8 @@ role, API, limit or tool, `docs/SETUP.md` for a new operator step.
 
 - Python 3.12, ruff with line length 200 and the bandit rules; every subprocess call is a fixed argument list.
 - New infrastructure tests go in `tests/cloudinfra/` as `test_infra_<topic>.py`, using and extending `gcp_fakes.py`
-  (or `azure_fakes.py` for the Azure adapter);
+  (or `azure_fakes.py` for the Azure adapter, which answers Resource Manager, Microsoft Graph and a blob service from
+  memory: `test_infra_azure.py` for its client and settings, `test_infra_azure_kinds.py` for its kinds);
   new delivery tests in `tests/appdelivery/` as `test_delivery_<topic>.py` with the fakes there. Neither directory
   takes a `conftest.py`.
 - A real-cloud test goes in `tests/integration/`, marked `integration`, creates the smallest thing that proves the

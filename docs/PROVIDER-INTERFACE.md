@@ -57,14 +57,18 @@ service keeps working: a request with access members still provisions, and the m
 | `boot_disk_gb(group)` | validation | The boot disk a group's machines get, which the adapter's software may raise; the per-request disk limit counts it. The base class returns what was asked. |
 | `estimate_resources(resources)` | `get_resource_cost` | The monthly cost of resources as they exist now (after a resize, whatever request or profile they came from), from list prices. |
 | `profile_infos()` | `list_resource_kinds`, `get_service_status` | The operator's software profiles: name, description, accelerator rule (`required`, `optional`, `none`). |
+| `resolve_member(member)` | provisioning (before the first create), `manage_infrastructure_access` | For an adapter whose grants name an id rather than the member as written: the member's `{"id", "type"}`, kept on the request's access entry (`principal`) and handed back in `ProvisionContext.principals`, so it is looked up once. A member the request names that the provider's directory does not know raises `INVALID_ACCESS`, and nothing of the request is created; the requester's own identity (added by `grant_requester`, perhaps another provider's account) is recorded `FAILED` with the reason instead. The base class answers None (Google grants by the address). |
+| `identity_member(resource)` | provisioning | The member a workload identity the adapter made is granted as: `serviceAccount:<email>` by default, `serviceAccount:<object id>` on Azure. |
+| `finished(ctx)` | destroy, cleanup, the last single delete | Nothing of the request is left: remove a container the adapter keeps for it (Azure's resource group). Raising leaves the destroy `DESTROY_FAILED` with the container named; destroying again tries again. The base class does nothing. |
+| `enforces_run_limit` | the sweeper | True (the default) when the provider stops a machine after `max_run_hours` itself, as Google does; False, and the sweeper stops it on the service's own clock (Azure). |
 
 Every method raises `InfrastructureError` with a code and keeps the provider's own message in `details`; nothing else
 escapes. The orchestrator treats any other exception as `INTERNAL_ERROR` and still cleans up, but a good adapter never
 lets one out.
 
 `ProvisionContext` carries the request id, the request's name (the prefix of every resource name), region, zone, the
-owner, the labels every resource gets, and the generated database password (never logged; `repr` hides it; dropped when
-the provisioning worker ends).
+owner, the labels every resource gets, the members' provider ids kept with the access list (`principals`), and the
+generated database password (never logged; `repr` hides it; dropped when the provisioning worker ends).
 
 `plan` also plans the secrets a request's own credentials go into: `<name>-db-password-<6 hex>` with a database and
 `<name>-cache-auth-<6 hex>` with a cache (the request id's start, since secret ids are unique in a project and request names
@@ -129,28 +133,61 @@ Google API; a test fails if any other module of the core does.
 | `database.high_availability` | `availabilityType: REGIONAL` |
 | ownership | labels `managed-by=cloudinfra`, `cloudinfra-request`, `cloudinfra-name`, `cloudinfra-owner`; a description on resources without labels |
 
-## AzureProvider (being built)
+## AzureProvider (identity, network, storage, compute; the rest being built)
 
 `cloudinfra/providers/azure/` is the Microsoft Azure adapter, built in the steps of
 [research/RESEARCH-2026-11-03-azure.md](research/RESEARCH-2026-11-03-azure.md), section 10. Only this package names an
-Azure endpoint or resource provider; a test fails if any other module of the core does. The first step is in place: the
-adapter has its credential, its client, the clouds, the regions and the quota read, and **provides no kind yet**. The
-validator refuses every block of an `azure` request before any call ("it provides no kinds yet"), and every primitive
-of the interface it has not written is refused with `UNSUPPORTED_RESOURCE_KIND` (`provider.NOT_YET`). Each kind lands
-with its own change and adds itself to `supported_kinds`.
+Azure endpoint or resource provider; a test fails if any other module of the core does. Two steps are in place: the
+credential, client, clouds, regions and quota (step 1), and release A's kinds, **identity, network, storage and
+compute**, with grants, stop and start, resize, connect blocks, metrics and prices (step 2). The validator refuses every
+other block of an `azure` request before any call, naming the kinds it provides, and every primitive of the interface
+it has not written is refused with `UNSUPPORTED_RESOURCE_KIND` (`provider.NOT_YET`). Each further kind lands with its
+own change and adds itself to `supported_kinds`. Nothing here has run against a real subscription yet: that is step 3.
 
 | Module | Holds |
 |---|---|
-| `settings.py` | `AzureSettings`: the subscription and its directory (tenant), the cloud (`public`, `usgovernment`, `china`), the allowed regions, zones the adapter's table leaves out, and which user-assigned identity of the host to use. No credential. |
+| `settings.py` | `AzureSettings`: the subscription and its directory (tenant), the cloud (`public`, `usgovernment`, `china`), the allowed regions, zones the adapter's table leaves out, which user-assigned identity of the host to use, the software profiles (a Marketplace image with or without a plan, or a Compute Gallery image), the default subnet, the Bastion and its subnet, `deny_egress`, the flow-log account and the price snapshot. No credential. |
 | `clouds.py` | Each cloud's Resource Manager, sign-in host and token audiences (Resource Manager, Graph, Key Vault, the database sign-in, and for the public cloud the metrics plane, Storage and Service Bus), as each cloud's own metadata document gave them on 2026-11-03; the documents are test fixtures, compared with the table. |
 | `auth.py` | `AzureToken`: a token per audience from the host, the first of an AKS pod's workload identity (its federated token exchanged with Entra ID), a Container Apps or App Service identity endpoint, a machine's instance metadata service, or the Azure CLI on a laptop; the one that answered is remembered. Kept in memory per audience until a minute before it ends. |
-| `api.py` | `AzureApi`: one REST client. A 429 and a call another operation held are tried again after Retry-After (reported instead when Azure asks for more than a minute); a PUT, DELETE or GET is tried again after a 5xx or a lost answer, a POST is not; a 401 once with a fresh token. Writes wait for their long-running operation through `Azure-AsyncOperation`, then `Location`, then the resource's `provisioningState`, and follow those addresses only on the host the call went to. Azure's error code (`RequestDisallowedByPolicy`, `AnotherOperationInProgress`, `SkuNotAvailable`, `ScopeLocked`…) decides the service's. The single seam `tests/cloudinfra/azure_fakes.py` replaces. |
-| `naming.py` | Each resource type's naming rule, the resource group of a request (`<prefix>-<8 hex of the request id>`), and names unique across all of Azure (storage accounts, key vaults, registries, Service Bus namespaces, flexible servers, Redis) salted with the same eight hex digits. |
+| `api.py` | `AzureApi`: one REST client, with the api-version of each resource type (`API_VERSIONS`, the latest stable on each template reference page on 2026-11-04). A 429 and a call another operation held are tried again after Retry-After (reported instead when Azure asks for more than a minute); a PUT, DELETE or GET is tried again after a 5xx or a lost answer, a POST is not; a 401 once with a fresh token. Writes wait for their long-running operation through `Azure-AsyncOperation`, then `Location`, then the resource's `provisioningState`, and follow those addresses only on the host the call went to. Azure's error code (`RequestDisallowedByPolicy`, `AnotherOperationInProgress`, `SkuNotAvailable`, `ScopeLocked`…) decides the service's. The single seam `tests/cloudinfra/azure_fakes.py` replaces. |
+| `naming.py` | Each resource type's naming rule, the resource group of a request (`<name>-<8 hex of the request id>`), and names unique across all of Azure (storage accounts, key vaults, registries, Service Bus namespaces, flexible servers, Redis) salted with the same eight hex digits. |
 | `regions.py` | The public cloud's regions and their numbered zones (`1`, `2`, `3`), from Microsoft's region list of 2026-10-27; regions with restricted access or zones in preview are left to the operator. |
-| `provider.py` | `AzureProvider(CloudProvider)`: regions, zones, the region and zone checks, and `quota`: regional vCPUs and machines (`CPUS`, `INSTANCES`, the names the orchestrator checks) and every VM family's vCPUs under Azure's names, from the Compute usages API. |
+| `translate.py` | Generic → Azure shapes: the sizes (Dsv5, Esv5, Dlsv5, B1s and B1ms; NCasT4_v3, NC_A100_v4, ND96asr_v4, NCads_H100_v5, ND96isr_H100_v5) with each family's quota name and Trusted Launch, the built-in images, disk SKUs, the software rules of a profile, and tags. |
+| `groups.py` | The request's resource group: made by the first create (once per process), deleted by `finished` with anything in it that carries the request's tag, or no tag and the request's name (the parts Azure makes with a machine carry none); anything else in it keeps the group and says so. |
+| `network.py` | Network security group (internal, Bastion SSH, public ports, the load-balancer probes, then deny; with `deny_egress` only the network and Entra ID outbound), a NAT gateway and its address in the request's zone, the virtual network with one subnet and no default outbound access, a flow log through the region's network watcher (named with the request id, since the watcher's group is shared); an added rule from priority 200. |
+| `compute.py` | Machines with their interface, public address and OS disk made in one PUT, each with `deleteOption: Delete`, Trusted Launch, a system-assigned identity, the `AADSSHLoginForLinux` extension where the machine reaches the internet (it installs a package; elsewhere the connect block says so), a throw-away administrator key, the request's identity when a group names one; get with the power state, and the addresses from the parts the machine itself names; the subscription-wide list by tags, deallocate and start, resize (one PATCH on the same hardware, else deallocate around it), disks attached at the next LUN, delete with its parts. |
+| `storage.py` | Managed disks in the request's zone; buckets as a storage account (no keys, no public access, TLS 1.2, soft delete seven days, zone-redundant where the region has zones) with one container `data`, deleted only when the blob service lists no blob. |
+| `identity.py` | User-assigned managed identities; their principal id is what grants name, their client id what a workload asks for tokens with. |
+| `access.py` | Members resolved through Microsoft Graph (`users/{address}`, else `users?$filter=mail eq`, `groups?$filter=mail eq`), or taken as written when an object id; role assignments on each resource's own scope, named from scope, principal and role, with `principalType`; a revoke deletes every role of the table. |
+| `connect.py` | `az network bastion ssh`/`tunnel` through the operator's Bastion with Entra sign-in (`az ssh vm` without one), `az storage blob … --auth-mode login`, the identity's client id. |
+| `monitoring.py` | Health from state; a machine's `Percentage CPU` from Azure Monitor, mean and peak, and its busiest minute in cores for idle stop. |
+| `pricing.py` | Approximate built-in pay-as-you-go prices for eastus2, a dated snapshot from the Retail Prices API (`cloud-infra prices --write`) that replaces them where it has a figure, disks priced by the tier that holds them. |
+| `provider.py` | `AzureProvider(CloudProvider)`: composes the above, validates and plans (each machine's family quota named in its spec), reads quota (regional and family vCPUs, machines, Standard public addresses), the wait ceiling of each kind. |
 
 Zones on Azure are logical and numbered per subscription: a request's `zone` is `1`, `2` or `3`, and a region without
 zones takes none. The contract's region and zone rules accept Azure's names (`eastus2`, `1`) beside Google's.
+
+### Mapping on Azure
+
+| Generic | Azure |
+|---|---|
+| a request | a resource group `<name>-<8 hex>` with the ownership tags; everything the request makes is in it, and it goes when the request is gone |
+| `compute.cpu`, `compute.memory_gb` | exactly one size: `Standard_D<n>s_v5` (4 GB per vCPU), `Standard_E<n>s_v5` (8), `Standard_D<n>ls_v5` (2), for 2 to 96 vCPUs; `Standard_B1s`, `B1ms` for one; any other shape refused with the sizes there are (no custom shapes) |
+| `compute.accelerator` | `t4`: `NC<4,8,16,64>as_T4_v3`; `a100`: `NC<24,48,96>ads_A100_v4`, `ND96asr_v4` for 8; `h100`: `NC40ads_H100_v5`, `NC80adis_H100_v5`, `ND96isr_H100_v5` for 8; the smallest covering the request; `l4` refused |
+| `compute.os`, `compute.profile` | `Canonical:ubuntu-24_04-lts:server:latest`, `Debian:debian-12:12-gen2:latest`, `resf:rockylinux-x86_64:9-base:latest` (with its plan); a profile's Marketplace or gallery image; the OS disk at least 30 GB, Standard SSD |
+| `compute` security | Trusted Launch with vTPM, Secure Boot as the software allows; `securityType: Standard` on the ND sizes |
+| sign-in | Entra ID: the `AADSSHLoginForLinux` extension (on a machine that reaches the internet) and Virtual Machine User Login (`use`) or Administrator Login (`admin`) on the machine, Reader on its interface for the Bastion |
+| `compute.public_ip` | a Standard static public address made with the machine, deleted with it |
+| `compute.max_run_hours` | no Azure equivalent: the sweeper deallocates the machine |
+| stop and start | `deallocate` (never `powerOff`: an allocated machine bills) and `start`; a machine shut down from inside is `UNKNOWN` with an error saying it still bills |
+| resize | `PATCH hardwareProfile.vmSize`, after `deallocate` when the machine's hardware does not offer the size; a machine keeps its GPUs and Trusted Launch |
+| `storage.type: persistent`, `performance` | a managed disk in the request's zone: `Standard_LRS` (standard), `StandardSSD_LRS` (balanced), `Premium_LRS` (ssd), at most 32,767 GB; attached at the next LUN with `deleteOption: Detach` |
+| `storage.type: object` | a storage account `<name><8 hex>` and its container `data`, `Standard_ZRS` (`Standard_LRS` where the region has no zones); Storage Blob Data Contributor (`use`) or Owner (`admin`) on the container |
+| `identity` | a user-assigned managed identity `<name>-<identity>`, granted as `serviceAccount:<principal id>` |
+| `network` | `<name>-net` with subnet `<name>-subnet`, security group `<name>-net-nsg` (rules `-allow-internal`, `-allow-bastion-ssh`, `-allow-public`, `-allow-probes`, `-deny-inbound`), NAT gateway `<name>-net-nat` with address `<name>-net-nat-ip`, flow log `<name>-net-<8 hex>-flowlog` |
+| `access` | one role assignment per (resource scope, member, role), its name a UUID from the three; members' object ids from Graph, kept with the access list |
+| quota | Compute usages (`cores`, `virtualMachines`, every family's vCPUs) and the Standard public addresses of the Network usages |
+| ownership | tags `managed-by=cloudinfra`, `cloudinfra-request`, `cloudinfra-name`, `cloudinfra-owner` (and `cloudinfra-group` on machines) |
 
 ## Adding a provider
 

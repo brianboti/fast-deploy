@@ -87,7 +87,7 @@ class ComputeResource(Resource):
     autostop_idle_minutes: int | None = Field(default=None, description="Idle minutes after which the service stops the machine; null never.")
     max_run_hours: int | None = None
     started_at: str | None = Field(default=None, description="When the machine last started; idle stop waits at least the idle window after it.")
-    stop_reason: str | None = Field(default=None, description="Why the service stopped it: requested, expired or idle.")
+    stop_reason: str | None = Field(default=None, description="Why the service stopped it: requested, expired, idle, or max_run (on a provider without a run limit of its own).")
     instance_id: str | None = Field(default=None, description="The provider's numeric id, which grants that outlive a name are bound to.")
 
 
@@ -97,7 +97,7 @@ class StorageResource(Resource):
     size_gb: int
     performance: str | None = None
     attached_to: str | None = Field(default=None, description="The compute resource id a disk is attached to.")
-    url: str | None = Field(default=None, description="A bucket's URL (gs://…).")
+    url: str | None = Field(default=None, description="A bucket's URL (gs://… on Google; https://ACCOUNT.blob…/data on Azure).")
 
 
 class FirewallRule(BaseModel):
@@ -117,9 +117,10 @@ class NetworkResource(Resource):
     public_access: bool = False
     firewall_rules: list[FirewallRule] = Field(default_factory=list)
     private_services_range: str | None = Field(default=None, description="The range reserved for managed services (databases) on this network.")
-    router: str | None = Field(default=None, description="The Cloud Router carrying the network's NAT, when it has one.")
+    router: str | None = Field(default=None, description="The router or NAT gateway carrying the network's NAT, when it has one.")
     nat: bool = Field(default=False, description="Machines and nodes without public addresses reach the internet through the network's NAT.")
     dns_policy: str | None = Field(default=None, description="The DNS response policy that sends Google's API names to its private addresses, with egress denied.")
+    flow_log: str | None = Field(default=None, description="The network's flow log, where the provider keeps it as a resource of its own (Azure); deleted with the network.")
 
 
 class DatabaseResource(Resource):
@@ -222,7 +223,9 @@ class ServiceResource(Resource):
 class IdentityResource(Resource):
     """A workload identity: an account with no key, holding the request's grants at its level."""
     kind: Literal[ResourceKind.identity] = ResourceKind.identity
-    email: str
+    email: str = Field(default="", description="The account's email address, where the provider names identities by one (Google); empty on Azure.")
+    principal_id: str | None = Field(default=None, description="The directory object id that grants name it by (Azure).")
+    client_id: str | None = Field(default=None, description="The id a workload asks for tokens as (Azure's AZURE_CLIENT_ID).")
     level: str = "use"
     kubernetes_service_account: str | None = Field(default=None, description="namespace/name of the Kubernetes service account that acts as it in the "
                                                                              "request's clusters, when the request has one.")

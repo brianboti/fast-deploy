@@ -1,7 +1,7 @@
 """Time on a request: when it expires, how close that is, and what keeps billing while it is stopped.
 
 A request's lifecycle is a small record kept beside it: expires_at, on_expiry, max_expires_at, stopped_at, stop_reason
-(requested, expired or idle), retain_until, awake_until, the warnings already sent, and the sweeper's attempts at expiry and
+(requested, expired, idle or max_run), retain_until, awake_until, the warnings already sent, and the sweeper's attempts at expiry and
 idle stop (expiry_attempts, expiry_attempted_at, idle_attempts). Nothing here calls a provider."""
 import datetime
 

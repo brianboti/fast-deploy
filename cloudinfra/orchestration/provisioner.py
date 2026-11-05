@@ -117,6 +117,11 @@ def named_secrets(created, names: list[str], prefix: str) -> list:
     return [made for made in created if made.kind == ResourceKind.secret
             and (SECRET_BY_PURPOSE.get(made.purpose) or made.name.removeprefix(f"{prefix}-")) in wanted]
 
+def principals_of(entries: list[dict]) -> dict[str, dict]:
+    """The provider ids kept with a request's access list, by member."""
+    return {entry["member"]: entry["principal"] for entry in entries or [] if entry.get("principal")}
+
+
 class Orchestrator:
     def __init__(self, config, state: StateManager, registry, executor=None, sleep=time.sleep, clock=time.monotonic, wallclock=None):
         self.config, self.state, self.registry, self.sleep, self.clock = config, state, registry, sleep, clock
@@ -148,7 +153,8 @@ class Orchestrator:
         return resource, record
 
     def _context(self, record: dict, principal=None) -> ProvisionContext:
-        return ProvisionContext(request_id=record["request_id"], name=record["name"], region=record["region"], zone=record["zone"], owner=record["owner"], labels=record["labels"])
+        return ProvisionContext(request_id=record["request_id"], name=record["name"], region=record["region"], zone=record["zone"], owner=record["owner"], labels=record["labels"],
+                                principals=principals_of(record["access"]))
 
     def lock(self, request_id: str) -> threading.RLock:
         """The lock that serializes changes to one request's status, lifecycle, access list and recorded grants in this
@@ -413,6 +419,8 @@ class Orchestrator:
             ctx.on_accepted = accepted
             try:
                 self._check_quota(provider, request, planned)
+                # before the first create: a member the request names that the directory does not know creates nothing
+                self._resolve_members(request_id, provider, ctx, required={entry.member for entry in request.access})
                 for item in planned:
                     current = item
                     pending = self.state.get_resource(item.spec["resource_id"])
@@ -420,7 +428,7 @@ class Orchestrator:
                     if item.kind == "identity":
                         identity = request.identity_named(item.spec["identity"])
                         resource = provider.create_identity(identity, item, ctx)
-                        self._add_member(request_id, f"serviceAccount:{resource.email}", identity.level)  # granted with every member, at the end
+                        self._add_member(request_id, provider.identity_member(resource), identity.level)  # granted with every member, at the end
                     elif item.kind == "network":
                         resource = network = provider.create_network(request.network, item, ctx)
                     elif item.kind == "storage":
@@ -550,6 +558,9 @@ class Orchestrator:
                   "DISKS_TOTAL_GB": sum(item.spec.get("size_gb", 0) for item in planned if item.kind == "storage" and item.spec.get("type") == "persistent")
                   + sum(item.spec.get("boot_disk_gb", 0) for item in planned if item.kind == "compute"),
                   "IN_USE_ADDRESSES": sum(1 for item in planned if item.kind == "compute" and item.spec.get("public_ip"))}
+        for item in planned:  # a machine family's own quota, where the provider counts one (Azure's vCPUs per family)
+            if item.kind == "compute" and item.spec.get("cpu_quota"):
+                wanted[item.spec["cpu_quota"]] = wanted.get(item.spec["cpu_quota"], 0) + item.spec.get("cpu", 0)
         for metric, needed in wanted.items():
             found = quota.get(metric)
             if needed and found and found.get("limit") is not None and float(found.get("usage") or 0) + needed > float(found["limit"]):
@@ -559,6 +570,19 @@ class Orchestrator:
 
     def _delete(self, provider: CloudProvider, resource, ctx: ProvisionContext) -> None:
         provider.delete(resource, ctx)
+
+    @staticmethod
+    def _finished(provider: CloudProvider, ctx: ProvisionContext) -> list[dict]:
+        """Tell the adapter that nothing of the request is left (CloudProvider.finished); what it could not remove, as the
+        remaining entry of a destroy or a cleanup."""
+        try:
+            provider.finished(ctx)
+        except Exception as exc:
+            cause = Orchestrator._cause(exc)
+            event("request_container_left", provider=provider.name, error=cause.detail().model_dump(mode="json"))
+            return [{"resource_id": None, "name": cause.details.get("container") or "the request's container at the provider",
+                     "error": cause.detail().model_dump(mode="json")}]
+        return []
 
     def _cleanup(self, request_id, created, ctx, provider) -> dict:
         operation_id = self.state.start_operation(request_id, "cleanup", identity=ctx.owner)
@@ -575,6 +599,8 @@ class Orchestrator:
                     cause = self._cause(exc)
                     self.state.save_resource(resource.model_copy(update={"error": cause.detail()}))
                     remaining.append({"resource_id": resource.id, "name": resource.name, "error": cause.detail().model_dump(mode="json")})
+            if not remaining:
+                remaining.extend(self._finished(provider, ctx))
             outcome = {"policy": "delete", "deleted": deleted, "remaining": remaining}
             self.state.finish_operation(operation_id, OperationStatus.SUCCEEDED if not remaining else OperationStatus.FAILED, detail=f"{len(deleted)} deleted, {len(remaining)} remaining")
             event("cleanup_completed", deleted=deleted, remaining=[item["resource_id"] for item in remaining])
@@ -707,9 +733,12 @@ class Orchestrator:
                     cause = self._cause(exc)
                     self.state.save_resource(resource.model_copy(update={"status": ResourceStatus.FAILED, "error": cause.detail()}))
                     remaining.append({"resource_id": resource.id, "name": resource.name, "error": cause.detail().model_dump(mode="json")})
+            if not remaining:
+                remaining.extend(self._finished(provider, ctx))
             if remaining:
-                error = InfrastructureError(ErrorCode.DESTROY_FAILED, f"{len(remaining)} of {len(resources)} resources could not be deleted; call destroy_infrastructure again once the cause is fixed",
-                                            {"remaining": remaining})
+                text = (f"{len(remaining)} of {len(resources)} resources could not be deleted" if any(item["resource_id"] for item in remaining)
+                        else f"Every resource was deleted, but not {remaining[0]['name']}: {remaining[0]['error']['message']}")
+                error = InfrastructureError(ErrorCode.DESTROY_FAILED, f"{text}; call destroy_infrastructure again once the cause is fixed", {"remaining": remaining})
                 self.state.transition(request_id, (RequestStatus.DESTROYING,), RequestStatus.DESTROY_FAILED, error=error.detail().model_dump(mode="json"))
                 self.state.finish_operation(operation_id, OperationStatus.FAILED, error=error.detail().model_dump(mode="json"), detail=f"{len(remaining)} remaining")
                 event("destruction_failed", remaining=[item["resource_id"] for item in remaining])
@@ -749,6 +778,40 @@ class Orchestrator:
         return [item for item in self.state.resources_of(request_id) if provider.takes_grants(item.kind.value, getattr(item, "type", None)) and item.provider_id
                 and item.status not in (ResourceStatus.DELETED, ResourceStatus.PENDING)]
 
+    @staticmethod
+    def _principal(provider: CloudProvider, entry: dict, ctx: ProvisionContext) -> dict | None:
+        """A member's id at the provider: the one kept on its entry, else looked up now and kept there (the caller saves the
+        entries); handed to the adapter through the context."""
+        if not entry.get("principal"):
+            found = provider.resolve_member(entry["member"])
+            if found:
+                entry["principal"] = dict(found)
+        if entry.get("principal"):
+            ctx.principals[entry["member"]] = entry["principal"]
+        return entry.get("principal")
+
+    def _resolve_members(self, request_id: str, provider: CloudProvider, ctx: ProvisionContext, required: set[str]) -> None:
+        """Look up every member of a request at the provider before anything is created, and keep the ids with its access
+        list (resolve_member); an adapter that grants by the member as written looks up nothing. A member the request names
+        that the provider cannot find fails the request; the requester's own identity, added by the operator's
+        grant_requester and perhaps another provider's account, is recorded as FAILED with the reason instead."""
+        with self.lock(request_id):
+            entries = self.state.get_request(request_id)["access"]
+            before = [dict(entry) for entry in entries]
+            for entry in entries:
+                if entry["status"] == "REVOKED":
+                    continue
+                try:
+                    self._principal(provider, entry, ctx)
+                except InfrastructureError as exc:
+                    if entry["member"] in required:
+                        raise
+                    entry.update(status="FAILED", error=exc.detail().model_dump(mode="json"), updated_at=lifecycle.iso(self.wallclock()))
+                    event("access_member_unresolved", member=entry["member"], error=exc.code.value)
+            if entries != before:
+                self.state.set_access(request_id, entries)
+                event("access_members_resolved", members=[entry["member"] for entry in entries if entry.get("principal")])
+
     def _add_member(self, request_id: str, member: str, level: str) -> None:
         """An identity this service made joins the request's access list, so it is granted on the request's resources as any
         member is; it is not checked against the operator's domains, being the request's own."""
@@ -773,6 +836,13 @@ class Orchestrator:
             for entry in entries:
                 wanted = entry["member"] == only if only is not None else entry["status"] == "PENDING"
                 if not wanted:
+                    continue
+                try:
+                    self._principal(provider, entry, ctx)
+                except Exception as exc:  # a member the directory does not know: recorded on it, never failing the request
+                    cause = self._cause(exc)
+                    entry.update(status="FAILED", resources=[], error=cause.detail().model_dump(mode="json"), updated_at=lifecycle.iso(self.wallclock()))
+                    event("access_grant_failed", member=entry["member"], error=cause.code.value)
                     continue
                 granted, errors = [], []
                 for target in targets:
@@ -827,8 +897,8 @@ class Orchestrator:
             raise InfrastructureError(ErrorCode.INVALID_REQUEST, f"action must be one of {', '.join(ACCESS_ACTIONS)}", {"field": "action"})
         if level not in ("use", "admin"):
             raise InfrastructureError(ErrorCode.INVALID_REQUEST, "level must be use or admin", {"field": "level"})
-        member = validation.check_member(member, "member")
-        self._record(request_id, principal)
+        record = self._record(request_id, principal)
+        member = validation.check_member(member, "member", record["provider"])
         with self.lock(request_id):
             self._change_access(self.state.get_request(request_id), action, member, principal, level)
         return self.status(request_id, principal, refresh=False)
@@ -1263,14 +1333,17 @@ class Orchestrator:
                     cause = self._cause(exc)
                     self.state.save_resource(secret.model_copy(update={"error": cause.detail()}))
                     detail = f"deleted; its secret {secret.id} could not be: {cause.message}"
-            self.state.finish_operation(operation_id, OperationStatus.SUCCEEDED, detail=detail)
             with self.lock(request_id):
                 entries = self.state.get_request(request_id)["access"]
                 if entries:  # members no longer have access to what is gone
                     self.state.set_access(request_id, [{**entry, "resources": [item for item in entry["resources"] if item not in gone]} for entry in entries])
-            if all(item.status == ResourceStatus.DELETED for item in self.state.resources_of(request_id)):
-                if self._finish_destroyed(request_id, (RequestStatus.READY, RequestStatus.STOPPED, RequestStatus.FAILED, RequestStatus.DESTROY_FAILED)):
-                    event("destruction_completed", resources=gone, reason="last resource of the request")
+            last = all(item.status == ResourceStatus.DELETED for item in self.state.resources_of(request_id))
+            left = self._finished(provider, ctx) if last else []
+            if left:  # the request stays as it is; destroying it tries again
+                detail = f"{detail}; {left[0]['name']} is left: {left[0]['error']['message']}. Destroy the request to remove it"
+            self.state.finish_operation(operation_id, OperationStatus.SUCCEEDED, detail=detail)
+            if last and not left and self._finish_destroyed(request_id, (RequestStatus.READY, RequestStatus.STOPPED, RequestStatus.FAILED, RequestStatus.DESTROY_FAILED)):
+                event("destruction_completed", resources=gone, reason="last resource of the request")
 
     def resize_compute(self, resource_id: str, cpu: int, memory_gb: int, principal, wait_seconds: int = 0) -> ResourceResponse:
         self.require(principal, "provision")

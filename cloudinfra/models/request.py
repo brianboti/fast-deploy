@@ -66,7 +66,8 @@ class LifetimeRequest(StrictModel):
 class AccessRequest(StrictModel):
     """Someone to grant access to what the request creates: login on machines, reading secrets, using buckets and queues."""
     member: str = Field(description="user:, group: or serviceAccount: and an email address in a domain the operator allows, or one of the operator's registry "
-                                    "writers (pushes to registries, granted nowhere else).")
+                                    "writers (pushes to registries, granted nowhere else). On azure, also user:, group: or serviceAccount: and a directory "
+                                    "object id, when it is a principal's identity: a service principal has no address.")
     level: AccessLevel = Field(default="use", description="use (log in, read and write data) or admin (administrator login, manage secret versions and objects).")
 
     @field_validator("member")
@@ -388,7 +389,8 @@ class NetworkRequest(StrictModel):
     cidr: str = Field(default="10.10.0.0/24", description="The subnet's private IPv4 range.")
     allowed_ports: list[int] = Field(default_factory=lambda: [80, 443], description="Ports opened from allowed_sources when public_access is true.")
     allowed_sources: list[str] = Field(default_factory=lambda: ["0.0.0.0/0"], description="IPv4 ranges allowed to reach allowed_ports.")
-    iap_ssh: bool = Field(default=True, description="Allow SSH on port 22 from the provider's identity-aware proxy range only; never from the internet.")
+    iap_ssh: bool = Field(default=True, description="Allow SSH on port 22 from the provider's identity-aware path only, never from the internet: "
+                                                   "Google's IAP range; on azure, the operator's Bastion subnet.")
     nat: bool = Field(default=True, description="A NAT for the network, so machines and cluster nodes without public addresses reach the internet; "
                                                 "none when the operator denies egress.")
 
@@ -410,7 +412,8 @@ class NetworkRequest(StrictModel):
 
 class InfrastructureRequest(StrictModel):
     """What the Application Layer wants: a provider, a region, and at least one resource block."""
-    provider: str = Field(default="gcp", pattern=r"^[a-z][a-z0-9-]{0,15}$", description="The cloud provider adapter: gcp; azure (being built, no kinds yet); aws and jetstream are planned.")
+    provider: str = Field(default="gcp", pattern=r"^[a-z][a-z0-9-]{0,15}$", description="The cloud provider adapter: gcp; azure (identity, network, storage and compute so far); "
+                                                                                 "aws and jetstream are planned.")
     region: str = Field(description="The provider's region (us-central1, eastus2).")
     zone: str | None = Field(default=None, description="A zone in the region (us-central1-a; on Azure a number, 1); the provider picks one when omitted.")
     name: str | None = Field(default=None, description="A short name used as the prefix of every resource name; infra-<8 hex> when omitted.")
@@ -464,6 +467,10 @@ class InfrastructureRequest(StrictModel):
         members = [item.member for item in self.access]
         if len(set(members)) != len(members):
             raise InfrastructureError(ErrorCode.INVALID_ACCESS, "access: each member once", {"field": "access"})
+        for member in members:
+            if validation.is_object_id(member) and self.provider not in validation.OBJECT_ID_PROVIDERS:
+                raise InfrastructureError(ErrorCode.INVALID_ACCESS, f"access: {member} names a directory object id, which the {self.provider} adapter does not take; "
+                                          "write an email address", {"field": "access", "value": member})
         for secret in self.secrets():
             owner = RESERVED_SECRETS.get(secret.name)
             if owner and getattr(self, owner) is not None:

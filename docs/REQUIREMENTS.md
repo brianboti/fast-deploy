@@ -42,7 +42,7 @@ packaging 26.3, pluggy 1.6.0, pygments 2.21.0 and sortedcontainers 2.4.0 to the 
 
 | Package | Version | Used for |
 |---|---|---|
-| `pytest` | 9.1.1 | The test suite (`tests/`), 1,000 tests on 2026-11-03, none touching a cloud |
+| `pytest` | 9.1.1 | The test suite (`tests/`), 1,044 tests on 2026-11-04, none touching a cloud |
 | `ruff` | 0.17.0 | Lint: correctness, imports, bug-prone patterns, modern syntax and the bandit security rules, line length 200 |
 | `zizmor` | 1.30.1 | Lint of the GitHub workflows and the Dependabot file |
 | `hypothesis` | 6.170.12 | Property tests of the validators and the redaction over generated input (`test_infra_properties.py`, `test_delivery_properties.py`) |
@@ -118,13 +118,15 @@ docker step is pinned by digest (`gcr.io/cloud-builders/docker@sha256:f772ab45�
   (seen 2026-10-29); the person needs `serviceusage.services.use` on that project.
 - Network reach to `*.googleapis.com`, and to each cluster's API endpoint it made (for namespaces, RoleBindings, the
   admission policy and the front door).
-- With an `azure` block (its adapter is being built and provides no kind yet): an Azure identity, the first the host
-  offers: an AKS pod's workload identity (`AZURE_FEDERATED_TOKEN_FILE`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, which
+- With an `azure` block (identity, network, storage and compute so far; the other kinds are being built): an Azure
+  identity, the first the host offers: an AKS pod's workload identity (`AZURE_FEDERATED_TOKEN_FILE`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, which
   AKS's webhook sets), a Container Apps or App Service managed identity (`IDENTITY_ENDPOINT`, `IDENTITY_HEADER`), a
   machine's managed identity through the metadata service at `169.254.169.254` (reached directly, never through a
   proxy), or on a laptop the Azure CLI signed in (`az login`; 2.54.0 or newer, which reports `expires_on`). No client
   secret or certificate is read, ever. Network reach to the cloud's Resource Manager (`management.azure.com` on the
-  public cloud) and, for workload identity, to Entra ID's sign-in host.
+  public cloud), Microsoft Graph (`graph.microsoft.com`, to look members up), the blob service of the buckets it made
+  (`*.blob.core.windows.net`, to check one is empty before deleting it), and, for workload identity, Entra ID's sign-in
+  host. The operator's price snapshot (`cloud-infra prices --write`) reads `prices.azure.com`, which needs no sign-in.
 - A writable directory for the state file, its lock file and, if set, the log file.
 - A configuration file (`cloudinfra.example.yaml` is the template) named by `CLOUDINFRA_CONFIG`.
 
@@ -252,16 +254,25 @@ The `cloudinfra` operator also defines the profile the delivery service needs fo
 
 ### The Azure subscription, while its adapter is being built
 
-The first step reads quota and nothing else ([research/RESEARCH-2026-11-03-azure.md](research/RESEARCH-2026-11-03-azure.md),
-section 10); section 4.2 of that note is the role the later steps need, and this table grows with them.
+Steps 1 and 2 of [research/RESEARCH-2026-11-03-azure.md](research/RESEARCH-2026-11-03-azure.md), section 10: quota, and
+identity, network, storage and compute. None of it has run against a real subscription yet; step 3 is that run, and it
+will turn the role below into the tested list Google's section 6 is. Section 4.2 of the note is the reasoning.
 
 | Need | Value |
 |---|---|
 | The subscription | `providers.azure.subscription_id`, in the directory `tenant_id`, in the cloud `cloud` (`public`, `usgovernment`, `china`) |
-| Resource provider registered | `Microsoft.Compute`, registered once by the operator; the service's own role does not hold `register/action` |
-| The service's identity | `Reader` on the subscription covers this step (`Microsoft.Compute/locations/usages/read`) |
-| API versions | Compute `2026-04-01` (usages); the instance metadata service `2018-02-01`; the identity endpoint `2019-08-01`; Entra ID's v2 token endpoint for workload identity; each cloud's metadata document `2022-09-01` (read once, kept as test fixtures) |
+| Resource providers registered | `Microsoft.Compute`, `Microsoft.Network`, `Microsoft.Storage`, `Microsoft.ManagedIdentity`, `Microsoft.Insights`, and `Microsoft.MarketplaceOrdering` for a Marketplace image with a plan; registered once by the operator, since the service's role holds no `register/action` |
+| The service's role, at the subscription (or the landing-zone scope its groups are made under) | a custom role with `Microsoft.Resources/subscriptions/resourceGroups/*` and `…/resources/read`, `Microsoft.Compute/virtualMachines/*`, `…/disks/*`, `…/locations/usages/read`, `Microsoft.Network/virtualNetworks/*`, `…/networkSecurityGroups/*`, `…/natGateways/*`, `…/publicIPAddresses/*`, `…/networkInterfaces/*`, `…/networkWatchers/flowLogs/*`, `…/locations/usages/read`, `Microsoft.Storage/storageAccounts/*`, `Microsoft.ManagedIdentity/userAssignedIdentities/*`, `Microsoft.Insights/metrics/read`, `Microsoft.Authorization/roleAssignments/read`; plus the data action `Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read` (or Storage Blob Data Reader), to see that a bucket is empty before deleting it |
+| The service's grant right | Role Based Access Control Administrator (`f58310d9-a9f6-439a-9e8d-f62e7b41a168`) at the same scope, with the condition of section 4.2 of the note naming only Virtual Machine User Login, Virtual Machine Administrator Login, Reader, Storage Blob Data Contributor and Storage Blob Data Owner, and only the principal types User, Group and ServicePrincipal |
+| Members by address | Microsoft Graph's `User.Read.All` and `Group.Read.All` application permissions on the service's identity, granted once by a Privileged Role Administrator; without them, members are named by object id (`user:<object id>`), and only a principal's own identity may be. A group is found by its mail address, so a security group without one is named by object id. A principal's identity that is another cloud's account (a Google service account) is recorded as failed on Azure requests, which go on |
+| Machines without a network block | `providers.azure.default_subnet`, a subnet the service may join (`Microsoft.Network/virtualNetworks/subnets/join/action`); Azure has no default network, so without it such a request is refused |
+| Reaching machines | an Azure Bastion, Standard with native client support, in a network peered with the request networks (`providers.azure.bastion`, and its `AzureBastionSubnet` range as `bastion_subnet`); members need Reader on it, which the platform team grants once. Without one, `az ssh vm` reaches a machine's own address only |
+| Sign-in on a machine | the `AADSSHLoginForLinux` extension reaches `login.microsoftonline.com`, `pas.windows.net` and `packages.microsoft.com` on 443, through the request network's NAT or the machine's own address; on a network with neither, or with `deny_egress`, the machine is made without it and its connect block says so (Run Command is then the way in, with a role the platform team grants) |
+| Flow logs | optional: `providers.azure.flow_logs_storage_account`, an account in the request's region, and the region's network watcher in `network_watcher_group` (`NetworkWatcherRG`, which Azure makes) |
+| Wait ceilings, each capped by `limits.operation_timeout_seconds` | resource group 300 s (its delete 1,800), network 600, flow log 300, identity 300, disk 600, storage account 600, machine 1,200, sign-in extension 900, attach 600, deallocate or start 900, resize 1,200, delete 1,200 |
+| API versions | Compute `2026-04-01` (machines, extensions, usages) and `2026-03-02` (disks); Network `2026-03-01`; Storage `2026-09-01` and the blob service's `2025-01-05`; ManagedIdentity `2024-11-30`; Resources `2025-04-01`; Authorization `2022-04-01`; Insights metrics `2023-10-01`; Microsoft Graph `v1.0`; the Retail Prices API `2023-01-01-preview`; the instance metadata service `2018-02-01`; the identity endpoint `2019-08-01`; each cloud's metadata document `2022-09-01` |
 | Regions and zones | Microsoft's region list of 2026-10-27 (`cloudinfra/providers/azure/regions.py`); others, and every sovereign cloud's, under `providers.azure.zones` |
+| Quota | each VM family's vCPUs in the region (a GPU family starts at zero in a new subscription, and is raised by a quota request), the regional vCPUs, and Standard public addresses; the orchestrator checks the family before it makes anything |
 
 ## 7. Product versions the adapter offers
 
@@ -287,6 +298,11 @@ workload (Deployment with `maxUnavailable: 0`, ClusterIP Service, a Secret per r
 HealthCheckPolicy when exposed), a Cloud Run service (a revision per release, `candidate` tag, traffic moved when ready)
 or a Cloud Run job (the job's container, run on demand). Attestations: Cosign `verify-attestation` with a Cloud KMS
 key (`gcpkms://…`), a public key file, or a keyless identity and issuer; type `slsaprovenance1` by default.
+
+On Azure, the kinds built so far (identity, network, storage, compute) map as the table "Mapping on Azure" in
+[PROVIDER-INTERFACE.md](PROVIDER-INTERFACE.md) says: exact Dsv5, Esv5, Dlsv5 and B sizes, T4, A100 and H100 sizes (no L4), the
+same three OS families from their publishers' Marketplace images, Standard HDD, Standard SSD and Premium SSD disks, and
+zone-redundant storage accounts for buckets.
 
 ## 8. Built-in limits and defaults
 
@@ -358,4 +374,5 @@ client; the sign-in page and Claude's client send one.
 | Roles and APIs | `docs/INFRASTRUCTURE-ARCHITECTURE.md`, `docs/DELIVERY-SPEC.md` section 9, `docs/DELIVERY-SPIKE.md`, `cloudinfra/providers/gcp/api.py`, `iam.py` | when a kind is added or a run on a real project finds a missing one |
 | Azure clouds' endpoints and token audiences | `cloudinfra/providers/azure/clouds.py`, compared by a test with `tests/cloudinfra/fixtures/azure-cloud-*.json` | for each cloud, `curl https://<resource manager>/metadata/endpoints?api-version=2022-09-01`, write the fixture, run the tests |
 | Azure regions, zones and api-versions | `cloudinfra/providers/azure/regions.py`, `api.py` (`API_VERSIONS`) | with the adapter, from Microsoft's region list and each service's REST reference |
+| Azure list prices | `cloudinfra/providers/azure/pricing.py` (approximate, eastus2, `verified` null), or the operator's snapshot | `cloud-infra prices --write FILE` from the Retail Prices API for the allowed regions, then `providers.azure.prices_file: FILE` |
 | Versions | `pyproject.toml` and `cloudinfra/__init__.py` (tied by a test); `appdelivery/__init__.py` on its own | with `docs/CHANGES.md` |

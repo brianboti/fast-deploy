@@ -341,6 +341,8 @@ roles "to avoid the Azure role assignments limit", F, [Entra SSH](https://learn.
 keep per-resource grants for the data roles (a secret, a container, a subscription), and have `quota()` report
 `roleAssignments` so that the planner refuses a request that would cross the limit. Because the resource group holds
 only the request's own resources, a group-scoped grant is still "on what the service created, never on the project".
+(Changed while building step 2: the login roles are granted per machine after all, since the orchestrator revokes
+resource by resource; section 10, step 2.)
 
 ### 4.4 Members: an Entra object id, not an e-mail
 
@@ -810,6 +812,21 @@ Each is a step of the first real run (section 10), as DELIVERY-SPIKE.md records 
    support request.
 9. The `RequestDisallowedByPolicy` body as a company's Deny policies return it.
 
+Step 2 added these, each a line of the first run's checklist:
+
+10. Trusted Launch on the GPU sizes: the adapter boots NCasT4_v3, NC_A100_v4 and NCads_H100_v5 with it and the ND sizes
+    without (`securityType: Standard`); a size that refuses it fails at create.
+11. Whether a Standard public address made with no zone in a zonal region is zone-redundant by default and so refused
+    by a zonal NAT gateway; the adapter gives both the request's zone.
+12. The `AADSSHLoginForLinux` extension on a request network with its NAT, and what a `deny_egress` network must allow
+    for it (`packages.microsoft.com` is outside the `AzureActiveDirectory` tag).
+13. Graph's `mail eq` filter on users and groups with `User.Read.All` and `Group.Read.All`, and a guest found by mail.
+14. Whether Azure removes the role assignments at a resource's scope when the resource is deleted; the adapter revokes
+    a machine's and a bucket's before deleting them, so none is left either way.
+15. The Retail Prices API's meter names for the NAT gateway and the static public address, and the Network usage name
+    of Standard public addresses (`StandardSkuPublicIpAddresses`).
+16. How long a role assignment takes to apply to Entra sign-in on a machine and to a bucket's data plane.
+
 ### 9.3 Gotchas, each a test in the fake
 
 - A role assignment made seconds after its principal fails with `PrincipalNotFound` unless `principalType` is set;
@@ -865,6 +882,36 @@ Trusted Launch, the Entra login extension, `deleteOption`), disks and buckets, i
 assignments with the deterministic GUID and `principalType`; `deallocate`/`start`; resize; the connect blocks;
 metrics for health and idle stop; quota from `usages`; the price snapshot command and `estimate_cost`. Every
 orchestration test (`tests/cloudinfra/test_infra_orchestration.py` takes any adapter) runs green against the fake.
+Built on 2026-11-04 on branch `azure-step-2`, with `tests/cloudinfra/test_infra_azure_kinds.py`: the orchestration
+tests are Google-shaped (they read the Google fake's own records), so their Azure twins are written there instead.
+api-versions were read on each template reference page that day (REQUIREMENTS.md lists them). Five decisions changed
+while building it, each for a reason the code met:
+
+- *Login roles on the machine and its interface, not the request's group.* The orchestrator grants and revokes
+  resource by resource (a machine is released before it is deleted, a member revoked from one resource), and a
+  group-scoped assignment shared by every machine would be removed with the first. Each machine costs two assignments
+  per member; quota() does not count the subscription's 5,000 yet (the read is a full listing), so the real run
+  measures it.
+- *The 2 GB family is Dlsv5, not Fsv2*: Dsv5's sibling, with the same sizes and generation, so a resize stays on the
+  same hardware more often.
+- *Disks follow the contract's names*: `standard` is Standard HDD, `balanced` Standard SSD, `ssd` Premium SSD; Premium
+  SSD v2 is zonal-only and data-only, and waits for a request that needs it.
+- *The NAT gateway and its address are zonal, in the request's zone*, where its machines are; a Standard gateway does
+  not take a zone-redundant address, and StandardV2 is not in every region.
+- *A machine shut down from inside is `UNKNOWN`, not `STOPPED`*: Azure still bills it in full, so it must neither be
+  priced as stopped nor skipped by a stop, which deallocates it.
+
+The resource group is removed through a new interface hook, `finished`, called when nothing of a request is left
+(after a destroy, a failed provisioning's cleanup, or the last single delete); a group holding something the service
+did not make is kept, and the destroy says which.
+
+A code review of the step before it was committed found five things, all fixed with a test each: the sign-in extension
+cannot install on a machine that reaches no package host, so it is made only where the machine has a NAT or an address
+of its own (and section 9.2 asks what a `deny_egress` network must allow); flow logs share the watcher's group across
+requests, so their names carry the request id; a requester identity that is another cloud's account must not fail an
+Azure request; a member never found must still be revocable; and a machine's parts are read from the machine, since
+Azure names the interface it makes from `networkInterfaceConfigurations` itself (and tags none of them, so the group's
+removal takes an untagged resource named after the request as the request's).
 
 **Step 3, the first real run** on a sandbox subscription the user names, as the Google spikes were run: the service's
 custom role and the conditioned RBAC Administrator grant, a request with a network, two machines (one Marketplace

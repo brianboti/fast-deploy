@@ -33,7 +33,7 @@ Application Layer            any system: Claude, a CI job, another service, the 
                  ▼                     ▼                     ▼                      ▼
        providers/gcp/            providers/azure/      AWSProvider          JetstreamProvider
        GCPProvider               AzureProvider         (later)              (later)
-                                 (being built: no kind yet)
+                                 (identity, network, storage, compute)
                  │  REST: compute, sqladmin, storage, servicenetworking, redis, pubsub, secretmanager, artifactregistry, container, iam, iap, run, cloudscheduler, monitoring
                  ▼
             Google Cloud

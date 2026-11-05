@@ -27,10 +27,19 @@ from ...models.errors import ErrorCode, InfrastructureError
 from ...observability.logging import event
 from .clouds import CLOUDS, AzureCloud
 
-# api-versions by resource provider, the latest stable on 2026-11-03; each kind adds its own when it lands.
+# api-versions by resource type, the latest stable on each one's template reference page
+# (learn.microsoft.com/azure/templates/<provider>/<type>) when read on 2026-11-04; each kind adds its own when it lands.
 API_VERSIONS = {
-    "Microsoft.Compute": "2026-04-01",  # virtual machines, disks, usages (learn.microsoft.com/rest/api/compute)
+    "Microsoft.Compute": "2026-04-01",  # virtual machines, their extensions, usages
+    "Microsoft.Compute/disks": "2026-03-02",  # managed disks version apart from machines
+    "Microsoft.Network": "2026-03-01",  # virtual networks, security groups, NAT gateways, public addresses, interfaces, flow logs, usages
+    "Microsoft.Storage": "2026-09-01",  # storage accounts, their blob service and containers
+    "Microsoft.ManagedIdentity": "2024-11-30",  # user-assigned identities
+    "Microsoft.Resources": "2025-04-01",  # resource groups and the resources in one
+    "Microsoft.Authorization": "2022-04-01",  # role assignments
+    "Microsoft.Insights": "2023-10-01",  # metrics (learn.microsoft.com/rest/api/monitor/metrics/list)
 }
+STORAGE_DATA_VERSION = "2025-01-05"  # x-ms-version of a blob service's data plane
 RETRIES = 5  # attempts of a call Azure refused for now, or of an idempotent call that met a 5xx or lost its answer
 RETRY_PAUSE_SECONDS = 1.0  # doubled after each attempt, unless Azure says how long in Retry-After
 BUSY_PAUSE_SECONDS = 10.0  # at least this long when another operation holds the resource
@@ -52,6 +61,7 @@ class AzureResponse:
     status: int
     headers: dict[str, str] = field(default_factory=dict)  # names in lowercase
     body: dict | None = None
+    text: str = ""  # an answer that is not JSON (a blob service lists in XML)
 
 
 def _error(body) -> dict:
@@ -170,7 +180,7 @@ class AzureApi:
         return url
 
     # ---- one call
-    def call(self, method: str, url: str, json=None, params=None, audience: str | None = None) -> AzureResponse:
+    def call(self, method: str, url: str, json=None, params=None, audience: str | None = None, headers: dict | None = None) -> AzureResponse:
         """One call. Tried again: a 429 and a call another operation refused (neither ran), any call that could not
         connect, and an idempotent call that met a 5xx or lost its answer; a 401 once with a fresh token. Each retry is
         a provider_retry event. Any other refusal raises."""
@@ -183,7 +193,7 @@ class AzureApi:
             except ValueError as exc:
                 raise InfrastructureError(ErrorCode.PROVIDER_AUTH_FAILED, str(exc)) from None
             try:
-                response = self.client.request(method, url, json=json, params=params, headers={"Authorization": "Bearer " + token})
+                response = self.client.request(method, url, json=json, params=params, headers={**(headers or {}), "Authorization": "Bearer " + token})
             except httpx.RequestError as exc:
                 unsent = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
                 if (unsent or idempotent) and attempt < RETRIES - 1:
@@ -195,9 +205,10 @@ class AzureApi:
                 raise InfrastructureError(ErrorCode.PROVIDER_UNAVAILABLE, f"Azure could not be reached ({type(exc).__name__})",
                                           {"url": url, **({} if unsent or idempotent else {"maybe_done": True})}) from None
             event("provider_call", provider="azure", method=method, url=url, status=response.status_code)
-            headers = {name.lower(): value for name, value in response.headers.items()}
+            answered = {name.lower(): value for name, value in response.headers.items()}
             if response.status_code < 400:
-                return AzureResponse(response.status_code, headers, _json(response))
+                body = _json(response)
+                return AzureResponse(response.status_code, answered, body, "" if body is not None else response.text[:65536])
             if response.status_code == 401 and not refreshed and hasattr(self.token, "invalidate"):
                 refreshed = True
                 self.token.invalidate(audience)
@@ -207,7 +218,7 @@ class AzureApi:
             reason = str(_error(body).get("code") or "")
             busy = reason in BUSY
             if (response.status_code == 429 or busy or (idempotent and response.status_code in (500, 502, 503, 504))) and attempt < RETRIES - 1:
-                asked = retry_after(headers)
+                asked = retry_after(answered)
                 if asked is not None and asked > MAX_RETRY_PAUSE_SECONDS:
                     error = translate_error(response.status_code, body, response.text)
                     error.details["retry_after_seconds"] = asked
