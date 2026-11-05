@@ -88,7 +88,7 @@ providers:
     #     image: projects/your-images-project/global/images/family/hardened-ubuntu-2404
     #     accelerator: none
     # default_accelerator_profile: gpu-signed     # what GPU machines get when they name no profile and no os
-  # azure:                                      # every kind but cluster, service, job and load_balancer so far (docs/research/RESEARCH-2026-11-03-azure.md)
+  # azure:                                      # every kind; not yet run on a real subscription (docs/research/RESEARCH-2026-11-03-azure.md)
   #   subscription_id: 00000000-0000-0000-0000-000000000000
   #   tenant_id: 00000000-0000-0000-0000-000000000000   # the subscription's Entra ID directory; the Azure CLI asks for tokens in it
   #   cloud: public                             # public, usgovernment or china
@@ -102,6 +102,12 @@ providers:
   #   flow_logs_storage_account: null           # an account in the region for VNet flow logs; none, no flow log
   #   prices_file: null                         # a snapshot from `cloud-infra prices --write FILE`; none, approximate built-in prices
   #   registry: /subscriptions/SUB/resourceGroups/hub/providers/Microsoft.ContainerRegistry/registries/platformimages  # ABAC mode; a request's registry is a prefix in it
+  #   cluster_registries: [platformimages-h7c2.azurecr.io/base]   # prefixes in that registry a cluster's nodes may pull from
+  #   cluster_authorized_networks: [203.0.113.0/24]   # where cloudinfra and appdelivery run; empty leaves the API server open behind Entra sign-in
+  #   service_auth_client_id: null              # an app registration services' Entra sign-in names; none, and only public services are possible
+  #   allow_public_services: false              # services callable without signing in
+  #   public_domains: [apps.example.com]        # where a load balancer's hostnames may be (Front Door, with managed certificates)
+  #   front_door_waf_policy: null               # a Front Door WAF policy attached to every load balancer with hostnames
   #   profiles:                                 # images the platform team approves
   #     gpu-hpc:
   #       image: microsoft-dsvm:ubuntu-hpc:2204:latest   # publisher:offer:sku:version, or a Compute Gallery image id

@@ -47,6 +47,10 @@ API_VERSIONS = {
     "Microsoft.Cache": "2026-09-01",  # Azure Managed Redis (redisEnterprise) and its database
     "Microsoft.Network/privateDnsZones": "2024-06-01",  # private DNS zones and their network links version apart from Microsoft.Network
     "Microsoft.Authorization/locks": "2020-05-01",  # management locks
+    # step 5's, read on each template reference page on 2026-11-05: the newest version without -preview
+    "Microsoft.ContainerService": "2026-08-01",  # AKS managed clusters
+    "Microsoft.App": "2026-07-01",  # Container Apps environments, apps, their auth configs, and jobs
+    "Microsoft.Cdn": "2026-07-01",  # Front Door Standard profiles, endpoints, origins, custom domains, routes, security policies
 }
 KEY_VAULT_DATA_VERSION = "7.5"  # a vault's own API, for secret values (learn.microsoft.com/rest/api/keyvault)
 STORAGE_DATA_VERSION = "2025-01-05"  # x-ms-version of a blob service's data plane

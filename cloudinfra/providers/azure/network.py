@@ -13,6 +13,9 @@ primitives (docs/research/RESEARCH-2026-11-03-azure.md, section 5.1).
 - The NAT gateway and its address are in the request's zone, where the machines are; a region without zones has a
   regional one.
 - A flow log goes to the operator's storage account through the region's network watcher when the operator names one.
+- A network whose request holds a container service or job has a second subnet, <network>-apps, a /27 delegated to
+  Container Apps and holding the network's one environment (apps.py): the machines' subnet is then the first half of the
+  range and the /27 the start of the second. The environment is the network's, kept in its group and removed before it.
 
 Parallel writes to one network fail with AnotherOperationInProgress, which the client tries again; a network's parts are
 made one after another, and the subnet is made with the network.
@@ -24,11 +27,14 @@ from .api import API_VERSIONS
 from .groups import group_of
 
 VERSION = API_VERSIONS["Microsoft.Network"]
+APPS_VERSION = API_VERSIONS["Microsoft.App"]
+APPS_DELEGATION = "Microsoft.App/environments"
 NETWORK = "Microsoft.Network"
 STATES = {"succeeded": ResourceStatus.READY, "updating": ResourceStatus.UPDATING, "creating": ResourceStatus.CREATING, "deleting": ResourceStatus.DELETING,
           "failed": ResourceStatus.FAILED}
 INTERNAL, BASTION, PUBLIC, PROBES, DENY = 100, 110, 120, 3900, 4000  # rule priorities; configure_firewall's rules take 200 and up
 FIRST_ADDED = 200
+ADMITTED = (300, 3800)  # where the rules a cluster or a load balancer adds go: the first free priority, after the request's own
 WATCHER_NOT_YET = (6, 10)  # Azure enables a region's network watcher when the first network there is made, a moment later
 
 
@@ -49,6 +55,21 @@ def _rule(name: str, priority: int, sources, ports, direction="Inbound", access=
     else:
         properties["destinationPortRange"] = "*"
     return {"name": name, "properties": properties}
+
+
+def apps_subnet_name(network_name: str) -> str:
+    return f"{network_name}-apps"
+
+
+def environment_of(network: NetworkResource) -> str:
+    """The id of a network's Container Apps environment, in the network's group."""
+    return f"{network.provider_id.split('/providers/', 1)[0]}/providers/Microsoft.App/managedEnvironments/{apps_subnet_name(network.name)}"
+
+
+def security_group(network_id: str) -> str:
+    """The security group a network this service made has on its subnets: <network>-nsg, in the network's group."""
+    group, name = network_id.split("/providers/", 1)[0], network_id.rstrip("/").rsplit("/", 1)[-1]
+    return f"{group}/providers/{NETWORK}/networkSecurityGroups/{name}-nsg"
 
 
 def reaches_internet(network: NetworkResource | None, public_ip: bool) -> bool:
@@ -116,7 +137,9 @@ class AzureNetwork:
         # every part is named after the network in the request's own group: all known from here, before any is made
         ctx.accepted(resource)
         self.api.put(self._url(nsg), {"location": region, "tags": tags, "properties": {"securityRules": bodies}}, VERSION, timeout=self.ceiling("network"))
-        subnet = {"addressPrefix": spec.cidr, "defaultOutboundAccess": False, "networkSecurityGroup": {"id": nsg}, "privateEndpointNetworkPolicies": "Enabled"}
+        apps = planned.spec.get("apps_subnet")
+        subnet = {"addressPrefix": planned.spec.get("subnet_cidr") or spec.cidr, "defaultOutboundAccess": False, "networkSecurityGroup": {"id": nsg},
+                  "privateEndpointNetworkPolicies": "Enabled"}
         if nat:
             ip = {"location": region, "tags": tags, "sku": {"name": "Standard", "tier": "Regional"},
                   "properties": {"publicIPAllocationMethod": "Static", "publicIPAddressVersion": "IPv4"}}
@@ -126,9 +149,12 @@ class AzureNetwork:
             self.api.put(self._url(address), ip, VERSION, timeout=self.ceiling("network"))
             self.api.put(self._url(gateway), body, VERSION, timeout=self.ceiling("network"))
             subnet["natGateway"] = {"id": gateway}
+        subnets = [{"name": planned.spec["subnet"], "properties": subnet}]
+        if apps:  # the same security group and NAT as the machines', delegated to Container Apps
+            subnets.append({"name": apps_subnet_name(name), "properties": {**subnet, "addressPrefix": apps,
+                                                                             "delegations": [{"name": "apps", "properties": {"serviceName": APPS_DELEGATION}}]}})
         created = self.api.put(self._url(network_id), {"location": region, "tags": tags, "properties": {
-            "addressSpace": {"addressPrefixes": [spec.cidr]}, "subnets": [{"name": planned.spec["subnet"], "properties": subnet}]}}, VERSION,
-            timeout=self.ceiling("network"))
+            "addressSpace": {"addressPrefixes": [spec.cidr]}, "subnets": subnets}}, VERSION, timeout=self.ceiling("network"))
         if flow_log:
             self._flow_log(flow_log, network_id, region, tags)
         return resource.model_copy(update={"status": STATES.get(str((created.get("properties") or {}).get("provisioningState", "")).lower(), ResourceStatus.READY)})
@@ -154,6 +180,33 @@ class AzureNetwork:
         self.api.put(self._url(f"{nsg}/securityRules/{name}"), {"properties": body["properties"]}, VERSION, timeout=self.ceiling("network"))
         return FirewallRule(name=name, ports=list(ports), sources=list(sources), provider_id=f"{nsg}/securityRules/{name}")
 
+    def admit(self, nsg: str, name: str, sources, ports, destinations, protocol: str = "Tcp") -> str:
+        """An inbound rule in a security group at its first free priority from 300 (a cluster's pods, a load balancer's
+        clients), kept apart from the request's own rules; the same name again replaces it in place. Its id."""
+        rule_id = f"{nsg}/securityRules/{name}"
+        found = self.api.get(self._url(nsg), VERSION)
+        rules = (found.get("properties") or {}).get("securityRules") or []
+        current = next((rule for rule in rules if rule.get("name") == name), None)
+        taken = {int((rule.get("properties") or {}).get("priority") or 0) for rule in rules if rule.get("name") != name}
+        priority = int((current.get("properties") or {}).get("priority")) if current else next((number for number in range(*ADMITTED) if number not in taken), None)
+        if priority is None:
+            raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"Security group {nsg.rsplit('/', 1)[-1]} has no free rule priority left")
+        body = _rule(name, priority, sources, ports, protocol=protocol, destination=destinations)
+        self.api.put(self._url(rule_id), {"properties": body["properties"]}, VERSION, timeout=self.ceiling("network"))
+        return rule_id
+
+    def remove_rule(self, rule_id: str) -> None:
+        self.api.delete(self._url(rule_id), VERSION, timeout=self.ceiling("network"))
+
+    def subnet_security_group(self, subnet_id: str) -> str | None:
+        """The security group on a subnet, when this service made it (one tagged as its own); None on the operator's."""
+        network = self.api.find(self._url(subnet_id.split("/subnets/", 1)[0]), VERSION) or {}
+        name = subnet_id.rsplit("/", 1)[-1]
+        subnet = next((item for item in (network.get("properties") or {}).get("subnets") or [] if item.get("name") == name), None) or {}
+        nsg = ((subnet.get("properties") or {}).get("networkSecurityGroup") or {}).get("id")
+        found = self.api.find(self._url(nsg), VERSION) if nsg else None
+        return nsg if found is not None and (found.get("tags") or {}).get("managed-by") == "cloudinfra" else None
+
     def get(self, resource: NetworkResource) -> NetworkResource:
         found = self.api.find(self._url(resource.provider_id), VERSION)
         if found is None:
@@ -163,6 +216,8 @@ class AzureNetwork:
 
     def delete(self, resource: NetworkResource, ctx) -> None:
         group = group_of(resource.provider_id)
+        # the Container Apps environment in its apps subnet, whose apps and jobs went before it
+        self.api.delete(self.api.arm(environment_of(resource)), APPS_VERSION, timeout=self.ceiling("environment"))
         private.remove_zones(self.api, resource, self.ceiling("network"))  # the private DNS zones its databases and caches were found by
         if resource.flow_log:
             self.api.delete(self._url(resource.flow_log), VERSION, timeout=self.ceiling("flow_log"))

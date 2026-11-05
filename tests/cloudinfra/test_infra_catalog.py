@@ -67,8 +67,8 @@ def test_import_boundary_the_core_never_imports_the_application_layer():
         relative = str(path.relative_to(PACKAGE))
         if "subprocess" in modules:
             assert relative in ("providers/gcp/auth.py", "providers/azure/auth.py"), f"{relative} runs commands; only the token helpers may"
-        if "yaml" in modules:
-            assert relative in ("config.py", "cli.py"), relative
+        if "yaml" in modules:  # safe_load only: the operator's configuration, and the kubeconfig AKS answers (it has no JSON form)
+            assert relative in ("config.py", "cli.py", "providers/azure/cluster.py"), relative
 
 
 def test_google_cloud_is_named_only_inside_its_adapter():

@@ -20,6 +20,9 @@ BASTION = re.compile(rf"^{_GROUP}/Microsoft\.Network/bastionHosts/[A-Za-z0-9._-]
 STORAGE_ACCOUNT = re.compile(rf"^{_GROUP}/Microsoft\.Storage/storageAccounts/[a-z0-9]{{3,24}}$")
 REGISTRY = re.compile(rf"^{_GROUP}/Microsoft\.ContainerRegistry/registries/[A-Za-z0-9]{{5,50}}$")
 PROFILE_NAME = re.compile(r"^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$")
+WAF_POLICY = re.compile(rf"^{_GROUP}/Microsoft\.Network/[Ff]ront[Dd]oor[Ww]eb[Aa]pplication[Ff]irewall[Pp]olicies/[A-Za-z0-9]{{1,128}}$")
+DOMAIN = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
+ACR_REPOSITORY = re.compile(r"^[a-z0-9]{5,50}(?:-[a-z0-9]{4,8})?\.azurecr\.(?:io|us|cn)/[a-z0-9][a-z0-9._-]{0,200}$")
 
 
 class AzureProfile(BaseModel):
@@ -77,7 +80,25 @@ class AzureSettings(BaseModel):
                                  "assignment mode AbacRepositoryPermissions), in which a request's registry is a repository prefix of its own; none, and "
                                  "a request may hold no registry. The service needs Container Registry Repository Contributor and Catalog Lister on it.")
 
-    @field_validator("subscription_id", "tenant_id", "identity_client_id")
+    # step 5: clusters, services and jobs, load balancers
+    cluster_registries: list[str] = Field(default_factory=list, max_length=50, description="The repository prefixes in the operator's registry "
+                                          "(LOGIN_SERVER/PREFIX, such as platformimages-h7c2.azurecr.io/base) a request may let its clusters' nodes pull "
+                                          "from; the kubelet identity is granted Container Registry Repository Reader under each one it names.")
+    cluster_authorized_networks: list[str] = Field(default_factory=list, max_length=200, description="The ranges that may reach a cluster's API server "
+                                                   "(authorizedIPRanges); empty leaves it open to any address, still behind Entra sign-in. List where "
+                                                   "cloudinfra and appdelivery run.")
+    public_domains: list[str] = Field(default_factory=list, description="DNS domains a load balancer's hostnames may be in (a hostname is the domain "
+                                      "or ends in .domain); none, and a load balancer serves plain HTTP or TCP on its address only.")
+    front_door_waf_policy: str | None = Field(default=None, pattern=WAF_POLICY.pattern, description="A Front Door WAF policy of the operator's, "
+                                              "attached to every load balancer with hostnames (a Front Door Standard profile takes custom rules; "
+                                              "managed rule sets need Premium).")
+    allow_public_services: bool = Field(default=False, description="Whether a request may make a container service callable without signing in.")
+    service_auth_client_id: str | None = Field(default=None, pattern=GUID.pattern, description="The client id of an app registration of the "
+                                               "operator's, in this tenant, that every service callable only with sign-in names as its Entra "
+                                               "audience: callers ask for tokens for api://<client id>. Without it, a request may hold only public "
+                                               "services, as nothing else checks a caller on Azure.")
+
+    @field_validator("subscription_id", "tenant_id", "identity_client_id", "service_auth_client_id")
     @classmethod
     def _lower(cls, value):
         return value.lower() if value else value
@@ -98,6 +119,34 @@ class AzureSettings(BaseModel):
                 raise ValueError(f"zones: {region!r} is not an Azure region's programmatic name, such as eastus2")
             if any(not ZONE.fullmatch(zone) for zone in zones) or len(set(zones)) != len(zones):
                 raise ValueError(f"zones.{region}: logical zone numbers such as \"1\", \"2\", \"3\", each once")
+        return value
+
+    @field_validator("cluster_authorized_networks")
+    @classmethod
+    def _authorized(cls, value):
+        for cidr in value:
+            try:
+                if "/" not in cidr:
+                    raise ValueError(cidr)
+                ipaddress.IPv4Network(cidr, strict=True)
+            except ValueError:
+                raise ValueError(f"cluster_authorized_networks: {cidr!r} is not an IPv4 range such as 203.0.113.0/24") from None
+        return value
+
+    @field_validator("public_domains")
+    @classmethod
+    def _domains(cls, value):
+        for domain in value:
+            if not DOMAIN.fullmatch(domain):
+                raise ValueError(f"public_domains: {domain!r} is not a lowercase DNS domain such as apps.example.com")
+        return value
+
+    @field_validator("cluster_registries")
+    @classmethod
+    def _cluster_registries(cls, value):
+        for entry in value:
+            if not ACR_REPOSITORY.fullmatch(entry):
+                raise ValueError(f"cluster_registries: {entry!r} is not LOGIN_SERVER/PREFIX, such as platformimages-h7c2.azurecr.io/base")
         return value
 
     @field_validator("bastion_subnet")
@@ -122,6 +171,8 @@ class AzureSettings(BaseModel):
             raise ValueError(f"default_accelerator_profile {self.default_accelerator_profile!r} is not one of the profiles")
         if self.default_accelerator_profile and self.profiles[self.default_accelerator_profile].accelerator == "none":
             raise ValueError("default_accelerator_profile names a profile that refuses accelerators")
+        if self.cluster_registries and not self.registry:
+            raise ValueError("cluster_registries: name the registry they are in (registry)")
         if self.bastion and not self.bastion_subnet:
             raise ValueError("bastion: give bastion_subnet too, the range its machines are reached from on port 22")
         return self

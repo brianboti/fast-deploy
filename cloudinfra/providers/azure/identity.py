@@ -4,8 +4,12 @@ else (learn.microsoft.com/rest/api/managedidentity/user-assigned-identities/crea
 names it carry it; a workload there asks the metadata service for tokens with its client id. Its principal id is what
 grants name; the orchestrator adds it to the request's members as serviceAccount:<principal id>.
 
-A cluster's federated credentials for it (a Kubernetes service account acting as it) come with clusters (step 5)."""
+In the request's clusters, the Kubernetes service account of its name in the request's namespace acts as it through
+workload identity: each cluster adds a federated credential to it naming the cluster's OIDC issuer and that service
+account (cluster.py), as soon as the cluster has an issuer, and removes it before the cluster goes
+(learn.microsoft.com/azure/aks/workload-identity-overview)."""
 from ...models.resources import IdentityResource, ResourceStatus
+from ..kubernetes import tenant_namespace
 from . import translate
 from .api import API_VERSIONS
 
@@ -25,7 +29,10 @@ class AzureIdentity:
         ctx.accepted(resource)
         made = self.api.put(self.api.arm(identity_id), {"location": ctx.region, "tags": tags}, VERSION, timeout=self.ceiling("identity"))
         properties = made.get("properties") or {}
-        return resource.model_copy(update={"status": ResourceStatus.READY, "principal_id": properties.get("principalId"), "client_id": properties.get("clientId")})
+        update = {"status": ResourceStatus.READY, "principal_id": properties.get("principalId"), "client_id": properties.get("clientId")}
+        if planned.spec.get("kubernetes"):  # unique per request: an issuer and subject name one namespace, and request names repeat
+            update["kubernetes_service_account"] = f"{tenant_namespace(ctx)}/{planned.spec['identity']}"
+        return resource.model_copy(update=update)
 
     def get(self, resource: IdentityResource) -> IdentityResource:
         found = self.api.find(self.api.arm(resource.provider_id), VERSION)

@@ -606,6 +606,9 @@ For this contract the decisions are:
 | `queue` with a private-only network (`deny_egress`) | accepted, with a note that the namespace's endpoint is public and reached through the `ServiceBus` tag with Entra authentication | private endpoints are Premium only |
 | `load_balancer: http` with hostnames | Front Door, global | the only managed certificate; an operator switch for a regional gateway later |
 | `service.timeout_seconds` above 240; `job.schedule.time_zone` not UTC | refused | Container Apps ingress and cron limits |
+| `cluster.public` | refused (step 5) | Application Gateway for Containers is a preview add-on on AKS |
+| `service.ingress: all` | refused (step 5) | the network's Container Apps environment is internal; Front Door Premium's Private Link to it comes later |
+| `service.cpu: 8`, memory other than 2 GiB per vCPU | 8 refused; less memory raised with a warning, more refused | the Consumption profile's fixed pairs |
 | `cluster.node_count: 1` or `node_cpu` below 4 | raised to the system pool's floor, with a warning | AKS's system pool rules |
 | a `zone` | optional; `1` by default where the region has zones; a size not offered in that zone for this subscription is refused before any call, from the Resource SKUs listing | zones are logical per subscription |
 | `region` | Azure names (`eastus2`, `westeurope`); the operator's `allowed_regions` | — |
@@ -840,6 +843,22 @@ Step 4 added these:
 21. Whether a flexible server's administrator password from `token_urlsafe` passes Azure's complexity rule every time
     (the orchestrator now ensures an upper and a lower case letter and a digit).
 
+Step 5 added these:
+
+22. That `listClusterUserCredential` answers on a cluster with local accounts off (the user kubeconfig holds no secret),
+    and that a role assignment at `<cluster>/namespaces/<ns>` takes effect for a member signed in with kubelogin.
+23. How long AKS refuses a create (`LinkedAuthorizationFailed`) after the control-plane identity's role on the subnet is
+    granted; the adapter tries again six times, twenty seconds apart.
+24. That a Container Apps environment's subnet takes the request's security group (allow-internal, the probes, deny)
+    and NAT gateway, and what Azure does on deleting an environment that still holds apps (the fake refuses it).
+25. Easy Auth on Container Apps honouring `allowedPrincipals.identities` and `groups` as App Service documents them, a
+    token for `api://<client id>` from `az account get-access-token`, and the 500-character limit.
+26. Front Door Standard taking an IPv4 origin forwarded over HTTP, the custom domain's `validationProperties` and
+    `domainValidationState` as the REST reference shows them, and how long a managed certificate takes after the TXT
+    record resolves.
+27. An IP-based backend pool on a Standard load balancer for machines with no public address, and that the probe's
+    source (the `AzureLoadBalancer` tag) passes the network's security group without a rule of its own.
+
 ### 9.3 Gotchas, each a test in the fake
 
 - A role assignment made seconds after its principal fails with `PrincipalNotFound` unless `principalType` is set;
@@ -967,6 +986,55 @@ never written, a vault purge asked for a request that never had a vault); all fi
 identity, the admission policy, Application Gateway for Containers with cert-manager; the Container Apps environment,
 apps and jobs with Easy Auth and Key Vault references. Then their real run, over plain HTTP first, HTTPS when the
 user has a domain, as on Google.
+
+Built on 2026-11-05 on branch `azure-step-5`, with `tests/cloudinfra/test_infra_azure_platform.py`, together with the
+load balancer the step-2 plan had left for later; api-versions read on each template reference page that day
+(ContainerService `2026-08-01`, App `2026-07-01`, Cdn `2026-07-01`). What changed while building it:
+
+- *No front door on a cluster yet.* Application Gateway for Containers' AKS add-on is preview only on 2026-11-05 (its
+  property is in no GA managedClusters version) and wants a `/24` of its own; the adapter calls GA APIs only, so
+  `cluster.public` is refused with the reason, and cert-manager is not installed. AKS's RBAC Writer role has no Gateway
+  API data actions either, so a front door will also need a custom role for HTTPRoutes.
+- *Members are Azure RBAC, not RoleBindings.* The Cluster User role on the cluster (its user kubeconfig) and RBAC
+  Reader or Writer at the request's namespace, by object id: no cluster call per member, and no doubt about how AKS names
+  a user to Kubernetes.
+- *No API server VNet integration.* It needs a delegated subnet and a role on it for no change in exposure: the API
+  server stays public behind Entra sign-in and the operator's authorized ranges, as a GKE cluster's is behind IAM.
+- *A cluster needs its request network's NAT* (`userAssignedNATGateway`); its nodes are raised to the system pool's floor
+  (two of four vCPUs, the same memory per vCPU where a size has it) and the plan says so through a new
+  `CloudProvider.warnings`. The orchestrator's quota check now counts a cluster's nodes.
+- *The kubelet identity is AKS's own*, granted Repository Reader under prefixes the operator lists (`cluster_registries`,
+  `LOGIN_SERVER/PREFIX`), the same one-assignment-per-member model as members' registry roles.
+- *The Container Apps environment is the network's, not the request's.* A delegated subnet holds one environment, so a
+  network shared through `network_id` shares it. A network sets aside a `/27` when its request holds a service or job
+  (the machines' subnet becomes the first half of its range); a network made without one cannot take services later,
+  and says so. The network's delete removes the environment first.
+- *Internal only.* The environment is internal, so a service is reached from its own network (the network's security
+  group admits nothing else); `ingress: all` is refused until Front Door Premium's Private Link to the environment is
+  built.
+- *Easy Auth needs an app registration*, which the operator makes once (`service_auth_client_id`): the service never
+  creates directory applications. Its allow-list holds object ids (500 characters, thirteen members) and groups, and
+  starts with the nil GUID so that it is never empty, since an empty one admits the whole tenant.
+- *No Key Vault references in the shell.* A secret asked for without a value is a disabled version Container Apps could
+  not read at creation; the runtime identity gets Secrets User on each named secret, and the delivery layer adds the
+  references with the release that uses them.
+- *Container Apps' fixed shapes*: 2 GiB per vCPU, at most 4 vCPUs, a 240-second request; a default the caller did not
+  set is lowered with a warning, a value they did set is refused. A job starts all of a run's tasks at once and gives no
+  task index; a schedule is UTC.
+- *Narrower roles than the note planned.* `admin` on a service is Container Apps Operator, not Contributor, whose
+  `containerApps/*` includes the auth config and so turning the sign-in off; `use` on a job is Jobs Reader, not Jobs
+  Operator, because a job's start takes an image and a command and runs them as its identity, which makes starting an
+  `admin` right. Members of Writer in a cluster stay as planned.
+- *A cluster opens its pod range on its subnet.* Azure CNI overlay does not encapsulate pod traffic between nodes, and the
+  subnet's security group sees it (concepts-network-azure-cni-overlay), so the request's deny-inbound rule would drop
+  DNS from a pod on one node to CoreDNS on another; the cluster adds `<cluster>-pods` (pod range to pod range) before
+  its nodes start and removes it after them.
+- *Every load balancer is a Standard load balancer* with an IP-based pool on the network the machines' own interfaces
+  are on (read from them: a load balancer over another request's machines is not on this request's network), its port
+  opened to those machines' addresses only (no write to the machines' interfaces); with
+  hostnames, Front Door Standard sits in front with the load balancer's address as its origin, and the network admits
+  `AzureFrontDoor.Backend` only. Checking `X-Azure-FDID` against the profile is the application's, and the connect block
+  says so.
 
 **Step 6, the delivery service.** Cut the provider seam `appdelivery` lacks (`google.py` → a `cloud` module per
 provider chosen by the environment), then Bastion reach and a container-host profile for Azure, Container Apps and

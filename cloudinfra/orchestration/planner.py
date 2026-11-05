@@ -101,17 +101,13 @@ def warnings(request: InfrastructureRequest, planned: list[PlannedResource], con
     if request.cache:
         found.append("the cache's AUTH string is copied into the request's cache-auth secret, which its access members can read")
     if request.clusters():
-        found.append("a cluster bills a management fee by the hour on top of its nodes (one zonal cluster per billing account is free); credentials come from the provider's IAM")
+        found.append("a cluster bills a management fee by the hour on top of its nodes; credentials come from the provider's IAM")
         for cluster in request.clusters():
             if cluster.public is not None and cluster.public.hostnames:
                 found.append(f"cluster {cluster.cluster_name}'s front door is public on HTTPS for {', '.join(cluster.public.hostnames)}: point their DNS at the address "
                              "it reports; the certificate becomes ACTIVE only after that, which can take up to an hour")
             elif cluster.public is not None:
                 found.append(f"cluster {cluster.cluster_name}'s front door serves plain HTTP on a public address, with no certificate")
-        outside = [cluster.cluster_name for cluster in request.clusters() if cluster.private_nodes and not (request.network is not None and request.network.nat)]
-        if outside:
-            found.append(f"cluster {', '.join(outside)}: private nodes have no public address and are not on this request's network with its NAT; they reach "
-                         "Google's APIs privately, and the internet only if their network has a NAT of its own")
     if request.load_balancer and request.load_balancer.hostnames:
         found.append(f"the load balancer is public on HTTPS for {', '.join(request.load_balancer.hostnames)} and redirects HTTP: point their DNS at the address it "
                      "reports; the certificate becomes ACTIVE only after that, which can take up to an hour")
@@ -121,6 +117,8 @@ def warnings(request: InfrastructureRequest, planned: list[PlannedResource], con
     if "registry" in request.kinds():
         found.append("registries: images are built only in the trusted project; only the operator's registry writers, named at admin, push, and every other "
                      "member pulls, whatever its level")
+    if provider is not None:
+        found.extend(provider.warnings(request, planned))
     found.extend(time_warnings(request, config))
     if request.access and provider is not None:
         takes = [kind for kind in request.kinds() if provider.takes_grants(kind, request.storage.type if kind == "storage" else None)]

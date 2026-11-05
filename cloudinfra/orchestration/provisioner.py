@@ -562,14 +562,17 @@ class Orchestrator:
         if not quota:
             event("quota_unavailable", provider=provider.name, region=request.region)
             return
-        wanted = {"CPUS": sum(item.spec.get("cpu", 0) for item in planned if item.kind == "compute"),
-                  "INSTANCES": sum(1 for item in planned if item.kind == "compute"),
+        # a cluster's nodes are machines too, where its plan says their size (Azure's does)
+        machines = [(item, item.spec.get("node_count", 1) if item.kind == "cluster" else 1) for item in planned
+                    if item.kind == "compute" or (item.kind == "cluster" and item.spec.get("cpu"))]
+        wanted = {"CPUS": sum(item.spec.get("cpu", 0) * count for item, count in machines),
+                  "INSTANCES": sum(count for _, count in machines),
                   "DISKS_TOTAL_GB": sum(item.spec.get("size_gb", 0) for item in planned if item.kind == "storage" and item.spec.get("type") == "persistent")
                   + sum(item.spec.get("boot_disk_gb", 0) for item in planned if item.kind == "compute"),
                   "IN_USE_ADDRESSES": sum(1 for item in planned if item.kind == "compute" and item.spec.get("public_ip"))}
-        for item in planned:  # a machine family's own quota, where the provider counts one (Azure's vCPUs per family)
-            if item.kind == "compute" and item.spec.get("cpu_quota"):
-                wanted[item.spec["cpu_quota"]] = wanted.get(item.spec["cpu_quota"], 0) + item.spec.get("cpu", 0)
+        for item, count in machines:  # a machine family's own quota, where the provider counts one (Azure's vCPUs per family)
+            if item.spec.get("cpu_quota"):
+                wanted[item.spec["cpu_quota"]] = wanted.get(item.spec["cpu_quota"], 0) + item.spec.get("cpu", 0) * count
         for metric, needed in wanted.items():
             found = quota.get(metric)
             if needed and found and found.get("limit") is not None and float(found.get("usage") or 0) + needed > float(found["limit"]):

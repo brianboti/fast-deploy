@@ -65,6 +65,12 @@ def info(resource, resources: list, settings, subscription: str, drivers: bool =
         if resource.client_id:
             commands["token"] = f"curl -H Metadata:true 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=RESOURCE&client_id={resource.client_id}'"
             notes.append(f"On such a machine, a workload asks for its tokens with client id {resource.client_id} (AZURE_CLIENT_ID for the Azure libraries)")
+        if resource.kubernetes_service_account and resource.client_id:
+            namespace, name = resource.kubernetes_service_account.split("/", 1)
+            commands["kubernetes"] = (f"kubectl create serviceaccount {name} -n {namespace} && kubectl annotate serviceaccount {name} -n {namespace} "
+                                      f"azure.workload.identity/client-id={resource.client_id}")
+            notes.append(f"In the request's clusters, pods running as the service account {resource.kubernetes_service_account} and labelled "
+                         "azure.workload.identity/use: \"true\" act as it")
         return ConnectInfo(commands=commands, notes=notes)
     if kind == "secret":
         notes = {"database_password": ["The password of the request's database"], "cache_auth": ["The access key of the request's cache"]}.get(resource.purpose, [])
@@ -122,6 +128,56 @@ def info(resource, resources: list, settings, subscription: str, drivers: bool =
                            notes=[f"Images live under {resource.address}/ in the operator's registry; only the operator's registry writers, named at admin, push, "
                                   "and every other member pulls", "A release names an image here by digest, never by tag",
                                   "Deleting the registry deletes every image under it", *granted])
+    if kind == "cluster":
+        where = f"--resource-group {group_of(resource.provider_id)} --name {resource.name} --subscription {subscription}"
+        namespace = resource.namespace or "NAMESPACE"
+        return ConnectInfo(commands={"credentials": f"az aks get-credentials {where}", "sign_in": "kubelogin convert-kubeconfig -l azurecli",
+                                     "use": f"kubectl get pods -n {namespace}"},
+                           prerequisites=["kubelogin (az aks install-cli)", "An address the operator's authorized ranges admit, when it lists any",
+                                          GRANT_DELAY, *granted],
+                           notes=[f"Your access is in the namespace {namespace} only: RBAC Reader at use, Writer at admin",
+                                  "Sign-in is Entra's: the cluster has no local accounts, and its kubeconfig holds no secret",
+                                  "A Service of type LoadBalancer or NodePort, an Ingress and a Gateway are refused in the namespace: a public address is the "
+                                  "infrastructure layer's"])
+    if kind == "service":
+        network = by_id.get(resource.network)
+        where = f"a machine on the network {network.name if network is not None else resource.network}"
+        url = resource.url or "URL"
+        if resource.public:
+            commands, notes = {"call": f"curl {url}"}, ["It takes calls without sign-in from its network"]
+        else:
+            client = settings.service_auth_client_id or "CLIENT_ID"
+            sign_in = f"$(az account get-access-token --resource api://{client} --query accessToken --output tsv)"  # a shell substitution, not a credential
+            commands = {"call": f'curl -H "Authorization: Bearer {sign_in}" {url}'}
+            notes = ["A call needs an Entra token for the operator's app registration and a member granted use or admin: anyone else is answered 401 or 403",
+                     *granted]
+        return ConnectInfo(commands=commands, prerequisites=[f"Reach it from {where}: its environment is internal"],
+                           notes=notes + [f"It runs a stand-in until a release is put on it; revision {resource.revision or 'none yet'}"])
+    if kind == "job":
+        where = f"--resource-group {group_of(resource.provider_id)} --name {resource.name} --subscription {subscription}"
+        notes = ["It runs a stand-in until a release is put on it", "Starting a run is admin's: Azure's start can change the image and command it runs "
+                 "as the job's identity; use reads the job and its runs", *granted]
+        if resource.schedule:
+            notes.insert(0, f"It runs by itself on {resource.schedule['cron']} (UTC)")
+        return ConnectInfo(commands={"run": f"az containerapp job start {where}", "runs": f"az containerapp job execution list {where} --output table"},
+                           prerequisites=["The Azure CLI's containerapp extension (az extension add --name containerapp)", GRANT_DELAY], notes=notes)
+    if kind == "load_balancer":
+        domains = [item for item in resource.components if item.get("kind") == "custom_domain"]
+        if not domains:
+            return ConnectInfo(commands={"call": f"curl http://{resource.address or 'ADDRESS'}:{resource.port}" if resource.type == "http"
+                                         else f"nc -vz {resource.address or 'ADDRESS'} {resource.port}"},
+                               notes=[f"Public on port {resource.port}, passed through to the machines, which see each client's own address"])
+        door_id = next((item.get("front_door_id") for item in resource.components if item.get("kind") == "front_door"), None)
+        records = []
+        for domain in domains:
+            records.append(f"{domain.get('txt_name', '_dnsauth.' + domain['name'])} TXT {domain.get('txt') or 'TOKEN (not issued yet)'}")
+            records.append(f"{domain['name']} CNAME {domain.get('cname') or resource.address}")
+        return ConnectInfo(commands={"call": f"curl https://{domains[0]['name']}"},
+                           prerequisites=["DNS records the operator adds: " + "; ".join(records)],
+                           notes=[f"Certificate: {resource.certificate or 'PROVISIONING'}; Front Door approves each hostname once its TXT record resolves, "
+                                  "and serves HTTPS after its CNAME does", "HTTP is redirected to HTTPS; Front Door forwards to the machines over HTTP",
+                                  "The machines admit Front Door's backends only, but every profile's, any tenant's: the application refuses a request "
+                                  f"whose X-Azure-FDID header is not {door_id or 'this profile id'}"])
     return None
 
 

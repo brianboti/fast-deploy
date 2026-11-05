@@ -1,7 +1,7 @@
 """Release S2 of the security assessment of 2026-10-30 (docs/research/RESEARCH-2026-10-30-security-assessment.md, section 7):
 the provider defaults the benchmarks expect, infrastructure side. Each test names the finding it holds."""
 import pytest
-from gcp_fakes import config_dict
+from gcp_fakes import config_dict, make_provider
 from test_infra_release_a import orchestrated, provision
 
 from cloudinfra.config import Config
@@ -62,7 +62,9 @@ def test_a_request_may_still_ask_for_public_nodes(tmp_path):
 def test_private_nodes_off_the_requests_network_are_warned_about():
     request = InfrastructureRequest.model_validate({"region": "us-central1", "cluster": {}})
     from cloudinfra.orchestration.planner import warnings
-    assert any("not on this request's network with its NAT" in item for item in warnings(request, []))
+    provider, _ = make_provider(Config.model_validate(config_dict()))
+    assert any("not on this request's network with its NAT" in item for item in warnings(request, [], provider=provider)), "Google's own note, from its adapter"
+    assert not any("NAT" in item for item in warnings(request, [])), "the planner itself names no cloud"
 
 
 @pytest.mark.parametrize("value", ["203.0.113.7", "0.0.0.0/33", "not-a-range"])
