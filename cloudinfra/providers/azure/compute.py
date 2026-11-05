@@ -37,6 +37,8 @@ from .network import reaches_internet
 VERSION = API_VERSIONS["Microsoft.Compute"]
 NETWORK_VERSION = API_VERSIONS["Microsoft.Network"]
 DISK_VERSION = API_VERSIONS["Microsoft.Compute/disks"]
+SKUS_VERSION = "2021-07-01"  # Resource SKUs (learn.microsoft.com/rest/api/compute/resource-skus/list), versioned apart from machines
+OFFERS_SECONDS = 3600
 # A machine shut down from inside is "stopped" but still allocated, and bills in full: it is UNKNOWN with an error saying so,
 # never STOPPED, so that a stop deallocates it and no estimate prices it as stopped.
 POWER = {"running": ResourceStatus.READY, "deallocated": ResourceStatus.STOPPED, "stopped": ResourceStatus.UNKNOWN, "starting": ResourceStatus.UPDATING,
@@ -81,6 +83,7 @@ class AzureCompute:
     def __init__(self, api, settings, groups, ceiling):
         self.api, self.settings, self.groups, self.ceiling = api, settings, groups, ceiling
         self._key = None
+        self._offers: dict[str, tuple[float, dict[str, set[str]]]] = {}
 
     def key(self) -> str:
         if self._key is None:
@@ -107,6 +110,38 @@ class AzureCompute:
             found["interfaces"] = interfaces
         if disk:
             found["os_disk"] = [disk]
+        return found
+
+    def offered(self, region: str) -> dict[str, set[str]] | None:
+        """The machine sizes Azure offers this subscription in a region (Resource SKUs: {size, lowercase: its zones, or
+        {""} where the region has none}), without the zones or the region a restriction takes away; read once an hour per
+        region. None when the listing cannot be read. A student subscription is offered none of the v5 sizes in most of
+        its regions (the real run of 2026-11-05), which Azure otherwise says only when the machine is made."""
+        kept = self._offers.get(region)
+        if kept is not None and self.api.clock() - kept[0] < OFFERS_SECONDS:
+            return kept[1]
+        try:
+            items = self.api.list(self.api.subscription("/providers/Microsoft.Compute/skus"), SKUS_VERSION, params={"$filter": f"location eq '{region}'"})
+        except InfrastructureError as exc:
+            event("size_offers_unread", region=region, code=exc.code.value)
+            return None
+        found = {}
+        for sku in items:
+            if sku.get("resourceType") != "virtualMachines" or not sku.get("name"):
+                continue
+            info = next((item for item in sku.get("locationInfo") or [] if str(item.get("location", "")).lower() == region.lower()), None)
+            if info is None:
+                continue
+            listed = set(info.get("zones") or [])
+            zones = set(listed) if listed else {""}
+            for restriction in sku.get("restrictions") or []:
+                if restriction.get("type") == "Location":
+                    zones = set()
+                elif restriction.get("type") == "Zone":
+                    zones -= set((restriction.get("restrictionInfo") or {}).get("zones") or [])
+            if zones:
+                found[sku["name"].lower()] = zones
+        self._offers[region] = (self.api.clock(), found)
         return found
 
     def interface(self, resource: ComputeResource) -> str:

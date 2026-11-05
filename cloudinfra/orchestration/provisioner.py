@@ -428,6 +428,11 @@ class Orchestrator:
             ctx.on_accepted = accepted
             try:
                 self._check_quota(provider, request, planned)
+                offers = provider.preflight(request, planned)  # what the provider's own listings say it would refuse
+                if offers:
+                    raise InfrastructureError(offers[0].code, offers[0].message, {"field": offers[0].field,
+                                                                                  "problems": [{"code": item.code.value, "message": item.message,
+                                                                                                "field": item.field} for item in offers]})
                 # before the first create: a member the request names that the directory does not know creates nothing
                 self._resolve_members(request_id, provider, ctx, required={entry.member for entry in request.access})
                 for item in planned:

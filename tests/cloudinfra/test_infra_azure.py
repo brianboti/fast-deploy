@@ -245,6 +245,19 @@ def test_without_an_async_operation_the_location_is_followed():
     assert api.put(GROUP_URL, {}, "2021-04-01")["name"] == "x" and [str(request.url) for request in seen[1:3]] == [location, location]
 
 
+def test_a_relative_location_is_read_on_the_calls_own_host_with_the_writes_api_version():
+    """A managed identity's create answers 201 with Location: /subscriptions/… (the real subscription, 2026-11-05)."""
+    identity = "/subscriptions/x/resourcegroups/rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/worker"
+    api, seen, _ = client((201, {"Location": identity}, {"properties": {"principalId": "p"}}), (200, {}, {"name": "worker", "properties": {"principalId": "p"}}),
+                          (200, {}, {"name": "worker", "properties": {"principalId": "p"}}))
+    assert api.put(GROUP_URL, {}, "2024-11-30")["name"] == "worker"
+    assert str(seen[1].url) == f"https://management.azure.com{identity}?api-version=2024-11-30", "on Resource Manager's host, with the write's api-version"
+    api, seen, _ = client((202, {"Location": "//attacker.example/operations/1"}, None))
+    with pytest.raises(InfrastructureError):
+        api.put(GROUP_URL, {}, "2021-04-01")
+    assert len(seen) == 1, "a protocol-relative address names another host: never followed"
+
+
 def test_a_resource_that_says_it_is_still_being_made_is_read_until_it_is_done():
     api, seen, _ = client((200, {}, {"properties": {"provisioningState": "Creating"}}), (200, {}, {"properties": {"provisioningState": "Updating"}}),
                           (200, {}, {"name": "x", "properties": {"provisioningState": "Succeeded"}}))

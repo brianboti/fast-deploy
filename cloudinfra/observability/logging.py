@@ -111,3 +111,6 @@ def configure(level: int = logging.INFO, path: str | None = None):
         handler = RotatingFileHandler(path, maxBytes=5_000_000, backupCount=5)
         handler.setFormatter(logging.Formatter("%(message)s"))
         log.addHandler(handler)
+    # The service's own handlers write each event; passed up, a handler a library puts on the root logger (the MCP SDK's
+    # RichHandler) would write it a second time, which the Azure run of 2026-11-05 saw on every line.
+    log.propagate = False

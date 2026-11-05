@@ -98,7 +98,8 @@ class AzureLoadBalancer:
         taken("public_ip", ip_id)
         made = self.api.put(self.api.arm(ip_id), address, VERSION, timeout=self.ceiling("network"))
         taken("load_balancer", lb_id)
-        self.api.put(self.api.arm(lb_id), self._body(spec, lb_id, ip_id, backends, vnet, region, tags), VERSION, timeout=self.ceiling("network"))
+        self.api.put(self.api.arm(lb_id), self._body(spec, lb_id, ip_id, region, tags), VERSION, timeout=self.ceiling("network"))
+        self._fill_pool(lb_id, backends, vnet)
         for subnet in sorted(set(subnets.values())):
             nsg = self.network.subnet_security_group(subnet)
             if nsg is None:  # the operator's subnet: its security group is the operator's to open
@@ -112,14 +113,24 @@ class AzureLoadBalancer:
             resource = self._front_door(spec, resource, public, group_id, tags, taken, components)
         return resource
 
-    @staticmethod
-    def _body(spec, lb_id, ip_id, backends, vnet, region, tags) -> dict:
+    def _fill_pool(self, lb_id: str, backends, vnet: str) -> None:
+        """The machines into the pool, by the pool's own call, and read back: Azure takes a load balancer whose PUT names
+        IP-based members and keeps none of them (the real run of 2026-11-05), so that one would send traffic nowhere."""
+        pool = f"{lb_id}/backendAddressPools/machines"
         members = [{"name": machine.name, "properties": {"ipAddress": machine.internal_ip, "virtualNetwork": {"id": vnet}}} for machine in backends]
+        self.api.put(self.api.arm(pool), {"properties": {"loadBalancerBackendAddresses": members}}, VERSION, timeout=self.ceiling("network"))
+        kept = (self.api.get(self.api.arm(pool), VERSION).get("properties") or {}).get("loadBalancerBackendAddresses") or []
+        if {str((member.get("properties") or {}).get("ipAddress")) for member in kept} != {machine.internal_ip for machine in backends}:
+            raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"Azure kept {len(kept)} of the load balancer's {len(backends)} machines in its pool",
+                                      {"pool": pool.rsplit("/", 1)[-1]})
+
+    @staticmethod
+    def _body(spec, lb_id, ip_id, region, tags) -> dict:
         probe = {"protocol": "Http", "port": spec.port, "requestPath": spec.health_check_path} if spec.type == "http" else {"protocol": "Tcp", "port": spec.port}
         probe.update(intervalInSeconds=5, probeThreshold=2)
         return {"location": region, "tags": tags, "sku": {"name": "Standard", "tier": "Regional"}, "properties": {
             "frontendIPConfigurations": [{"name": "front", "properties": {"publicIPAddress": {"id": ip_id}}}],
-            "backendAddressPools": [{"name": "machines", "properties": {"loadBalancerBackendAddresses": members}}],
+            "backendAddressPools": [{"name": "machines"}],  # its members by the pool's own call (_fill_pool)
             "probes": [{"name": "health", "properties": probe}],
             "loadBalancingRules": [{"name": f"port-{spec.port}", "properties": {
                 "frontendIPConfiguration": {"id": f"{lb_id}/frontendIPConfigurations/front"}, "backendAddressPool": {"id": f"{lb_id}/backendAddressPools/machines"},

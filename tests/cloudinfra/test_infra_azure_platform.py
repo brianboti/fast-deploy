@@ -387,7 +387,11 @@ def test_a_tcp_load_balancer_passes_connections_to_the_machines_by_their_private
     assert address["sku"] == {"name": "Standard", "tier": "Regional"} and address["zones"] == ["1", "2", "3"]
     [body] = puts(fake, "loadBalancers")
     properties = body["properties"]
-    members = properties["backendAddressPools"][0]["properties"]["loadBalancerBackendAddresses"]
+    assert properties["backendAddressPools"] == [{"name": "machines"}], "members go by the pool's own call: Azure keeps none named here"
+    [pool] = puts(fake, "backendAddressPools")
+    members = pool["properties"]["loadBalancerBackendAddresses"]
+    [kept] = of_kind(fake, "Microsoft.Network/loadBalancers/backendAddressPools")
+    assert len(kept["properties"]["loadBalancerBackendAddresses"]) == 2, "and the pool holds them afterwards"
     [network] = of_kind(fake, "Microsoft.Network/virtualNetworks")
     behind = sorted(machine.internal_ip for machine in response.resources.compute if machine.group == "pg")
     [outside] = [machine.internal_ip for machine in response.resources.compute if machine.group == "ops"]
@@ -470,8 +474,8 @@ def test_a_load_balancer_over_another_requests_machines_uses_their_network_and_a
     machines = [machine.id for machine in first.resources.compute]
     second = provision(orchestrator, request(name="three", network={"cidr": "10.20.0.0/24"}, load_balancer={"backends": machines}))
     assert second.status == RequestStatus.READY, second.error
-    [body] = puts(fake, "loadBalancers")
-    members = body["properties"]["backendAddressPools"][0]["properties"]["loadBalancerBackendAddresses"]
+    [pool] = puts(fake, "backendAddressPools")
+    members = pool["properties"]["loadBalancerBackendAddresses"]
     assert {member["properties"]["virtualNetwork"]["id"].rsplit("/", 1)[-1] for member in members} == {"one-net"}, "the machines' network, not this request's"
     [rule] = [path for method, path in fake.order if method == "PUT" and "/securityRules/" in path]
     assert "/networkSecurityGroups/one-net-nsg/" in rule

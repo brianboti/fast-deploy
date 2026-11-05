@@ -100,8 +100,9 @@ class AzureSecret:
                               audience=self.cloud.key_vault)
                 return
             except InfrastructureError as exc:
-                if exc.code == ErrorCode.NOT_FOUND and attempt < attempts - 1:
-                    self.api.sleep(PURGE_NOT_YET[1])  # not among the deleted ones yet
+                if exc.code in (ErrorCode.NOT_FOUND, ErrorCode.PROVIDER_CONFLICT) and attempt < attempts - 1:
+                    # not among the deleted ones yet, or its delete still running (409, every purge of the real run of 2026-11-05)
+                    self.api.sleep(PURGE_NOT_YET[1])
                     continue
                 if exc.code in (ErrorCode.NOT_FOUND, ErrorCode.PROVIDER_CONFLICT):  # gone, or being deleted still: the vault's purge takes it later
                     event("secret_purge_left", secret=resource.name, reason=exc.code.value)
