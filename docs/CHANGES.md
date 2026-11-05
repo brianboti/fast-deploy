@@ -4,6 +4,20 @@ into another line. Fixes reported privately are listed here when their advisory 
 
 # Unreleased
 
+## The delivery service's provider seam (Azure, step 6a)
+
+The first part of step 6 of docs/research/RESEARCH-2026-11-03-azure.md: `appdelivery` names a cloud per environment
+before Azure is added to it. Nothing changes for Google.
+
+- An environment has a `provider` (`gcp`, the default and for now the only one), and `appdelivery/clouds/` holds a
+  `Cloud` per provider: what reaches an environment's machines, clusters, services and jobs, its builder, its secret
+  reads, the token a machine pulls with, and the check of an image's provenance. `releases.py` and the builder ask the
+  environment's cloud for each and name no cloud themselves; `clouds/gcp.py` composes the Google modules that were the
+  whole service.
+- The planner's rules for reaching a machine (Container-Optimized OS, IAP on port 22, Artifact Registry's private path)
+  are Google's own function, picked by the environment's provider; an environment's identity is named through its
+  `member` and `identity`.
+
 ## Azure, the first real run: what it found
 
 The first run of the Azure adapter on a real subscription, a student one, on 2026-11-05 ([AZURE-RUNS.md](AZURE-RUNS.md)),

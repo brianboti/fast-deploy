@@ -559,6 +559,7 @@ gcp:
 environments:
   dev:
     token_env: APPDELIVERY_DEV_INFRA_TOKEN          # cloudinfra token of this environment's read-only principal
+    provider: gcp                                    # the cloud this environment's targets are in (the default; gcp only for now)
     service_account: appdelivery-dev@infra-project.iam.gserviceaccount.com
     allowed_registries: [us-central1-docker.pkg.dev/infra-project/shop-images]
     build: {service_account: build-dev@infra-project.iam.gserviceaccount.com}   # machine_type, timeout_seconds, builder optional
@@ -580,6 +581,10 @@ principals:
   - {name: shop-team, token_sha256: "…", infra_owner: shop-team, environments: [dev, prod], can_deploy: true, can_build: true}
   - {name: shop-oncall, token_sha256: "…", infra_owner: shop-team, environments: [prod], can_approve: true}
 ```
+
+Every step of a release that touches a cloud (reaching a target, reading a secret, a machine's pull token, the
+provenance check, a build) goes through the environment's `provider`, a `Cloud` in `appdelivery/clouds/`; the release
+logic in `releases.py` names no cloud, and the planner's rules for reaching a machine are the provider's own.
 
 ### Running it on Google Cloud
 

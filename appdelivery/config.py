@@ -97,6 +97,8 @@ class WorkloadLimits(StrictModel):
 
 
 class Environment(StrictModel):
+    provider: Literal["gcp"] = Field(default="gcp", description="The cloud this environment's targets and builds are in (clouds/); its identities below "
+                                                              "are that cloud's.")
     token_env: str = Field(pattern=r"^[A-Z][A-Z0-9_]{2,63}$", description="The environment variable that holds this environment's cloudinfra token.")
     service_account: str = Field(pattern=SERVICE_ACCOUNT.pattern, description="The identity this environment acts as on machines and secrets.")
     pull_service_account: str = Field(pattern=SERVICE_ACCOUNT.pattern,
@@ -138,6 +140,16 @@ class Environment(StrictModel):
         if self.pull_service_account in (self.service_account, self.build.service_account if self.build else None):
             raise ValueError("pull_service_account must be an account of its own: a machine receives its token, so it may read images and nothing else")
         return self
+
+    @property
+    def identity(self) -> str:
+        """The identity this environment acts as, as messages name it."""
+        return self.service_account
+
+    @property
+    def member(self) -> str:
+        """The identity as the infrastructure layer's access list names it: what a request must grant for releases."""
+        return f"serviceAccount:{self.service_account}"
 
     def allows(self, repository: str) -> bool:
         """host/path is under one of allowed_registries, whole path parts only."""
