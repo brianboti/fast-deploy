@@ -28,7 +28,7 @@ VAULT = "https://vault.azure.net"
 GROUP_URL = f"https://management.azure.com/subscriptions/{SUBSCRIPTION}/resourceGroups/platform-1a2b3c4d"
 OPERATION = f"https://management.azure.com/subscriptions/{SUBSCRIPTION}/providers/Microsoft.Resources/operations/op-1?api-version=2021-04-01"
 AZURE_REQUEST = {"provider": "azure", "region": "eastus2", "network": {}, "compute": {"cpu": 2, "memory_gb": 8}}
-NOT_YET_REQUEST = {"provider": "azure", "region": "eastus2", "database": {}}
+NOT_YET_REQUEST = {"provider": "azure", "region": "eastus2", "cluster": {}}
 
 
 # ---- the clouds
@@ -449,14 +449,15 @@ def test_a_kind_it_does_not_provide_yet_is_refused_before_any_call_naming_those_
     provider, fake = make_azure_provider(config)
     problems = validator.validate(InfrastructureRequest.model_validate(NOT_YET_REQUEST), config, provider)
     assert [(problem.code, problem.message) for problem in problems if problem.code == ErrorCode.UNSUPPORTED_RESOURCE_KIND] == \
-        [(ErrorCode.UNSUPPORTED_RESOURCE_KIND, "The azure adapter does not provide database; it provides identity, network, storage, compute")]
+        [(ErrorCode.UNSUPPORTED_RESOURCE_KIND, "The azure adapter does not provide cluster; it provides identity, network, storage, compute, database, cache, queue, "
+                                               "secret, registry")]
     assert validator.validate(InfrastructureRequest.model_validate(AZURE_REQUEST), config, provider) == [] and fake.calls == []
 
 
 def test_every_primitive_not_written_yet_is_a_structured_refusal():
     provider, fake = make_azure_provider(make_azure_config())
-    assert {"create_database", "delete_cache", "get_cluster", "create_load_balancer"} <= set(NOT_YET) and not {"create_compute", "resource_health"} & set(NOT_YET)
-    for operation in ("create_database", "get_queue", "delete_cluster"):
+    assert {"create_cluster", "delete_service", "get_job", "create_load_balancer"} <= set(NOT_YET) and not {"create_database", "resource_health"} & set(NOT_YET)
+    for operation in ("create_cluster", "get_job", "delete_service"):
         with pytest.raises(InfrastructureError) as caught:
             getattr(provider, operation)(None, None, None, None)
         assert caught.value.code == ErrorCode.UNSUPPORTED_RESOURCE_KIND and caught.value.details == {"provider": "azure", "operation": operation}
@@ -506,7 +507,8 @@ def test_the_service_names_the_subscription_and_refuses_what_azure_does_not_prov
     assert orchestrator.validate(InfrastructureRequest.model_validate(AZURE_REQUEST), who).valid and fake.calls == []
     assert orchestrator.validate(InfrastructureRequest.model_validate(VM_REQUEST), who).valid, "the Google adapter beside it is untouched"
     kinds = orchestrator.resource_kinds()
-    assert kinds.providers == ["azure", "gcp"] and [kind.kind for kind in kinds.kinds if "azure" in kind.providers] == ["identity", "network", "storage", "compute"]
+    assert kinds.providers == ["azure", "gcp"] and [kind.kind for kind in kinds.kinds if "azure" in kind.providers] == \
+        ["identity", "network", "storage", "compute", "database", "cache", "queue", "secret", "registry"]
 
 
 def test_the_fake_is_the_client_with_its_seam_replaced():

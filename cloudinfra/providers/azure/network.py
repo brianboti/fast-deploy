@@ -19,7 +19,7 @@ made one after another, and the subnet is made with the network.
 """
 from ...models.errors import ErrorCode, InfrastructureError
 from ...models.resources import FirewallRule, NetworkResource, ResourceStatus
-from . import translate
+from . import private, translate
 from .api import API_VERSIONS
 from .groups import group_of
 
@@ -163,6 +163,7 @@ class AzureNetwork:
 
     def delete(self, resource: NetworkResource, ctx) -> None:
         group = group_of(resource.provider_id)
+        private.remove_zones(self.api, resource, self.ceiling("network"))  # the private DNS zones its databases and caches were found by
         if resource.flow_log:
             self.api.delete(self._url(resource.flow_log), VERSION, timeout=self.ceiling("flow_log"))
         self.api.delete(self._url(resource.provider_id), VERSION, timeout=self.ceiling("network"))  # its subnet goes with it

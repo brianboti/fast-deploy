@@ -186,3 +186,83 @@ def tags(ctx, extra: dict[str, str] | None = None) -> dict[str, str]:
 
 def description(ctx) -> str:
     return f"cloudinfra request {ctx.request_id} ({ctx.name}) owner {ctx.owner or 'unknown'}"
+
+
+# ---- databases: Azure Database for PostgreSQL and MySQL flexible servers (docs/research/RESEARCH-2026-11-03-azure.md, section 5.4)
+# PostgreSQL 14 to 18, 18 the default; 13 and older are under extended support only. MySQL 8.0 through the API's GA
+# version (it names it 8.0.21); 8.4 is offered only by a preview version, which this adapter does not call, and 5.7 is
+# closed to new servers.
+DB_VERSIONS = {"postgresql": {"default": "18", "versions": {"14": "14", "15": "15", "16": "16", "17": "17", "18": "18"},
+                              "refused": {"13": "PostgreSQL 13 and older run on Azure under paid extended support only"}},
+               "mysql": {"default": "8.0", "versions": {"8.0": "8.0.21"},
+                         "refused": {"5.7": "MySQL 5.7 is closed to new servers on Azure",
+                                     "8.4": "Azure offers MySQL 8.4 only through a preview API, which this adapter does not use; ask for 8.0"}}}
+# small is Burstable, which Microsoft says is not for production and has no high availability
+DB_SKUS = {"small": ("Standard_B1ms", "Burstable"), "medium": ("Standard_D2ds_v5", "GeneralPurpose"), "large": ("Standard_D4ds_v5", "GeneralPurpose")}
+DB_PORTS = {"postgresql": 5432, "mysql": 3306}
+PG_STORAGE_GB = (32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32767)  # PostgreSQL's disk sizes; a request's is raised to the next
+MYSQL_MIN_STORAGE_GB = 20
+# names a flexible server takes for no administrator (learn.microsoft.com/azure/postgresql/flexible-server/quickstart-create-server)
+RESERVED_LOGINS = frozenset({"azure_superuser", "azure_pg_admin", "admin", "administrator", "root", "guest", "public", "sa", "mysql"})
+
+
+def database_version(spec) -> tuple[str, str] | Problem:
+    """(label, the API's version value) for the engine and version, or the problem."""
+    known = DB_VERSIONS[spec.engine]
+    label = spec.version or known["default"]
+    if label in known["refused"]:
+        return Problem(ErrorCode.INVALID_DATABASE_CONFIGURATION, known["refused"][label], "database.version")
+    if label not in known["versions"]:
+        return Problem(ErrorCode.INVALID_DATABASE_CONFIGURATION, f"{spec.engine} {label} is not offered on Azure; versions: {', '.join(known['versions'])}",
+                       "database.version")
+    return label, known["versions"][label]
+
+
+def database_storage(spec) -> int:
+    if spec.engine == "postgresql":
+        return next((size for size in PG_STORAGE_GB if size >= spec.storage_gb), PG_STORAGE_GB[-1])
+    return max(spec.storage_gb, MYSQL_MIN_STORAGE_GB)
+
+
+def database_problems(spec) -> list[Problem]:
+    found = []
+    version = database_version(spec)
+    if isinstance(version, Problem):
+        found.append(version)
+    if spec.high_availability and DB_SKUS[spec.size][1] == "Burstable":
+        found.append(Problem(ErrorCode.INVALID_DATABASE_CONFIGURATION, "A small database is Burstable on Azure, which has no high availability; ask for medium or large",
+                             "database.high_availability"))
+    username = spec.username
+    if username in RESERVED_LOGINS or username.startswith(("pg_", "azure_")):
+        found.append(Problem(ErrorCode.INVALID_DATABASE_CONFIGURATION, f"{username!r} is a name Azure keeps for itself; choose another username", "database.username"))
+    elif spec.engine == "postgresql" and not username.isalnum():
+        found.append(Problem(ErrorCode.INVALID_DATABASE_CONFIGURATION, "On Azure, a PostgreSQL administrator's name has letters and digits only", "database.username"))
+    if spec.engine == "postgresql" and spec.storage_gb > PG_STORAGE_GB[-1]:
+        found.append(Problem(ErrorCode.INVALID_DATABASE_CONFIGURATION, f"Azure's PostgreSQL holds at most {PG_STORAGE_GB[-1]} GB", "database.storage_gb"))
+    return found
+
+
+# ---- caches: Azure Managed Redis, Balanced sizes (learn.microsoft.com/azure/redis/overview); Azure Cache for Redis is
+# closed to new customers since 2026-04-01 and is not used
+CACHE_VERSION = "7.4"
+CACHE_SKUS = (("Balanced_B1", 1), ("Balanced_B3", 3), ("Balanced_B5", 6), ("Balanced_B10", 12), ("Balanced_B20", 24), ("Balanced_B50", 60),
+              ("Balanced_B100", 120), ("Balanced_B150", 180), ("Balanced_B250", 240), ("Balanced_B350", 360))
+CACHE_PORT = 10000
+
+
+def cache_sku(memory_gb: int) -> tuple[str, int] | None:
+    """The smallest Balanced size holding the memory asked, and its memory."""
+    return next(((name, size) for name, size in CACHE_SKUS if size >= memory_gb), None)
+
+
+def cache_problems(spec) -> list[Problem]:
+    found = []
+    if spec.version is not None and spec.version != CACHE_VERSION:
+        found.append(Problem(ErrorCode.INVALID_CACHE_CONFIGURATION, f"Azure Managed Redis runs Redis {CACHE_VERSION}; leave version out or ask for it", "cache.version"))
+    if cache_sku(spec.memory_gb) is None:
+        found.append(Problem(ErrorCode.INVALID_CACHE_CONFIGURATION, f"Azure Managed Redis's Balanced sizes hold at most {CACHE_SKUS[-1][1]} GB", "cache.memory_gb"))
+    return found
+
+
+def translate_namespace(engine: str) -> str:
+    return {"postgresql": "Microsoft.DBforPostgreSQL", "mysql": "Microsoft.DBforMySQL"}[engine]

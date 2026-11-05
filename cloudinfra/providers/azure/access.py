@@ -16,6 +16,8 @@ grants and revokes resource by resource, and a revoke on one machine must not ta
 principalType is always set, so that an identity made seconds ago is found (ARM waits for its replication instead of
 answering PrincipalNotFound). A grant can take up to 10 minutes to apply (Storage and Key Vault say so).
 """
+import re
+import threading
 import uuid
 from urllib.parse import quote
 
@@ -30,14 +32,33 @@ VM_ADMIN_LOGIN = "1c0163c0-47e6-4577-8991-ea5c82e286e4"
 READER = "acdd72a7-3385-48ef-bd42-f606fba81ae7"
 BLOB_CONTRIBUTOR = "ba92f5b4-2d11-453d-a403-e96b0029c9fe"
 BLOB_OWNER = "b7e6dc6d-f1e8-4753-8033-0f276bb0955b"
+SECRETS_USER = "4633458b-17de-408a-b874-0445c86b69e6"
+SECRETS_OFFICER = "b86a8fe4-44ce-4948-aee5-eccb2c155cd7"
+BUS_SENDER = "69a216fc-b8fb-44d8-bc22-1f3c2cd27a39"
+BUS_RECEIVER = "4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0"
+REPOSITORY_READER = "b93aa761-3e63-49ed-ac28-beffa264f7ac"  # learn.microsoft.com/azure/role-based-access-control/built-in-roles/containers
+REPOSITORY_WRITER = "2a1e307c-b015-4ebd-883e-5b7698a07328"
 NAMES = {VM_USER_LOGIN: "Virtual Machine User Login", VM_ADMIN_LOGIN: "Virtual Machine Administrator Login", READER: "Reader",
-         BLOB_CONTRIBUTOR: "Storage Blob Data Contributor", BLOB_OWNER: "Storage Blob Data Owner"}
+         BLOB_CONTRIBUTOR: "Storage Blob Data Contributor", BLOB_OWNER: "Storage Blob Data Owner", SECRETS_USER: "Key Vault Secrets User",
+         SECRETS_OFFICER: "Key Vault Secrets Officer", BUS_SENDER: "Azure Service Bus Data Sender", BUS_RECEIVER: "Azure Service Bus Data Receiver",
+         REPOSITORY_READER: "Container Registry Repository Reader", REPOSITORY_WRITER: "Container Registry Repository Writer"}
 # role tables: level -> roles; a revoke removes every role of the table, whichever level was granted
 ROLES = {
     "machine": {"use": (VM_USER_LOGIN,), "admin": (VM_ADMIN_LOGIN,)},
     "interface": {"use": (READER,), "admin": (READER,)},  # the Bastion reads a machine's interface to reach it
     "bucket": {"use": (BLOB_CONTRIBUTOR,), "admin": (BLOB_OWNER,)},
+    "secret": {"use": (SECRETS_USER,), "admin": (SECRETS_OFFICER,)},  # at the secret's own scope, never the vault's
+    "topic": {"use": (BUS_SENDER,), "admin": (BUS_SENDER,)},
+    "subscription": {"use": (BUS_RECEIVER,), "admin": (BUS_RECEIVER,)},
+    # on the operator's registry, conditioned to the request's repository prefix; a writer pushes, any other member pulls
+    "registry": {"use": (REPOSITORY_READER,), "admin": (REPOSITORY_WRITER,)},
 }
+# The data actions a repository role's condition limits to the request's prefix
+# (learn.microsoft.com/azure/container-registry/container-registry-rbac-abac-repository-permissions).
+REPOSITORY_ACTIONS = {REPOSITORY_READER: ("content/read", "metadata/read"),
+                      REPOSITORY_WRITER: ("content/read", "metadata/read", "content/write", "metadata/write")}
+REPOSITORY_NAME = "@Request[Microsoft.ContainerRegistry/registries/repositories:name] StringStartsWithIgnoreCase"
+PREFIX = re.compile(r"^[a-z0-9][a-z0-9._-]{0,200}$")  # a prefix this service made: no slash, no quote, nothing a condition could read otherwise
 # The only roles this service assigns; the service's grant right is conditioned on this list (section 4.2).
 GRANTED_ROLES = frozenset(role for levels in ROLES.values() for roles in levels.values() for role in roles)
 PRINCIPAL_TYPES = {"user": "User", "group": "Group", "serviceAccount": "ServicePrincipal"}
@@ -52,9 +73,23 @@ def assignment_name(scope: str, principal_id: str, role: str) -> str:
     return str(uuid.uuid5(NAMESPACE, f"{scope.lower()}|{principal_id.lower()}|{role.lower()}"))
 
 
+def repository_condition(role: str, prefixes) -> str:
+    """The ABAC condition that limits a repository role to the repositories under these prefixes (each ends in /, so
+    that app does not also match app-old/)."""
+    actions = " AND ".join(f"!(ActionMatches{{'Microsoft.ContainerRegistry/registries/repositories/{action}'}})" for action in REPOSITORY_ACTIONS[role])
+    names = " OR ".join(f"{REPOSITORY_NAME} '{prefix}/'" for prefix in sorted(prefixes))
+    return f"(({actions}) OR ({names}))"
+
+
+def prefixes_of(condition: str | None) -> set[str]:
+    """The prefixes a condition this service wrote names."""
+    return set(re.findall(r"StringStartsWithIgnoreCase '([^'/]+)/'", condition or ""))
+
+
 class AzureAccess:
     def __init__(self, api, cloud):
         self.api, self.cloud = api, cloud
+        self._shared = threading.Lock()  # a registry assignment is shared by every request of a member: changed one at a time
 
     # ---- members
     def resolve(self, member: str) -> dict:
@@ -100,36 +135,74 @@ class AzureAccess:
     def _url(self, scope: str, name: str) -> str:
         return self.api.arm(f"{scope}/providers/Microsoft.Authorization/roleAssignments/{name}")
 
-    def assign(self, scope: str, principal: dict, role: str, description: str) -> None:
-        body = {"properties": {"roleDefinitionId": f"/subscriptions/{self.api.subscription_id}/providers/Microsoft.Authorization/roleDefinitions/{role}",
+    def _body(self, principal: dict, role: str, description: str) -> dict:
+        return {"properties": {"roleDefinitionId": f"/subscriptions/{self.api.subscription_id}/providers/Microsoft.Authorization/roleDefinitions/{role}",
                                "principalId": principal["id"], "principalType": principal["type"], "description": description[:1024]}}
-        url = self._url(scope, assignment_name(scope, principal["id"], role))
+
+    def _put(self, url: str, body: dict, conditioned: bool) -> None:
         for attempt in range(NOT_YET[0]):
             try:
                 self.api.call("PUT", url, json=body, params={"api-version": VERSION})
                 return
             except InfrastructureError as exc:
                 reason = exc.details.get("reason")
+                if reason == "RoleAssignmentExists" and conditioned:
+                    # the same role for this member under another name, made by hand: its condition is not this service's to read
+                    raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, "Azure already holds this repository role for this member on the operator's registry "
+                                              "under an assignment this service did not make; remove it, then grant again", dict(exc.details)) from None
                 if reason == "RoleAssignmentExists":  # the same grant under another name, made by hand or before: it is there
                     return
                 if reason != "PrincipalNotFound" or attempt == NOT_YET[0] - 1:
                     raise
                 self.api.sleep(NOT_YET[1])
 
-    def unassign(self, scope: str, principal: dict, role: str) -> None:
-        self.api.delete(self._url(scope, assignment_name(scope, principal["id"], role)), VERSION)
+    def assign(self, scope: str, principal: dict, role: str, description: str, prefix: str = "") -> None:
+        url = self._url(scope, assignment_name(scope, principal["id"], role))
+        if not prefix:
+            self._put(url, self._body(principal, role, description), False)
+            return
+        # Azure keeps one assignment of a role per member and scope, so a member's repository role on the operator's registry
+        # is one assignment whose condition names every prefix it holds: read, widened, written back, one change at a time
+        with self._shared:
+            current = self.api.find(url, VERSION)
+            prefixes = prefixes_of(((current or {}).get("properties") or {}).get("condition"))
+            if prefix in prefixes:
+                return
+            body = self._body(principal, role, "cloudinfra: repository prefixes of the requests this member is granted on")
+            body["properties"].update(condition=repository_condition(role, prefixes | {prefix}), conditionVersion="2.0")
+            self._put(url, body, True)
 
-    def grant(self, targets: list[tuple[str, str]], principal: dict, level: str, description: str) -> list[str]:
-        """Assign the level's roles of each (scope, table); the roles' names, in order."""
+    def unassign(self, scope: str, principal: dict, role: str, prefix: str = "") -> None:
+        url = self._url(scope, assignment_name(scope, principal["id"], role))
+        if not prefix:
+            self.api.delete(url, VERSION)
+            return
+        with self._shared:
+            current = self.api.find(url, VERSION)
+            prefixes = prefixes_of(((current or {}).get("properties") or {}).get("condition"))
+            if prefix not in prefixes:
+                return
+            if prefixes == {prefix}:
+                self.api.delete(url, VERSION)
+                return
+            body = self._body(principal, role, "cloudinfra: repository prefixes of the requests this member is granted on")
+            body["properties"].update(condition=repository_condition(role, prefixes - {prefix}), conditionVersion="2.0")
+            self._put(url, body, True)
+
+    def grant(self, targets: list[tuple], principal: dict, level: str, description: str) -> list[str]:
+        """Assign the level's roles of each (scope, table[, repository prefix]); the roles' names, in order."""
         granted = []
-        for scope, table in targets:
+        for scope, table, *prefix in targets:
+            if table == "registry" and not (prefix and PREFIX.fullmatch(prefix[0])):
+                # never a registry-wide grant: the condition is what keeps a member inside the request's repositories
+                raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"A registry grant needs the request's repository prefix; {prefix!r} is not one")
             for role in ROLES[table][level]:
-                self.assign(scope, principal, role, description)
+                self.assign(scope, principal, role, description, *prefix)
                 granted.append(NAMES[role])
         return granted
 
-    def revoke(self, targets: list[tuple[str, str]], principal: dict) -> None:
+    def revoke(self, targets: list[tuple], principal: dict) -> None:
         """Remove every role this service grants on each scope from one principal; another role or principal is never touched."""
-        for scope, table in targets:
+        for scope, table, *prefix in targets:
             for role in sorted({role for roles in ROLES[table].values() for role in roles}):
-                self.unassign(scope, principal, role)
+                self.unassign(scope, principal, role, *prefix)

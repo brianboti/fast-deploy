@@ -426,6 +426,7 @@ def test_a_bucket_takes_entra_sign_in_only_and_is_deleted_only_when_empty(tmp_pa
     failed = orchestrator.destroy(response.request_id, who, wait_seconds=45)
     assert failed.status == RequestStatus.DESTROY_FAILED and failed.error.details["remaining"][0]["error"]["code"] == "PROVIDER_CONFLICT"
     assert ("https://" + f"{account}.blob.core.windows.net/data", "https://storage.azure.com/") in fake.audiences and fake.of_type("Microsoft.Storage/storageAccounts")
+    assert fake.assignments() == [("containers/data", USERS["ada@example.com"], BLOB_OWNER)], "a bucket kept keeps its members' access"
     fake.blobs[account] = []
     assert orchestrator.destroy(response.request_id, who, wait_seconds=45).status == RequestStatus.DESTROYED
     assert fake.resources == {} and fake.assignments() == [], "the grants went with it"

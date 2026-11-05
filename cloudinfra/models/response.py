@@ -91,7 +91,8 @@ class Resources(Model):
     load_balancer: list[LoadBalancerResource] = Field(default_factory=list)
 
     def all(self) -> list:
-        return [*self.network, *self.storage, *self.compute, *self.database, *self.cache, *self.queue, *self.secret, *self.registry, *self.cluster, *self.load_balancer]
+        return [*self.identity, *self.network, *self.storage, *self.compute, *self.database, *self.cache, *self.queue, *self.secret, *self.registry, *self.cluster,
+                *self.service, *self.job, *self.load_balancer]
 
 
 class Credentials(Model):

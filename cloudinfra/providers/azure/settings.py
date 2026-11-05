@@ -18,6 +18,7 @@ IMAGE = re.compile(r"^(?:[A-Za-z0-9._-]{1,128}:[A-Za-z0-9._-]{1,128}:[A-Za-z0-9.
 SUBNET = re.compile(rf"^{_GROUP}/Microsoft\.Network/virtualNetworks/[A-Za-z0-9._-]{{2,64}}/subnets/[A-Za-z0-9._-]{{1,80}}$")
 BASTION = re.compile(rf"^{_GROUP}/Microsoft\.Network/bastionHosts/[A-Za-z0-9._-]{{1,80}}$")
 STORAGE_ACCOUNT = re.compile(rf"^{_GROUP}/Microsoft\.Storage/storageAccounts/[a-z0-9]{{3,24}}$")
+REGISTRY = re.compile(rf"^{_GROUP}/Microsoft\.ContainerRegistry/registries/[A-Za-z0-9]{{5,50}}$")
 PROFILE_NAME = re.compile(r"^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$")
 
 
@@ -72,6 +73,9 @@ class AzureSettings(BaseModel):
                                        "subscription's network watchers (NetworkWatcher_<region>), where flow logs live.")
     prices_file: str | None = Field(default=None, description="A price snapshot `cloud-infra prices --write` made from Azure's Retail Prices API; the "
                                     "adapter's approximate built-in prices when none.")
+    registry: str | None = Field(default=None, pattern=REGISTRY.pattern, description="The operator's container registry (Standard or Premium, its role "
+                                 "assignment mode AbacRepositoryPermissions), in which a request's registry is a repository prefix of its own; none, and "
+                                 "a request may hold no registry. The service needs Container Registry Repository Contributor and Catalog Lister on it.")
 
     @field_validator("subscription_id", "tenant_id", "identity_client_id")
     @classmethod

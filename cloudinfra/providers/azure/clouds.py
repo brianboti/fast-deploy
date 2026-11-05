@@ -33,6 +33,7 @@ class AzureCloud:
     metrics: str | None = None
     storage: str | None = None
     service_bus: str | None = None
+    container_registry: str | None = None  # a registry's own sign-in audience (learn.microsoft.com/azure/container-registry/container-registry-authentication)
 
     @property
     def key_vault(self) -> str:
@@ -49,7 +50,8 @@ CLOUDS = {
                          arm_audience="https://management.azure.com/", graph="https://graph.microsoft.com/",
                          oss_rdbms="https://ossrdbms-aad.database.windows.net", key_vault_suffix="vault.azure.net", storage_suffix="core.windows.net",
                          registry_suffix="azurecr.io", postgresql_suffix="postgres.database.azure.com", mysql_suffix="mysql.database.azure.com",
-                         metrics="https://metrics.monitor.azure.com", storage="https://storage.azure.com/", service_bus="https://servicebus.azure.net"),
+                         metrics="https://metrics.monitor.azure.com", storage="https://storage.azure.com/", service_bus="https://servicebus.azure.net",
+                         container_registry="https://containerregistry.azure.net"),
     "usgovernment": AzureCloud(name="AzureUSGovernment", resource_manager="https://management.usgovcloudapi.net", login="https://login.microsoftonline.us",
                                arm_audience="https://management.usgovcloudapi.net", graph="https://graph.microsoft.us/",
                                oss_rdbms="https://ossrdbms-aad.database.usgovcloudapi.net", key_vault_suffix="vault.usgovcloudapi.net",

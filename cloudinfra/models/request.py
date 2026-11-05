@@ -412,8 +412,8 @@ class NetworkRequest(StrictModel):
 
 class InfrastructureRequest(StrictModel):
     """What the Application Layer wants: a provider, a region, and at least one resource block."""
-    provider: str = Field(default="gcp", pattern=r"^[a-z][a-z0-9-]{0,15}$", description="The cloud provider adapter: gcp; azure (identity, network, storage and compute so far); "
-                                                                                 "aws and jetstream are planned.")
+    provider: str = Field(default="gcp", pattern=r"^[a-z][a-z0-9-]{0,15}$", description="The cloud provider adapter: gcp; azure (every kind but cluster, service, job and "
+                                                                                 "load_balancer so far); aws and jetstream are planned.")
     region: str = Field(description="The provider's region (us-central1, eastus2).")
     zone: str | None = Field(default=None, description="A zone in the region (us-central1-a; on Azure a number, 1); the provider picks one when omitted.")
     name: str | None = Field(default=None, description="A short name used as the prefix of every resource name; infra-<8 hex> when omitted.")
