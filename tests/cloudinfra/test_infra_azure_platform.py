@@ -3,9 +3,10 @@ services and jobs on Container Apps in their network's environment, and load bal
 Every test runs against the fake Azure in azure_fakes.py."""
 import base64
 import datetime
+import re
 
 import pytest
-from azure_fakes import REGISTRY, REGISTRY_LOGIN, USERS, make_azure_config, make_azure_orchestrator, make_azure_provider, refusal
+from azure_fakes import AKS_SERVER, REGISTRY, REGISTRY_LOGIN, USERS, make_azure_config, make_azure_orchestrator, make_azure_provider, refusal
 from gcp_fakes import principal
 from test_infra_azure_services import operator_registry, plan_of, provision, puts
 
@@ -177,7 +178,7 @@ def test_a_cluster_is_aks_with_entra_rbac_its_own_identities_and_the_requests_na
     assert identity.kubernetes_service_account == f"{namespace}/trainer"
     # what is in the cluster: the admission policy, then the namespace
     endpoint = cluster.endpoint
-    assert endpoint.endswith(".azmk8s.io:443") and cluster.ca_certificate and cluster.namespace == namespace and cluster.subnet.endswith("/subnets/ml-subnet")
+    assert AKS_SERVER.fullmatch(endpoint) and cluster.ca_certificate and cluster.namespace == namespace and cluster.subnet.endswith("/subnets/ml-subnet")
     assert {path.rsplit("/", 1)[-1] for (where, path) in fake.kube_objects if where == endpoint} == {"cloudinfra-no-public-entry"}
     assert len([key for key in fake.kube_objects if key[0] == endpoint]) == 2, "the policy and its binding"
     assert fake.kube_namespaces[endpoint][namespace]["pod-security.kubernetes.io/enforce"] == "baseline"
@@ -429,7 +430,7 @@ def test_hostnames_put_front_door_with_managed_certificates_in_front_and_admit_o
         ("Enabled", "HttpOnly", ["Http", "Https"])
     [policy] = puts(fake, "securityPolicies")
     assert policy["properties"]["parameters"]["wafPolicy"] == {"id": WAF}
-    assert balancer.address.endswith(".azurefd.net") and balancer.certificate == "PROVISIONING"
+    assert re.fullmatch(r"[a-z0-9-]+\.z01\.azurefd\.net", balancer.address) and balancer.certificate == "PROVISIONING"
     [door] = [item for item in balancer.components if item["kind"] == "front_door"]
     assert door["front_door_id"] == fake.of_type("Microsoft.Cdn/profiles")["shop-lb-fd"]["properties"]["frontDoorId"]
     [record] = [item for item in balancer.components if item["kind"] == "custom_domain"]

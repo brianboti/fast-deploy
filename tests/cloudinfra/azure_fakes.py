@@ -732,6 +732,7 @@ class FakeAzureApi(AzureApi):
                       for item in self.resources.values() if item["type"] == "Microsoft.Authorization/roleAssignments")
 
 
+AKS_SERVER = re.compile(r"[a-z0-9-]+\.hcp\.[a-z0-9]+\.azmk8s\.io:443")  # an AKS API server's host and port, as a kubeconfig names it
 STEP5_PUTS = {"Microsoft.ContainerService/managedClusters": "_cluster", "Microsoft.App/managedEnvironments": "_environment",
               "Microsoft.App/containerApps": "_container_app", "Microsoft.App/jobs": "_job", "Microsoft.App/containerApps/authConfigs": "_auth_config",
               "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials": "_federated",
@@ -744,7 +745,7 @@ class FakeAksKube:
     """A cluster's Kubernetes API, as far as the adapter uses it: the namespace and the admission policy, kept on the fake."""
 
     def __init__(self, fake: FakeAzureApi, endpoint: str, ca_certificate: str):
-        assert endpoint.endswith(".azmk8s.io:443") and ca_certificate, "the adapter must know the server and CA from the cluster's kubeconfig"
+        assert AKS_SERVER.fullmatch(endpoint) and ca_certificate, "the adapter must know the server and CA from the cluster's kubeconfig"
         self.fake, self.endpoint = fake, endpoint
 
     def _maybe_fail(self):
