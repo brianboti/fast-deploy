@@ -28,6 +28,9 @@ def zone_of(cloud, service: str) -> str | None:
         return f"privatelink.{cloud.mysql_suffix}"
     return "privatelink.redis.azure.net" if cloud.name == "AzureCloud" else None
 ZONE_TAGS = 15  # a private DNS zone takes at most fifteen tags
+# A zone whose network link was just deleted may still be refused for a moment as holding it (CannotDeleteResource,
+# "nested resources exist"; the real run of 2026-11-05 met it a second after the link's delete had ended): tried again.
+NESTED_NOT_YET = (6, 10)
 
 
 def zone_id(api, network: NetworkResource, zone: str) -> str:
@@ -76,4 +79,11 @@ def remove_zones(api, network: NetworkResource, ceiling: int) -> None:
             continue
         for link in api.list(api.arm(f"{found}/virtualNetworkLinks"), ZONE_VERSION):
             api.delete(api.arm(link["id"]), ZONE_VERSION, timeout=ceiling)
-        api.delete(api.arm(found), ZONE_VERSION, timeout=ceiling)
+        for attempt in range(NESTED_NOT_YET[0]):
+            try:
+                api.delete(api.arm(found), ZONE_VERSION, timeout=ceiling)
+                break
+            except InfrastructureError as exc:
+                if exc.details.get("reason") != "CannotDeleteResource" or attempt == NESTED_NOT_YET[0] - 1:
+                    raise
+                api.sleep(NESTED_NOT_YET[1])

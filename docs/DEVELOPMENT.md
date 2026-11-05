@@ -74,7 +74,9 @@ role, API, limit or tool, `docs/SETUP.md` for a new operator step.
   (or `azure_fakes.py` for the Azure adapter, which answers Resource Manager, Microsoft Graph and a blob service from
   memory: `test_infra_azure.py` for its client and settings, `test_infra_azure_kinds.py` for release A's kinds,
   `test_infra_azure_services.py` for the managed services, `test_infra_azure_platform.py` for clusters, services, jobs
-  and load balancers, with a cluster's API answered by `FakeAksKube`);
+  and load balancers, with a cluster's API answered by `FakeAksKube`; `test_infra_real_run_2026_11_05_azure.py` for
+  what the first run on Azure found, as each real run's findings get a file of their own; `conftest.py` passes the
+  service's events up to pytest's handler again before each test, since the service stops them at its own);
   new delivery tests in `tests/appdelivery/` as `test_delivery_<topic>.py` with the fakes there. Neither directory
   takes a `conftest.py`.
 - A real-cloud test goes in `tests/integration/`, marked `integration`, creates the smallest thing that proves the

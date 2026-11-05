@@ -107,6 +107,8 @@ class FakeAzureApi(AzureApi):
         self.kube_namespaces: dict[str, dict[str, dict]] = {}
         self.kube_objects: dict[tuple[str, str], dict] = {}
         self.kube_fail = None
+        self.skus: dict[str, list[dict]] | None = None  # region -> its Resource SKUs; None: the listing answers 404, as unreadable
+        self.zone_lag = 0  # a private DNS zone is refused this many deletes after its last link went, as Azure did on 2026-11-05
         self.role_lag = 0  # AKS refuses this many cluster creates as LinkedAuthorizationFailed, as while a role on the subnet is not yet seen
 
     def _sleep(self, seconds):
@@ -215,6 +217,12 @@ class FakeAzureApi(AzureApi):
         if key not in self.resources and parent in self.resources and not key.endswith(("/vmsizes", "/resources")):
             children = [self._public(item) for name, item in self.resources.items() if name.startswith(key + "/") and name.count("/") == key.count("/") + 1]
             return AzureResponse(200, {}, {"value": children})  # a resource's child collection: its zone's links, a vault's secrets
+        if key.endswith("/providers/microsoft.compute/skus"):
+            region = re.fullmatch(r"location eq '([a-z0-9]+)'", params.get("$filter", ""))
+            assert region and params["api-version"] == "2021-07-01", params
+            if self.skus is None:
+                raise refusal(404, "NotFound", "no listing in this fake")
+            return AzureResponse(200, {}, {"value": self.skus.get(region.group(1), [])})
         typed = re.match(r"^(/subscriptions/[^/]+/resourcegroups/[^/]+)/providers/([^/]+/[^/]+)$", key)
         if typed and key not in self.resources:  # the resources of one type in a group: a group's identities
             group, kind = typed.groups()
@@ -295,6 +303,9 @@ class FakeAzureApi(AzureApi):
             assert target.lower() in self.resources, f"an endpoint for {target}, which does not exist"
             resource["_delete_with"] = target.lower()
         self.resources[key] = resource
+        if kind == "Microsoft.ManagedIdentity/userAssignedIdentities" and existing is None:
+            # as Azure answers a new identity: 201, and a Location naming the identity itself, relative (seen 2026-11-05)
+            return AzureResponse(201, {"location": path.replace("/resourceGroups/", "/resourcegroups/")}, self._public(resource))
         return AzureResponse(200 if existing else 201 if kind == "Microsoft.Authorization/roleAssignments" else 200, {}, self._public(resource))
 
     # ---- step 5's resources, each checked as Azure checks it
@@ -407,7 +418,17 @@ class FakeAzureApi(AzureApi):
         address = properties["frontendIPConfigurations"][0]["properties"]["publicIPAddress"]["id"]
         if address.lower() not in self.resources:
             raise refusal(400, "InvalidResourceReference", f"Public address {address} was not found")
-        for member in properties["backendAddressPools"][0]["properties"]["loadBalancerBackendAddresses"]:
+        for pool in properties.get("backendAddressPools") or []:  # as Azure does: IP-based members named here are not kept
+            pool.pop("properties", None)
+            self.resources[f"{key}/backendaddresspools/{pool['name'].lower()}"] = {
+                "id": f"{path}/backendAddressPools/{pool['name']}", "name": pool["name"], "type": "Microsoft.Network/loadBalancers/backendAddressPools",
+                "_top": False, "properties": {"loadBalancerBackendAddresses": [], "provisioningState": "Succeeded"}}
+
+    def _pool(self, path, key, name, resource, body, existing):
+        if key.rsplit("/backendaddresspools/", 1)[0] not in self.resources:
+            raise refusal(404, "ResourceNotFound", f"The load balancer of {path} was not found")
+        resource["_top"] = False
+        for member in resource["properties"]["loadBalancerBackendAddresses"]:
             network = member["properties"]["virtualNetwork"]["id"]
             if network.startswith(HUB):
                 continue
@@ -573,6 +594,13 @@ class FakeAzureApi(AzureApi):
                 if item.get("_attached_to") == key:
                     item["_attached_to"] = None
                     item["properties"]["diskState"] = "Unattached"
+        if found["type"] == "Microsoft.Network/privateDnsZones":
+            links = [name for name in self.resources if name.startswith(key + "/virtualnetworklinks/")]
+            if links or self.zone_lag:
+                self.zone_lag = max(self.zone_lag - 1, 0) if not links else self.zone_lag
+                self.resources[key] = found
+                raise refusal(409, "CannotDeleteResource", "Cannot delete resource while nested resources exist. Some existing nested resource IDs include: "
+                              f"'{(links or [key + '/virtualNetworkLinks/gone'])[0]}'")
         if found["type"] == "Microsoft.App/managedEnvironments":
             held = [item["name"] for item in self.resources.values() if item["type"] in ("Microsoft.App/containerApps", "Microsoft.App/jobs")
                     and item["properties"]["environmentId"].lower() == key]
@@ -736,7 +764,8 @@ AKS_SERVER = re.compile(r"[a-z0-9-]+\.hcp\.[a-z0-9]+\.azmk8s\.io:443")  # an AKS
 STEP5_PUTS = {"Microsoft.ContainerService/managedClusters": "_cluster", "Microsoft.App/managedEnvironments": "_environment",
               "Microsoft.App/containerApps": "_container_app", "Microsoft.App/jobs": "_job", "Microsoft.App/containerApps/authConfigs": "_auth_config",
               "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials": "_federated",
-              "Microsoft.Network/loadBalancers": "_load_balancer", "Microsoft.Cdn/profiles": "_cdn", "Microsoft.Cdn/profiles/afdEndpoints": "_cdn",
+              "Microsoft.Network/loadBalancers": "_load_balancer", "Microsoft.Network/loadBalancers/backendAddressPools": "_pool",
+              "Microsoft.Cdn/profiles": "_cdn", "Microsoft.Cdn/profiles/afdEndpoints": "_cdn",
               "Microsoft.Cdn/profiles/originGroups": "_cdn", "Microsoft.Cdn/profiles/originGroups/origins": "_cdn", "Microsoft.Cdn/profiles/customDomains": "_cdn",
               "Microsoft.Cdn/profiles/afdEndpoints/routes": "_cdn", "Microsoft.Cdn/profiles/securityPolicies": "_cdn"}
 

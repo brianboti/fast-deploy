@@ -48,7 +48,7 @@ MAX_DISK_GB = 32767  # Azure's largest managed disk
 # (docs/research/RESEARCH-2026-11-03-azure.md, section 9.1; REQUIREMENTS.md lists them).
 CEILINGS = {"resource_group": 300, "network": 600, "flow_log": 300, "identity": 300, "disk": 600, "storage_account": 600, "compute": 1200, "extension": 900,
             "attach": 600, "power": 900, "resize": 1200, "delete": 1200, "vault": 600, "namespace": 900, "database": 1800, "cache": 1800,
-            "cluster": 2400, "environment": 1800, "app": 900, "front_door": 900}
+            "cluster": 2400, "environment": 2700, "app": 900, "front_door": 900}  # an environment's delete took 28 minutes on 2026-11-05
 MAX_LOCK_SECONDS = 300  # Service Bus's longest message lock
 
 
@@ -345,7 +345,7 @@ class AzureProvider(CloudProvider):
                                                  "cpu_quota": size.quota, "node_count": max(cluster.node_count, translate.SYSTEM_POOL_NODES),
                                                  "node_disk_gb": cluster.node_disk_gb, "private_nodes": cluster.private_nodes, "registries": list(cluster.registries),
                                                  "kubernetes_version": cluster.kubernetes_version, "tier": "Standard", "identities": identities,
-                                                 "location": region,
+                                                 "location": region, "zone": zone,
                                                  "network": own_network or cluster.network_id, "region": region}))
         for service in request.services():
             mapping = "Microsoft.App/containerApps, userAssignedIdentities (its runtime)" + ("" if service.public else ", authConfigs (Entra sign-in)") + \
@@ -372,6 +372,30 @@ class AzureProvider(CloudProvider):
                                                  "backends": backends, "health_check_path": balancer.health_check_path if balancer.type == "http" else None,
                                                  "hostnames": list(balancer.hostnames), "front_door": bool(balancer.hostnames), "region": region}))
         return planned
+
+    def preflight(self, request: InfrastructureRequest, planned: list[PlannedResource]) -> list[Problem]:
+        """A machine or node size Azure does not offer this subscription in the request's region and zone, refused before
+        anything is made, with the adapter's sizes that are offered there (section 6 of the research note)."""
+        wanted: dict[str, tuple[str, set[str]]] = {}
+        for item in planned:
+            if item.kind in ("compute", "cluster"):
+                wanted.setdefault(item.spec["machine_type"], (item.kind, set()))[1].add(item.spec.get("zone") or "")
+        offered = self.compute.offered(request.region) if wanted else None
+        if offered is None:  # nothing wanted, or a listing Azure did not answer; an empty one offers nothing
+            return []
+        problems = []
+        for size, (kind, zones) in sorted(wanted.items()):
+            where = offered.get(size.lower(), set())
+            for zone in sorted(zones - where):
+                place = f"{request.region} zone {zone}" if zone else request.region
+                ours = sorted(item.name for item in translate.SIZES if zone in offered.get(item.name.lower(), set()))
+                text = f"Azure does not offer {size} to this subscription in {place}"
+                text += f"; it does in zone {', '.join(sorted(where))}" if where - {""} else ""
+                text += (f"; of the adapter's sizes it offers there {', '.join(ours[:8])}" if ours else
+                         "; it offers none of the adapter's sizes there: try another region or zone")
+                code = ErrorCode.INVALID_CLUSTER_CONFIGURATION if kind == "cluster" else ErrorCode.INVALID_COMPUTE_CONFIGURATION
+                problems.append(Problem(code, text, kind))
+        return problems
 
     def estimate_cost(self, planned: list[PlannedResource]) -> CostEstimate:
         return pricing.estimate(planned, self.prices)

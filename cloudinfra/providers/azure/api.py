@@ -19,7 +19,7 @@ What Azure's documents say, and this client does (docs/research/RESEARCH-2026-11
 """
 import time
 from dataclasses import dataclass, field
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
 
@@ -186,12 +186,21 @@ class AzureApi:
 
     @staticmethod
     def _follow(url: str, origin: str) -> str:
-        """An address Azure handed back (an operation to watch, the next page): only on the host the call went to, over https."""
+        """An address Azure handed back (an operation to watch, the next page): only on the host the call went to, over https.
+        A relative one is read against the call's own address, as HTTP says: a managed identity's create answers 201 with
+        Location: /subscriptions/… (found on a real subscription on 2026-11-05)."""
+        url = urljoin(origin, url)
         target, source = urlparse(url), urlparse(origin)
         if target.scheme != "https" or not target.hostname or target.hostname != source.hostname:
             raise InfrastructureError(ErrorCode.PROVIDER_ERROR, "Azure pointed the service at another host; it does not follow",
                                       {"url": origin, "host": target.hostname or ""})
         return url
+
+    def _poll(self, address: str, origin: str, api_version: str) -> AzureResponse:
+        """Read an address Azure handed back; one without an api-version (a Location naming the resource itself) gets the
+        write's, which Resource Manager requires of every read."""
+        followed = self._follow(address, origin)
+        return self.call("GET", followed, params=None if "api-version" in parse_qs(urlparse(followed).query) else {"api-version": api_version})
 
     # ---- one call
     def call(self, method: str, url: str, json=None, params=None, audience: str | None = None, headers: dict | None = None, data: dict | None = None,
@@ -313,14 +322,14 @@ class AzureApi:
                                           {"url": url, "method": method})
             self.sleep(min(max(pause, 1.0), MAX_POLL_SECONDS))
             if operation:
-                polled = self.call("GET", self._follow(operation, url))
+                polled = self._poll(operation, url, api_version)
                 status = str((polled.body or {}).get("status") or "").lower()
                 if status == DONE:
                     break
                 if status in FAILED:
                     raise self._failed(polled.body, url)
             elif location:
-                polled = self.call("GET", self._follow(location, url))
+                polled = self._poll(location, url, api_version)
                 if polled.status != 202:
                     if method in ("POST", "DELETE"):
                         return polled.body if method == "POST" else None
@@ -340,7 +349,7 @@ class AzureApi:
         if method == "DELETE":
             return None
         if method == "POST":
-            return self.call("GET", self._follow(location, url)).body if location else None
+            return self._poll(location, url, api_version).body if location else None
         final = self.get(url, api_version)
         self._check(final, url)
         return final

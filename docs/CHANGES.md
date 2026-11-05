@@ -4,6 +4,31 @@ into another line. Fixes reported privately are listed here when their advisory 
 
 # Unreleased
 
+## Azure, the first real run: what it found
+
+The first run of the Azure adapter on a real subscription, a student one, on 2026-11-05 ([AZURE-RUNS.md](AZURE-RUNS.md)),
+found these; each is fixed with a test in `tests/cloudinfra/test_infra_real_run_2026_11_05_azure.py` or beside the
+client.
+
+- The client follows a relative address Azure hands back (a new managed identity answers `Location: /subscriptions/…`)
+  on the call's own host, with the write's `api-version` when it has none; another host is still never followed.
+- `CloudProvider.preflight`, after the quota check and before anything is made: on Azure the Resource SKUs listing
+  (cached an hour per region), so that a machine or node size the subscription is not offered in the request's region
+  and zone is refused naming the sizes and zones it is offered, instead of failing at the machine's create. The
+  service's role needs `Microsoft.Compute/skus/read`.
+- A load balancer's machines go into its pool by the pool's own PUT and are read back: Azure kept none of the IP-based
+  members named in the load balancer's PUT, which left it `READY` and serving nowhere.
+- A request's status reads while its database is ready and its password's secret is not made yet; it crashed with
+  `IndexError`.
+- A private DNS zone Azure still counts its deleted network link for (`CannotDeleteResource`) is deleted on a later
+  try; a network with a cache was left by its first destroy.
+- A secret's purge that meets 409 while its delete runs is tried again, so a secret deleted on its own is not left
+  recoverable for seven days.
+- A Container Apps environment's delete waits up to 45 minutes (it took 28); REQUIREMENTS.md says to raise the
+  operation timeout for services and jobs.
+- For every adapter: the service's log writes each event once; a root handler a library adds (the MCP SDK's) wrote
+  each a second time.
+
 ## Azure, step 5: clusters, services, jobs and load balancers
 
 The platform kinds of the Azure adapter (docs/research/RESEARCH-2026-11-03-azure.md, section 10, step 5), tested against

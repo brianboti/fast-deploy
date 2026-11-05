@@ -859,6 +859,16 @@ Step 5 added these:
 27. An IP-based backend pool on a Standard load balancer for machines with no public address, and that the probe's
     source (the `AzureLoadBalancer` tag) passes the network's security group without a rule of its own.
 
+The first real run, on a student subscription on 2026-11-05 ([AZURE-RUNS.md](../AZURE-RUNS.md), section 1), settled
+these: 24, an environment's subnet takes the request's security group and NAT gateway, and its delete took 28 minutes;
+25 in part, Azure takes the auth config and its allow-list (no call could reach the internal environment); 27, an
+IP-based pool's members must go by the pool's own PUT, since Azure keeps none named in the load balancer's; 15, the
+Network usage of public addresses is `PublicIPAddresses` on this offer. It also met what no page said: a managed
+identity's create answers with a relative `Location`; a size the subscription is not offered fails only at the create
+(the check of section 6 had not been built); a private DNS zone is refused a second after its last link's delete; a
+secret's purge meets 409 while its delete runs; Front Door is forbidden to free and student subscriptions. 22, 23 and
+26 wait for a subscription with quota, with clusters and GPUs.
+
 ### 9.3 Gotchas, each a test in the fake
 
 - A role assignment made seconds after its principal fails with `PrincipalNotFound` unless `principalType` is set;

@@ -45,6 +45,7 @@ account, and is itself only a read-only caller of `cloudinfra`. Tests hold both 
 | [docs/DELIVERY-SPEC.md](docs/DELIVERY-SPEC.md) | The delivery service: who trusts whom, the release contract, the four targets, a release's life, boundaries |
 | [docs/DELIVERY-CATALOG.md](docs/DELIVERY-CATALOG.md) | The delivery service's 14 tools and error codes (generated) |
 | [docs/DELIVERY-SPIKE.md](docs/DELIVERY-SPIKE.md) | What each real run on Google Cloud proved and found, machines to Cloud Run |
+| [docs/AZURE-RUNS.md](docs/AZURE-RUNS.md) | What each real run of the infrastructure layer on Azure proved and found |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Conventions: layout, tests, boundary tests, the generated catalogs, lock files, versions, releases |
 | [docs/CHANGES.md](docs/CHANGES.md) | What each version changed |
 | [docs/research/](docs/research/) | The reviews behind the design: the split into layers, whether the layer is built right, where it stands, the delivery service's shape |
@@ -155,8 +156,10 @@ ran on a real project (recorded in [docs/DELIVERY-SPIKE.md](docs/DELIVERY-SPIKE.
 and start; the delivery service from its own image on Container-Optimized OS, releasing to a group of machines with
 approval, a failed release restored, rollback and remove; a release on a GKE cluster; two clusters with their own node
 accounts, a private registry and a front door reached from the internet over plain HTTP; Cloud Run services and a
-scheduled job. Not yet run for real: a front door with HTTPS on a real domain, removing a job's release, release A's
-expiry and idle stop against a live project, and a second cloud provider.
+scheduled job. On Azure (recorded in [docs/AZURE-RUNS.md](docs/AZURE-RUNS.md)), a student subscription ran machines
+with grants, stop, start and resize, disks, buckets, a private database and cache, a queue, secrets, Container Apps
+services and jobs, and load balancers. Not yet run for real: a front door with HTTPS on a real domain, removing a job's
+release, release A's expiry and idle stop against a live project, and on Azure clusters, GPUs and Front Door.
 
 ## Layout
 

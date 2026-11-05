@@ -115,6 +115,11 @@ class CloudProvider(ABC):
         """What a plan should say about this provider's shapes: a size raised to its floor, a limit it applies; [] by default."""
         return []
 
+    def preflight(self, request: InfrastructureRequest, planned: list[PlannedResource]) -> list[Problem]:
+        """What the provider's own listings say it would refuse, read before anything is made, such as a machine size it
+        does not offer this account in that zone. Best effort: [] when a listing cannot be read, and by default."""
+        return []
+
     # ---- best effort, may be empty
     def quota(self, region: str) -> dict[str, dict]:
         """Quota headroom the provider reports for a region ({metric: {limit, usage}}); {} when it cannot be read."""

@@ -76,6 +76,8 @@ def info(resource, resources: list, settings, subscription: str, drivers: bool =
         notes = {"database_password": ["The password of the request's database"], "cache_auth": ["The access key of the request's cache"]}.get(resource.purpose, [])
         if not resource.versions and not resource.purpose:
             notes.append("It has no value yet: a member at admin sets one with the write command; nothing can be read until then")
+        if _vault(resource) is None:
+            return ConnectInfo(notes=notes + ["It is still being made"])
         return ConnectInfo(commands={"read": _secret_command(resource),
                                      "write": f"az keyvault secret set --vault-name {_vault(resource)} --name {resource.name} --file FILE"},
                            notes=notes + [GRANT_DELAY, *granted])
@@ -87,8 +89,9 @@ def info(resource, resources: list, settings, subscription: str, drivers: bool =
         else:
             client = f'psql "host={host} port={resource.port} dbname={resource.database} user={resource.username} sslmode=require"'
         commands = {"connect": client}
-        if secret is not None:
-            commands["password"] = _secret_command(secret)
+        password = _secret_command(secret) if secret is not None else None
+        if password:
+            commands["password"] = password
         if resource.public_access:
             where = (f"The server takes no connection until a firewall rule admits one: az {'mysql' if resource.engine == 'mysql' else 'postgres'} flexible-server "
                      f"firewall-rule create --resource-group {group_of(resource.provider_id)} --name {resource.name} --rule-name RULE "
@@ -104,8 +107,9 @@ def info(resource, resources: list, settings, subscription: str, drivers: bool =
     if kind == "cache":
         secret = by_id.get(resource.auth_secret)
         commands = {"connect": f"redis-cli -h {resource.host or 'HOST'} -p {resource.port} --tls --askpass"}
-        if secret is not None:
-            commands["auth"] = _secret_command(secret)
+        auth = _secret_command(secret) if secret is not None else None
+        if auth:
+            commands["auth"] = auth
         network = by_id.get(resource.network)
         return ConnectInfo(commands=commands, prerequisites=[f"A machine on the network {network.name if network is not None else resource.network}: the cache has no "
                                                              "public address, and its name resolves to its private endpoint there"],
@@ -181,9 +185,14 @@ def info(resource, resources: list, settings, subscription: str, drivers: bool =
     return None
 
 
-def _vault(resource) -> str:
-    return resource.resource_name.split("//", 1)[1].split(".", 1)[0]
+def _vault(resource) -> str | None:
+    """The vault of a secret this service made (https://<vault>.vault.azure.net/secrets/<name>); None for one not made
+    yet, whose name is still a placeholder: a request's database is ready before its password's secret is made, and a
+    status read meanwhile must not fail (the real run of 2026-11-05)."""
+    name = resource.resource_name or ""
+    return name.split("//", 1)[1].split(".", 1)[0] if "//" in name else None
 
 
-def _secret_command(secret) -> str:
-    return f"az keyvault secret show --vault-name {_vault(secret)} --name {secret.name} --query value --output tsv"
+def _secret_command(secret) -> str | None:
+    vault = _vault(secret)
+    return f"az keyvault secret show --vault-name {vault} --name {secret.name} --query value --output tsv" if vault else None
