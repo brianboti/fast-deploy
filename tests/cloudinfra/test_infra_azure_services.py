@@ -1,6 +1,9 @@
 """The Azure adapter's managed services (docs/research/RESEARCH-2026-11-03-azure.md, section 10, step 4): secrets in a
 vault per request, queues in a Service Bus namespace per request, a registry as a repository prefix in the operator's
 registry, databases and caches private behind an endpoint. Every test runs against the fake Azure in azure_fakes.py."""
+import re
+from urllib.parse import urlparse
+
 import pytest
 from azure_fakes import (
     REGISTRY,
@@ -119,8 +122,8 @@ def test_secrets_live_in_a_vault_of_the_requests_own_written_through_its_api_and
         {scope for scope, _, _ in fake.assignments()} == {"secrets/keys-token", "secrets/keys-empty"}, "at each secret's own scope, never the vault's"
     assert all(principal_id == ada for _, principal_id, _ in fake.assignments())
     assert empty.connect.commands["write"] == f"az keyvault secret set --vault-name {vault} --name keys-empty --file FILE" and "no value yet" in empty.connect.notes[0]
-    reads = [call for call in fake.calls if ".vault.azure.net" in call[1].split("/")[2] and call[0] == "GET"]
-    assert reads == [], "the service never reads a value back"
+    on_vault = [call[0] for call in fake.calls if re.fullmatch(r"[a-z0-9-]+\.vault\.azure\.net", urlparse(call[1]).hostname or "")]
+    assert "PUT" in on_vault and "GET" not in on_vault, "the service writes values and never reads one back"
     destroyed = orchestrator.destroy(response.request_id, who, wait_seconds=45)
     assert destroyed.status == RequestStatus.DESTROYED and fake.resources == {} and fake.deleted_vaults == set() and vault not in fake.vault_data
 
