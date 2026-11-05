@@ -4,6 +4,47 @@ into another line. Fixes reported privately are listed here when their advisory 
 
 # Unreleased
 
+## Azure, step 5: clusters, services, jobs and load balancers
+
+The platform kinds of the Azure adapter (docs/research/RESEARCH-2026-11-03-azure.md, section 10, step 5), tested against
+the fake. With them the Azure adapter provides every kind; the real run comes next, once the user starts it.
+
+- Clusters: AKS, Standard tier, one system pool raised to AKS's floor (two nodes of four vCPUs) and said so in the plan,
+  Azure Linux 3, Azure CNI overlay with Cilium, the request's subnet and its NAT gateway (a network without one, or
+  whose rules refuse egress, is refused), a rule in the subnet's security group admitting the pod range to itself, Entra sign-in only (local accounts off) with Azure RBAC: a member gets the Cluster User role on the cluster
+  and RBAC Reader (`use`) or Writer (`admin`) on the request's namespace only. The control plane runs as an identity
+  made for the cluster, granted Network Contributor on its subnet before AKS checks it (a create AKS refuses meanwhile is
+  tried again); the kubelet identity pulls under the registry prefixes the operator lists in `cluster_registries`; each
+  request identity gets a federated credential for the service account of its name; the namespace and the admission
+  policy are made through the cluster's API with a token for AKS's server application. A front door is refused:
+  Application Gateway for Containers is a preview add-on on AKS.
+- Services and jobs: Container Apps on the Consumption profile in their network's environment, which is internal and
+  lives in a `/27` the network sets aside when its request holds a service or job (the machines' subnet is then the
+  first half of the range); the network's delete removes it first. A service runs a stand-in with a runtime identity
+  that reads its named secrets; one callable only with sign-in has Entra sign-in in front of it for the operator's app
+  registration (`service_auth_client_id`), with an allow-list of the members granted at `use` or `admin` that starts with
+  nobody; `admin` also gets Container Apps Operator, never Contributor, which could turn the sign-in off. Jobs run
+  manually or on a UTC schedule with no scheduler of their own; `use` reads one (Jobs Reader) and `admin` starts and
+  changes it (Jobs Contributor), since Azure's start may change the image it runs as the job's identity. Refused: more than 4 vCPUs, memory
+  beyond 2 GiB per vCPU, a timeout above 240 seconds, `ingress: all`, a time zone other than UTC.
+- Load balancers: a Standard public load balancer with the machines in an IP-based pool on the network their own
+  interfaces are on (machines of two networks are refused), a probe and a rule, and a rule in that network's security
+  group, at the first free priority from 300, opening the port to those machines only; with hostnames, Front Door
+  Standard in front, with a managed certificate per hostname, HTTP redirected, the operator's WAF policy, and the
+  security rule admitting Front Door's backends only. The resource reports each hostname's TXT token and CNAME target,
+  and the profile's id, which the application checks `X-Azure-FDID` against.
+- Shared: the namespace, admission policy and Kubernetes client moved to `cloudinfra/providers/kubernetes.py` (GKE's
+  module imports them); `CloudProvider.warnings` lets an adapter say what it raised or gives differently, and Google's
+  cluster notes moved into it; the quota check counts a cluster's nodes where its plan gives their size; a cluster
+  records its nodes' subnet; `cluster.registries` takes an Azure prefix (`LOGIN_SERVER/PREFIX`) beside an Artifact
+  Registry path, each provider refusing the other's.
+- Security: the service's grant right now also names the AKS, Container Apps and Network Contributor roles (the last
+  for service principals only, its own cluster identities); its role gains the Kubernetes data actions for namespaces
+  and admission policies, nothing an application puts in a cluster. A service's allow-list is never empty: nobody's id
+  stands in until a member is granted. A code review of the step found the pod range blocked between nodes, a load
+  balancer over another request's machines pointed at the wrong network, its port open to the whole subnet, an admin able
+  to turn a service's sign-in off and a job's user able to run any image as it; each is fixed with a test.
+
 ## Azure, step 4: databases, caches, queues, secrets and registries
 
 The managed services of the Azure adapter (docs/research/RESEARCH-2026-11-03-azure.md, section 10, step 4), tested

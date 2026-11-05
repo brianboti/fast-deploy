@@ -7,12 +7,15 @@ every resource is a PUT of the id the caller chose, read back with its provision
 interface, public address and OS disk with it, and its delete takes those whose deleteOption is Delete; a group's delete
 takes everything in it.
 """
+import base64
 import copy
+import ipaddress
 import itertools
 import re
 import uuid
 from urllib.parse import parse_qsl, unquote
 
+import yaml
 from gcp_fakes import config_dict
 
 from cloudinfra.config import Config
@@ -100,6 +103,11 @@ class FakeAzureApi(AzureApi):
         self.registry_tokens: list[tuple[str, str]] = []  # (registry API path, bearer) of every call to the registry's own API
         self.passwords: dict[str, str] = {}  # flexible server name -> the administrator password it was made with (never answered back)
         self.catalog_page = 2  # the registry answers its catalog this many names at a time, with a Link to the next page
+        # step 5: what is inside each cluster's own API (endpoint -> namespace -> labels; (endpoint, path) -> object), and its planted failure
+        self.kube_namespaces: dict[str, dict[str, dict]] = {}
+        self.kube_objects: dict[tuple[str, str], dict] = {}
+        self.kube_fail = None
+        self.role_lag = 0  # AKS refuses this many cluster creates as LinkedAuthorizationFailed, as while a role on the subnet is not yet seen
 
     def _sleep(self, seconds):
         self.now += seconds
@@ -190,6 +198,8 @@ class FakeAzureApi(AzureApi):
             raise refusal(404, "ResourceNotFound", f"{path} was not found")
         assert params["api-version"] == self._expected_version(found["type"]), (path, params["api-version"])
         answer = copy.deepcopy(found)
+        if found["type"] == "Microsoft.Network/networkSecurityGroups":
+            answer["properties"]["securityRules"] = self._nsg_rules(key)
         if found["type"] == "Microsoft.Compute/virtualMachines" and params.get("$expand") == "instanceView":
             answer["properties"]["instanceView"] = {"statuses": [{"code": "ProvisioningState/succeeded", "time": found["_started"]},
                                                                  {"code": f"PowerState/{found['_power']}"}]}
@@ -205,6 +215,13 @@ class FakeAzureApi(AzureApi):
         if key not in self.resources and parent in self.resources and not key.endswith(("/vmsizes", "/resources")):
             children = [self._public(item) for name, item in self.resources.items() if name.startswith(key + "/") and name.count("/") == key.count("/") + 1]
             return AzureResponse(200, {}, {"value": children})  # a resource's child collection: its zone's links, a vault's secrets
+        typed = re.match(r"^(/subscriptions/[^/]+/resourcegroups/[^/]+)/providers/([^/]+/[^/]+)$", key)
+        if typed and key not in self.resources:  # the resources of one type in a group: a group's identities
+            group, kind = typed.groups()
+            if group not in self.resources:
+                raise refusal(404, "ResourceGroupNotFound", f"{path} was not found")
+            return AzureResponse(200, {}, {"value": [self._public(item) for name, item in self.resources.items()
+                                                     if name.startswith(group + "/providers/") and item["type"].lower() == kind]})
         if re.match(r"^/subscriptions/[^/]+/resourcegroups/[^/]+/resources$", key):
             group = key[: -len("/resources")]
             if group not in self.resources:
@@ -265,12 +282,163 @@ class FakeAzureApi(AzureApi):
                 raise refusal(409, "ConflictError", f"A vault with the same name already exists in deleted state: {name}")
             properties["vaultUri"] = f"https://{name}.vault.azure.net/"
             self.vault_data.setdefault(name, {})
+        if kind == "Microsoft.Network/networkSecurityGroups/securityRules":
+            nsg = key.rsplit("/securityrules/", 1)[0]
+            clash = [rule for rule in self._nsg_rules(nsg) if rule["name"].lower() != name.lower()
+                     and (rule["properties"]["priority"], rule["properties"]["direction"]) == (properties["priority"], properties["direction"])]
+            if clash:
+                raise refusal(400, "SecurityRuleConflict", f"Security rule {name} has the same priority as {clash[0]['name']}")
+        if kind in STEP5_PUTS:
+            getattr(self, STEP5_PUTS[kind])(path, key, name, resource, body, existing)
         if kind == "Microsoft.Network/privateEndpoints":
             target = properties["privateLinkServiceConnections"][0]["properties"]["privateLinkServiceId"]
             assert target.lower() in self.resources, f"an endpoint for {target}, which does not exist"
             resource["_delete_with"] = target.lower()
         self.resources[key] = resource
         return AzureResponse(200 if existing else 201 if kind == "Microsoft.Authorization/roleAssignments" else 200, {}, self._public(resource))
+
+    # ---- step 5's resources, each checked as Azure checks it
+    def _nsg_rules(self, nsg_key):
+        nsg = self.resources[nsg_key]
+        rules = {rule["name"].lower(): rule for rule in nsg["properties"].get("securityRules") or []}
+        for name, item in self.resources.items():
+            if item["type"] == "Microsoft.Network/networkSecurityGroups/securityRules" and name.startswith(nsg_key + "/securityrules/"):
+                rules[item["name"].lower()] = {"name": item["name"], "properties": item["properties"]}
+        return list(rules.values())
+
+    def _subnet(self, subnet_id):
+        """(the virtual network, the subnet) of a subnet id, or None for one outside the fake (the operator's)."""
+        network = self.resources.get(subnet_id.lower().split("/subnets/")[0])
+        if network is None:
+            return None
+        name = subnet_id.rsplit("/", 1)[-1]
+        found = next((item for item in network["properties"]["subnets"] if item["name"] == name), None)
+        if found is None:
+            raise refusal(400, "InvalidResourceReference", f"Subnet {subnet_id} was not found")
+        return network, found
+
+    def _has_role(self, scope, principal, role):
+        return any(item["type"] == "Microsoft.Authorization/roleAssignments" and item["properties"]["scope"].lower() == scope.lower()
+                   and item["properties"]["principalId"] == principal and item["properties"]["roleDefinitionId"].endswith(role)
+                   for item in self.resources.values())
+
+    def _cluster(self, path, key, name, resource, body, existing):
+        properties = resource["properties"]
+        identities = list((body.get("identity") or {}).get("userAssignedIdentities") or {})
+        assert len(identities) == 1, "one control plane identity"
+        control = self.resources.get(identities[0].lower())
+        if control is None:
+            raise refusal(400, "InvalidParameter", f"The user-assigned identity {identities[0]} was not found")
+        pool = properties["agentPoolProfiles"][0]
+        assert pool["mode"] == "System" and pool["count"] >= 2 and not pool["vmSize"].startswith("Standard_B"), pool
+        if self.role_lag:
+            self.role_lag -= 1
+            raise refusal(400, "LinkedAuthorizationFailed", "The client has permission to perform action on scope, however the linked subscription was not found")
+        if not self._has_role(pool["vnetSubnetID"], control["properties"]["principalId"], "4d97b98b-1d4f-4787-a291-c67834d212e7"):
+            raise refusal(400, "LinkedAuthorizationFailed", "The cluster identity does not have authorization to perform action "
+                          "'Microsoft.Network/virtualNetworks/subnets/join/action' on the subnet")
+        _, subnet = self._subnet(pool["vnetSubnetID"])
+        if properties["networkProfile"]["outboundType"] == "userAssignedNATGateway" and not subnet["properties"].get("natGateway"):
+            raise refusal(400, "InvalidParameter", "outboundType userAssignedNATGateway needs a NAT gateway on the subnet")
+        if existing is not None:
+            return
+        location = body["location"]
+        properties.update(fqdn=f"{properties['dnsPrefix']}-k8s4dnz1.hcp.{location}.azmk8s.io", currentKubernetesVersion=properties.get("kubernetesVersion") or "1.33.3",
+                          powerState={"code": "Running"},
+                          oidcIssuerProfile={**properties["oidcIssuerProfile"], "issuerURL": f"https://{location}.oic.prod-aks.azure.com/{TENANT}/{uuid.uuid4()}/"},
+                          identityProfile={"kubeletidentity": {"objectId": str(uuid.uuid4()), "clientId": str(uuid.uuid4()), "resourceId":
+                                           f"/subscriptions/{SUBSCRIPTION}/resourceGroups/{properties['nodeResourceGroup']}/providers/"
+                                           f"Microsoft.ManagedIdentity/userAssignedIdentities/{name}-agentpool"}})
+
+    def _environment(self, path, key, name, resource, body, existing):
+        subnet_id = resource["properties"]["vnetConfiguration"]["infrastructureSubnetId"]
+        _, subnet = self._subnet(subnet_id)
+        if ipaddress.ip_network(subnet["properties"]["addressPrefix"]).prefixlen > 27:
+            raise refusal(400, "ManagedEnvironmentSubnetTooSmall", "A workload profiles environment's subnet is a /27 or larger")
+        if [item["properties"]["serviceName"] for item in subnet["properties"].get("delegations") or []] != ["Microsoft.App/environments"]:
+            raise refusal(400, "ManagedEnvironmentSubnetDelegationError", "The subnet must be delegated to Microsoft.App/environments")
+        if any(item["type"] == "Microsoft.App/managedEnvironments" and item["id"].lower() != key
+               and item["properties"]["vnetConfiguration"]["infrastructureSubnetId"].lower() == subnet_id.lower() for item in self.resources.values()):
+            raise refusal(400, "ManagedEnvironmentSubnetIsInUse", "The subnet holds another environment")
+        resource["properties"].setdefault("defaultDomain", f"{name}-x7k2.{body['location']}.azurecontainerapps.io")
+        resource["properties"].setdefault("staticIp", "10.10.0.140")
+
+    def _in_environment(self, resource, body):
+        environment = resource["properties"]["environmentId"]
+        if environment.lower() not in self.resources:
+            raise refusal(400, "ManagedEnvironmentNotFound", f"Environment {environment} was not found")
+        for identity in (body.get("identity") or {}).get("userAssignedIdentities") or {}:
+            if identity.lower() not in self.resources:
+                raise refusal(400, "InvalidParameter", f"The user-assigned identity {identity} was not found")
+        return self.resources[environment.lower()]
+
+    def _container_app(self, path, key, name, resource, body, existing):
+        environment = self._in_environment(resource, body)
+        properties = resource["properties"]
+        ingress = properties["configuration"].get("ingress")
+        if ingress is not None:
+            ingress["fqdn"] = f"{name}.{environment['properties']['defaultDomain']}"
+        revision = f"{name}--{next(self.ticks):07d}"
+        properties.update(latestRevisionName=revision, latestReadyRevisionName=revision, runningStatus="Running")
+
+    def _job(self, path, key, name, resource, body, existing):
+        self._in_environment(resource, body)
+
+    def _auth_config(self, path, key, name, resource, body, existing):
+        assert name == "current", name
+        if key.rsplit("/authconfigs/", 1)[0] not in self.resources:
+            raise refusal(404, "ContainerAppNotFound", f"{path} has no app")
+
+    def _federated(self, path, key, name, resource, body, existing):
+        identity = key.rsplit("/federatedidentitycredentials/", 1)[0]
+        if identity not in self.resources:
+            raise refusal(404, "ResourceNotFound", f"The identity of {path} was not found")
+        others = [item for item_key, item in self.resources.items() if item_key.startswith(identity + "/federatedidentitycredentials/") and item_key != key]
+        if len(others) >= 20:
+            raise refusal(400, "BadRequest", "An identity holds at most 20 federated identity credentials")
+        pair = (resource["properties"]["issuer"], resource["properties"]["subject"])
+        if any((item["properties"]["issuer"], item["properties"]["subject"]) == pair for item in others):
+            raise refusal(409, "Conflict", "A federated identity credential with this issuer and subject already exists")
+        assert resource["properties"]["audiences"] == ["api://AzureADTokenExchange"]
+        resource["_top"] = False
+
+    def _load_balancer(self, path, key, name, resource, body, existing):
+        properties = resource["properties"]
+        address = properties["frontendIPConfigurations"][0]["properties"]["publicIPAddress"]["id"]
+        if address.lower() not in self.resources:
+            raise refusal(400, "InvalidResourceReference", f"Public address {address} was not found")
+        for member in properties["backendAddressPools"][0]["properties"]["loadBalancerBackendAddresses"]:
+            network = member["properties"]["virtualNetwork"]["id"]
+            if network.startswith(HUB):
+                continue
+            found = self.resources.get(network.lower())
+            if found is None:
+                raise refusal(400, "InvalidResourceReference", f"Virtual network {network} was not found")
+            address = ipaddress.ip_address(member["properties"]["ipAddress"])
+            if not any(address in ipaddress.ip_network(prefix) for prefix in found["properties"]["addressSpace"]["addressPrefixes"]):
+                raise refusal(400, "InvalidIPAddressInBackendAddressPool", f"{address} is not in virtual network {found['name']}")
+
+    def _cdn(self, path, key, name, resource, body, existing):
+        kind = resource["type"]
+        profile = key.split("/providers/microsoft.cdn/profiles/", 1)[1].split("/", 1)[0]
+        if kind == "Microsoft.Cdn/profiles":
+            assert body["location"] == "global" and body["sku"]["name"] == "Standard_AzureFrontDoor", body
+            resource["properties"].setdefault("frontDoorId", str(uuid.uuid4()))
+            return
+        resource["_top"] = False
+        parent = key.rsplit("/", 2)[0]
+        if parent not in self.resources:
+            raise refusal(404, "ParentResourceNotFound", f"The parent of {path} was not found")
+        properties = resource["properties"]
+        if kind == "Microsoft.Cdn/profiles/afdEndpoints":
+            properties.setdefault("hostName", f"{name}-g7d2h4b8c6e0.z01.azurefd.net")
+        elif kind == "Microsoft.Cdn/profiles/customDomains":
+            properties.setdefault("validationProperties", {"validationToken": f"token-for-{name}-in-{profile}", "expirationDate": "2026-11-12T00:00:00Z"})
+            properties.setdefault("domainValidationState", "Pending")
+        elif kind == "Microsoft.Cdn/profiles/afdEndpoints/routes":
+            for reference in [item["id"] for item in properties["customDomains"]] + [properties["originGroup"]["id"]]:
+                if reference.lower() not in self.resources:
+                    raise refusal(400, "BadRequest", f"{reference} was not found")
 
     def _machine(self, resource, existing):
         """A machine's PUT makes its interface, its public address and its OS disk, as Azure does."""
@@ -358,6 +526,12 @@ class FakeAzureApi(AzureApi):
             assert action in ("stop", "start"), action
             machine["properties"]["state"] = "Stopped" if action == "stop" else "Ready"
             return AzureResponse(200, {}, None)
+        if machine["type"] == "Microsoft.ContainerService/managedClusters":
+            assert action == "listclusterusercredential", action
+            config = {"apiVersion": "v1", "kind": "Config", "clusters": [{"name": machine["name"], "cluster": {
+                "server": f"https://{machine['properties']['fqdn']}:443", "certificate-authority-data": base64.b64encode(b"-----BEGIN CERTIFICATE-----").decode()}}],
+                      "users": [{"name": "clusterUser", "user": {"exec": {"command": "kubelogin", "args": ["get-token", "--server-id", "6dae42f8-4368-4678-94ff-3960e28e3630"]}}}]}
+            return AzureResponse(200, {}, {"kubeconfigs": [{"name": "clusterUser", "value": base64.b64encode(yaml.safe_dump(config).encode()).decode()}]})
         if machine["type"] == "Microsoft.Cache/redisEnterprise/databases":
             assert action == "listkeys", action
             return AzureResponse(200, {}, {"primaryKey": f"primary-key-of-{machine_key.split('/')[-3]}", "secondaryKey": "secondary"})
@@ -399,7 +573,18 @@ class FakeAzureApi(AzureApi):
                 if item.get("_attached_to") == key:
                     item["_attached_to"] = None
                     item["properties"]["diskState"] = "Unattached"
+        if found["type"] == "Microsoft.App/managedEnvironments":
+            held = [item["name"] for item in self.resources.values() if item["type"] in ("Microsoft.App/containerApps", "Microsoft.App/jobs")
+                    and item["properties"]["environmentId"].lower() == key]
+            if held:
+                self.resources[key] = found
+                raise refusal(409, "ManagedEnvironmentHasApps", f"The environment still holds {held[0]}")
         if found["type"] == "Microsoft.Network/virtualNetworks":
+            environments = [item["name"] for item in self.resources.values() if item["type"] == "Microsoft.App/managedEnvironments"
+                            and item["properties"]["vnetConfiguration"]["infrastructureSubnetId"].lower().startswith(key + "/subnets/")]
+            if environments:
+                self.resources[key] = found
+                raise refusal(400, "InUseSubnetCannotBeDeleted", f"A subnet is in use by the environment {environments[0]}")
             subnet = found["properties"]["subnets"][0]["name"]
             users = [item for item in self.resources.values() if item["type"] == "Microsoft.Network/networkInterfaces"
                      and str(((item["properties"].get("ipConfigurations") or [{}])[0].get("properties") or {}).get("subnet", {}).get("id", "")).lower()
@@ -511,6 +696,30 @@ class FakeAzureApi(AzureApi):
         return AzureResponse(202, {}, None)
 
     # ---- what the tests look at
+    def admits(self, nsg_id, source, destination, port):
+        """Whether a security group admits one inbound TCP connection (source: an address or a service tag), as Azure
+        evaluates its rules: the inbound rule of lowest priority that matches decides."""
+        def matches(prefixes, value):
+            address = ipaddress.ip_address(value) if value[0].isdigit() else None
+            for prefix in prefixes:
+                if prefix in ("*", value):
+                    return True
+                if prefix == "Internet" and address is not None and address.is_global:
+                    return True
+                if prefix[0].isdigit() and address is not None and address in ipaddress.ip_network(prefix):
+                    return True
+            return False
+        for rule in sorted(self._nsg_rules(nsg_id.lower()), key=lambda rule: rule["properties"]["priority"]):
+            properties = rule["properties"]
+            if properties["direction"] != "Inbound" or properties["protocol"] not in ("*", "Tcp"):
+                continue
+            sources = properties.get("sourceAddressPrefixes") or [properties.get("sourceAddressPrefix")]
+            destinations = properties.get("destinationAddressPrefixes") or [properties.get("destinationAddressPrefix")]
+            ports = properties.get("destinationPortRanges") or [properties.get("destinationPortRange")]
+            if matches(sources, source) and matches(destinations, destination) and ("*" in ports or str(port) in ports):
+                return properties["access"] == "Allow"
+        return False
+
     def of_type(self, kind):
         return {item["name"]: item for item in self.resources.values() if item["type"] == kind}
 
@@ -523,6 +732,39 @@ class FakeAzureApi(AzureApi):
                       for item in self.resources.values() if item["type"] == "Microsoft.Authorization/roleAssignments")
 
 
+STEP5_PUTS = {"Microsoft.ContainerService/managedClusters": "_cluster", "Microsoft.App/managedEnvironments": "_environment",
+              "Microsoft.App/containerApps": "_container_app", "Microsoft.App/jobs": "_job", "Microsoft.App/containerApps/authConfigs": "_auth_config",
+              "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials": "_federated",
+              "Microsoft.Network/loadBalancers": "_load_balancer", "Microsoft.Cdn/profiles": "_cdn", "Microsoft.Cdn/profiles/afdEndpoints": "_cdn",
+              "Microsoft.Cdn/profiles/originGroups": "_cdn", "Microsoft.Cdn/profiles/originGroups/origins": "_cdn", "Microsoft.Cdn/profiles/customDomains": "_cdn",
+              "Microsoft.Cdn/profiles/afdEndpoints/routes": "_cdn", "Microsoft.Cdn/profiles/securityPolicies": "_cdn"}
+
+
+class FakeAksKube:
+    """A cluster's Kubernetes API, as far as the adapter uses it: the namespace and the admission policy, kept on the fake."""
+
+    def __init__(self, fake: FakeAzureApi, endpoint: str, ca_certificate: str):
+        assert endpoint.endswith(".azmk8s.io:443") and ca_certificate, "the adapter must know the server and CA from the cluster's kubeconfig"
+        self.fake, self.endpoint = fake, endpoint
+
+    def _maybe_fail(self):
+        if self.fake.kube_fail is not None:
+            error, self.fake.kube_fail = self.fake.kube_fail, None
+            raise error
+
+    def ensure_namespace(self, name, labels):
+        self._maybe_fail()
+        self.fake.kube_namespaces.setdefault(self.endpoint, {})[name] = dict(labels)
+
+    def put(self, collection, body):
+        self._maybe_fail()
+        self.fake.kube_objects[(self.endpoint, f"{collection}/{body['metadata']['name']}")] = body
+
+    def delete(self, path):
+        self._maybe_fail()
+        self.fake.kube_objects.pop((self.endpoint, path), None)
+
+
 # the sizes the fake's hardware offers a running machine: the same family letter
 SIZES_BY_LETTER = {"D": ["Standard_D2s_v5", "Standard_D4s_v5", "Standard_D8s_v5", "Standard_D16s_v5", "Standard_D2ls_v5", "Standard_D4ls_v5"],
                    "E": ["Standard_E2s_v5", "Standard_E4s_v5", "Standard_E8s_v5"], "B": ["Standard_B1s", "Standard_B1ms"]}
@@ -530,7 +772,7 @@ SIZES_BY_LETTER = {"D": ["Standard_D2s_v5", "Standard_D4s_v5", "Standard_D8s_v5"
 
 def make_azure_provider(config, fake=None):
     fake = fake or FakeAzureApi()
-    return AzureProvider(config.providers.azure, api=fake), fake
+    return AzureProvider(config.providers.azure, api=fake, kube=lambda endpoint, ca: FakeAksKube(fake, endpoint, ca)), fake
 
 
 def make_azure_orchestrator(tmp_path, config=None, fake=None):

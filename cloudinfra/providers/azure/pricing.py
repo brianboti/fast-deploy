@@ -60,7 +60,13 @@ BUILT_IN = {
     "servicebus_namespace_hour": 0.0135,  # a Standard namespace's base charge; operations on top
     "registry_gb_month": 0.10,  # storage in the operator's registry beyond what its tier includes
     "private_endpoint_hour": 0.01,
+    # step 5's, approximate as the rest
+    "aks_standard_hour": 0.10,  # the Standard tier's control plane, per cluster; its nodes are virtual machines on top
+    "apps_idle_vcpu_second": 0.000003, "apps_idle_gib_second": 0.000003,  # a Consumption replica kept warm and idle; one serving bills more, by use
+    "lb_rule_hour": 0.025,  # a Standard load balancer's first five rules; data processed by the GB on top
+    "front_door_standard_month": 35.0,  # a Front Door Standard profile's base fee; requests and data by volume on top
 }
+SECONDS_PER_MONTH = HOURS_PER_MONTH * 3600
 NOTE = ("Approximate pay-as-you-go list prices (reservations, savings plans, Hybrid Benefit, egress, transactions and snapshots excluded); "
         "without a snapshot from the Retail Prices API they are the adapter's own figures for eastus2. Never a bill.")
 
@@ -151,6 +157,27 @@ def line(planned: PlannedResource, prices: dict) -> tuple[CostLine, bool]:
         monthly = spec.get("size_gb", 0) * BUILT_IN["registry_gb_month"]
         basis = f"{spec.get('size_gb', 0)} GB of images in the operator's registry, if stored beyond what its tier includes"
         stopped = round(monthly, 2)
+    elif planned.kind == "cluster":
+        count = spec.get("node_count", 1)
+        nodes = (table["vm_hour"].get(spec["machine_type"], 0.0) * HOURS_PER_MONTH + disk_month(table, "Premium_LRS", spec.get("node_disk_gb", 50))) * count
+        monthly = BUILT_IN["aks_standard_hour"] * HOURS_PER_MONTH + nodes
+        basis = (f"the Standard tier's control plane for {HOURS_PER_MONTH} hours and {count} {spec['machine_type']} nodes with "
+                 f"{spec.get('node_disk_gb', 50)} GB OS disks")
+        stopped = round(monthly, 2)
+    elif planned.kind in ("service", "job"):
+        warm = spec.get("min_instances", 0) if planned.kind == "service" else 0
+        memory_gib = spec.get("memory_mb", 2048) / 1024
+        monthly = warm * (spec.get("cpu", 1) * BUILT_IN["apps_idle_vcpu_second"] + memory_gib * BUILT_IN["apps_idle_gib_second"]) * SECONDS_PER_MONTH
+        basis = (f"{warm} instance{'s' if warm != 1 else ''} kept warm at the idle rate; " if warm else "nothing while idle; ") + \
+            "Container Apps bills each running second of vCPU and memory by use on top, after a monthly free grant"
+        stopped = round(monthly, 2)
+    elif planned.kind == "load_balancer":
+        monthly = (BUILT_IN["lb_rule_hour"] + table["public_ip_hour"]) * HOURS_PER_MONTH
+        basis = "a Standard load balancer's rule and its static address; data processed by the GB on top"
+        if spec.get("hostnames"):
+            monthly += BUILT_IN["front_door_standard_month"]
+            basis += "; a Front Door Standard profile, with requests and data by volume on top"
+        stopped = round(monthly, 2)
     else:
         monthly, basis, stopped = 0.0, "not priced by this adapter yet", 0.0
     return CostLine(resource=planned.name, kind=planned.kind, monthly_usd=round(monthly, 2), basis=basis, stopped_usd=stopped), from_snapshot
@@ -184,6 +211,14 @@ def as_planned(resource, zoned: bool = False) -> PlannedResource:
         spec.update(namespace=False)  # the namespace is priced with the first queue of a request, as planned
     elif kind == "registry":
         spec.update(size_gb=resource.size_gb)
+    elif kind == "cluster":
+        spec.update(machine_type=resource.machine_type, node_count=resource.node_count, node_disk_gb=resource.node_disk_gb or 50)
+    elif kind == "service":
+        spec.update(cpu=resource.cpu, memory_mb=resource.memory_mb, min_instances=resource.min_instances)
+    elif kind == "job":
+        spec.update(cpu=resource.cpu, memory_mb=resource.memory_mb)
+    elif kind == "load_balancer":
+        spec.update(hostnames=list(resource.hostnames))
     return PlannedResource(kind=kind, name=resource.name, provider_mapping="existing", spec=spec)
 
 

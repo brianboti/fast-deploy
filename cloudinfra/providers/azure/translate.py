@@ -266,3 +266,111 @@ def cache_problems(spec) -> list[Problem]:
 
 def translate_namespace(engine: str) -> str:
     return {"postgresql": "Microsoft.DBforPostgreSQL", "mysql": "Microsoft.DBforMySQL"}[engine]
+
+
+# ---- clusters: AKS (docs/research/RESEARCH-2026-11-03-azure.md, section 5.5)
+# A cluster's one pool is its system pool, which AKS wants of at least two nodes of at least four vCPUs and 4 GB, and
+# never of B-series sizes (learn.microsoft.com/azure/aks/use-system-pools): a smaller request is raised to that floor,
+# its memory per vCPU kept where a size has it, and the plan says so.
+SYSTEM_POOL_NODES, SYSTEM_POOL_CPU = 2, 4
+NODE_SIZES = [size for size in GENERAL if not size.name.startswith("Standard_B")]
+# Pods and Services get overlay ranges outside the nodes' network: the first pair that does not overlap it
+# (learn.microsoft.com/azure/aks/azure-cni-overlay; the defaults are the first).
+CLUSTER_RANGES = (("10.244.0.0/16", "10.0.0.0/16", "10.0.0.10"), ("172.20.0.0/16", "172.21.0.0/16", "172.21.0.10"),
+                  ("192.168.0.0/17", "192.168.128.0/20", "192.168.128.10"))
+
+
+def node_shape(spec) -> tuple[Size, bool] | Problem:
+    """The nodes' size, and whether it was raised to the system pool's floor."""
+    exact = next((size for size in NODE_SIZES if size.cpu == spec.node_cpu and size.memory_gb == spec.node_memory_gb), None)
+    if spec.node_cpu >= SYSTEM_POOL_CPU:
+        if exact is not None:
+            return exact, False
+        offered = sorted({size.memory_gb for size in NODE_SIZES if size.cpu == spec.node_cpu})
+        text = (f"With {spec.node_cpu} vCPUs, Azure's node sizes have {', '.join(map(str, offered))} GB of memory" if offered else
+                f"Azure's node sizes have {', '.join(map(str, sorted({size.cpu for size in NODE_SIZES})))} vCPUs; there are no custom shapes")
+        return Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, text, "cluster.node_cpu")
+    floor = [size for size in NODE_SIZES if size.cpu == SYSTEM_POOL_CPU]
+    same = next((size for size in floor if size.memory_gb * spec.node_cpu == spec.node_memory_gb * size.cpu), None)
+    holding = sorted((size for size in floor if size.memory_gb >= spec.node_memory_gb), key=lambda size: size.memory_gb)
+    if same is None and not holding:
+        return Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, f"An AKS node has at least {SYSTEM_POOL_CPU} vCPUs, and with {SYSTEM_POOL_CPU} Azure's sizes hold at "
+                       f"most {max(size.memory_gb for size in floor)} GB; ask for more vCPUs", "cluster.node_memory_gb")
+    return same or holding[0], True
+
+
+def cluster_ranges(cidr: str | None) -> tuple[str, str, str]:
+    """(pod range, service range, the cluster DNS service's address) clear of the nodes' network."""
+    import ipaddress
+    network = ipaddress.ip_network(cidr) if cidr else None
+    for pods, services, dns in CLUSTER_RANGES:
+        if network is None or not (network.overlaps(ipaddress.ip_network(pods)) or network.overlaps(ipaddress.ip_network(services))):
+            return pods, services, dns
+    return CLUSTER_RANGES[-1]
+
+
+# ---- services and jobs: Container Apps on the Consumption workload profile (learn.microsoft.com/azure/container-apps/containers):
+# 0.25 to 4 vCPUs per replica, always 2 GiB of memory per vCPU, and an ingress request ends after 240 seconds
+# (…/ingress-overview). An environment's subnet is a /27 delegated to it (…/custom-virtual-networks).
+APP_MAX_CPU = 4
+APP_MEMORY_PER_CPU_MB = 2048
+APP_TIMEOUT_SECONDS = 240
+APP_NAME_LENGTH = 32  # a container app's and a job's name
+APPS_SUBNET_PREFIX = 27
+UTC = ("UTC", "Etc/UTC")
+
+
+def app_memory_mb(spec) -> int:
+    return spec.cpu * APP_MEMORY_PER_CPU_MB
+
+
+def app_problems(spec, kind: str) -> list[Problem]:
+    """What Container Apps cannot give a service or a job, refused before any call."""
+    name = spec.service_name if kind == "service" else spec.job_name
+    found = []
+    if spec.cpu > APP_MAX_CPU:
+        found.append(Problem(ErrorCode.INVALID_SERVICE_CONFIGURATION, f"{kind} {name}: Container Apps' Consumption profile runs at most {APP_MAX_CPU} vCPUs per "
+                             f"instance; {spec.cpu} asked", f"{kind}.cpu"))
+    elif "memory_mb" in spec.model_fields_set and spec.memory_mb > app_memory_mb(spec):
+        needed = -(-spec.memory_mb // APP_MEMORY_PER_CPU_MB)
+        found.append(Problem(ErrorCode.INVALID_SERVICE_CONFIGURATION, f"{kind} {name}: on Container Apps a vCPU comes with {APP_MEMORY_PER_CPU_MB} MiB, so "
+                             f"{spec.memory_mb} MiB needs {needed} vCPUs" + (f", more than its {APP_MAX_CPU}" if needed > APP_MAX_CPU else ""), f"{kind}.memory_mb"))
+    if kind == "service":
+        if "timeout_seconds" in spec.model_fields_set and spec.timeout_seconds > APP_TIMEOUT_SECONDS:
+            found.append(Problem(ErrorCode.INVALID_SERVICE_CONFIGURATION, f"service {name}: Container Apps ends a request after {APP_TIMEOUT_SECONDS} seconds; "
+                                 f"{spec.timeout_seconds} asked", "service.timeout_seconds"))
+        if spec.ingress == "all":
+            found.append(Problem(ErrorCode.INVALID_SERVICE_CONFIGURATION, f"service {name}: on Azure a service's environment is internal to its network, so "
+                                 "ingress all is not offered yet; keep internal or internal_and_load_balancer", "service.ingress"))
+    else:
+        if spec.schedule is not None and spec.schedule.time_zone not in UTC:
+            found.append(Problem(ErrorCode.INVALID_SERVICE_CONFIGURATION, f"job {name}: Container Apps runs a schedule in UTC only; write the cron in UTC and "
+                                 "leave time_zone out", "job.schedule.time_zone"))
+        if spec.parallelism and spec.parallelism < spec.tasks:
+            found.append(Problem(ErrorCode.INVALID_SERVICE_CONFIGURATION, f"job {name}: Container Apps starts all of a run's tasks at once, so parallelism "
+                                 f"is at least tasks ({spec.tasks}); leave it out", "job.parallelism"))
+    return found
+
+
+def app_warnings(spec, kind: str) -> list[str]:
+    """What Container Apps gives a service or a job that differs from what it asked."""
+    name = spec.service_name if kind == "service" else spec.job_name
+    found = []
+    if spec.cpu <= APP_MAX_CPU and spec.memory_mb != app_memory_mb(spec):
+        found.append(f"{kind} {name}: {spec.cpu} vCPU on Container Apps comes with {app_memory_mb(spec)} MiB of memory, not {spec.memory_mb}")
+    if kind == "service" and spec.timeout_seconds > APP_TIMEOUT_SECONDS:
+        found.append(f"service {name}: a request may take {APP_TIMEOUT_SECONDS} seconds at most on Container Apps")
+    if kind == "job" and spec.tasks > 1:
+        found.append(f"job {name}: Container Apps gives a task no index of its own; its {spec.tasks} tasks share the work through a queue or the like")
+    return found
+
+
+def apps_layout(cidr: str) -> tuple[str, str] | None:
+    """(the machines' subnet, Container Apps' subnet) of a network that holds both: the first half of its range, and the
+    first /27 of its second half, which keeps the rest of that half for later; None when the range is too small for that."""
+    import ipaddress
+    network = ipaddress.ip_network(cidr)
+    if network.prefixlen > APPS_SUBNET_PREFIX - 1:
+        return None
+    first, second = network.subnets(prefixlen_diff=1)
+    return str(first), str(next(second.subnets(new_prefix=APPS_SUBNET_PREFIX)))

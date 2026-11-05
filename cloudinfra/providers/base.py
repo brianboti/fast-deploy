@@ -111,6 +111,10 @@ class CloudProvider(ABC):
     def estimate_cost(self, planned: list[PlannedResource]) -> CostEstimate:
         """Monthly cost of a plan from the provider's list prices; an estimate, never a bill."""
 
+    def warnings(self, request: InfrastructureRequest, planned: list[PlannedResource]) -> list[str]:
+        """What a plan should say about this provider's shapes: a size raised to its floor, a limit it applies; [] by default."""
+        return []
+
     # ---- best effort, may be empty
     def quota(self, region: str) -> dict[str, dict]:
         """Quota headroom the provider reports for a region ({metric: {limit, usage}}); {} when it cannot be read."""

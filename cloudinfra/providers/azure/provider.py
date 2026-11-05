@@ -3,17 +3,15 @@
 Built in steps (docs/research/RESEARCH-2026-11-03-azure.md, section 10). Step 1 gave the adapter its credential
 (auth.py), its client (api.py), the clouds, the regions and their zones, and the quota read. Step 2 gave it release
 A's kinds: identity, network, storage (disks and buckets) and compute, with grants, stop and start, resize, connect
-blocks, metrics and prices. Step 4 gives it the managed services: secrets (a vault per request), queues (a Service Bus
+blocks, metrics and prices. Step 4 gave it the managed services: secrets (a vault per request), queues (a Service Bus
 namespace per request), a registry (a repository prefix in the operator's registry), databases and caches (private
-behind an endpoint). Everything a request makes is in a resource group of its own (groups.py), removed when nothing of
-the request is left, the request's vault purged first.
+behind an endpoint). Step 5 gives it the rest: clusters (AKS), services and jobs (Container Apps, in their network's
+environment) and load balancers (a Standard load balancer, with Front Door for hostnames). Everything a request makes is
+in a resource group of its own (groups.py), removed when nothing of the request is left, the request's vault purged
+first.
 
-The other kinds are refused before any call: the validator names what this adapter provides, and every primitive the
-interface asks for that it does not have yet is refused with UNSUPPORTED_RESOURCE_KIND (NOT_YET below). Each kind lands
-with its own change, adds itself to supported_kinds, and leaves NOT_YET by being written.
+What Azure lacks is refused before any call, with the reason: the validator names it (section 6 of the research note).
 """
-import abc
-
 from ...models.errors import ErrorCode, InfrastructureError
 from ...models.request import ComputeRequest, InfrastructureRequest
 from ...models.response import CostEstimate, Health, PlannedResource, Usage
@@ -21,13 +19,16 @@ from ..base import CloudProvider, Problem, ProvisionContext
 from . import connect, naming, pricing, private, translate
 from .access import AzureAccess
 from .api import API_VERSIONS, AzureApi
+from .apps import AzureApps
 from .auth import AzureToken
 from .cache import AzureCache
 from .clouds import CLOUDS
+from .cluster import AzureCluster
 from .compute import AzureCompute
 from .database import AzureDatabase
 from .groups import AzureGroups
 from .identity import AzureIdentity
+from .loadbalancer import AzureLoadBalancer
 from .monitoring import AzureMonitoring
 from .network import AzureNetwork
 from .queue import AzureQueue
@@ -46,18 +47,20 @@ MAX_DISK_GB = 32767  # Azure's largest managed disk
 # How long the adapter waits for each kind of operation, in seconds; the operator's operation timeout caps every one
 # (docs/research/RESEARCH-2026-11-03-azure.md, section 9.1; REQUIREMENTS.md lists them).
 CEILINGS = {"resource_group": 300, "network": 600, "flow_log": 300, "identity": 300, "disk": 600, "storage_account": 600, "compute": 1200, "extension": 900,
-            "attach": 600, "power": 900, "resize": 1200, "delete": 1200, "vault": 600, "namespace": 900, "database": 1800, "cache": 1800}
+            "attach": 600, "power": 900, "resize": 1200, "delete": 1200, "vault": 600, "namespace": 900, "database": 1800, "cache": 1800,
+            "cluster": 2400, "environment": 1800, "app": 900, "front_door": 900}
 MAX_LOCK_SECONDS = 300  # Service Bus's longest message lock
 
 
 class AzureProvider(CloudProvider):
     name = "azure"
-    supported_kinds: tuple[str, ...] = ("identity", "network", "storage", "compute", "database", "cache", "queue", "secret", "registry")
+    supported_kinds: tuple[str, ...] = ("identity", "network", "storage", "compute", "database", "cache", "queue", "secret", "registry", "cluster", "service",
+                                        "job", "load_balancer")
     stoppable_kinds: tuple[str, ...] = ("compute", "database")
-    grantable_kinds: tuple[str, ...] = ("compute", "storage", "secret", "queue", "registry")
+    grantable_kinds: tuple[str, ...] = ("compute", "storage", "secret", "queue", "registry", "cluster", "service", "job")
     enforces_run_limit = False  # Azure has no maximum run duration: the sweeper stops a machine at its max_run_hours
 
-    def __init__(self, settings, api: AzureApi | None = None, token=None, operation_timeout: int = 900, clock=None):
+    def __init__(self, settings, api: AzureApi | None = None, token=None, operation_timeout: int = 900, clock=None, kube=None):
         self.settings = settings
         self.cloud = CLOUDS[settings.cloud]
         self.operation_timeout = operation_timeout
@@ -74,6 +77,9 @@ class AzureProvider(CloudProvider):
         self.registries = AzureRegistry(self.api, settings, self.cloud, self.tenant)
         self.database = AzureDatabase(self.api, self.groups, self.tenant, self.ceiling)
         self.cache = AzureCache(self.api, self.groups, self.ceiling)
+        self.cluster = AzureCluster(self.api, settings, self.groups, self.access, self.registries, self.network, self.tenant, self.ceiling, kube)
+        self.apps = AzureApps(self.api, settings, self.cloud, self.groups, self.access, self.tenant, self.zones, self.ceiling)
+        self.load_balancer = AzureLoadBalancer(self.api, settings, self.groups, self.network, self.compute, self.zones, self.ceiling)
         self.monitoring = AzureMonitoring(self.api, clock)
         self.prices = pricing.load(settings.prices_file)
         self._tenant = settings.tenant_id
@@ -142,7 +148,90 @@ class AzureProvider(CloudProvider):
             if registry.immutable_tags:
                 problems.append(Problem(ErrorCode.INVALID_REQUEST, f"registry {registry.name}: Azure makes a tag immutable only one by one after it is pushed, "
                                         "which the delivery service does not do on Azure yet; leave immutable_tags out and release by digest", "registry.immutable_tags"))
+        problems.extend(self._step5_problems(request))
         return problems
+
+    def _step5_problems(self, request: InfrastructureRequest) -> list[Problem]:
+        """Clusters, services, jobs and load balancers: what Azure, or this operator, cannot give them."""
+        problems = []
+        own = request.network
+        egress = own is not None and own.nat and not self.settings.deny_egress
+        for cluster in request.clusters():
+            label = f"cluster {cluster.cluster_name}"
+            shape = translate.node_shape(cluster)
+            if isinstance(shape, Problem):
+                problems.append(Problem(shape.code, f"{label}: {shape.message}", shape.field))
+            if cluster.public is not None:
+                problems.append(Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, f"{label}: a front door on AKS is Application Gateway for Containers, whose AKS "
+                                        "add-on is in preview, and this adapter uses GA APIs only; put a load_balancer in front of machines, or leave public out",
+                                        "cluster.public"))
+            if own is None and cluster.network_id is None:
+                problems.append(Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, f"{label}: an AKS cluster on Azure needs a network block or network_id; its "
+                                        "nodes join the request's subnet", "cluster.network_id"))
+            elif cluster.network_id is None and not egress:
+                problems.append(Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, f"{label}: AKS nodes leave through the network's NAT gateway, and this network "
+                                        "has none (nat off, or the operator denies egress)", "network.nat"))
+            unknown = [entry for entry in cluster.registries if entry not in self.settings.cluster_registries]
+            if unknown:
+                problems.append(Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, f"{label}: {', '.join(unknown)} is not a registry prefix this operator lets "
+                                        f"clusters pull from: {', '.join(self.settings.cluster_registries) or 'none'}", "cluster.registries"))
+            if cluster.kubernetes_version and "-" in cluster.kubernetes_version:
+                problems.append(Problem(ErrorCode.INVALID_CLUSTER_CONFIGURATION, f"{label}: AKS names versions as 1.33 or 1.33.2", "cluster.kubernetes_version"))
+        prefix = request.name or "infra-00000000"
+        apps = [("service", item, item.service_name) for item in request.services()] + [("job", item, item.job_name) for item in request.jobs()]
+        for kind, item, name in apps:
+            problems.extend(translate.app_problems(item, kind))
+            if len(f"{prefix}-{name}") > translate.APP_NAME_LENGTH:
+                problems.append(Problem(ErrorCode.INVALID_SERVICE_CONFIGURATION, f"{kind} {name}: Container Apps names are {translate.APP_NAME_LENGTH} characters at "
+                                        f"most, and {prefix}-{name} is longer; shorten the request's or the {kind}'s name", f"{kind}.name"))
+            if own is None and item.network_id is None:
+                problems.append(Problem(ErrorCode.INVALID_SERVICE_CONFIGURATION, f"{kind} {name}: on Azure a {kind} runs in its network's Container Apps "
+                                        "environment; add a network block or network_id", f"{kind}.network_id"))
+            if kind == "service" and item.public and not self.settings.allow_public_services:
+                problems.append(Problem(ErrorCode.INVALID_SERVICE_CONFIGURATION, f"service {name}: this operator does not allow services callable without "
+                                        "signing in (providers.azure.allow_public_services)", "service.public"))
+            if kind == "service" and not item.public and not self.settings.service_auth_client_id:
+                problems.append(Problem(ErrorCode.INVALID_SERVICE_CONFIGURATION, f"service {name}: a service callable only with sign-in has Entra sign-in in "
+                                        "front of it, for which this operator names no app registration (providers.azure.service_auth_client_id)",
+                                        "service.public"))
+        if own is not None and any(item.network_id is None for _, item, _ in apps):
+            if self.settings.deny_egress:
+                problems.append(Problem(ErrorCode.INVALID_SERVICE_CONFIGURATION, "Container Apps' platform needs outbound access, which this operator denies on "
+                                        "the networks it makes (providers.azure.deny_egress)", "network"))
+            if translate.apps_layout(own.cidr) is None:
+                problems.append(Problem(ErrorCode.INVALID_NETWORK_CONFIGURATION, f"network.cidr {own.cidr} is too small to hold Container Apps' /"
+                                        f"{translate.APPS_SUBNET_PREFIX} beside the machines' subnet: give it /{translate.APPS_SUBNET_PREFIX - 1} or larger",
+                                        "network.cidr"))
+        balancer = request.load_balancer
+        if balancer is not None and balancer.hostnames:
+            outside = [name for name in balancer.hostnames if not any(name == domain or name.endswith("." + domain) for domain in self.settings.public_domains)]
+            if outside:
+                problems.append(Problem(ErrorCode.INVALID_LOAD_BALANCER_CONFIGURATION, f"load_balancer.hostnames: {', '.join(outside)} is not in a domain this "
+                                        f"operator allows: {', '.join(self.settings.public_domains) or 'none'}", "load_balancer.hostnames"))
+        return problems
+
+    def warnings(self, request: InfrastructureRequest, planned: list[PlannedResource]) -> list[str]:
+        found = []
+        for cluster in request.clusters():
+            shape = translate.node_shape(cluster)
+            if not isinstance(shape, Problem) and shape[1]:
+                found.append(f"cluster {cluster.cluster_name}: AKS's system pool has nodes of {translate.SYSTEM_POOL_CPU} vCPUs at least, so its nodes are "
+                             f"{shape[0].name} ({shape[0].cpu} vCPUs, {shape[0].memory_gb} GB)")
+            if cluster.node_count < translate.SYSTEM_POOL_NODES:
+                found.append(f"cluster {cluster.cluster_name}: AKS's system pool has {translate.SYSTEM_POOL_NODES} nodes at least, so it has "
+                             f"{translate.SYSTEM_POOL_NODES}")
+        for service in request.services():
+            found.extend(translate.app_warnings(service, "service"))
+        for job in request.jobs():
+            found.extend(translate.app_warnings(job, "job"))
+        if request.services() or request.jobs():
+            found.append("services and jobs run in their network's Container Apps environment, which is internal: they are reached from that network only, "
+                         "and all of their egress leaves through it")
+        if request.load_balancer is not None and request.load_balancer.hostnames:
+            found.append("on Azure each hostname needs two DNS records the load balancer reports: a TXT record _dnsauth.<hostname> with its token, which "
+                         "Front Door checks before it issues the certificate, and a CNAME to the Front Door endpoint; the machines admit every Front Door "
+                         "profile's backends, any tenant's, so the application checks the X-Azure-FDID header against this profile's id (front_door_id)")
+        return found
 
     def plan(self, request: InfrastructureRequest, ctx: ProvisionContext) -> list[PlannedResource]:
         unsupported = [kind for kind in request.kinds() if kind not in self.supported_kinds]
@@ -153,7 +242,8 @@ class AzureProvider(CloudProvider):
         zoned = bool(self.zones(region))
         for identity in request.identities():  # first: machines carry them, and they are granted on everything after
             planned.append(PlannedResource(kind="identity", name=f"{prefix}-{identity.identity_name}", provider_mapping="Microsoft.ManagedIdentity/userAssignedIdentities",
-                                           spec={"identity": identity.identity_name, "level": identity.level, "kubernetes": False, "region": region}))
+                                           spec={"identity": identity.identity_name, "level": identity.level, "kubernetes": bool(request.clusters()),
+                                                 "region": region}))
         groups = request.compute_groups()
         own_network = f"{prefix}-net" if request.network else None
         if request.network:
@@ -163,11 +253,14 @@ class AzureProvider(CloudProvider):
             rules = [f"{own_network}-allow-internal"] + ([f"{own_network}-allow-bastion-ssh"] if request.network.iap_ssh and self.settings.bastion_subnet else []) \
                 + ([f"{own_network}-allow-public"] if request.network.public_access else []) + [f"{own_network}-allow-probes", f"{own_network}-deny-inbound"]
             rules += [f"{own_network}-allow-egress-internal", f"{own_network}-allow-egress-entra", f"{own_network}-deny-egress"] if deny_egress else []
-            mapping = "Microsoft.Network/networkSecurityGroups, virtualNetworks (one subnet, no default outbound access)" \
-                + (", publicIPAddresses, natGateways" if nat else "") + (", networkWatchers/flowLogs" if flow_logs else "")
+            layout = translate.apps_layout(request.network.cidr) if any(item.network_id is None for item in [*request.services(), *request.jobs()]) else None
+            mapping = "Microsoft.Network/networkSecurityGroups, virtualNetworks (one subnet, no default outbound access" \
+                + ("; and a /27 delegated to Container Apps)" if layout else ")") + (", publicIPAddresses, natGateways" if nat else "") \
+                + (", networkWatchers/flowLogs" if flow_logs else "")
             planned.append(PlannedResource(kind="network", name=own_network, provider_mapping=mapping,
                                            spec={"subnet": f"{prefix}-subnet", "cidr": request.network.cidr, "public_access": request.network.public_access,
-                                                 "firewall_rules": rules, "nat": nat, "deny_egress": deny_egress, "flow_logs": flow_logs, "zone": zone, "region": region}))
+                                                 "firewall_rules": rules, "nat": nat, "deny_egress": deny_egress, "flow_logs": flow_logs, "zone": zone, "region": region,
+                                                 "subnet_cidr": layout[0] if layout else request.network.cidr, "apps_subnet": layout[1] if layout else None}))
         if request.storage and request.storage.type == "persistent":
             targets = [group for group in groups if request.storage.group in (None, group.group_name)]
             machines = [(f"{prefix}-{group.group_name}-disk-{index}", f"{prefix}-{group.group_name}-{index}") for group in targets for index in range(1, group.count + 1)]
@@ -239,6 +332,45 @@ class AzureProvider(CloudProvider):
             planned.append(PlannedResource(kind="registry", name=name, provider_mapping="a repository prefix in the operator's registry (nothing made until a push)",
                                            spec={"registry": registry.name, "prefix": prefix_of(name, ctx.request_id), "size_gb": registry.size_gb,
                                                  "immutable_tags": registry.immutable_tags, "region": region}))
+        identities = [{"name": f"{prefix}-{identity.identity_name}", "account": identity.identity_name} for identity in request.identities()]
+        for cluster in request.clusters():
+            shape = translate.node_shape(cluster)
+            if isinstance(shape, Problem):
+                raise InfrastructureError(shape.code, shape.message, {"field": shape.field})
+            size = shape[0]
+            mapping = "Microsoft.ContainerService/managedClusters (Standard tier, one system pool), userAssignedIdentities (its control plane), roleAssignments"
+            mapping += ", federatedIdentityCredentials" if identities else ""
+            planned.append(PlannedResource(kind="cluster", name=f"{prefix}-{cluster.cluster_name}", provider_mapping=mapping,
+                                           spec={"cluster": cluster.cluster_name, "machine_type": size.name, "cpu": size.cpu, "memory_gb": size.memory_gb,
+                                                 "cpu_quota": size.quota, "node_count": max(cluster.node_count, translate.SYSTEM_POOL_NODES),
+                                                 "node_disk_gb": cluster.node_disk_gb, "private_nodes": cluster.private_nodes, "registries": list(cluster.registries),
+                                                 "kubernetes_version": cluster.kubernetes_version, "tier": "Standard", "identities": identities,
+                                                 "location": region,
+                                                 "network": own_network or cluster.network_id, "region": region}))
+        for service in request.services():
+            mapping = "Microsoft.App/containerApps, userAssignedIdentities (its runtime)" + ("" if service.public else ", authConfigs (Entra sign-in)") + \
+                "; the network's managedEnvironments, with its first service or job"
+            planned.append(PlannedResource(kind="service", name=f"{prefix}-{service.service_name}", provider_mapping=mapping,
+                                           spec={"service": service.service_name, "cpu": service.cpu, "memory_mb": translate.app_memory_mb(service),
+                                                 "min_instances": service.min_instances, "max_instances": service.max_instances, "public": service.public,
+                                                 "ingress": service.ingress, "network": own_network or service.network_id, "region": region}))
+        for job in request.jobs():
+            planned.append(PlannedResource(kind="job", name=f"{prefix}-{job.job_name}", provider_mapping=(
+                "Microsoft.App/jobs" + (" (on a schedule, in UTC)" if job.schedule else "") + ", userAssignedIdentities (its runtime); the network's managedEnvironments"),
+                spec={"job": job.job_name, "cpu": job.cpu, "memory_mb": translate.app_memory_mb(job), "tasks": job.tasks,
+                      "schedule": {"cron": job.schedule.cron, "time_zone": "UTC"} if job.schedule else None, "network": own_network or job.network_id,
+                      "region": region}))
+        if request.load_balancer:
+            balancer = request.load_balancer
+            group = request.group(balancer.backend_group)
+            backends = [f"{prefix}-{group.group_name}-{index}" for index in range(1, group.count + 1)] if group else list(balancer.backends or [])
+            mapping = "Microsoft.Network/publicIPAddresses, loadBalancers (Standard, an IP-based pool), networkSecurityGroups/securityRules"
+            mapping += ", Microsoft.Cdn/profiles (Front Door Standard: an endpoint, an origin, custom domains with managed certificates, a route)" if balancer.hostnames else ""
+            mapping += ", securityPolicies (the operator's WAF policy)" if balancer.hostnames and self.settings.front_door_waf_policy else ""
+            planned.append(PlannedResource(kind="load_balancer", name=f"{prefix}-lb", provider_mapping=mapping,
+                                           spec={"type": balancer.type, "port": balancer.port, "backend_group": group.group_name if group else "external",
+                                                 "backends": backends, "health_check_path": balancer.health_check_path if balancer.type == "http" else None,
+                                                 "hostnames": list(balancer.hostnames), "front_door": bool(balancer.hostnames), "region": region}))
         return planned
 
     def estimate_cost(self, planned: list[PlannedResource]) -> CostEstimate:
@@ -412,6 +544,45 @@ class AzureProvider(CloudProvider):
     def delete_cache(self, resource, ctx):
         self.cache.delete(resource, ctx)
 
+    def create_cluster(self, spec, planned, ctx, network):
+        return self.cluster.create(spec, planned, ctx, network)
+
+    def get_cluster(self, resource):
+        return self.cluster.get(resource)
+
+    def delete_cluster(self, resource, ctx):
+        self._release(resource, ctx)
+        self.cluster.delete(resource, ctx)
+
+    def create_service(self, spec, planned, ctx, network, secrets):
+        return self.apps.create_service(spec, planned, ctx, network, secrets)
+
+    def get_service(self, resource):
+        return self.apps.get_service(resource)
+
+    def delete_service(self, resource, ctx):
+        self._release(resource, ctx)
+        self.apps.delete_service(resource, ctx)
+
+    def create_job(self, spec, planned, ctx, network, secrets):
+        return self.apps.create_job(spec, planned, ctx, network, secrets)
+
+    def get_job(self, resource):
+        return self.apps.get_job(resource)
+
+    def delete_job(self, resource, ctx):
+        self._release(resource, ctx)
+        self.apps.delete_job(resource, ctx)
+
+    def create_load_balancer(self, spec, planned, ctx, backends, network):
+        return self.load_balancer.create(spec, planned, ctx, backends, network)
+
+    def get_load_balancer(self, resource):
+        return self.load_balancer.get(resource)
+
+    def delete_load_balancer(self, resource, ctx):
+        self.load_balancer.delete(resource, ctx)
+
     # ---- optional capabilities
     def stop_compute(self, resource, ctx):
         return self.compute.stop(resource, ctx)
@@ -444,6 +615,12 @@ class AzureProvider(CloudProvider):
             return [(resource.topic, "topic")] + ([(resource.subscription, "subscription")] if resource.subscription else [])
         if kind == "registry":
             return [(registry_of(resource), "registry", resource.repository)]  # the registry the prefix was made in
+        if kind == "cluster":
+            return self.cluster.targets(resource)
+        if kind == "service":
+            return [(resource.provider_id, "app")]
+        if kind == "job":
+            return [(resource.provider_id, "job")]
         return []
 
     def _principal(self, member: str, ctx: ProvisionContext) -> dict:
@@ -456,7 +633,9 @@ class AzureProvider(CloudProvider):
         targets = self._targets(resource)
         if not targets:
             return []
-        return self.access.grant(targets, self._principal(member, ctx), level, f"cloudinfra request {ctx.request_id} ({ctx.name}): {member} at {level}")
+        principal = self._principal(member, ctx)
+        allowed = self.apps.allow(resource, principal, True) if resource.kind.value == "service" else []  # calling it: its sign-in's allow-list
+        return allowed + self.access.grant(targets, principal, level, f"cloudinfra request {ctx.request_id} ({ctx.name}): {member} at {level}")
 
     def _release(self, resource, ctx) -> None:
         """Before a resource is deleted, remove the role assignments this service made on it: Azure keeps an assignment whose
@@ -467,9 +646,10 @@ class AzureProvider(CloudProvider):
         # every member the request ever had, not only those recorded on the resource: a grant that failed halfway may have
         # made one of its assignments before it failed, and a revoke of one never made finds nothing
         for member in dict.fromkeys([*(grant.member for grant in resource.access), *ctx.principals]):
-            self.revoke(resource, member, ctx)
+            self.revoke(resource, member, ctx, releasing=True)
 
-    def revoke(self, resource, member, ctx) -> None:
+    def revoke(self, resource, member, ctx, releasing: bool = False) -> None:
+        """releasing: the resource is about to be deleted, so a service's sign-in allow-list, which goes with it, is left."""
         targets = self._targets(resource)
         if not targets:
             return
@@ -479,6 +659,8 @@ class AzureProvider(CloudProvider):
             if exc.code != ErrorCode.INVALID_ACCESS:
                 raise
             return  # Azure's directory cannot name it, so no grant names it either: nothing to remove
+        if resource.kind.value == "service" and not releasing:
+            self.apps.allow(resource, principal, False)
         self.access.revoke(targets, principal)
 
     def connect_info(self, resource, resources):
@@ -498,18 +680,3 @@ class AzureProvider(CloudProvider):
 def _entry(usage: dict) -> dict:
     limit = usage.get("limit")
     return {"limit": limit if isinstance(limit, int) and limit >= 0 else None, "usage": usage.get("currentValue", 0)}
-
-
-def _not_yet(operation: str):
-    def refuse(self, *args, **kwargs):
-        raise InfrastructureError(ErrorCode.UNSUPPORTED_RESOURCE_KIND, f"The azure adapter does not provide this yet ({operation})",
-                                  {"provider": "azure", "operation": operation})
-    refuse.__name__ = operation
-    return refuse
-
-
-# Every primitive of the interface this adapter has not written yet, refused with a structured error.
-NOT_YET = tuple(sorted(AzureProvider.__abstractmethods__))
-for _operation in NOT_YET:
-    setattr(AzureProvider, _operation, _not_yet(_operation))
-abc.update_abstractmethods(AzureProvider)

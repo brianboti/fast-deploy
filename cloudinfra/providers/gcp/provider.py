@@ -227,6 +227,16 @@ class GCPProvider(CloudProvider):
                                                  "health_check_path": balancer.health_check_path if balancer.type == "http" else None, "hostnames": list(balancer.hostnames)}))
         return planned
 
+    def warnings(self, request: InfrastructureRequest, planned: list[PlannedResource]) -> list[str]:
+        found = []
+        if request.clusters():
+            found.append("one zonal cluster per billing account has no management fee")
+        outside = [cluster.cluster_name for cluster in request.clusters() if cluster.private_nodes and not (request.network is not None and request.network.nat)]
+        if outside:
+            found.append(f"cluster {', '.join(outside)}: private nodes have no public address and are not on this request's network with its NAT; they reach "
+                         "Google's APIs privately, and the internet only if their network has a NAT of its own")
+        return found
+
     def estimate_cost(self, planned: list[PlannedResource]) -> CostEstimate:
         return pricing.estimate(planned)
 

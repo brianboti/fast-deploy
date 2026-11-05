@@ -39,6 +39,9 @@ CRON = re.compile(r"^[0-9A-Za-z*/,-]+( [0-9A-Za-z*/,-]+){4}$")  # five unix-cron
 TIME_ZONE = re.compile(r"^[A-Za-z_]+(?:/[A-Za-z0-9_+-]+){0,2}$")
 HOSTNAME = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 REGISTRY = re.compile(r"^[a-z0-9-]+-docker\.pkg\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/[a-z0-9][a-z0-9._-]{0,62}$")  # an Artifact Registry repository
+# A repository prefix in an Azure container registry: LOGIN_SERVER/PREFIX (platformimages-h7c2.azurecr.io/base). Each
+# provider's validator refuses the other's form, as no operator lists one for it.
+ACR_REPOSITORY = re.compile(r"^[a-z0-9]{5,50}(?:-[a-z0-9]{4,8})?\.azurecr\.(?:io|us|cn)/[a-z0-9][a-z0-9._-]{0,200}$")
 
 
 class StrictModel(BaseModel):
@@ -237,8 +240,10 @@ class ClusterRequest(StrictModel):
                                                           "network's NAT, and Google's APIs privately. false gives each node a public address.")
     network_id: str | None = Field(default=None, description="A network this service created earlier (net-…); the operator's default network when omitted.")
     public: PublicRequest | None = Field(default=None, description="A front door: a public address and a Gateway for the request's workloads.")
-    registries: list[str] = Field(default_factory=list, max_length=10, description="Artifact Registry repositories (LOCATION-docker.pkg.dev/PROJECT/REPO) the nodes "
-                                                                                 "may pull images from; the operator lists the ones a request may name.")
+    registries: list[str] = Field(default_factory=list, max_length=10, description="Repositories the nodes may pull images from: on gcp Artifact Registry "
+                                                                                 "repositories (LOCATION-docker.pkg.dev/PROJECT/REPO), on azure repository prefixes "
+                                                                                 "in the operator's registry (LOGIN_SERVER/PREFIX); the operator lists the ones a "
+                                                                                 "request may name.")
 
     @field_validator("network_id")
     @classmethod
@@ -249,8 +254,8 @@ class ClusterRequest(StrictModel):
     @classmethod
     def _registries(cls, value):
         for registry in value:
-            if not REGISTRY.fullmatch(registry):
-                raise ValueError(f"cluster.registries: {registry!r} is not LOCATION-docker.pkg.dev/PROJECT/REPO")
+            if not (REGISTRY.fullmatch(registry) or ACR_REPOSITORY.fullmatch(registry)):
+                raise ValueError(f"cluster.registries: {registry!r} is not LOCATION-docker.pkg.dev/PROJECT/REPO (gcp) or LOGIN_SERVER/PREFIX (azure)")
         if len(set(value)) != len(value):
             raise ValueError("cluster.registries: each repository once")
         return value
@@ -412,8 +417,8 @@ class NetworkRequest(StrictModel):
 
 class InfrastructureRequest(StrictModel):
     """What the Application Layer wants: a provider, a region, and at least one resource block."""
-    provider: str = Field(default="gcp", pattern=r"^[a-z][a-z0-9-]{0,15}$", description="The cloud provider adapter: gcp; azure (every kind but cluster, service, job and "
-                                                                                 "load_balancer so far); aws and jetstream are planned.")
+    provider: str = Field(default="gcp", pattern=r"^[a-z][a-z0-9-]{0,15}$", description="The cloud provider adapter: gcp or azure; aws and jetstream "
+                                                                                 "are planned.")
     region: str = Field(description="The provider's region (us-central1, eastus2).")
     zone: str | None = Field(default=None, description="A zone in the region (us-central1-a; on Azure a number, 1); the provider picks one when omitted.")
     name: str | None = Field(default=None, description="A short name used as the prefix of every resource name; infra-<8 hex> when omitted.")

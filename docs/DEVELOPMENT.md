@@ -73,7 +73,8 @@ role, API, limit or tool, `docs/SETUP.md` for a new operator step.
 - New infrastructure tests go in `tests/cloudinfra/` as `test_infra_<topic>.py`, using and extending `gcp_fakes.py`
   (or `azure_fakes.py` for the Azure adapter, which answers Resource Manager, Microsoft Graph and a blob service from
   memory: `test_infra_azure.py` for its client and settings, `test_infra_azure_kinds.py` for release A's kinds,
-  `test_infra_azure_services.py` for the managed services);
+  `test_infra_azure_services.py` for the managed services, `test_infra_azure_platform.py` for clusters, services, jobs
+  and load balancers, with a cluster's API answered by `FakeAksKube`);
   new delivery tests in `tests/appdelivery/` as `test_delivery_<topic>.py` with the fakes there. Neither directory
   takes a `conftest.py`.
 - A real-cloud test goes in `tests/integration/`, marked `integration`, creates the smallest thing that proves the

@@ -38,10 +38,21 @@ BUS_SENDER = "69a216fc-b8fb-44d8-bc22-1f3c2cd27a39"
 BUS_RECEIVER = "4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0"
 REPOSITORY_READER = "b93aa761-3e63-49ed-ac28-beffa264f7ac"  # learn.microsoft.com/azure/role-based-access-control/built-in-roles/containers
 REPOSITORY_WRITER = "2a1e307c-b015-4ebd-883e-5b7698a07328"
+# step 5's, each read on its built-in roles page on 2026-11-05 (containers, networking)
+CLUSTER_USER = "4abbcc35-e782-43d8-92c5-2d3f1bd2253f"  # Azure Kubernetes Service Cluster User Role: the cluster's user kubeconfig, nothing in it
+AKS_RBAC_READER = "7f6c6a51-bcf8-42ba-9220-52d62157d7db"
+AKS_RBAC_WRITER = "a7ffa36f-339b-4b5c-8bdf-e2c188b2c0eb"
+NETWORK_CONTRIBUTOR = "4d97b98b-1d4f-4787-a291-c67834d212e7"
+APPS_OPERATOR = "f3bd1b5c-91fa-40e7-afe7-0c11d331232c"  # Container Apps Operator: its revisions, logs and console; never its configuration
+JOBS_READER = "edd66693-d32a-450b-997d-0158c03976b0"
+JOBS_CONTRIBUTOR = "4e3d2b60-56ae-4dc6-a233-09c8e5a82e68"
 NAMES = {VM_USER_LOGIN: "Virtual Machine User Login", VM_ADMIN_LOGIN: "Virtual Machine Administrator Login", READER: "Reader",
          BLOB_CONTRIBUTOR: "Storage Blob Data Contributor", BLOB_OWNER: "Storage Blob Data Owner", SECRETS_USER: "Key Vault Secrets User",
          SECRETS_OFFICER: "Key Vault Secrets Officer", BUS_SENDER: "Azure Service Bus Data Sender", BUS_RECEIVER: "Azure Service Bus Data Receiver",
-         REPOSITORY_READER: "Container Registry Repository Reader", REPOSITORY_WRITER: "Container Registry Repository Writer"}
+         REPOSITORY_READER: "Container Registry Repository Reader", REPOSITORY_WRITER: "Container Registry Repository Writer",
+         CLUSTER_USER: "Azure Kubernetes Service Cluster User Role", AKS_RBAC_READER: "Azure Kubernetes Service RBAC Reader",
+         AKS_RBAC_WRITER: "Azure Kubernetes Service RBAC Writer", NETWORK_CONTRIBUTOR: "Network Contributor", APPS_OPERATOR: "Container Apps Operator",
+         JOBS_READER: "Container Apps Jobs Reader", JOBS_CONTRIBUTOR: "Container Apps Jobs Contributor"}
 # role tables: level -> roles; a revoke removes every role of the table, whichever level was granted
 ROLES = {
     "machine": {"use": (VM_USER_LOGIN,), "admin": (VM_ADMIN_LOGIN,)},
@@ -52,6 +63,20 @@ ROLES = {
     "subscription": {"use": (BUS_RECEIVER,), "admin": (BUS_RECEIVER,)},
     # on the operator's registry, conditioned to the request's repository prefix; a writer pushes, any other member pulls
     "registry": {"use": (REPOSITORY_READER,), "admin": (REPOSITORY_WRITER,)},
+    # a cluster: its user kubeconfig at the cluster's scope, and Azure RBAC for Kubernetes at its request's namespace only
+    # (learn.microsoft.com/azure/aks/manage-azure-rbac): Reader reads, Writer also changes workloads, services, config maps
+    # and secrets, as Kubernetes' view and edit do
+    "cluster": {"use": (CLUSTER_USER,), "admin": (CLUSTER_USER,)},
+    "namespace": {"use": (AKS_RBAC_READER,), "admin": (AKS_RBAC_WRITER,)},
+    # a container service: calling it is its Entra sign-in's allow-list (apps.py), not a role; admin also restarts and
+    # activates its revisions, reads its logs and opens a console in it, and cannot change it or its sign-in (a new
+    # revision is the delivery layer's): Container Apps Contributor could turn the sign-in off
+    "app": {"use": (), "admin": (APPS_OPERATOR,)},
+    # a job: use reads it and its runs; admin also starts and changes it. Azure's start takes an image and a command of the
+    # caller's choosing, run as the job's identity, so starting is admin's (Jobs Operator would give it to use)
+    "job": {"use": (JOBS_READER,), "admin": (JOBS_CONTRIBUTOR,)},
+    # never a member's: a cluster's own control-plane identity, on the subnet its nodes join
+    "subnet": {"use": (NETWORK_CONTRIBUTOR,), "admin": (NETWORK_CONTRIBUTOR,)},
 }
 # The data actions a repository role's condition limits to the request's prefix
 # (learn.microsoft.com/azure/container-registry/container-registry-rbac-abac-repository-permissions).
