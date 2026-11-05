@@ -30,6 +30,9 @@ GRAPH = "https://graph.microsoft.com"
 HUB = f"/subscriptions/{SUBSCRIPTION}/resourceGroups/hub/providers/Microsoft.Network"
 BASTION = f"{HUB}/bastionHosts/hub-bastion"
 DEFAULT_SUBNET = f"{HUB}/virtualNetworks/hub/subnets/workloads"
+REGISTRY = f"/subscriptions/{SUBSCRIPTION}/resourceGroups/hub/providers/Microsoft.ContainerRegistry/registries/platformimages"
+VAULT_AUDIENCE = "https://vault.azure.net"
+REGISTRY_LOGIN = "platformimages-h7c2.azurecr.io"  # a login server with a label Azure added: more than the registry's name
 # people and groups in the fake directory: address -> object id
 USERS = {"ada@example.com": "11111111-1111-4111-8111-111111111111", "grace@example.com": "22222222-2222-4222-8222-222222222222"}
 GUESTS = {"linus@partner.example.com": "33333333-3333-4333-8333-333333333333"}  # a guest: their address is their mail, not their sign-in name
@@ -71,7 +74,9 @@ class FakeAzureApi(AzureApi):
 
     def __init__(self):
         self.now = 0.0  # the fake's own clock: a sleep moves it on, so a wait that never ends runs out instead of hanging a test
-        super().__init__(SUBSCRIPTION, token=lambda audience=None: "fake-token", sleep=self._sleep, clock=lambda: self.now)
+        # a token says which audience it was asked for, so a test sees which one went where
+        super().__init__(SUBSCRIPTION, token=lambda audience=None: "fake-token" if audience in (None, f"{ARM}/") else f"fake-token:{audience}",
+                         sleep=self._sleep, clock=lambda: self.now)
         self.calls = []  # (method, url, body, query parameters)
         self.audiences = []  # (url, audience) of calls made with a token for another audience than Resource Manager's
         self.fail_on = []
@@ -88,12 +93,19 @@ class FakeAzureApi(AzureApi):
         self.addresses = itertools.count(4)  # private addresses handed out on a subnet: 10.x.y.4, .5…
         self.public = itertools.count(10)
         self.ticks = itertools.count(1)
+        self.vault_data: dict[str, dict[str, list[dict]]] = {}  # vault name -> secret name -> its versions ({value, enabled}), on the vault's own API
+        self.deleted_secrets: dict[str, set[str]] = {}  # vault name -> secrets deleted and not purged
+        self.deleted_vaults: set[str] = set()  # vault names deleted and not purged
+        self.repositories: set[str] = set()  # repositories in the operator's registry
+        self.registry_tokens: list[tuple[str, str]] = []  # (registry API path, bearer) of every call to the registry's own API
+        self.passwords: dict[str, str] = {}  # flexible server name -> the administrator password it was made with (never answered back)
+        self.catalog_page = 2  # the registry answers its catalog this many names at a time, with a Link to the next page
 
     def _sleep(self, seconds):
         self.now += seconds
 
     # ---- one call
-    def call(self, method, url, json=None, params=None, audience=None, headers=None):
+    def call(self, method, url, json=None, params=None, audience=None, headers=None, data=None, bearer=None):
         path, _, query = url.partition("?")
         params = {**dict(parse_qsl(query)), **dict(params or {})}
         self.calls.append((method, url, json, params))
@@ -102,14 +114,22 @@ class FakeAzureApi(AzureApi):
         for fail_method, fragment in self.fail_on:
             if method == fail_method and fragment in url:
                 raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"planted failure on {method} {fragment}", {"http_status": 400, "planted": True})
-        for (refuse_method, fragment), errors in self.refuse.items():
-            if method == refuse_method and fragment in url and errors:
+        for (refuse_method, fragment), errors in self.refuse.items():  # a fragment ending in $ matches the end of the address only
+            matched = path.endswith(fragment[:-1]) if fragment.endswith("$") else fragment in url
+            if method == refuse_method and matched and errors:
                 raise errors.pop(0)
         if path.startswith(GRAPH):
             return self._graph(method, unquote(path[len(GRAPH):]), params)
         found = re.match(r"^https://([a-z0-9]{3,24})\.blob\.core\.windows\.net/data$", path)
         if found:
             return self._blob_service(found.group(1), method, params, headers or {})
+        found = re.match(r"^https://([a-z0-9-]{3,24})\.vault\.azure\.net(/.*)$", path)
+        if found:
+            assert audience == VAULT_AUDIENCE and params.get("api-version"), (url, audience)
+            return self._vault_service(found.group(1), method, found.group(2), json)
+        found = re.match(r"^https://([a-z0-9-]{5,60})\.azurecr\.io(/.*)$", path)
+        if found:
+            return self._registry_service(found.group(1), method, found.group(2), params, data, bearer)
         assert path.startswith(ARM), f"the adapter called outside Resource Manager: {url}"
         path = path[len(ARM):]
         for pattern, handler in ((r"^/subscriptions/([^/]+)/providers/Microsoft\.Compute/locations/([^/]+)/usages$", self._usages),
@@ -153,9 +173,15 @@ class FakeAzureApi(AzureApi):
         namespace = kind.split("/")[0]
         if kind == "Microsoft.Compute/disks":
             return API_VERSIONS["Microsoft.Compute/disks"]
+        if kind.startswith("Microsoft.Network/privateDnsZones"):
+            return API_VERSIONS["Microsoft.Network/privateDnsZones"]
+        if kind == "Microsoft.Authorization/locks":
+            return API_VERSIONS["Microsoft.Authorization/locks"]
         return API_VERSIONS.get(namespace)
 
     def _get(self, path, key, params):
+        if key == f"/subscriptions/{SUBSCRIPTION}":
+            return AzureResponse(200, {}, {"id": path, "subscriptionId": SUBSCRIPTION, "tenantId": TENANT})
         listing = self._list(path, key, params)
         if listing is not None:
             return listing
@@ -175,6 +201,10 @@ class FakeAzureApi(AzureApi):
 
     def _list(self, path, key, params):
         """The collections the adapter reads; None for a single resource."""
+        parent = key.rsplit("/", 1)[0]
+        if key not in self.resources and parent in self.resources and not key.endswith(("/vmsizes", "/resources")):
+            children = [self._public(item) for name, item in self.resources.items() if name.startswith(key + "/") and name.count("/") == key.count("/") + 1]
+            return AzureResponse(200, {}, {"value": children})  # a resource's child collection: its zone's links, a vault's secrets
         if re.match(r"^/subscriptions/[^/]+/resourcegroups/[^/]+/resources$", key):
             group = key[: -len("/resources")]
             if group not in self.resources:
@@ -210,6 +240,8 @@ class FakeAzureApi(AzureApi):
         resource = {**(existing or {}), **body, "id": path, "name": name, "type": kind, "properties": properties, "_top": kind.count("/") == 1}
         if kind == "Microsoft.Authorization/roleAssignments":
             resource["properties"]["scope"] = path.split("/providers/Microsoft.Authorization/")[0]
+            # Azure keeps one assignment of a role per member and scope, whatever its condition: another name for the same is
+            # refused, and a PUT of the same name changes its condition (the ACR ABAC page's own advice on prefixes)
             twin = next((item for item in self.resources.values() if item["type"] == kind and item["id"].lower() != key
                          and (item["properties"]["scope"].lower(), item["properties"]["principalId"], item["properties"]["roleDefinitionId"])
                          == (resource["properties"]["scope"].lower(), properties["principalId"], properties["roleDefinitionId"])), None)
@@ -222,6 +254,21 @@ class FakeAzureApi(AzureApi):
             properties["ipAddress"] = f"20.1.2.{next(self.public)}"
         if kind == "Microsoft.Compute/virtualMachines":
             self._machine(resource, existing)
+        if kind in ("Microsoft.DBforPostgreSQL/flexibleServers", "Microsoft.DBforMySQL/flexibleServers"):
+            self.passwords[name] = properties.pop("administratorLoginPassword", "")  # never answered back, as Azure does
+            engine = "postgres" if "PostgreSQL" in kind else "mysql"
+            properties.update(state="Ready", fullyQualifiedDomainName=f"{name}.{engine}.database.azure.com")
+        if kind == "Microsoft.Cache/redisEnterprise":
+            properties.update(resourceState="Running", hostName=f"{name}.{body.get('location', 'eastus2')}.redis.azure.net")
+        if kind == "Microsoft.KeyVault/vaults":
+            if name in self.deleted_vaults:
+                raise refusal(409, "ConflictError", f"A vault with the same name already exists in deleted state: {name}")
+            properties["vaultUri"] = f"https://{name}.vault.azure.net/"
+            self.vault_data.setdefault(name, {})
+        if kind == "Microsoft.Network/privateEndpoints":
+            target = properties["privateLinkServiceConnections"][0]["properties"]["privateLinkServiceId"]
+            assert target.lower() in self.resources, f"an endpoint for {target}, which does not exist"
+            resource["_delete_with"] = target.lower()
         self.resources[key] = resource
         return AzureResponse(200 if existing else 201 if kind == "Microsoft.Authorization/roleAssignments" else 200, {}, self._public(resource))
 
@@ -296,9 +343,24 @@ class FakeAzureApi(AzureApi):
 
     def _post(self, path, key):
         machine_key, _, action = key.rpartition("/")
+        if "/deletedvaults/" in key and action == "purge":
+            vault = key.split("/deletedvaults/", 1)[1].split("/", 1)[0]
+            if vault not in self.deleted_vaults:
+                raise refusal(404, "ResourceNotFound", f"Deleted vault {vault} was not found")
+            self.deleted_vaults.discard(vault)
+            self.vault_data.pop(vault, None)
+            self.deleted_secrets.pop(vault, None)
+            return AzureResponse(200, {}, None)
         machine = self.resources.get(machine_key)
         if machine is None:
             raise refusal(404, "ResourceNotFound", f"{path} was not found")
+        if machine["type"].endswith("/flexibleServers"):
+            assert action in ("stop", "start"), action
+            machine["properties"]["state"] = "Stopped" if action == "stop" else "Ready"
+            return AzureResponse(200, {}, None)
+        if machine["type"] == "Microsoft.Cache/redisEnterprise/databases":
+            assert action == "listkeys", action
+            return AzureResponse(200, {}, {"primaryKey": f"primary-key-of-{machine_key.split('/')[-3]}", "secondaryKey": "secondary"})
         if action == "deallocate":
             machine["_power"] = "deallocated"
         elif action == "start":
@@ -308,16 +370,29 @@ class FakeAzureApi(AzureApi):
         return AzureResponse(200, {}, None)
 
     def _delete(self, path, key):
+        scopes = {name: name.split("/providers/microsoft.authorization/locks/", 1)[0] for name, item in self.resources.items()
+                  if item["type"] == "Microsoft.Authorization/locks" and name != key}
+        # a lock stops the delete of what it is on, of anything under it, and of the group it is in
+        locked = [name for name, scope in scopes.items() if (key + "/").startswith(scope + "/") or scope.startswith(key + "/")]
+        if locked and key in self.resources:
+            raise refusal(409, "ScopeLocked", f"The scope '{path}' cannot perform delete operation because following scope(s) are locked: {locked[0]}")
         found = self.resources.pop(key, None)
         if found is None:
             return AzureResponse(204, {}, None)
+        if found["type"] == "Microsoft.KeyVault/vaults":
+            self.deleted_vaults.add(found["name"])  # soft delete: kept, with its secrets, until purged
         if found["type"] == "Microsoft.Compute/disks" and found.get("_attached_to") in self.resources:
             self.resources[key] = found
             raise refusal(409, "OperationNotAllowed", f"Disk {found['name']} is attached to a VM")
         if found["type"] == "Microsoft.Resources/resourceGroups":
             for name in [name for name in self.resources if name.startswith(key + "/")]:
+                if self.resources[name]["type"] == "Microsoft.KeyVault/vaults":
+                    self.deleted_vaults.add(self.resources[name]["name"])
                 del self.resources[name]
-        if found["type"] == "Microsoft.Compute/virtualMachines":
+        if found["type"] in ("Microsoft.Compute/virtualMachines", "Microsoft.DBforPostgreSQL/flexibleServers", "Microsoft.DBforMySQL/flexibleServers",
+                             "Microsoft.Cache/redisEnterprise"):
+            if found["type"] != "Microsoft.Compute/virtualMachines":
+                assert not [item for item in self.resources.values() if item.get("_delete_with") == key], "its private endpoint goes before it"
             for name in [name for name, item in self.resources.items() if item.get("_delete_with") == key]:
                 del self.resources[name]
             for item in self.resources.values():
@@ -376,6 +451,64 @@ class FakeAzureApi(AzureApi):
             raise refusal(404, "ResourceNotFound", "The specified resource does not exist.")
         listed = "".join(f"<Blob><Name>{name}</Name></Blob>" for name in self.blobs[account][:1])
         return AzureResponse(200, {}, None, f'<?xml version="1.0"?><EnumerationResults><Blobs>{listed}</Blobs></EnumerationResults>')
+
+    # ---- a vault's own API
+    def _vault_service(self, vault, method, path, body):
+        if not any(item["type"] == "Microsoft.KeyVault/vaults" and item["name"] == vault for item in self.resources.values()):
+            raise InfrastructureError(ErrorCode.PROVIDER_UNAVAILABLE, "Azure could not be reached (ConnectError)", {"url": path})
+        secrets = self.vault_data.setdefault(vault, {})
+        found = re.fullmatch(r"/(secrets|deletedsecrets)/([A-Za-z0-9-]+)", path)
+        assert found, path
+        collection, name = found.groups()
+        vault_id = next(item["id"] for item in self.resources.values() if item["type"] == "Microsoft.KeyVault/vaults" and item["name"] == vault)
+        arm = f"{vault_id}/secrets/{name}"
+        if collection == "secrets" and method == "PUT":
+            if name in self.deleted_secrets.get(vault, set()):
+                raise refusal(409, "Conflict", f"Secret {name} is currently in a deleted but recoverable state")
+            secrets.setdefault(name, []).append({"value": body["value"], "enabled": body["attributes"]["enabled"]})
+            self.resources[arm.lower()] = {"id": arm, "name": name, "type": "Microsoft.KeyVault/vaults/secrets", "_top": False,
+                                           "properties": {"attributes": body["attributes"], "provisioningState": "Succeeded"}}
+            return AzureResponse(200, {}, {"id": f"https://{vault}.vault.azure.net/secrets/{name}/v{len(secrets[name])}", "attributes": body["attributes"]})
+        if collection == "secrets" and method == "DELETE":
+            if name not in secrets:
+                raise refusal(404, "SecretNotFound", f"A secret with (name/id) {name} was not found in this key vault")
+            self.deleted_secrets.setdefault(vault, set()).add(name)
+            del secrets[name]
+            self.resources.pop(arm.lower(), None)
+            return AzureResponse(200, {}, {"recoveryId": f"https://{vault}.vault.azure.net/deletedsecrets/{name}"})
+        if collection == "deletedsecrets" and method == "DELETE":
+            if name not in self.deleted_secrets.get(vault, set()):
+                raise refusal(404, "SecretNotFound", f"Deleted secret {name} was not found")
+            self.deleted_secrets[vault].discard(name)
+            return AzureResponse(204, {}, None)
+        raise AssertionError(f"the fake vault has no {method} {path}")
+
+    # ---- a registry's own API
+    def _registry_service(self, registry, method, path, params, data, bearer):
+        self.registry_tokens.append((path, bearer))
+        if path == "/oauth2/exchange":
+            assert method == "POST" and bearer == "" and data["grant_type"] == "access_token" and data["tenant"] == TENANT
+            assert data["access_token"] == "fake-token:https://containerregistry.azure.net", "the registry's own audience, never Resource Manager's"
+            return AzureResponse(200, {}, {"refresh_token": f"refresh-for-{registry}"})
+        if path == "/oauth2/token":
+            assert method == "POST" and bearer == "" and data["refresh_token"] == f"refresh-for-{registry}"
+            return AzureResponse(200, {}, {"access_token": f"access:{data['scope']}"})
+        if path == "/v2/_catalog":
+            assert method == "GET" and bearer == "access:registry:catalog:*"
+            names = sorted(self.repositories)
+            if params.get("last"):
+                names = [name for name in names if name > params["last"]]
+            page = names[: min(int(params.get("n", 100)), self.catalog_page)]  # a registry may answer fewer than asked
+            headers = {"link": f'</v2/_catalog?last={page[-1]}&n={params.get("n", 100)}>; rel="next"'} if len(names) > len(page) else {}
+            return AzureResponse(200, headers, {"repositories": page})
+        found = re.fullmatch(r"/acr/v1/(.+)", path)
+        assert found and method == "DELETE", path
+        repository = found.group(1)
+        assert bearer == f"access:repository:{repository}:delete", bearer
+        if repository not in self.repositories:
+            raise refusal(404, "NAME_UNKNOWN", "repository name not known to registry")
+        self.repositories.discard(repository)
+        return AzureResponse(202, {}, None)
 
     # ---- what the tests look at
     def of_type(self, kind):

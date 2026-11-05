@@ -66,4 +66,68 @@ def info(resource, resources: list, settings, subscription: str, drivers: bool =
             commands["token"] = f"curl -H Metadata:true 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=RESOURCE&client_id={resource.client_id}'"
             notes.append(f"On such a machine, a workload asks for its tokens with client id {resource.client_id} (AZURE_CLIENT_ID for the Azure libraries)")
         return ConnectInfo(commands=commands, notes=notes)
+    if kind == "secret":
+        notes = {"database_password": ["The password of the request's database"], "cache_auth": ["The access key of the request's cache"]}.get(resource.purpose, [])
+        if not resource.versions and not resource.purpose:
+            notes.append("It has no value yet: a member at admin sets one with the write command; nothing can be read until then")
+        return ConnectInfo(commands={"read": _secret_command(resource),
+                                     "write": f"az keyvault secret set --vault-name {_vault(resource)} --name {resource.name} --file FILE"},
+                           notes=notes + [GRANT_DELAY, *granted])
+    if kind == "database":
+        secret = by_id.get(resource.password_secret)
+        host = resource.host or "HOST"
+        if resource.engine == "mysql":
+            client = f"mysql --host={host} --port={resource.port} --user={resource.username} --ssl-mode=REQUIRED --password {resource.database}"
+        else:
+            client = f'psql "host={host} port={resource.port} dbname={resource.database} user={resource.username} sslmode=require"'
+        commands = {"connect": client}
+        if secret is not None:
+            commands["password"] = _secret_command(secret)
+        if resource.public_access:
+            where = (f"The server takes no connection until a firewall rule admits one: az {'mysql' if resource.engine == 'mysql' else 'postgres'} flexible-server "
+                     f"firewall-rule create --resource-group {group_of(resource.provider_id)} --name {resource.name} --rule-name RULE "
+                     "--start-ip-address ADDRESS --end-ip-address ADDRESS")
+        else:
+            network = by_id.get(resource.network)
+            where = (f"A machine on the network {network.name if network is not None else resource.network}: the server has no public address, and its name "
+                     "resolves to its private endpoint there")
+        days = 30 if resource.engine == "mysql" else 7
+        return ConnectInfo(commands=commands, prerequisites=[where, "Read access to the password secret, which members of the request's access list have"],
+                           notes=stopped + [f"The user is the server's administrator; Azure starts a stopped server again by itself after {days} days"]
+                           + (["A small database is Burstable: not for production"] if resource.tier.startswith("Standard_B") else []))
+    if kind == "cache":
+        secret = by_id.get(resource.auth_secret)
+        commands = {"connect": f"redis-cli -h {resource.host or 'HOST'} -p {resource.port} --tls --askpass"}
+        if secret is not None:
+            commands["auth"] = _secret_command(secret)
+        network = by_id.get(resource.network)
+        return ConnectInfo(commands=commands, prerequisites=[f"A machine on the network {network.name if network is not None else resource.network}: the cache has no "
+                                                             "public address, and its name resolves to its private endpoint there"],
+                           notes=["Paste the access key when redis-cli asks; the certificate is a public one, so no CA file is needed"])
+    if kind == "queue":
+        namespace, topic = resource.topic.split("/namespaces/", 1)[1].split("/topics/", 1)
+        public = settings.cloud == "public"  # Service Bus's host and audience are documented for the public cloud only
+        base = f"https://{namespace}.servicebus.windows.net/{topic}" if public else f"https://NAMESPACE_HOST/{topic}"
+        audience = "https://servicebus.azure.net" if public else "SERVICE_BUS_AUDIENCE"
+        sign_in = f"$(az account get-access-token --resource {audience} --query accessToken --output tsv)"  # a shell substitution, not a credential
+        commands = {"publish": f'curl -X POST {base}/messages -H "Authorization: Bearer {sign_in}" -d TEXT'}
+        if resource.subscription:
+            commands["receive"] = f'curl -X DELETE {base}/subscriptions/{resource.subscription.rsplit("/", 1)[-1]}/messages/head -H "Authorization: Bearer {sign_in}"'
+        return ConnectInfo(commands=commands, notes=["Entra sign-in only: the namespace has no connection string", GRANT_DELAY, *granted])
+    if kind == "registry":
+        registry = resource.address.split(".", 1)[0]
+        return ConnectInfo(commands={"login": f"az acr login --name {registry}",
+                                     "digest": f"az acr repository show --name {registry} --image {resource.repository}/IMAGE:TAG --query digest --output tsv",
+                                     "pull": f"docker pull {resource.address}/IMAGE@sha256:DIGEST"},
+                           notes=[f"Images live under {resource.address}/ in the operator's registry; only the operator's registry writers, named at admin, push, "
+                                  "and every other member pulls", "A release names an image here by digest, never by tag",
+                                  "Deleting the registry deletes every image under it", *granted])
     return None
+
+
+def _vault(resource) -> str:
+    return resource.resource_name.split("//", 1)[1].split(".", 1)[0]
+
+
+def _secret_command(secret) -> str:
+    return f"az keyvault secret show --vault-name {_vault(secret)} --name {secret.name} --query value --output tsv"

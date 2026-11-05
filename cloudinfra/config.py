@@ -92,7 +92,8 @@ class AccessSettings(StrictModel):
     max_members: int = Field(default=10, ge=0, le=50, description="At most this many members per request, the requester included.")
     registry_writers: list[str] = Field(default_factory=list, description="The only members a registry lets push: the service accounts that build images in "
                                         "the trusted project, named by a request at admin. They are granted on registries and nothing else; every other member of "
-                                        "a registry pulls, whatever its level. Empty: nobody pushes to a registry this service made.")
+                                        "a registry pulls, whatever its level. Empty: nobody pushes to a registry this service made. On Azure a build identity is "
+                                        "named by its object id (serviceAccount:<object id>): a service principal has no address.")
 
     @model_validator(mode="before")
     @classmethod
@@ -106,8 +107,8 @@ class AccessSettings(StrictModel):
     @classmethod
     def _writers(cls, value):
         for member in value:
-            if not member.startswith("serviceAccount:") or not validation.MEMBER.fullmatch(member):
-                raise ValueError(f"access.registry_writers: {member!r} is not serviceAccount: and an account's email address")
+            if not member.startswith("serviceAccount:") or not validation.ANY_MEMBER.fullmatch(member):
+                raise ValueError(f"access.registry_writers: {member!r} is not serviceAccount: and an account's email address or object id")
         return [validation.normal_member(member) for member in value]
 
     def writes_registries(self, member: str) -> bool:

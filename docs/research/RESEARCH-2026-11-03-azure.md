@@ -827,6 +827,19 @@ Step 2 added these, each a line of the first run's checklist:
     of Standard public addresses (`StandardSkuPublicIpAddresses`).
 16. How long a role assignment takes to apply to Entra sign-in on a machine and to a bucket's data plane.
 
+Step 4 added these:
+
+17. Whether a vault data action held at the subscription applies at once to a vault made moments ago, and whether a
+    secret takes an empty disabled value.
+18. That a PUT of an existing role assignment may change its condition (the adapter widens and narrows a member's
+    repository condition that way), and the condition's length limit for a member on many requests' registries.
+19. The Writer role's ABAC condition, written by analogy with Microsoft's Reader example; and the registry token
+    exchange with a token for `https://containerregistry.azure.net`.
+20. The private endpoint group ids (`postgresqlServer`, `mysqlServer`, `redisEnterprise`) and the Managed Redis zone
+    `privatelink.redis.azure.net`; the Balanced sizes' memory; how long a Managed Redis takes to make.
+21. Whether a flexible server's administrator password from `token_urlsafe` passes Azure's complexity rule every time
+    (the orchestrator now ensures an upper and a lower case letter and a digit).
+
 ### 9.3 Gotchas, each a test in the fake
 
 - A role assignment made seconds after its principal fails with `PrincipalNotFound` unless `principalType` is set;
@@ -921,7 +934,34 @@ DELIVERY-SPIKE.md, as the user prefers.
 
 **Step 4, the managed services.** Secrets (vault per request, data-plane writes, purge on destroy), queues, the
 registry prefix with ABAC conditions, database (private endpoint, the SQL user from inside the network), cache
-(Azure Managed Redis, `listKeys` into the secret). Then their real run.
+(Azure Managed Redis, `listKeys` into the secret). Then their real run. Built on 2026-11-05 on branch `azure-step-4`,
+with `tests/cloudinfra/test_infra_azure_services.py`; the user chose that day to build every kind before any real run.
+api-versions were read on each template reference page that day. What changed while building it:
+
+- *The database's user is its administrator.* Azure has no API for a database user and the service cannot reach a
+  private server to run SQL, so the request's username is the server's administrator, as a Cloud SQL user is a
+  cloudsqlsuperuser on Google; Azure's reserved names and, on PostgreSQL, any name but letters and digits are refused.
+- *MySQL is 8.0.* The GA API offers `8.0.21` and `5.7`; 8.4 is only in a preview version, which the adapter does not use.
+- *The service writes secrets but never reads them.* Its role holds the vault data actions `setSecret`, `delete` and
+  `purge` at its scope, not `getSecret`, so no vault grant is made per request (and none waits ten minutes to apply).
+- *The private DNS zone lives with the network*, in its group and tagged as its request: a network takes one zone of a
+  name, and several requests' databases may join one network.
+- *A registry prefix carries the request id* (`<name>-<registry>-<8 hex>`), so two requests of one name never share
+  repositories. Azure keeps one assignment of a role per member and scope, and the ACR ABAC page puts several prefixes in
+  one condition, so a member's repository role on the operator's registry is one assignment whose condition names every
+  prefix it is granted on: a grant widens it, a revoke narrows it, the last one deletes it, one change at a time.
+- *Grants are removed before their resource is deleted*, for every member the request ever had (a grant that failed
+  halfway may have made one assignment): a registry's scope is the operator's registry, which outlives the request.
+  A bucket that still holds blobs is refused before any grant goes, and keeps its members.
+- *A registry is torn down in the registry it was made in*, read from the resource, at the login server Azure answers,
+  with a token for the registry's own audience; its catalog is read from the prefix on, page by page as its Link header
+  says.
+- *Private DNS zones follow the cloud*: `privatelink.` and the cloud's own database suffix; Azure Managed Redis's zone is
+  documented for the public cloud only, so caches are refused elsewhere.
+
+A code review of the step found these last four, the registry's, and two slow paths (a purge waited on for a secret
+never written, a vault purge asked for a request that never had a vault); all fixed with a test each.
+
 
 **Step 5, clusters, services and jobs.** AKS with Azure RBAC at namespace scope, workload identity, the node
 identity, the admission policy, Application Gateway for Containers with cert-manager; the Container Apps environment,

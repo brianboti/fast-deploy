@@ -117,6 +117,15 @@ def named_secrets(created, names: list[str], prefix: str) -> list:
     return [made for made in created if made.kind == ResourceKind.secret
             and (SECRET_BY_PURPOSE.get(made.purpose) or made.name.removeprefix(f"{prefix}-")) in wanted]
 
+def database_password() -> str:
+    """32 random URL-safe characters with an upper and a lower case letter and a digit among them, as every provider's
+    password rule takes (Azure's flexible servers ask for three kinds of character)."""
+    while True:
+        password = secrets.token_urlsafe(24)
+        if any(char.isupper() for char in password) and any(char.islower() for char in password) and any(char.isdigit() for char in password):
+            return password
+
+
 def principals_of(entries: list[dict]) -> dict[str, dict]:
     """The provider ids kept with a request's access list, by member."""
     return {entry["member"]: entry["principal"] for entry in entries or [] if entry.get("principal")}
@@ -302,7 +311,7 @@ class Orchestrator:
             existing = self._existing_networks(request, principal, provider)
             external_backends = self._existing_backends(request, principal, provider)
             # The database password is generated here, written by the worker to a secret the request owns, and dropped.
-            password = secrets.token_urlsafe(24) if request.database else None
+            password = database_password() if request.database else None
             ctx.database_password = password
             self.state.create_request(request_id, ctx.name, provider.name, request.region, ctx.zone, principal.name, RequestStatus.PROVISIONING, request.model_dump(mode="json"),
                                       ctx.labels, estimate.monthly_usd)

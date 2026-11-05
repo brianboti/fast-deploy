@@ -4,6 +4,45 @@ into another line. Fixes reported privately are listed here when their advisory 
 
 # Unreleased
 
+## Azure, step 4: databases, caches, queues, secrets and registries
+
+The managed services of the Azure adapter (docs/research/RESEARCH-2026-11-03-azure.md, section 10, step 4), tested
+against the fake. The real run waits until every kind is built (the user's choice of 2026-11-05).
+
+- Secrets: one Key Vault per request, Azure RBAC only, soft delete seven days, deleted and purged when nothing of the
+  request is left. Values are written through the vault's own API by a service whose role can set, delete and purge a
+  secret but never read one; a secret asked for with no value is a disabled empty version until a member writes one.
+  Members are granted at the secret's own scope.
+- Queues: one Service Bus Standard namespace per request with no connection string (Entra sign-in only); a topic per
+  queue and its subscription; a message lock of at most 300 seconds, longer ones refused.
+- Registries: a repository prefix in the operator's registry (`providers.azure.registry`), granted through ABAC
+  conditions on the prefix: members pull, only the operator's registry writers push. A member holds one assignment of
+  a role on the registry, whose condition names every request prefix it is granted on. Deleting a registry deletes its
+  repositories through the registry's own API, in the registry it was made in. `immutable_tags` is refused on Azure
+  until the delivery service locks tags there.
+- Databases: PostgreSQL 14 to 18 and MySQL 8.0 flexible servers whose administrator is the request's user, a deletion
+  lock, private behind an endpoint with a private DNS zone kept with the network; stop and start with the request.
+  PostgreSQL 13, MySQL 5.7 and 8.4 (preview only), high availability on a small (Burstable) server and Azure's reserved
+  administrator names are refused before any call.
+- Caches: Azure Managed Redis (never Azure Cache for Redis, closed to new customers), the smallest Balanced size holding
+  the memory, Redis 7.4 only, private behind an endpoint, its access key copied into the request's secret; in the public
+  cloud only, the one Microsoft documents a private DNS zone for.
+- Grants on a bucket, a secret, a queue or a registry are removed before the resource is deleted, for every member the
+  request had (a bucket that still holds blobs keeps its grants with it).
+- Fixed before release, from a code review of the step: a registry's grants are one assignment per member that names
+  every prefix, since Azure keeps one per member and scope; a registry is torn down in the registry it was made in, at
+  the login server Azure answers, with a token for the registry's own audience, its catalog read page by page; private
+  DNS zones follow the cloud; a grant that failed halfway is still removed; no purge is waited on for a secret never
+  written, and none is asked for a request that never had a vault.
+- For every adapter: the generated database password always holds an upper and a lower case letter and a digit;
+  `access.registry_writers` takes an object id (a build identity on Azure is a service principal); `Resources.all()`
+  lists identities, services and jobs too.
+
+**Before you upgrade.** Nothing to do for Google. For Azure, REQUIREMENTS.md's Azure table lists the new resource
+providers to register, the actions and data actions to add to the service's role, the roles to add to its grant
+right's condition, and, for registries, the operator's registry with the service's roles on it. An operator offering
+caches raises `limits.operation_timeout_seconds` to 1,800.
+
 ## Azure, step 2: identity, network, storage and compute
 
 The second step of the Azure adapter (docs/research/RESEARCH-2026-11-03-azure.md, section 10): release A's kinds on

@@ -88,7 +88,7 @@ providers:
     #     image: projects/your-images-project/global/images/family/hardened-ubuntu-2404
     #     accelerator: none
     # default_accelerator_profile: gpu-signed     # what GPU machines get when they name no profile and no os
-  # azure:                                      # identity, network, storage and compute so far (docs/research/RESEARCH-2026-11-03-azure.md)
+  # azure:                                      # every kind but cluster, service, job and load_balancer so far (docs/research/RESEARCH-2026-11-03-azure.md)
   #   subscription_id: 00000000-0000-0000-0000-000000000000
   #   tenant_id: 00000000-0000-0000-0000-000000000000   # the subscription's Entra ID directory; the Azure CLI asks for tokens in it
   #   cloud: public                             # public, usgovernment or china
@@ -101,6 +101,7 @@ providers:
   #   deny_egress: false                        # true: nothing but the network and Entra ID outbound, and no NAT
   #   flow_logs_storage_account: null           # an account in the region for VNet flow logs; none, no flow log
   #   prices_file: null                         # a snapshot from `cloud-infra prices --write FILE`; none, approximate built-in prices
+  #   registry: /subscriptions/SUB/resourceGroups/hub/providers/Microsoft.ContainerRegistry/registries/platformimages  # ABAC mode; a request's registry is a prefix in it
   #   profiles:                                 # images the platform team approves
   #     gpu-hpc:
   #       image: microsoft-dsvm:ubuntu-hpc:2204:latest   # publisher:offer:sku:version, or a Compute Gallery image id

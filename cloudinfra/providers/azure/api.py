@@ -38,7 +38,17 @@ API_VERSIONS = {
     "Microsoft.Resources": "2025-04-01",  # resource groups and the resources in one
     "Microsoft.Authorization": "2022-04-01",  # role assignments
     "Microsoft.Insights": "2023-10-01",  # metrics (learn.microsoft.com/rest/api/monitor/metrics/list)
+    # step 4, read on each template reference page on 2026-11-05
+    "Microsoft.KeyVault": "2026-05-15",  # vaults, and deletedVaults' purge
+    "Microsoft.ServiceBus": "2026-01-01",  # namespaces, topics, subscriptions
+    "Microsoft.ContainerRegistry": "2025-11-01",  # the operator's registry, read only
+    "Microsoft.DBforPostgreSQL": "2026-10-01",  # flexible servers and their databases
+    "Microsoft.DBforMySQL": "2024-12-30",  # flexible servers (8.0; 8.4 is only in a preview version) and their databases
+    "Microsoft.Cache": "2026-09-01",  # Azure Managed Redis (redisEnterprise) and its database
+    "Microsoft.Network/privateDnsZones": "2024-06-01",  # private DNS zones and their network links version apart from Microsoft.Network
+    "Microsoft.Authorization/locks": "2020-05-01",  # management locks
 }
+KEY_VAULT_DATA_VERSION = "7.5"  # a vault's own API, for secret values (learn.microsoft.com/rest/api/keyvault)
 STORAGE_DATA_VERSION = "2025-01-05"  # x-ms-version of a blob service's data plane
 RETRIES = 5  # attempts of a call Azure refused for now, or of an idempotent call that met a 5xx or lost its answer
 RETRY_PAUSE_SECONDS = 1.0  # doubled after each attempt, unless Azure says how long in Retry-After
@@ -180,20 +190,23 @@ class AzureApi:
         return url
 
     # ---- one call
-    def call(self, method: str, url: str, json=None, params=None, audience: str | None = None, headers: dict | None = None) -> AzureResponse:
+    def call(self, method: str, url: str, json=None, params=None, audience: str | None = None, headers: dict | None = None, data: dict | None = None,
+             bearer: str | None = None) -> AzureResponse:
         """One call. Tried again: a 429 and a call another operation refused (neither ran), any call that could not
         connect, and an idempotent call that met a 5xx or lost its answer; a 401 once with a fresh token. Each retry is
-        a provider_retry event. Any other refusal raises."""
+        a provider_retry event. Any other refusal raises. `data` sends a form instead of JSON; `bearer` is a token the
+        caller holds instead of the host's for an audience (a registry's own token), "" for none."""
         idempotent = method in IDEMPOTENT
         refreshed = False
         attempt = 0
         while True:
             try:
-                token = self.token(audience)
+                token = self.token(audience) if bearer is None else bearer
             except ValueError as exc:
                 raise InfrastructureError(ErrorCode.PROVIDER_AUTH_FAILED, str(exc)) from None
+            sent = {**(headers or {}), **({"Authorization": "Bearer " + token} if token else {})}
             try:
-                response = self.client.request(method, url, json=json, params=params, headers={**(headers or {}), "Authorization": "Bearer " + token})
+                response = self.client.request(method, url, json=json, data=data, params=params, headers=sent)
             except httpx.RequestError as exc:
                 unsent = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
                 if (unsent or idempotent) and attempt < RETRIES - 1:
@@ -209,7 +222,7 @@ class AzureApi:
             if response.status_code < 400:
                 body = _json(response)
                 return AzureResponse(response.status_code, answered, body, "" if body is not None else response.text[:65536])
-            if response.status_code == 401 and not refreshed and hasattr(self.token, "invalidate"):
+            if response.status_code == 401 and not refreshed and bearer is None and hasattr(self.token, "invalidate"):
                 refreshed = True
                 self.token.invalidate(audience)
                 event("provider_retry", provider="azure", method=method, url=url, status=401, reason="token refreshed")

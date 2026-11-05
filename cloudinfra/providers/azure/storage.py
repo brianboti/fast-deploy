@@ -107,17 +107,17 @@ class AzureStorage:
             raise
         return "<Blob>" in answer.text
 
+    def refuse_if_holding(self, resource: StorageResource) -> None:
+        """A bucket that holds a blob is not deleted, and keeps its members' access: an infrastructure call never destroys data."""
+        if resource.type == "object" and self._holds_blobs(resource):
+            raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, f"Bucket {resource.name} still holds blobs; the service deletes only empty buckets, so that no "
+                                      "data is destroyed by an infrastructure call", {"account": resource.name}, resource.id)
+
     def delete(self, resource: StorageResource, ctx) -> None:
         if resource.type == "persistent":
             self.api.delete(self.api.arm(resource.provider_id), DISK_VERSION, timeout=self.ceiling("disk"))
             return
         if self.api.find(self.api.arm(resource.provider_id), STORAGE_VERSION) is None:
             return
-        if self._holds_blobs(resource):
-            raise InfrastructureError(ErrorCode.PROVIDER_CONFLICT, f"Bucket {resource.name} still holds blobs; the service deletes only empty buckets, so that no "
-                                      "data is destroyed by an infrastructure call", {"account": resource.name}, resource.id)
-        for member in dict.fromkeys(grant.member for grant in resource.access):  # role assignments at its scope are this service's to remove
-            principal = ctx.principals.get(member)
-            if principal:
-                self.access.revoke([(self.container_scope(resource), "bucket")], principal)
+        self.refuse_if_holding(resource)
         self.api.delete(self.api.arm(resource.provider_id), STORAGE_VERSION, timeout=self.ceiling("storage_account"))

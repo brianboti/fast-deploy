@@ -133,16 +133,17 @@ Google API; a test fails if any other module of the core does.
 | `database.high_availability` | `availabilityType: REGIONAL` |
 | ownership | labels `managed-by=cloudinfra`, `cloudinfra-request`, `cloudinfra-name`, `cloudinfra-owner`; a description on resources without labels |
 
-## AzureProvider (identity, network, storage, compute; the rest being built)
+## AzureProvider (every kind but cluster, service, job and load balancer; those being built)
 
 `cloudinfra/providers/azure/` is the Microsoft Azure adapter, built in the steps of
 [research/RESEARCH-2026-11-03-azure.md](research/RESEARCH-2026-11-03-azure.md), section 10. Only this package names an
-Azure endpoint or resource provider; a test fails if any other module of the core does. Two steps are in place: the
-credential, client, clouds, regions and quota (step 1), and release A's kinds, **identity, network, storage and
-compute**, with grants, stop and start, resize, connect blocks, metrics and prices (step 2). The validator refuses every
-other block of an `azure` request before any call, naming the kinds it provides, and every primitive of the interface
-it has not written is refused with `UNSUPPORTED_RESOURCE_KIND` (`provider.NOT_YET`). Each further kind lands with its
-own change and adds itself to `supported_kinds`. Nothing here has run against a real subscription yet: that is step 3.
+Azure endpoint or resource provider; a test fails if any other module of the core does. Three steps are in place: the
+credential, client, clouds, regions and quota (step 1); release A's kinds, **identity, network, storage and compute**,
+with grants, stop and start, resize, connect blocks, metrics and prices (step 2); and the managed services, **database,
+cache, queue, secret and registry** (step 4). The validator refuses a cluster, a service, a job or a load balancer before
+any call, naming the kinds it provides, and every primitive of the interface it has not written is refused with
+`UNSUPPORTED_RESOURCE_KIND` (`provider.NOT_YET`). Nothing here has run against a real subscription yet: the user chose
+to build every kind first (2026-11-05), then run them all.
 
 | Module | Holds |
 |---|---|
@@ -161,6 +162,12 @@ own change and adds itself to `supported_kinds`. Nothing here has run against a 
 | `access.py` | Members resolved through Microsoft Graph (`users/{address}`, else `users?$filter=mail eq`, `groups?$filter=mail eq`), or taken as written when an object id; role assignments on each resource's own scope, named from scope, principal and role, with `principalType`; a revoke deletes every role of the table. |
 | `connect.py` | `az network bastion ssh`/`tunnel` through the operator's Bastion with Entra sign-in (`az ssh vm` without one), `az storage blob … --auth-mode login`, the identity's client id. |
 | `monitoring.py` | Health from state; a machine's `Percentage CPU` from Azure Monitor, mean and peak, and its busiest minute in cores for idle stop. |
+| `secret.py` | One Key Vault per request (Azure RBAC, soft delete seven days, no purge protection), made with its first secret; values written through the vault's own API by a service that can set, delete and purge a secret but never read one; a secret with no value is a disabled empty version until a member writes one; the vault deleted and purged when nothing of the request is left. |
+| `queue.py` | One Service Bus Standard namespace per request (local authentication off: Entra sign-in only), a topic per queue and its subscription. |
+| `registry.py` | A request's registry as a repository prefix (`<name>-<registry>-<8 hex>`) in the operator's registry; nothing made until a push; its repositories deleted through the registry's own API with a registry token the service gets by exchanging its own. |
+| `database.py` | PostgreSQL and MySQL flexible servers: the request's user is the administrator, a CanNotDelete lock as deletion protection (waited out on delete), the database child, a private endpoint when private; stop and start. |
+| `cache.py` | Azure Managed Redis: the smallest Balanced size holding the memory, its database (TLS, port 10000, OSS clustering), a private endpoint, the primary key copied into the request's secret. |
+| `private.py` | Private endpoints and the private DNS zones they are found by, the zones kept with the network (a network takes one zone of a name) and removed with it. |
 | `pricing.py` | Approximate built-in pay-as-you-go prices for eastus2, a dated snapshot from the Retail Prices API (`cloud-infra prices --write`) that replaces them where it has a figure, disks priced by the tier that holds them. |
 | `provider.py` | `AzureProvider(CloudProvider)`: composes the above, validates and plans (each machine's family quota named in its spec), reads quota (regional and family vCPUs, machines, Standard public addresses), the wait ceiling of each kind. |
 
@@ -187,6 +194,13 @@ zones takes none. The contract's region and zone rules accept Azure's names (`ea
 | `network` | `<name>-net` with subnet `<name>-subnet`, security group `<name>-net-nsg` (rules `-allow-internal`, `-allow-bastion-ssh`, `-allow-public`, `-allow-probes`, `-deny-inbound`), NAT gateway `<name>-net-nat` with address `<name>-net-nat-ip`, flow log `<name>-net-<8 hex>-flowlog` |
 | `access` | one role assignment per (resource scope, member, role), its name a UUID from the three; members' object ids from Graph, kept with the access list |
 | quota | Compute usages (`cores`, `virtualMachines`, every family's vCPUs) and the Standard public addresses of the Network usages |
+| `secret` | a secret `<name>-<secret>` in the request's vault `<name>-<8 hex>`; Key Vault Secrets User (`use`) or Officer (`admin`) at the secret's own scope; credentials as `<name>-db-password` and `<name>-cache-auth` there |
+| `queue` | topic `<name>-<queue>` and subscription of the same name (TTL from `retention_hours`, lock from `ack_deadline_seconds`, at most 300) in the request's namespace `<name>-<8 hex>`; Data Sender on the topic, Data Receiver on the subscription |
+| `registry` | the prefix `<name>-<registry>-<8 hex>/` in the operator's registry; Container Registry Repository Reader (`use`, and anyone but a registry writer) or Writer (the operator's registry writers at `admin`) on the registry, conditioned to the prefix; `immutable_tags` refused until the delivery service locks tags on Azure |
+| `database.engine`, `version` | PostgreSQL 14 to 18 (18 the default; 13 refused), MySQL 8.0 (sent as `8.0.21`; 8.4 is in a preview API only, 5.7 closed): `flexibleServers` named `<name>-db-<8 hex>` |
+| `database.size`, `storage_gb`, `high_availability` | `Standard_B1ms` (Burstable, no standby), `Standard_D2ds_v5`, `Standard_D4ds_v5`; storage raised to PostgreSQL's next disk size (32 GB at least) or MySQL's 20; `ZoneRedundant`, or `SameZone` in a region without zones |
+| private `database`, `cache` | `publicNetworkAccess: Disabled`, a private endpoint `<name>-pe` in the network's subnet (`postgresqlServer`, `mysqlServer`, `redisEnterprise`), and the zone `privatelink.postgres.database.azure.com`, `privatelink.mysql.database.azure.com` or `privatelink.redis.azure.net` in the network's group, linked to it |
+| `cache` | Azure Managed Redis `<name>-<8 hex>`, `Balanced_B1` to `B350` by memory, Redis 7.4 only, high availability only when asked, its access key in `<name>-cache-auth` |
 | ownership | tags `managed-by=cloudinfra`, `cloudinfra-request`, `cloudinfra-name`, `cloudinfra-owner` (and `cloudinfra-group` on machines) |
 
 ## Adding a provider

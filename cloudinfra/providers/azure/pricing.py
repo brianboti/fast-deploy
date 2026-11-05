@@ -52,6 +52,14 @@ BUILT_IN = {
     "public_ip_hour": 0.005,
     "nat_hour": 0.045,
     "blob_gb_month": {"Standard_LRS": 0.0184, "Standard_ZRS": 0.023},
+    # step 4's services, approximate as the rest (the snapshot does not read them yet)
+    "db_hour": {"Standard_B1ms": 0.017, "Standard_D2ds_v5": 0.178, "Standard_D4ds_v5": 0.356},  # flexible server compute; high availability doubles it
+    "db_storage_gb_month": 0.115,
+    "cache_hour": {"Balanced_B1": 0.06, "Balanced_B3": 0.14, "Balanced_B5": 0.25, "Balanced_B10": 0.5, "Balanced_B20": 1.0, "Balanced_B50": 2.3,
+                   "Balanced_B100": 4.6, "Balanced_B150": 6.9, "Balanced_B250": 9.2, "Balanced_B350": 13.8},  # high availability doubles it
+    "servicebus_namespace_hour": 0.0135,  # a Standard namespace's base charge; operations on top
+    "registry_gb_month": 0.10,  # storage in the operator's registry beyond what its tier includes
+    "private_endpoint_hour": 0.01,
 }
 NOTE = ("Approximate pay-as-you-go list prices (reservations, savings plans, Hybrid Benefit, egress, transactions and snapshots excluded); "
         "without a snapshot from the Retail Prices API they are the adapter's own figures for eastus2. Never a bill.")
@@ -120,6 +128,29 @@ def line(planned: PlannedResource, prices: dict) -> tuple[CostLine, bool]:
         stopped = round(monthly, 2)
     elif planned.kind == "identity":
         monthly, basis, stopped = 0.0, "managed identities are free", 0.0
+    elif planned.kind == "database":
+        copies = 2 if spec.get("high_availability") else 1
+        storage = spec["storage_gb"] * BUILT_IN["db_storage_gb_month"] * copies
+        endpoint = BUILT_IN["private_endpoint_hour"] * HOURS_PER_MONTH if spec.get("private") else 0.0
+        monthly = BUILT_IN["db_hour"].get(spec["tier"], 0.0) * HOURS_PER_MONTH * copies + storage + endpoint
+        basis = (f"{spec['tier']} for {HOURS_PER_MONTH} hours{' with a standby' if copies == 2 else ''}, {spec['storage_gb']} GB of storage"
+                 + (" and its private endpoint" if spec.get("private") else ""))
+        stopped = round(storage + endpoint, 2)  # a stopped server bills its storage only
+    elif planned.kind == "cache":
+        copies = 2 if spec.get("high_availability") else 1
+        monthly = BUILT_IN["cache_hour"].get(spec["tier"], 0.0) * HOURS_PER_MONTH * copies + BUILT_IN["private_endpoint_hour"] * HOURS_PER_MONTH
+        basis = f"{spec['tier']} ({spec['memory_gb']} GB){' with high availability' if copies == 2 else ''} for {HOURS_PER_MONTH} hours and its private endpoint"
+        stopped = round(monthly, 2)
+    elif planned.kind == "queue":
+        monthly = BUILT_IN["servicebus_namespace_hour"] * HOURS_PER_MONTH if spec.get("namespace") else 0.0
+        basis = ("the request's Standard Service Bus namespace" if spec.get("namespace") else "a topic in the request's namespace") + "; operations billed by volume on top"
+        stopped = round(monthly, 2)
+    elif planned.kind == "secret":
+        monthly, basis, stopped = 0.0, "a secret in the request's vault: operations billed per 10,000 on top", 0.0
+    elif planned.kind == "registry":
+        monthly = spec.get("size_gb", 0) * BUILT_IN["registry_gb_month"]
+        basis = f"{spec.get('size_gb', 0)} GB of images in the operator's registry, if stored beyond what its tier includes"
+        stopped = round(monthly, 2)
     else:
         monthly, basis, stopped = 0.0, "not priced by this adapter yet", 0.0
     return CostLine(resource=planned.name, kind=planned.kind, monthly_usd=round(monthly, 2), basis=basis, stopped_usd=stopped), from_snapshot
@@ -145,6 +176,14 @@ def as_planned(resource, zoned: bool = False) -> PlannedResource:
                     redundancy="Standard_ZRS" if zoned else "Standard_LRS")
     elif kind == "network":
         spec.update(nat=resource.nat, flow_logs=bool(resource.flow_log))
+    elif kind == "database":
+        spec.update(tier=resource.tier, storage_gb=resource.storage_gb, high_availability=resource.high_availability, private=not resource.public_access)
+    elif kind == "cache":
+        spec.update(tier=resource.tier, memory_gb=resource.memory_gb, high_availability=resource.high_availability)
+    elif kind == "queue":
+        spec.update(namespace=False)  # the namespace is priced with the first queue of a request, as planned
+    elif kind == "registry":
+        spec.update(size_gb=resource.size_gb)
     return PlannedResource(kind=kind, name=resource.name, provider_mapping="existing", spec=spec)
 
 

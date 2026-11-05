@@ -109,7 +109,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | Field | Required | Description |
 |---|---|---|
 | `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
-| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides identity, network, storage and compute so far. |
+| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides every kind but cluster, service, job and load_balancer so far. |
 | `level` | no | use (default) or admin: its access on the request's resources. |
 | `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
 | `labels` | no | Labels for every resource, next to the service's ownership labels. |
@@ -182,7 +182,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
 | `cpu` | yes | Virtual CPUs per machine. |
 | `memory_gb` | yes | Memory per machine, in GB. |
-| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides identity, network, storage and compute so far. |
+| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides every kind but cluster, service, job and load_balancer so far. |
 | `count` | no | How many identical machines (default 1). |
 | `os` | no | ubuntu (the default without a profile), debian or rocky. |
 | `profile` | no | A software profile the operator defines, such as a GPU image with signed drivers; list_resource_kinds names them. Instead of os. |
@@ -310,7 +310,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 |---|---|---|
 | `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
 | `size_gb` | yes | Disk size in GB; for a bucket, the expected capacity used only in the estimate. |
-| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides identity, network, storage and compute so far. |
+| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides every kind but cluster, service, job and load_balancer so far. |
 | `type` | no | persistent (default): a block disk; object: a bucket. |
 | `performance` | no | Disk class: standard, balanced (default) or ssd. |
 | `zone` | no | A zone of the region; the provider picks the first when omitted. |
@@ -405,7 +405,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | Field | Required | Description |
 |---|---|---|
 | `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
-| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides identity, network, storage and compute so far. |
+| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides every kind but cluster, service, job and load_balancer so far. |
 | `public_access` | no | Allow public addresses and open allowed_ports from allowed_sources (default false); needs the operator's allow_public_exposure. |
 | `cidr` | no | The subnet's private IPv4 range (default 10.10.0.0/24). |
 | `allowed_ports` | no | Ports opened from allowed_sources when public_access is on (default 80, 443). |
@@ -503,7 +503,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | Field | Required | Description |
 |---|---|---|
 | `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
-| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides identity, network, storage and compute so far. |
+| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides every kind but cluster, service, job and load_balancer so far. |
 | `engine` | no | postgresql (default) or mysql. |
 | `version` | no | Major version (16, 8.0); the provider's default when omitted. |
 | `size` | no | small (default), medium or large. |
@@ -583,7 +583,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 |---|---|---|
 | `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
 | `network_id` | yes | A network this service created earlier (net-…); required, since the resource is private. |
-| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides identity, network, storage and compute so far. |
+| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides every kind but cluster, service, job and load_balancer so far. |
 | `memory_gb` | no | Memory in GB (default 1). |
 | `high_availability` | no | A replica in a second zone (default false). |
 | `version` | no | Engine version (7.2); the provider's default when omitted. |
@@ -657,7 +657,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 |---|---|---|
 | `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
 | `queue_name` | yes | The queue's short name, part of the topic's name. |
-| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides identity, network, storage and compute so far. |
+| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides every kind but cluster, service, job and load_balancer so far. |
 | `retention_hours` | no | How long unacknowledged messages are kept (default 168, up to 744). |
 | `subscription` | no | Create one pull subscription (default true). |
 | `ack_deadline_seconds` | no | Acknowledgement deadline (default 20). |
@@ -731,7 +731,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 |---|---|---|
 | `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
 | `secret_name` | yes | The secret's short name, part of its resource name. |
-| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides identity, network, storage and compute so far. |
+| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides every kind but cluster, service, job and load_balancer so far. |
 | `generate_value` | no | Write a generated random value as the first version (default false). |
 | `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
 | `labels` | no | Labels for every resource, next to the service's ownership labels. |
@@ -803,7 +803,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 |---|---|---|
 | `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
 | `registry_name` | yes | The repository's short name, part of its provider name. |
-| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides identity, network, storage and compute so far. |
+| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides every kind but cluster, service, job and load_balancer so far. |
 | `immutable_tags` | no | Refuse to move a tag once pushed (default false). |
 | `size_gb` | no | The images it is expected to hold, in GB, for the cost estimate only (default 10). |
 | `name` | no | A short name (1 to 20 lowercase letters, digits, dashes) used as the prefix of every resource name; infra-<8 hex> when omitted. |
@@ -875,7 +875,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | Field | Required | Description |
 |---|---|---|
 | `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
-| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides identity, network, storage and compute so far. |
+| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides every kind but cluster, service, job and load_balancer so far. |
 | `node_count` | no | Nodes in the pool (default 1). |
 | `node_cpu` | no | Virtual CPUs per node (default 2). |
 | `node_memory_gb` | no | Memory per node in GB (default 8). |
@@ -956,7 +956,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | Field | Required | Description |
 |---|---|---|
 | `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
-| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides identity, network, storage and compute so far. |
+| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides every kind but cluster, service, job and load_balancer so far. |
 | `cpu` | no | Virtual CPUs per instance: 1, 2, 4 or 8 (default 1). |
 | `memory_mb` | no | Memory per instance in MiB (default 512). |
 | `min_instances` | no | Instances kept warm (default 0). |
@@ -1036,7 +1036,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 | Field | Required | Description |
 |---|---|---|
 | `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
-| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides identity, network, storage and compute so far. |
+| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides every kind but cluster, service, job and load_balancer so far. |
 | `cpu` | no | Virtual CPUs per task: 1, 2, 4 or 8 (default 1). |
 | `memory_mb` | no | Memory per task in MiB (default 512). |
 | `tasks` | no | Tasks one run starts (default 1). |
@@ -1117,7 +1117,7 @@ Generated from `cloudinfra/mcp/catalog.py` by `python -m cloudinfra.cli catalog 
 |---|---|---|
 | `region` | yes | The provider's region (us-central1); must be in the service's allowed regions. |
 | `backends` | yes | The machines behind it (cmp-…), all in one zone. |
-| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides identity, network, storage and compute so far. |
+| `provider` | no | The cloud provider adapter: gcp (default) provides every kind; azure provides every kind but cluster, service, job and load_balancer so far. |
 | `type` | no | http (default) or tcp. |
 | `port` | no | The port the machines serve on; without hostnames the public port is the same (default 80). |
 | `health_check_path` | no | The path an http health check requests (default /). |
