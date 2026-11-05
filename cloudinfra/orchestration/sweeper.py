@@ -7,7 +7,9 @@ ones that have a lifetime, and
   another request still uses), what can stop is stopped meanwhile; a failed request is destroyed at expiry;
 - destroys a request kept at expiry once its retention has passed, unless it was extended;
 - stops a machine that has been idle for its autostop window: its busiest CPU sample in the window used fewer cores than
-  limits.idle_cpu_cores, at least one window after it last started, and not while keep_awake holds.
+  limits.idle_cpu_cores, at least one window after it last started, and not while keep_awake holds;
+- stops a machine that has run its max_run_hours since it last started, on an adapter whose provider has no run limit of
+  its own (Azure's), keep_awake or not: Google stops such a machine itself.
 
 The sweeper decides under the request's lock; what it starts runs in the workers, as a caller's work does, so a sweep
 reports what it started, and the outcome is in the request's operations. An attempt that fails is tried again after a wait
@@ -61,7 +63,7 @@ class Sweeper:
     def tick(self) -> dict:
         """One sweep: what it warned about, what it started (stopping, destroying, idle_stopping), the expired requests it
         keeps until their retention ends, and the errors it met."""
-        found = {"warned": [], "stopping": [], "destroying": [], "kept": [], "idle_stopping": [], "errors": []}
+        found = {"warned": [], "stopping": [], "destroying": [], "kept": [], "idle_stopping": [], "run_limit_stopping": [], "errors": []}
         orchestrator = self.orchestrator
         for listed in orchestrator.state.sweepable_requests():
             if self._halt.is_set():  # shutting down: leave the rest to the next start
@@ -161,19 +163,21 @@ class Sweeper:
         found["destroying"].append(request_id)
 
     def _idle(self, record: dict, now: datetime.datetime, found: dict) -> None:
-        """Hand the idle machines of a READY request to the workers to stop. A machine whose refresh or measurement fails is
-        reported and passed over, never the others; one whose last stops failed waits, as expiry does."""
+        """Hand the idle machines of a READY request to the workers to stop, and those past their run limit where the
+        provider does not stop them itself. A machine whose refresh or measurement fails is reported and passed over, never
+        the others; one whose last stops failed waits, as expiry does."""
         awake = lifecycle.parse((record["lifecycle"] or {}).get("awake_until"))
-        if awake is not None and now < awake:
-            return
+        awake = awake is not None and now < awake
         orchestrator, request_id = self.orchestrator, record["request_id"]
         provider = orchestrator.registry.get(record["provider"])
         threshold = orchestrator.config.limits.idle_cpu_cores
         attempts = dict((record["lifecycle"] or {}).get("idle_attempts") or {})
         changing = {item.resource_id for item in orchestrator.state.running_operations_of(request_id)}
-        idle = []
+        idle, overrun = [], []
         for resource in orchestrator.state.resources_of(request_id):
-            if resource.kind != ResourceKind.compute or not resource.autostop_idle_minutes or resource.status not in WATCHED or resource.id in changing:
+            limited = not provider.enforces_run_limit and bool(resource.kind == ResourceKind.compute and resource.max_run_hours)
+            watched = (resource.kind == ResourceKind.compute and resource.autostop_idle_minutes and not awake) or limited
+            if not watched or resource.status not in WATCHED or resource.id in changing:
                 continue
             tried, at = attempts.get(resource.id) or (0, None)
             if not lifecycle.retry_due(tried, at, now):
@@ -182,8 +186,15 @@ class Sweeper:
                 resource = orchestrator._refresh(record, resource)  # one failed refresh must not hide a machine from idle stop for good
                 if resource.status != ResourceStatus.READY:
                     continue
-                window = resource.autostop_idle_minutes
                 started = lifecycle.parse(resource.started_at) or lifecycle.parse(resource.created_at)
+                if limited and started is not None and now - started >= datetime.timedelta(hours=resource.max_run_hours):
+                    attempts[resource.id] = [tried + 1, lifecycle.iso(now)]
+                    overrun.append(resource)
+                    event("machine_run_limit", resource_id=resource.id, max_run_hours=resource.max_run_hours, started_at=resource.started_at)
+                    continue
+                if not resource.autostop_idle_minutes or awake:
+                    continue
+                window = resource.autostop_idle_minutes
                 if started is not None and now - started < datetime.timedelta(minutes=window):
                     continue
                 cores = provider.busy_cores(resource, window)
@@ -195,9 +206,13 @@ class Sweeper:
             attempts[resource.id] = [tried + 1, lifecycle.iso(now)]
             idle.append(resource)
             event("machine_idle", resource_id=resource.id, busy_cores=cores, window_minutes=window, threshold_cores=threshold)
-        if idle:
+        if idle or overrun:
             life = dict(orchestrator.state.get_request(request_id)["lifecycle"] or {})  # as a warning may have just left it
             life["idle_attempts"] = attempts
             orchestrator.state.set_lifecycle(request_id, life)
+        if overrun:
+            orchestrator.stop_idle(record, overrun, SWEEPER, reason="max_run")
+            found["run_limit_stopping"].extend(item.id for item in overrun)
+        if idle:
             orchestrator.stop_idle(record, idle, SWEEPER)
             found["idle_stopping"].extend(item.id for item in idle)

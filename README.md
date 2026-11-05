@@ -24,7 +24,7 @@ appdelivery   build (Cloud Build) · bind · run · health · roll back · recor
 cloudinfra    validate → plan → price → provision → grant access → stop/start → expire → destroy
         │  CloudProvider
         ▼
-Google Cloud  (Azure: adapter being built, no kind yet; AWS to come; nothing above changes)
+Google Cloud  (Azure: identity, network, storage and compute so far, not yet run on a real subscription; AWS to come; nothing above changes)
 ```
 
 The infrastructure service takes no repository, image, script, command or key, holds no credential in any file, and

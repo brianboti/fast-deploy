@@ -77,7 +77,8 @@ def warnings(request: InfrastructureRequest, planned: list[PlannedResource], con
                          "the machine restarts rather than migrates on host maintenance")
         if chosen.get("boot_disk_gb") and chosen["boot_disk_gb"] > group.boot_disk_gb:
             asked = f", not the {group.boot_disk_gb} GB asked" if "boot_disk_gb" in group.model_fields_set else ""
-            found.append(f"{group.group_name}: the boot disk is {chosen['boot_disk_gb']} GB, the minimum of profile {chosen.get('profile')}{asked}")
+            source = f"profile {chosen['profile']}" if chosen.get("profile") else "the provider's image"
+            found.append(f"{group.group_name}: the boot disk is {chosen['boot_disk_gb']} GB, the minimum of {source}{asked}")
         if chosen.get("autostop_idle_minutes") and group.autostop is None:
             found.append(f"{group.group_name}: the operator's default stops these machines after {chosen['autostop_idle_minutes']} idle minutes; "
                          "control_infrastructure keep_awake suspends it")

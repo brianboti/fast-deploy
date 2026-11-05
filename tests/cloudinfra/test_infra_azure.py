@@ -1,5 +1,5 @@
 """The Azure adapter's first step (docs/research/RESEARCH-2026-11-03-azure.md, section 10): its clouds, settings, token
-helper, REST client, names, regions and quota, and its place in the registry. It provides no kind yet, and says so."""
+helper, REST client, names, regions and quota, and its place in the registry. Its kinds are test_infra_azure_kinds.py's."""
 import json
 from pathlib import Path
 
@@ -27,7 +27,8 @@ ARM_AUDIENCE = "https://management.azure.com/"
 VAULT = "https://vault.azure.net"
 GROUP_URL = f"https://management.azure.com/subscriptions/{SUBSCRIPTION}/resourceGroups/platform-1a2b3c4d"
 OPERATION = f"https://management.azure.com/subscriptions/{SUBSCRIPTION}/providers/Microsoft.Resources/operations/op-1?api-version=2021-04-01"
-AZURE_REQUEST = {"provider": "azure", "region": "eastus2", "compute": {"cpu": 2, "memory_gb": 8}}
+AZURE_REQUEST = {"provider": "azure", "region": "eastus2", "network": {}, "compute": {"cpu": 2, "memory_gb": 8}}
+NOT_YET_REQUEST = {"provider": "azure", "region": "eastus2", "database": {}}
 
 
 # ---- the clouds
@@ -443,19 +444,19 @@ def test_the_registry_builds_the_adapter_with_the_operators_timeout():
     assert registry.names() == ["azure", "gcp"] and "azure" not in PLANNED_PROVIDERS
 
 
-def test_it_provides_no_kind_yet_and_says_so_before_any_call():
+def test_a_kind_it_does_not_provide_yet_is_refused_before_any_call_naming_those_it_does():
     config = make_azure_config()
     provider, fake = make_azure_provider(config)
-    problems = validator.validate(InfrastructureRequest.model_validate(AZURE_REQUEST), config, provider)
+    problems = validator.validate(InfrastructureRequest.model_validate(NOT_YET_REQUEST), config, provider)
     assert [(problem.code, problem.message) for problem in problems if problem.code == ErrorCode.UNSUPPORTED_RESOURCE_KIND] == \
-        [(ErrorCode.UNSUPPORTED_RESOURCE_KIND, "The azure adapter does not provide compute; it provides no kinds yet")]
-    assert fake.calls == []
+        [(ErrorCode.UNSUPPORTED_RESOURCE_KIND, "The azure adapter does not provide database; it provides identity, network, storage, compute")]
+    assert validator.validate(InfrastructureRequest.model_validate(AZURE_REQUEST), config, provider) == [] and fake.calls == []
 
 
 def test_every_primitive_not_written_yet_is_a_structured_refusal():
     provider, fake = make_azure_provider(make_azure_config())
-    assert {"create_compute", "delete_network", "resource_health", "resource_usage"} <= set(NOT_YET)
-    for operation in ("create_compute", "get_network", "resource_health"):
+    assert {"create_database", "delete_cache", "get_cluster", "create_load_balancer"} <= set(NOT_YET) and not {"create_compute", "resource_health"} & set(NOT_YET)
+    for operation in ("create_database", "get_queue", "delete_cluster"):
         with pytest.raises(InfrastructureError) as caught:
             getattr(provider, operation)(None, None, None, None)
         assert caught.value.code == ErrorCode.UNSUPPORTED_RESOURCE_KIND and caught.value.details == {"provider": "azure", "operation": operation}
@@ -483,24 +484,29 @@ def test_a_sovereign_clouds_regions_are_the_operators():
 def test_quota_reads_regional_and_family_vcpus_through_every_page():
     provider, fake = make_azure_provider(make_azure_config())
     quota = provider.quota("eastus2")
-    assert quota == {"CPUS": {"limit": 20, "usage": 6}, "INSTANCES": {"limit": 25000, "usage": 3}, "standardDSv5Family": {"limit": 10, "usage": 6},
-                     "standardNCADSA100v4Family": {"limit": 0, "usage": 0}}, "a GPU family starts at zero in a new subscription"
-    assert len(fake.calls) == 3 and fake.calls[0][1].endswith(f"/subscriptions/{SUBSCRIPTION}/providers/Microsoft.Compute/locations/eastus2/usages")
+    assert quota == {"CPUS": {"limit": 20, "usage": 6}, "INSTANCES": {"limit": 25000, "usage": 3}, "standardDSv5Family": {"limit": 50, "usage": 6},
+                     "standardNCADSA100v4Family": {"limit": 0, "usage": 0}, "IN_USE_ADDRESSES": {"limit": 1000, "usage": 2}}, \
+        "a GPU family starts at zero in a new subscription"
+    assert len(fake.calls) == 4 and fake.calls[0][1].endswith(f"/subscriptions/{SUBSCRIPTION}/providers/Microsoft.Compute/locations/eastus2/usages")
+    assert fake.calls[3][1].endswith(f"/subscriptions/{SUBSCRIPTION}/providers/Microsoft.Network/locations/eastus2/usages")
+    fake.fail_on.append(("GET", "Microsoft.Network/locations"))
+    assert "IN_USE_ADDRESSES" not in provider.quota("eastus2") and provider.quota("eastus2")["CPUS"], "the addresses' usages are a part, not all"
     fake.fail_on.append(("GET", "/usages"))
     assert provider.quota("eastus2") == {}, "best effort: never an error"
 
 
-def test_the_service_names_the_subscription_and_refuses_an_azure_request_without_raising(tmp_path):
+def test_the_service_names_the_subscription_and_refuses_what_azure_does_not_provide_without_raising(tmp_path):
     orchestrator, fake = make_azure_orchestrator(tmp_path, config=make_azure_config(tmp_path, gcp=True))
     status = orchestrator.service_status("1.38.0")
     assert status["providers"]["azure"] == {"subscription": SUBSCRIPTION, "cloud": "public", "allowed_regions": ["eastus2", "westus"], "planned": False}
     assert status["providers"]["gcp"]["project"] == "test-project" and status["planned_providers"] == ["aws", "jetstream"]
     who = principal(orchestrator.config)
-    result = orchestrator.validate(InfrastructureRequest.model_validate(AZURE_REQUEST), who)
+    result = orchestrator.validate(InfrastructureRequest.model_validate(NOT_YET_REQUEST), who)
     assert not result.valid and result.problems[0].code == ErrorCode.UNSUPPORTED_RESOURCE_KIND and fake.calls == []
+    assert orchestrator.validate(InfrastructureRequest.model_validate(AZURE_REQUEST), who).valid and fake.calls == []
     assert orchestrator.validate(InfrastructureRequest.model_validate(VM_REQUEST), who).valid, "the Google adapter beside it is untouched"
     kinds = orchestrator.resource_kinds()
-    assert kinds.providers == ["azure", "gcp"] and all("azure" not in kind.providers for kind in kinds.kinds)
+    assert kinds.providers == ["azure", "gcp"] and [kind.kind for kind in kinds.kinds if "azure" in kind.providers] == ["identity", "network", "storage", "compute"]
 
 
 def test_the_fake_is_the_client_with_its_seam_replaced():

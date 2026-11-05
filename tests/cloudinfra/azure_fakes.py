@@ -1,11 +1,17 @@
-"""A fake Azure for the unit tests: the Resource Manager endpoints the adapter calls, answered from memory, with planted
-failures. It grows with each kind of the adapter (docs/research/RESEARCH-2026-11-03-azure.md, section 10).
+"""A fake Azure for the unit tests: Resource Manager, Microsoft Graph and a blob service, answered from memory, with
+planted failures. It grows with each kind of the adapter (docs/research/RESEARCH-2026-11-03-azure.md, section 10).
 
 No test here touches a cloud. The fake replaces AzureApi.call, so the adapter's addresses, bodies, paging and waits run
-as in production, and `calls` records every one for assertions.
+as in production, and `calls` records every one for assertions. Resource Manager is modelled as Azure documents it:
+every resource is a PUT of the id the caller chose, read back with its provisioningState; a machine's PUT makes its
+interface, public address and OS disk with it, and its delete takes those whose deleteOption is Delete; a group's delete
+takes everything in it.
 """
+import copy
+import itertools
 import re
-from urllib.parse import parse_qsl
+import uuid
+from urllib.parse import parse_qsl, unquote
 
 from gcp_fakes import config_dict
 
@@ -13,13 +19,26 @@ from cloudinfra.config import Config
 from cloudinfra.models.errors import ErrorCode, InfrastructureError
 from cloudinfra.orchestration.provisioner import InlineExecutor, Orchestrator
 from cloudinfra.providers import ProviderRegistry
-from cloudinfra.providers.azure.api import API_VERSIONS, AzureApi, AzureResponse
+from cloudinfra.providers.azure.api import API_VERSIONS, AzureApi, AzureResponse, translate_error
 from cloudinfra.providers.azure.provider import AzureProvider
 from cloudinfra.state.state_manager import StateManager
 
 SUBSCRIPTION = "00000000-0000-4000-8000-000000000001"
 TENANT = "00000000-0000-4000-8000-0000000000aa"
 ARM = "https://management.azure.com"
+GRAPH = "https://graph.microsoft.com"
+HUB = f"/subscriptions/{SUBSCRIPTION}/resourceGroups/hub/providers/Microsoft.Network"
+BASTION = f"{HUB}/bastionHosts/hub-bastion"
+DEFAULT_SUBNET = f"{HUB}/virtualNetworks/hub/subnets/workloads"
+# people and groups in the fake directory: address -> object id
+USERS = {"ada@example.com": "11111111-1111-4111-8111-111111111111", "grace@example.com": "22222222-2222-4222-8222-222222222222"}
+GUESTS = {"linus@partner.example.com": "33333333-3333-4333-8333-333333333333"}  # a guest: their address is their mail, not their sign-in name
+GROUPS = {"data-team@example.com": "44444444-4444-4444-8444-444444444444"}
+AZURE_VM_REQUEST = {"provider": "azure", "region": "eastus2", "network": {}, "compute": {"cpu": 2, "memory_gb": 8}}
+AZURE_FULL_REQUEST = {"provider": "azure", "region": "eastus2", "name": "analytics", "labels": {"team": "data"},
+                      "network": {"public_access": True, "allowed_ports": [443], "allowed_sources": ["203.0.113.0/24"]},
+                      "compute": {"count": 2, "cpu": 4, "memory_gb": 16, "os": "ubuntu", "public_ip": True},
+                      "storage": {"type": "persistent", "size_gb": 100, "performance": "ssd"}}
 
 
 def azure_settings(**overrides):
@@ -41,38 +60,281 @@ def usage(name, current, limit):
     return {"name": {"value": name, "localizedValue": name}, "currentValue": current, "limit": limit, "unit": "Count"}
 
 
+def refusal(status, code, message="refused by the fake"):
+    """An Azure refusal as the client turns it into a structured error."""
+    return translate_error(status, {"error": {"code": code, "message": message}})
+
+
 class FakeAzureApi(AzureApi):
-    """Azure's REST surface, in memory. `fail_on` holds (method, url fragment) pairs that raise a provider error once reached."""
+    """Azure's REST surface, in memory. `fail_on` holds (method, url fragment) pairs that raise a provider error once
+    reached; `refuse` maps (method, url fragment) to Azure refusals handed out one per call, in order."""
 
     def __init__(self):
         self.now = 0.0  # the fake's own clock: a sleep moves it on, so a wait that never ends runs out instead of hanging a test
         super().__init__(SUBSCRIPTION, token=lambda audience=None: "fake-token", sleep=self._sleep, clock=lambda: self.now)
         self.calls = []  # (method, url, body, query parameters)
+        self.audiences = []  # (url, audience) of calls made with a token for another audience than Resource Manager's
         self.fail_on = []
+        self.refuse: dict[tuple[str, str], list[InfrastructureError]] = {}
         self.page_size = 2
         self.usages = {"eastus2": [usage("availabilitySets", 0, 2500), usage("cores", 6, 20), usage("virtualMachines", 3, 25000),
-                                   usage("standardDSv5Family", 6, 10), usage("standardNCADSA100v4Family", 0, 0), usage("PremiumDiskCount", 1, 1000)]}
+                                   usage("standardDSv5Family", 6, 50), usage("standardNCADSA100v4Family", 0, 0), usage("PremiumDiskCount", 1, 1000)]}
+        self.network_usages = {"eastus2": [usage("VirtualNetworks", 1, 1000), usage("StandardSkuPublicIpAddresses", 2, 1000)]}
+        self.resources: dict[str, dict] = {}  # lowercase id -> the resource as Azure answers it
+        self.blobs: dict[str, list[str]] = {}  # storage account name -> blob names in its container
+        self.cpu_percent: dict[str, float] = {}  # lowercase machine id -> its Percentage CPU samples' value
+        self.graph_denied = False
+        self.order: list[tuple[str, str]] = []  # (method, id) of every write that reached the fake, in order
+        self.addresses = itertools.count(4)  # private addresses handed out on a subnet: 10.x.y.4, .5…
+        self.public = itertools.count(10)
+        self.ticks = itertools.count(1)
 
     def _sleep(self, seconds):
         self.now += seconds
 
-    def call(self, method, url, json=None, params=None, audience=None):
+    # ---- one call
+    def call(self, method, url, json=None, params=None, audience=None, headers=None):
         path, _, query = url.partition("?")
         params = {**dict(parse_qsl(query)), **dict(params or {})}
         self.calls.append((method, url, json, params))
+        if audience is not None:
+            self.audiences.append((url, audience))
         for fail_method, fragment in self.fail_on:
             if method == fail_method and fragment in url:
                 raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"planted failure on {method} {fragment}", {"http_status": 400, "planted": True})
+        for (refuse_method, fragment), errors in self.refuse.items():
+            if method == refuse_method and fragment in url and errors:
+                raise errors.pop(0)
+        if path.startswith(GRAPH):
+            return self._graph(method, unquote(path[len(GRAPH):]), params)
+        found = re.match(r"^https://([a-z0-9]{3,24})\.blob\.core\.windows\.net/data$", path)
+        if found:
+            return self._blob_service(found.group(1), method, params, headers or {})
         assert path.startswith(ARM), f"the adapter called outside Resource Manager: {url}"
         path = path[len(ARM):]
-        handlers = (
-            (r"^/subscriptions/([^/]+)/providers/Microsoft\.Compute/locations/([^/]+)/usages$", self._usages),
-        )
-        for pattern, handler in handlers:
-            found = re.match(pattern, path)
-            if found:
-                return handler(found, method, json or {}, params)
-        raise AssertionError(f"the fake has no handler for {method} {path}")
+        for pattern, handler in ((r"^/subscriptions/([^/]+)/providers/Microsoft\.Compute/locations/([^/]+)/usages$", self._usages),
+                                 (r"^/subscriptions/([^/]+)/providers/Microsoft\.Network/locations/([^/]+)/usages$", self._network_usages)):
+            matched = re.match(pattern, path)
+            if matched:
+                return handler(matched, method, json or {}, params)
+        assert path.startswith(f"/subscriptions/{SUBSCRIPTION}"), path
+        assert params.get("api-version"), f"no api-version on {method} {path}"
+        return self._arm(method, path, json, params)
+
+    # ---- Resource Manager
+    def _arm(self, method, path, body, params):
+        key = path.lower()
+        if method == "GET":
+            return self._get(path, key, params)
+        if method == "PUT":
+            self.order.append(("PUT", path))
+            return self._put(path, key, copy.deepcopy(body) or {}, params)
+        if method == "PATCH":
+            self.order.append(("PATCH", path))
+            return self._patch(path, key, body or {})
+        if method == "DELETE":
+            self.order.append(("DELETE", path))
+            return self._delete(path, key)
+        if method == "POST":
+            self.order.append(("POST", path))
+            return self._post(path, key)
+        raise AssertionError(f"the fake has no {method}")
+
+    def _type(self, path):
+        """The resource type of an id: Microsoft.Compute/virtualMachines, Microsoft.Compute/virtualMachines/extensions…"""
+        parts = path.split("/")
+        if "providers" not in parts:
+            return "Microsoft.Resources/resourceGroups" if len(parts) == 5 else "Microsoft.Resources/subscriptions"
+        at = len(parts) - 1 - parts[::-1].index("providers")
+        rest = parts[at + 1:]
+        return "/".join([rest[0], *rest[1::2]])
+
+    def _expected_version(self, kind):
+        namespace = kind.split("/")[0]
+        if kind == "Microsoft.Compute/disks":
+            return API_VERSIONS["Microsoft.Compute/disks"]
+        return API_VERSIONS.get(namespace)
+
+    def _get(self, path, key, params):
+        listing = self._list(path, key, params)
+        if listing is not None:
+            return listing
+        found = self.resources.get(key)
+        if found is None:
+            raise refusal(404, "ResourceNotFound", f"{path} was not found")
+        assert params["api-version"] == self._expected_version(found["type"]), (path, params["api-version"])
+        answer = copy.deepcopy(found)
+        if found["type"] == "Microsoft.Compute/virtualMachines" and params.get("$expand") == "instanceView":
+            answer["properties"]["instanceView"] = {"statuses": [{"code": "ProvisioningState/succeeded", "time": found["_started"]},
+                                                                 {"code": f"PowerState/{found['_power']}"}]}
+        return AzureResponse(200, {}, self._public(answer))
+
+    @staticmethod
+    def _public(resource):
+        return {name: value for name, value in resource.items() if not name.startswith("_")}
+
+    def _list(self, path, key, params):
+        """The collections the adapter reads; None for a single resource."""
+        if re.match(r"^/subscriptions/[^/]+/resourcegroups/[^/]+/resources$", key):
+            group = key[: -len("/resources")]
+            if group not in self.resources:
+                raise refusal(404, "ResourceGroupNotFound", f"{path} was not found")
+            items = [self._public(item) for name, item in self.resources.items() if name.startswith(group + "/providers/") and item["_top"]]
+            return AzureResponse(200, {}, {"value": items})
+        for kind in ("Microsoft.Compute/virtualMachines", "Microsoft.Network/networkInterfaces", "Microsoft.Network/publicIPAddresses"):
+            if key == f"/subscriptions/{SUBSCRIPTION}/providers/{kind}".lower():
+                return AzureResponse(200, {}, {"value": [self._public(item) for item in self.resources.values() if item["type"] == kind]})
+        if key.endswith("/vmsizes"):
+            machine = self.resources[key[: -len("/vmsizes")]]
+            family = machine["properties"]["hardwareProfile"]["vmSize"].split("_")[1][0]  # the same letter: the same hardware, in this fake
+            return AzureResponse(200, {}, {"value": [{"name": name} for name in SIZES_BY_LETTER.get(family, [])]})
+        if key.endswith("/providers/microsoft.insights/metrics"):
+            machine = key[: -len("/providers/microsoft.insights/metrics")]
+            assert params["api-version"] == API_VERSIONS["Microsoft.Insights"] and params["metricnames"] == "Percentage CPU" and params["interval"] == "PT1M"
+            value = self.cpu_percent.get(machine)
+            aggregation = params["aggregation"].lower()
+            data = [{"timeStamp": "2026-11-04T10:00:00Z", aggregation: value}, {"timeStamp": "2026-11-04T10:01:00Z", aggregation: value / 2}] if value is not None else []
+            return AzureResponse(200, {}, {"value": [{"name": {"value": "Percentage CPU"}, "timeseries": [{"data": data}] if data else [], "errorCode": "Success"}]})
+        return None
+
+    def _put(self, path, key, body, params):
+        kind = self._type(path)
+        assert params["api-version"] == self._expected_version(kind), (path, params["api-version"])
+        if kind != "Microsoft.Resources/resourceGroups":
+            group = "/".join(key.split("/")[:5])
+            if group not in self.resources:
+                raise refusal(404, "ResourceGroupNotFound", f"Resource group '{path.split('/')[4]}' could not be found.")
+        name = path.rsplit("/", 1)[-1]
+        existing = self.resources.get(key)
+        properties = {**((existing or {}).get("properties") or {}), **(body.get("properties") or {}), "provisioningState": "Succeeded"}
+        resource = {**(existing or {}), **body, "id": path, "name": name, "type": kind, "properties": properties, "_top": kind.count("/") == 1}
+        if kind == "Microsoft.Authorization/roleAssignments":
+            resource["properties"]["scope"] = path.split("/providers/Microsoft.Authorization/")[0]
+            twin = next((item for item in self.resources.values() if item["type"] == kind and item["id"].lower() != key
+                         and (item["properties"]["scope"].lower(), item["properties"]["principalId"], item["properties"]["roleDefinitionId"])
+                         == (resource["properties"]["scope"].lower(), properties["principalId"], properties["roleDefinitionId"])), None)
+            if twin is not None:
+                raise refusal(409, "RoleAssignmentExists", "The role assignment already exists.")
+            resource["_top"] = False
+        if kind == "Microsoft.ManagedIdentity/userAssignedIdentities" and existing is None:
+            properties.update(principalId=str(uuid.uuid4()), clientId=str(uuid.uuid4()), tenantId=TENANT)
+        if kind == "Microsoft.Network/publicIPAddresses" and not properties.get("ipAddress"):
+            properties["ipAddress"] = f"20.1.2.{next(self.public)}"
+        if kind == "Microsoft.Compute/virtualMachines":
+            self._machine(resource, existing)
+        self.resources[key] = resource
+        return AzureResponse(200 if existing else 201 if kind == "Microsoft.Authorization/roleAssignments" else 200, {}, self._public(resource))
+
+    def _machine(self, resource, existing):
+        """A machine's PUT makes its interface, its public address and its OS disk, as Azure does."""
+        properties = resource["properties"]
+        if existing is not None:
+            return
+        properties["vmId"] = str(uuid.uuid4())
+        properties["timeCreated"] = "2026-11-04T09:00:00Z"
+        resource["_power"], resource["_started"] = "running", f"2026-11-04T09:0{next(self.ticks) % 10}:00Z"
+        group = "/".join(resource["id"].split("/")[:5])
+        properties["networkProfile"]["networkInterfaces"] = []
+        for configuration in properties["networkProfile"]["networkInterfaceConfigurations"]:
+            ip_configuration = configuration["properties"]["ipConfigurations"][0]["properties"]
+            subnet = ip_configuration["subnet"]["id"]
+            prefix = self._prefix(subnet)
+            # the fake names a machine's parts its own way, so that the adapter must read them from the machine
+            nic_id = f"{group}/providers/Microsoft.Network/networkInterfaces/{configuration['name']}-{next(self.ticks):03d}"
+            properties["networkProfile"]["networkInterfaces"].append({"id": nic_id, "properties": {"primary": True, "deleteOption": configuration["properties"]["deleteOption"]}})
+            nic = {"privateIPAddress": f"{prefix}.{next(self.addresses)}", "subnet": {"id": subnet}}
+            if ip_configuration.get("publicIPAddressConfiguration"):
+                public = ip_configuration["publicIPAddressConfiguration"]
+                ip_name = f"{public['name']}-{next(self.ticks):03d}"
+                ip_id = f"{group}/providers/Microsoft.Network/publicIPAddresses/{ip_name}"
+                self.resources[ip_id.lower()] = {"id": ip_id, "name": ip_name, "type": "Microsoft.Network/publicIPAddresses", "_top": True,
+                                                 "_delete_with": resource["id"].lower() if public["properties"]["deleteOption"] == "Delete" else None,
+                                                 "properties": {"ipAddress": f"20.1.2.{next(self.public)}", "provisioningState": "Succeeded"}}
+                nic["publicIPAddress"] = {"id": ip_id}
+            self.resources[nic_id.lower()] = {"id": nic_id, "name": nic_id.rsplit("/", 1)[-1], "type": "Microsoft.Network/networkInterfaces", "_top": True,
+                                              "_delete_with": resource["id"].lower() if configuration["properties"]["deleteOption"] == "Delete" else None,
+                                              "properties": {"ipConfigurations": [{"name": "primary", "properties": nic}], "virtualMachine": {"id": resource["id"]},
+                                                             "provisioningState": "Succeeded"}}
+        disk = properties["storageProfile"]["osDisk"]
+        disk_id = f"{group}/providers/Microsoft.Compute/disks/{disk['name']}_{next(self.ticks):03d}"
+        disk.setdefault("managedDisk", {})["id"] = disk_id
+        self.resources[disk_id.lower()] = {"id": disk_id, "name": disk_id.rsplit("/", 1)[-1], "type": "Microsoft.Compute/disks", "_top": True,
+                                           "_delete_with": resource["id"].lower() if disk.get("deleteOption") == "Delete" else None,
+                                           "properties": {"diskSizeGB": disk["diskSizeGB"], "provisioningState": "Succeeded"}}
+
+    def _prefix(self, subnet):
+        network = self.resources.get(subnet.lower().split("/subnets/")[0])
+        if network is None:
+            return "10.250.0"  # the operator's subnet, outside the fake
+        cidr = network["properties"]["subnets"][0]["properties"]["addressPrefix"]
+        return cidr.split("/")[0].rsplit(".", 1)[0]
+
+    def _patch(self, path, key, body):
+        found = self.resources.get(key)
+        if found is None:
+            raise refusal(404, "ResourceNotFound", f"{path} was not found")
+        properties = body.get("properties") or {}
+        if "hardwareProfile" in properties:
+            if found.get("_power") == "running" and properties["hardwareProfile"]["vmSize"] not in self._sizes(found):
+                raise refusal(409, "OperationNotAllowed", "The requested VM size is not available in the current hardware cluster; deallocate the VM first")
+            found["properties"]["hardwareProfile"] = properties["hardwareProfile"]
+        if "storageProfile" in properties:
+            found["properties"]["storageProfile"]["dataDisks"] = copy.deepcopy(properties["storageProfile"]["dataDisks"])
+            for disk in found["properties"]["storageProfile"]["dataDisks"]:
+                attached = self.resources.get(disk["managedDisk"]["id"].lower())
+                if attached is None:
+                    raise refusal(404, "NotFound", f"Disk {disk['managedDisk']['id']} was not found")
+                if attached.get("zones") != found.get("zones"):
+                    raise refusal(400, "BadRequest", "The disk is in another zone")
+                attached["properties"]["diskState"] = "Attached"
+                attached["_attached_to"] = found["id"].lower()
+        return AzureResponse(200, {}, self._public(found))
+
+    def _sizes(self, machine):
+        letter = machine["properties"]["hardwareProfile"]["vmSize"].split("_")[1][0]
+        return SIZES_BY_LETTER.get(letter, [])
+
+    def _post(self, path, key):
+        machine_key, _, action = key.rpartition("/")
+        machine = self.resources.get(machine_key)
+        if machine is None:
+            raise refusal(404, "ResourceNotFound", f"{path} was not found")
+        if action == "deallocate":
+            machine["_power"] = "deallocated"
+        elif action == "start":
+            machine["_power"], machine["_started"] = "running", f"2026-11-04T1{next(self.ticks) % 10}:00:00Z"
+        else:
+            raise AssertionError(f"the fake has no action {action}")
+        return AzureResponse(200, {}, None)
+
+    def _delete(self, path, key):
+        found = self.resources.pop(key, None)
+        if found is None:
+            return AzureResponse(204, {}, None)
+        if found["type"] == "Microsoft.Compute/disks" and found.get("_attached_to") in self.resources:
+            self.resources[key] = found
+            raise refusal(409, "OperationNotAllowed", f"Disk {found['name']} is attached to a VM")
+        if found["type"] == "Microsoft.Resources/resourceGroups":
+            for name in [name for name in self.resources if name.startswith(key + "/")]:
+                del self.resources[name]
+        if found["type"] == "Microsoft.Compute/virtualMachines":
+            for name in [name for name, item in self.resources.items() if item.get("_delete_with") == key]:
+                del self.resources[name]
+            for item in self.resources.values():
+                if item.get("_attached_to") == key:
+                    item["_attached_to"] = None
+                    item["properties"]["diskState"] = "Unattached"
+        if found["type"] == "Microsoft.Network/virtualNetworks":
+            subnet = found["properties"]["subnets"][0]["name"]
+            users = [item for item in self.resources.values() if item["type"] == "Microsoft.Network/networkInterfaces"
+                     and str(((item["properties"].get("ipConfigurations") or [{}])[0].get("properties") or {}).get("subnet", {}).get("id", "")).lower()
+                     == f"{key}/subnets/{subnet}".lower()]
+            if users:
+                self.resources[key] = found
+                raise refusal(400, "InUseSubnetCannotBeDeleted", f"Subnet {subnet} is in use by {users[0]['id']}")
+        for name in [name for name in self.resources if name.startswith(key + "/")]:  # a resource's children go with it
+            del self.resources[name]
+        return AzureResponse(200, {}, None)
 
     def _usages(self, found, method, body, params):
         subscription, region = found.groups()
@@ -84,6 +346,53 @@ class FakeAzureApi(AzureApi):
             answer["nextLink"] = (f"{ARM}/subscriptions/{subscription}/providers/Microsoft.Compute/locations/{region}/usages"
                                   f"?api-version={params['api-version']}&$skiptoken={start + self.page_size}")
         return AzureResponse(200, {}, answer)
+
+    def _network_usages(self, found, method, body, params):
+        assert method == "GET" and params["api-version"] == API_VERSIONS["Microsoft.Network"]
+        return AzureResponse(200, {}, {"value": self.network_usages.get(found.group(2), [])})
+
+    # ---- Microsoft Graph
+    def _graph(self, method, path, params):
+        assert method == "GET" and path.startswith("/v1.0/")
+        if self.graph_denied:
+            raise refusal(403, "Authorization_RequestDenied", "Insufficient privileges to complete the operation.")
+        found = re.match(r"^/v1\.0/users/(.+)$", path)
+        if found:
+            address = found.group(1).lower()
+            if address not in USERS:
+                raise refusal(404, "Request_ResourceNotFound", f"Resource '{address}' does not exist")
+            return AzureResponse(200, {}, {"id": USERS[address], "userPrincipalName": address})
+        mail = re.fullmatch(r"mail eq '([^']+)'", params.get("$filter", ""))
+        assert mail, params
+        directory = {**GUESTS} if path == "/v1.0/users" else GROUPS if path == "/v1.0/groups" else None
+        assert directory is not None, path
+        value = [{"id": directory[mail.group(1).lower()], "mail": mail.group(1)}] if mail.group(1).lower() in directory else []
+        return AzureResponse(200, {}, {"value": value})
+
+    # ---- a blob service's own API
+    def _blob_service(self, account, method, params, headers):
+        assert method == "GET" and params == {"restype": "container", "comp": "list", "maxresults": "1"} and headers.get("x-ms-version")
+        if account not in self.blobs:
+            raise refusal(404, "ResourceNotFound", "The specified resource does not exist.")
+        listed = "".join(f"<Blob><Name>{name}</Name></Blob>" for name in self.blobs[account][:1])
+        return AzureResponse(200, {}, None, f'<?xml version="1.0"?><EnumerationResults><Blobs>{listed}</Blobs></EnumerationResults>')
+
+    # ---- what the tests look at
+    def of_type(self, kind):
+        return {item["name"]: item for item in self.resources.values() if item["type"] == kind}
+
+    def machine(self, name):
+        return next(item for item in self.resources.values() if item["type"] == "Microsoft.Compute/virtualMachines" and item["name"] == name)
+
+    def assignments(self):
+        """(scope's last two segments, principal id, role GUID) of every role assignment, sorted."""
+        return sorted(("/".join(item["properties"]["scope"].split("/")[-2:]), item["properties"]["principalId"], item["properties"]["roleDefinitionId"].rsplit("/", 1)[-1])
+                      for item in self.resources.values() if item["type"] == "Microsoft.Authorization/roleAssignments")
+
+
+# the sizes the fake's hardware offers a running machine: the same family letter
+SIZES_BY_LETTER = {"D": ["Standard_D2s_v5", "Standard_D4s_v5", "Standard_D8s_v5", "Standard_D16s_v5", "Standard_D2ls_v5", "Standard_D4ls_v5"],
+                   "E": ["Standard_E2s_v5", "Standard_E4s_v5", "Standard_E8s_v5"], "B": ["Standard_B1s", "Standard_B1ms"]}
 
 
 def make_azure_provider(config, fake=None):

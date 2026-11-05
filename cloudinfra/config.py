@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from .providers.azure.settings import AzureSettings
 from .providers.gcp.settings import GcpSettings
 from .security import validation
-from .security.validation import MEMBER, normal_member
+from .security.validation import ANY_MEMBER, normal_member
 
 
 class StrictModel(BaseModel):
@@ -33,8 +33,9 @@ class Principal(StrictModel):
     scope: str = Field(default="own", pattern=r"^(own|all)$")
     max_monthly_cost_usd: float | None = Field(default=None, ge=0, description="A tighter ceiling than limits.max_monthly_cost_usd for this caller.")
     # The identity granted access to what this caller creates, when access.grant_requester is on: a person for a person's
-    # token, or the service account an Application Layer system runs as.
-    identity: str | None = Field(default=None, pattern=MEMBER.pattern)
+    # token, or the service account an Application Layer system runs as. On Azure it may be a directory object id
+    # (serviceAccount:<object id> for a service principal or a managed identity, which have no address).
+    identity: str | None = Field(default=None, pattern=ANY_MEMBER.pattern)
 
     @field_validator("identity")
     @classmethod

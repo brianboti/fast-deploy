@@ -26,7 +26,7 @@ from cloudinfra.orchestration.sweeper import Sweeper
 from cloudinfra.providers import ProviderRegistry
 from cloudinfra.state.state_manager import ProcessLock
 
-EMPTY = {"warned": [], "stopping": [], "destroying": [], "kept": [], "idle_stopping": [], "errors": []}
+EMPTY = {"warned": [], "stopping": [], "destroying": [], "kept": [], "idle_stopping": [], "run_limit_stopping": [], "errors": []}
 
 
 class Deferred:

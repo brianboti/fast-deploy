@@ -358,7 +358,7 @@ def test_lifetime_warns_then_stops_then_destroys_after_retention(tmp_path, caplo
     assert any(item.startswith("Expired at 2026-10-31T12:00:00Z; destroyed at 2026-11-07T13:00:00Z") for item in expired.warnings)
     assert expired.operations[-1].kind == "stop" and expired.operations[-1].identity == SWEEPER.name
     refused(ErrorCode.INVALID_STATE, orchestrator.control, response.request_id, "start", who)
-    assert sweeper.tick() == {"warned": [], "stopping": [], "destroying": [], "kept": [], "idle_stopping": [], "errors": []}
+    assert sweeper.tick() == {"warned": [], "stopping": [], "destroying": [], "kept": [], "idle_stopping": [], "run_limit_stopping": [], "errors": []}
     clock.advance(days=7)
     assert sweeper.tick()["destroying"] == [response.request_id]
     assert orchestrator.status(response.request_id, who).status == RequestStatus.DESTROYED and not fake.instances
@@ -637,7 +637,7 @@ def test_nothing_is_marked_stopped_while_a_machine_may_still_run(tmp_path):
     assert orchestrator.status(response.request_id, who).status == RequestStatus.READY
     instance["status"] = "RUNNING"
     fake.fail_on.append(("GET", f"/instances/{machine.name}"))  # its state cannot be read: it is stopped anyway, and the outcome stays open
-    assert sweeper.tick() == {"warned": [], "stopping": [], "destroying": [], "kept": [], "idle_stopping": [], "errors": []}, "a failed attempt waits 5 minutes"
+    assert sweeper.tick() == {"warned": [], "stopping": [], "destroying": [], "kept": [], "idle_stopping": [], "run_limit_stopping": [], "errors": []}, "a failed attempt waits 5 minutes"
     clock.advance(minutes=5)
     found = sweeper.tick()
     after = orchestrator.status(response.request_id, who, refresh=False)

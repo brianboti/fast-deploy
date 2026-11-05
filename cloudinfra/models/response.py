@@ -160,6 +160,8 @@ class AccessGrant(Model):
     resources: list[str] = Field(default_factory=list, description="The resources granted on.")
     error: ErrorDetail | None = None
     updated_at: str | None = None
+    principal: dict[str, str] | None = Field(default=None, description="The member's directory object id and type, looked up once before anything is "
+                                             "granted where the provider grants by id (Azure), and kept: a later grant or revoke never looks it up again.")
 
 
 class Lifecycle(Model):
@@ -169,7 +171,7 @@ class Lifecycle(Model):
     expires_in_hours: float | None = None
     max_expires_at: str | None = Field(default=None, description="The latest an extension can reach, from the operator's maximum lifetime.")
     stopped_at: str | None = None
-    stop_reason: str | None = Field(default=None, description="requested, expired or idle.")
+    stop_reason: str | None = Field(default=None, description="requested, expired, idle or max_run.")
     retain_until: str | None = Field(default=None, description="For a request stopped at expiry: when it is destroyed.")
     awake_until: str | None = Field(default=None, description="Idle stop is suspended until then.")
     warnings_sent: list[str] = Field(default_factory=list)

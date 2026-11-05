@@ -88,13 +88,24 @@ providers:
     #     image: projects/your-images-project/global/images/family/hardened-ubuntu-2404
     #     accelerator: none
     # default_accelerator_profile: gpu-signed     # what GPU machines get when they name no profile and no os
-  # azure:                                      # being built (docs/research/RESEARCH-2026-11-03-azure.md): no kind yet, quota and status only
+  # azure:                                      # identity, network, storage and compute so far (docs/research/RESEARCH-2026-11-03-azure.md)
   #   subscription_id: 00000000-0000-0000-0000-000000000000
   #   tenant_id: 00000000-0000-0000-0000-000000000000   # the subscription's Entra ID directory; the Azure CLI asks for tokens in it
   #   cloud: public                             # public, usgovernment or china
   #   allowed_regions: [eastus2]
   #   zones: {taiwannorth: ["1", "2", "3"]}       # regions the adapter's own table leaves out; [] for a region without zones
   #   identity_client_id: null                  # the user-assigned managed identity to use when the host has several
+  #   default_subnet: /subscriptions/SUB/resourceGroups/hub/providers/Microsoft.Network/virtualNetworks/hub/subnets/workloads  # Azure has no default network
+  #   bastion: /subscriptions/SUB/resourceGroups/hub/providers/Microsoft.Network/bastionHosts/hub-bastion   # Standard, native client on
+  #   bastion_subnet: 10.0.1.0/26               # its AzureBastionSubnet, admitted on port 22 by networks with iap_ssh
+  #   deny_egress: false                        # true: nothing but the network and Entra ID outbound, and no NAT
+  #   flow_logs_storage_account: null           # an account in the region for VNet flow logs; none, no flow log
+  #   prices_file: null                         # a snapshot from `cloud-infra prices --write FILE`; none, approximate built-in prices
+  #   profiles:                                 # images the platform team approves
+  #     gpu-hpc:
+  #       image: microsoft-dsvm:ubuntu-hpc:2204:latest   # publisher:offer:sku:version, or a Compute Gallery image id
+  #       accelerator: required
+  #       min_boot_disk_gb: 64
 principals:                                       # the Application Layer systems that may call the service
   - name: app-layer
     token_sha256: "REPLACE_WITH_THE_HASH_FROM_cloud-infra_token"   # or token_hmac_sha256, made with CLOUDINFRA_TOKEN_PEPPER set (docs/SETUP.md)

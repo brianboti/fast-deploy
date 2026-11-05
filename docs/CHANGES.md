@@ -4,6 +4,56 @@ into another line. Fixes reported privately are listed here when their advisory 
 
 # Unreleased
 
+## Azure, step 2: identity, network, storage and compute
+
+The second step of the Azure adapter (docs/research/RESEARCH-2026-11-03-azure.md, section 10): release A's kinds on
+Azure, tested against a fake of Azure; nothing has run against a real subscription yet (step 3).
+
+- An `azure` request may hold `identity`, `network`, `storage` (disks and buckets) and `compute`; any other block is
+  refused before any call, naming the four. Everything a request makes is in a resource group of its own, named after
+  the request and tagged with it, deleted when nothing of the request is left.
+- Machines: exactly one of Azure's sizes (Dsv5, Esv5, Dlsv5, B1s and B1ms; NCasT4_v3, NC_A100_v4, ND96asr_v4,
+  NCads_H100_v5, ND96isr_H100_v5), any other shape refused with the sizes there are, `l4` refused; Ubuntu 24.04, Debian
+  12 or Rocky 9 (with its Marketplace plan), or an operator profile's Marketplace or gallery image; Trusted Launch;
+  sign-in with Entra ID through the `AADSSHLoginForLinux` extension and the login roles, no password and no key anyone
+  holds; parts deleted with the machine. `stop` deallocates. `max_run_hours` is enforced by the sweeper, since Azure
+  has no run limit. A resize the machine's hardware offers is one change, any other deallocates around it.
+- Networks: a security group admitting the subnet, the operator's Bastion on port 22, the public ports asked and the
+  load-balancer probes, then refusing the rest; a NAT gateway in the request's zone; no default outbound access; a flow
+  log to the operator's account when one is named; `deny_egress` leaves only the network and Entra ID outbound.
+- Disks are Standard HDD, Standard SSD or Premium SSD by `performance`, attached at the next LUN, and outlive their
+  machine; a bucket is a storage account with no keys and no public access and one container, deleted only empty.
+- Access: members are looked up in Microsoft Graph once, before anything is made, and their object ids kept on the
+  request's access list (shown as `principal`); a member the directory does not know creates nothing. On Azure a
+  member may also be written `user:`, `group:` or `serviceAccount:` with an object id, when it is a principal's
+  identity. Grants are role assignments on each resource's own scope, never wider.
+- New operator settings under `providers.azure`: `profiles`, `default_accelerator_profile`, `default_subnet`,
+  `bastion` and `bastion_subnet`, `deny_egress`, `flow_logs_storage_account`, `network_watcher_group`, `prices_file`.
+- `cloud-infra prices --write FILE` writes a dated snapshot of Azure's list prices for the allowed regions, from the
+  Retail Prices API; without one, estimates use the adapter's approximate built-in prices.
+- For every adapter: the quota check also checks a machine family's own limit where the adapter names one; a request's
+  container at the provider is removed when nothing of it is left, and a destroy that cannot remove it says so and can
+  be tried again; the sweeper reports `run_limit_stopping`.
+- Fixed before release, from a code review of the change: a machine that reaches no package host (a network without
+  NAT, or with egress denied, and no address of its own) is made without the sign-in extension, which would wait and
+  fail, and its connect block says how else to reach it; a flow log's name carries the request id, since the watcher's
+  group is shared; a requester identity Azure cannot name (another cloud's account) is recorded as failed instead of
+  failing every Azure request; a member never found can be revoked; a machine's interface, address and OS disk are read
+  from the machine, not guessed; `az ssh vm` takes the machine's address.
+- Tests: `tests/cloudinfra/test_infra_azure_kinds.py`; the fake in `azure_fakes.py` now answers Resource Manager, Graph
+  and a blob service from memory, and names a machine's parts its own way, untagged, as Azure does.
+
+**Before you upgrade.** Nothing to do for Google. For Azure, follow REQUIREMENTS.md section 6's Azure table: register
+the resource providers, give the service its role and its conditioned grant right, and either grant it Graph's
+`User.Read.All` and `Group.Read.All` or name members by object id.
+
+Security:
+
+- **Both images: `apt` 3.0.3 in the base image (CVE-2026-109518, High).** The image scan in CI found it on 2026-11-05 in
+  the `python:3.12-slim` image pinned on 2026-11-03; both Dockerfiles (and `examples/hello`) now pin the image Docker
+  rebuilt on 2026-11-05 (`sha256:e695ab18…`, still Python 3.12.16), which carries the fixed `apt`. The CI image scan is
+  its test; the repository test that holds both Dockerfiles to one digest still passes.
+
 ## Azure, step 1: the adapter's credential, client, clouds, regions and quota
 
 The first step of the Azure adapter planned in docs/research/RESEARCH-2026-11-03-azure.md (section 10). It provides
