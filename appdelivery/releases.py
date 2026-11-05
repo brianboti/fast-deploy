@@ -15,10 +15,11 @@ import time
 
 import httpx
 
-from . import attest, bindings, cloudbuild, planner, provenance, remote
+from . import attest, bindings, planner, remote
 from .building import Builder
 from .cloudbuild import CloudBuildClient
-from .config import BuildSettings
+from .clouds import Cloud
+from .clouds.gcp import GcpCloud
 from .errors import DeliveryError, ErrorCode
 from .events import bound, event
 from .google import HostToken, ServiceAccountTokens
@@ -73,10 +74,16 @@ class Delivery:
         self._locks: dict[tuple[str, str], threading.RLock] = {}
         self._guard = threading.Lock()
         # Cloud Build is called as the environment's own service account
-        builds = builds or (lambda environment: CloudBuildClient(lambda: self.tokens(config.environments[environment].service_account), self.http))
-        self.builder = Builder(config, state, builds, build_executor, sleep, clock)
+        self.builds = builds or (lambda environment: CloudBuildClient(lambda: self.tokens(config.environments[environment].service_account), self.http))
+        # each environment's work goes through the cloud it names (clouds/): Google's reads the factories above, which tests replace
+        self.clouds: dict[str, Cloud] = {"gcp": GcpCloud(self)}
+        self.builder = Builder(config, state, lambda environment: self.cloud(environment).builds(environment), build_executor, sleep, clock)
 
     # ---- helpers
+    def cloud(self, environment: str) -> Cloud:
+        """The cloud an environment's releases and builds run on."""
+        return self.clouds[self.config.environments[environment].provider]
+
     def lock(self, request_id: str, group: str) -> threading.RLock:
         with self._guard:
             return self._locks.setdefault((request_id, group), threading.RLock())
@@ -224,10 +231,10 @@ class Delivery:
         return infra, self._sessions(release)(release.environment)
 
     def _sessions(self, release: ReleaseRequest):
-        """What reaches the release's target: a cluster deployer, a Cloud Run deployer, or a machine session."""
-        if release.target.job:
-            return self.jobs
-        return self.clusters if release.target.cluster else self.services if release.target.service else self.machines
+        """What reaches the release's target, in its environment's cloud: a cluster deployer, a managed service's or job's
+        deployer, or a machine session."""
+        kind = "jobs" if release.target.job else "clusters" if release.target.cluster else "services" if release.target.service else "machines"
+        return lambda environment: getattr(self.cloud(environment), kind)(environment)
 
     def _target(self, infra: InfraRequest, release: ReleaseRequest):
         if release.target.job:
@@ -246,12 +253,9 @@ class Delivery:
                              gateway=door.gateway if door else None, https=bool(door and door.hostnames))
 
     def _registry_token(self, release: ReleaseRequest, environment) -> str | None:
-        """A token that reads the image and nothing else: the environment's pull account, minted fresh for this one use. The
+        """A token that reads the image and nothing else, minted fresh for this one use by the environment's cloud; the
         environment's own token never leaves this service (the review of 2026-10-30: root on a team's machine could read it)."""
-        if not release.registry().endswith(planner.ARTIFACT_REGISTRY_SUFFIX):
-            return None
-        mint = getattr(self.tokens, "fresh", self.tokens)
-        return mint(environment.pull_service_account)
+        return self.cloud(release.environment).pull_token(release)
 
     def _rollout(self, release_id: str) -> None:
         record = self.state.get_release(release_id)
@@ -266,17 +270,13 @@ class Delivery:
                     build = self.state.built(record["infra_owner"], release.image)
                     if build is None:
                         raise DeliveryError(ErrorCode.NOT_BUILT_HERE, f"{release.image} was not built by this service", {"image": release.image})
-                    found = provenance.occurrences(self.http, self.tokens(environment.service_account), release.image)
-                    built_in = self.config.environments.get(build["environment"])  # an environment since removed keeps its builds verifiable
-                    settings = built_in.build if built_in is not None else None
-                    builder = settings.builder if settings is not None else BuildSettings.model_fields["builder"].default
-                    event("provenance_verified", **provenance.verify(release.image, build, found, expected=cloudbuild.expected(build, builder)))
+                    event("provenance_verified", **self.cloud(release.environment).provenance(release, build))
                 if environment.require_attestation:
                     verified = attest.verify(release, environment, self._registry_token(release, environment), self.runner)
                     event("image_verified", **verified)
                 # a service's container reads its secrets itself at start, so only references to them are made here
-                resolve = bindings.references if release.target.service or release.target.job else bindings.resolve
-                values = resolve(release, infra, self.http, self.tokens(environment.service_account))
+                cloud = self.cloud(release.environment)
+                values = (cloud.references if release.target.service or release.target.job else cloud.resolve)(release, infra)
             except DeliveryError as exc:
                 for target in record["targets"]:
                     self.state.set_target(release_id, target["resource_id"], "SKIPPED")
@@ -446,7 +446,7 @@ class Delivery:
         if record["status"] != "RUNNING":
             raise DeliveryError(ErrorCode.INVALID_STATE, f"Release {release_id} is {record['status']}, not the release its job holds", {"status": record["status"]})
         infra = self.infra(release.environment).get_request(release.request_id)
-        return record, release, self._target(infra, release), self.jobs(release.environment)
+        return record, release, self._target(infra, release), self.cloud(release.environment).jobs(release.environment)
 
     def start_run(self, release_id: str, principal, wait_seconds: int = 0) -> RunResponse:
         """Run the job now, as it holds this release; with wait_seconds, wait that long for it to finish."""
@@ -503,7 +503,7 @@ class Delivery:
                 previous_id, previous = self._previous(record)
                 try:
                     if release.target.job:  # a job keeps no earlier container: the previous release's is made again, its secrets pinned now
-                        values = bindings.references(previous, infra, self.http, self.tokens(self.config.environments[release.environment].service_account))
+                        values = self.cloud(release.environment).references(previous, infra)
                         report = session.rollback(self._target(infra, release), release_id, previous_id, previous, values)
                     else:
                         report = session.rollback(self._target(infra, release), release_id, previous_id, previous)

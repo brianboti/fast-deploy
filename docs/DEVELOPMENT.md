@@ -15,13 +15,15 @@ cloudinfra/                 the infrastructure service (version in __init__.py, 
   observability/            JSON events, redaction
 appdelivery/                the delivery service (its own version in __init__.py)
   models.py planner.py      the release contract and the checks against cloudinfra's answer
-  releases.py state.py      the orchestrator and its SQLite state
+  releases.py state.py      the orchestrator and its SQLite state; it names no cloud
+  clouds/                   the provider seam: each environment's provider (gcp) reaches its targets, reads its secrets,
+                            mints a machine's pull token, checks provenance and runs builds; gcp.py composes the modules below
   machine.py host/release.sh  a release on a machine: the host script, sent over gcloud ssh through IAP
   kube.py run.py            a release on a cluster, and on a Cloud Run service or job
   infra.py google.py        the cloudinfra HTTP client; Google tokens and Secret Manager reads
   remote.py                 the only module that runs a command (gcloud, cosign), with fixed argument lists
   server.py auth.py catalog.py tools.py oauth.py
-tests/cloudinfra/           test_infra_*.py with gcp_fakes.py (a fake Google Cloud and Kubernetes); no conftest
+tests/cloudinfra/           test_infra_*.py with gcp_fakes.py and azure_fakes.py; conftest.py lets pytest read the service's events
 tests/appdelivery/          test_delivery_*.py with its own fakes (delivery_fakes, fleet_fakes, host_fakes, kube_fakes, run_fakes); no conftest
 tests/integration/          a real project, marked integration, skipped unless CLOUDINFRA_INTEGRATION=1
 examples/                   one request and one release, validated by CI and a test
