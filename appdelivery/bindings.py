@@ -1,5 +1,7 @@
 """Turning a release's bindings into the values the container gets, at the moment it is started. Secret values are read as
-the environment's service account and exist only in the mapping this returns, which goes to the machine and is dropped."""
+the environment's own identity and exist only in the mapping this returns, which goes to the machine and is dropped.
+values() and pinned() take the reading from the environment's cloud (clouds/); resolve() and references() are Google's."""
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .errors import DeliveryError, ErrorCode
@@ -9,8 +11,17 @@ from .models import MAX_VALUE, ReleaseRequest
 
 
 def resolve(release: ReleaseRequest, infra: InfraRequest, client, token: str) -> dict[str, str]:
-    """NAME → value for every binding. A value Docker's env file cannot carry (a line break, a NUL, too long) is refused
-    by name, without the value."""
+    """values() with Secret Manager's reads."""
+    return values(release, infra, lambda secret: read_secret(client, token, secret.resource_name))
+
+
+def _unread(secret) -> str:
+    raise AssertionError("a binding without a secret reads none")
+
+
+def values(release: ReleaseRequest, infra: InfraRequest, read: Callable) -> dict[str, str]:
+    """NAME → value for every binding, a secret's read with read(secret). A value Docker's env file cannot carry (a line
+    break, a NUL, too long) is refused by name, without the value."""
     values = {}
     for name, binding in release.env.items():
         if binding.value is not None:
@@ -24,7 +35,7 @@ def resolve(release: ReleaseRequest, infra: InfraRequest, client, token: str) ->
             secret = infra.secret(binding.secret)
             if secret is None:
                 raise DeliveryError(ErrorCode.INVALID_BINDING, f"env.{name}: the request has no secret {binding.secret!r}", {"field": f"env.{name}"})
-            value = read_secret(client, token, secret.resource_name)
+            value = read(secret)
         if "\n" in value or "\r" in value or "\0" in value or len(value) > MAX_VALUE:
             raise DeliveryError(ErrorCode.INVALID_BINDING, f"env.{name}: its value holds a line break or a NUL, or is longer than {MAX_VALUE} characters, which "
                                 "Docker's env file cannot carry; store it base64-encoded", {"field": f"env.{name}"})
@@ -34,22 +45,28 @@ def resolve(release: ReleaseRequest, infra: InfraRequest, client, token: str) ->
 
 @dataclass(frozen=True)
 class SecretRef:
-    """A secret the container reads itself at start (Cloud Run's secretKeyRef), pinned to a version; never its value."""
+    """A secret the container reads itself at start (Cloud Run's secretKeyRef, a Container Apps Key Vault reference), pinned
+    to a version; never its value."""
     resource_name: str
     version: str
 
 
 def references(release: ReleaseRequest, infra: InfraRequest, client, token: str) -> dict[str, str | SecretRef]:
-    """NAME → value for plain bindings and endpoints, NAME → SecretRef for secrets, each pinned to the version current now."""
+    """pinned() with Secret Manager's versions."""
+    return pinned(release, infra, lambda secret: SecretRef(secret.resource_name, secret_version(client, token, secret.resource_name)))
+
+
+def pinned(release: ReleaseRequest, infra: InfraRequest, pin: Callable) -> dict[str, str | SecretRef]:
+    """NAME → value for plain bindings and endpoints, NAME → pin(secret), a SecretRef to the version current now, for secrets."""
     found: dict[str, str | SecretRef] = {}
     for name, binding in release.env.items():
         if binding.secret is None:
-            found.update(resolve(release.model_copy(update={"env": {name: binding}}), infra, client, token))
+            found.update(values(release.model_copy(update={"env": {name: binding}}), infra, _unread))
             continue
         secret = infra.secret(binding.secret)
         if secret is None:
             raise DeliveryError(ErrorCode.INVALID_BINDING, f"env.{name}: the request has no secret {binding.secret!r}", {"field": f"env.{name}"})
-        found[name] = SecretRef(secret.resource_name, secret_version(client, token, secret.resource_name))
+        found[name] = pin(secret)
     return found
 
 

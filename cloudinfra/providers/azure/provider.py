@@ -67,7 +67,7 @@ class AzureProvider(CloudProvider):
         self.api = api or AzureApi(settings.subscription_id, token or AzureToken(self.cloud, client_id=settings.identity_client_id, tenant_id=settings.tenant_id),
                                    cloud=self.cloud, operation_timeout=operation_timeout)
         self.groups = AzureGroups(self.api, self.ceiling)
-        self.access = AzureAccess(self.api, self.cloud)
+        self.access = AzureAccess(self.api, self.cloud, settings.service_deploy_role)
         self.network = AzureNetwork(self.api, settings, self.groups, self.ceiling)
         self.compute = AzureCompute(self.api, settings, self.groups, self.ceiling)
         self.storage = AzureStorage(self.api, settings, self.cloud, self.groups, self.compute, self.access, self.ceiling)
@@ -227,6 +227,11 @@ class AzureProvider(CloudProvider):
         if request.services() or request.jobs():
             found.append("services and jobs run in their network's Container Apps environment, which is internal: they are reached from that network only, "
                          "and all of their egress leaves through it")
+            if not self.settings.app_registries:
+                found.append("this operator lets services and jobs pull from no registry prefix (providers.azure.app_registries): they can run public images only")
+        if request.services() and not self.settings.service_deploy_role:
+            found.append("a service's admin gets Container Apps Operator only, as this operator names no deploy role (providers.azure.service_deploy_role): "
+                         "no member and no delivery service can put a release on it")
         if request.load_balancer is not None and request.load_balancer.hostnames:
             found.append("on Azure each hostname needs two DNS records the load balancer reports: a TXT record _dnsauth.<hostname> with its token, which "
                          "Front Door checks before it issues the certificate, and a CNAME to the Front Door endpoint; the machines admit every Front Door "
@@ -642,7 +647,7 @@ class AzureProvider(CloudProvider):
         if kind == "cluster":
             return self.cluster.targets(resource)
         if kind == "service":
-            return [(resource.provider_id, "app")]
+            return [(resource.provider_id, "app"), (resource.provider_id, "app_deploy")]
         if kind == "job":
             return [(resource.provider_id, "job")]
         return []

@@ -1,0 +1,19 @@
+# What CI's image scan (the images job of .github/workflows/ci.yml) is told to set aside. Every entry names one
+# advisory, one package and the one file it was found in, why it is not reachable in a way that matters here, and when it
+# goes; anything else that is high or critical and has a fix still fails the run. Review each entry at every bump of the
+# file it names, and delete it the day that file carries the fix.
+ignore:
+  # GO-2026-6865 (GHSA-fpmh-frq8-7rj8, CVE-2026-116591), set aside 2026-11-06: klauspost/compress before 1.20.2 panics
+  # on some crafted zstd frames. Cosign v3.1.4, the newest release, carries 1.20.1 (its main branch has 1.20.3).
+  # appdelivery runs cosign only as a child process per verification (appdelivery/attest.py): a panic ends that process,
+  # the verification fails and the release is refused, so the most it can do is stop one release, never let one through.
+  # Goes with the first Cosign release whose go.mod has klauspost/compress 1.20.2 or later.
+  - vulnerability: GO-2026-6865
+    package: &cosign-compress
+      name: github.com/klauspost/compress
+      type: go-module
+      location: /usr/local/bin/cosign
+  - vulnerability: GHSA-fpmh-frq8-7rj8
+    package: *cosign-compress
+  - vulnerability: CVE-2026-116591
+    package: *cosign-compress

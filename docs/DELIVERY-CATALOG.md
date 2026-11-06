@@ -46,8 +46,9 @@ Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DE
 | `INFRA_UNAVAILABLE` | The infrastructure layer could not be reached or answered something unexpected; retry later. |
 | `INFRA_AUTH_FAILED` | The infrastructure layer refused this service's token for the environment. |
 | `GOOGLE_AUTH_FAILED` | This service's host could not get a token, or may not act as the environment's service account. |
-| `SECRET_UNAVAILABLE` | A bound secret could not be read as the environment's service account. |
-| `MACHINE_UNREACHABLE` | The SSH session to a machine failed, after waiting out IAP's passing refusals. |
+| `AZURE_AUTH_FAILED` | This service's host could not get a token for the environment's managed identity (not attached to it), or a registry refused the pull identity's token. |
+| `SECRET_UNAVAILABLE` | A bound secret could not be read as the environment's identity (its service account, or its managed identity). |
+| `MACHINE_UNREACHABLE` | The SSH session to a machine failed, after waiting out the passing refusals of IAP or of the Bastion's Entra sign-in. |
 | `MACHINE_ERROR` | The host script on a machine stopped or ended without a report. |
 | `CLUSTER_UNREACHABLE` | The cluster's API could not be reached, or refused this environment's service account (its namespace grant, or container.clusterViewer). |
 | `CLUSTER_ERROR` | The cluster's API refused a change to the workload; details carry its answer. |
@@ -142,7 +143,7 @@ Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DE
 
 **Output.** ReleaseResponse: release_id, status, environment, request_id, group, image, previous, can_roll_back, requested_by, approved_by, env (each name and its source, never a value), warnings, targets (each machine with its status, times, error and the failed container's scrubbed log), error.
 
-**Possible errors.** `INVALID_RELEASE`, `INVALID_BINDING`, `UNKNOWN_ENVIRONMENT`, `PERMISSION_DENIED`, `NOT_FOUND`, `INVALID_STATE`, `NOT_GRANTED`, `UNSUPPORTED_TARGET`, `UNREACHABLE_TARGET`, `REGISTRY_NOT_ALLOWED`, `NOT_BUILT_HERE`, `INFRA_UNAVAILABLE`, `INFRA_AUTH_FAILED`, `ATTESTATION_FAILED`, `PROVENANCE_FAILED`, `SECRET_UNAVAILABLE`, `GOOGLE_AUTH_FAILED`, `MACHINE_UNREACHABLE`, `MACHINE_ERROR`, `CLUSTER_UNREACHABLE`, `CLUSTER_ERROR`, `SERVICE_UNREACHABLE`, `SERVICE_ERROR`, `PULL_FAILED`, `UNHEALTHY`, `ROLLOUT_FAILED`.
+**Possible errors.** `INVALID_RELEASE`, `INVALID_BINDING`, `UNKNOWN_ENVIRONMENT`, `PERMISSION_DENIED`, `NOT_FOUND`, `INVALID_STATE`, `NOT_GRANTED`, `UNSUPPORTED_TARGET`, `UNREACHABLE_TARGET`, `REGISTRY_NOT_ALLOWED`, `NOT_BUILT_HERE`, `INFRA_UNAVAILABLE`, `INFRA_AUTH_FAILED`, `ATTESTATION_FAILED`, `PROVENANCE_FAILED`, `SECRET_UNAVAILABLE`, `GOOGLE_AUTH_FAILED`, `AZURE_AUTH_FAILED`, `MACHINE_UNREACHABLE`, `MACHINE_ERROR`, `CLUSTER_UNREACHABLE`, `CLUSTER_ERROR`, `SERVICE_UNREACHABLE`, `SERVICE_ERROR`, `PULL_FAILED`, `UNHEALTHY`, `ROLLOUT_FAILED`.
 
 **Security.** Changes what runs on machines. Needs can_deploy in the release's environment.
 
@@ -161,7 +162,7 @@ Generated from `appdelivery/catalog.py` by `app-delivery catalog --write docs/DE
 
 **Output.** ReleaseResponse: release_id, status, environment, request_id, group, image, previous, can_roll_back, requested_by, approved_by, env (each name and its source, never a value), warnings, targets (each machine with its status, times, error and the failed container's scrubbed log), error.
 
-**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `ATTESTATION_FAILED`, `PROVENANCE_FAILED`, `SECRET_UNAVAILABLE`, `GOOGLE_AUTH_FAILED`, `MACHINE_UNREACHABLE`, `MACHINE_ERROR`, `CLUSTER_UNREACHABLE`, `CLUSTER_ERROR`, `SERVICE_UNREACHABLE`, `SERVICE_ERROR`, `PULL_FAILED`, `UNHEALTHY`, `ROLLOUT_FAILED`.
+**Possible errors.** `NOT_FOUND`, `PERMISSION_DENIED`, `INVALID_STATE`, `ATTESTATION_FAILED`, `PROVENANCE_FAILED`, `SECRET_UNAVAILABLE`, `GOOGLE_AUTH_FAILED`, `AZURE_AUTH_FAILED`, `MACHINE_UNREACHABLE`, `MACHINE_ERROR`, `CLUSTER_UNREACHABLE`, `CLUSTER_ERROR`, `SERVICE_UNREACHABLE`, `SERVICE_ERROR`, `PULL_FAILED`, `UNHEALTHY`, `ROLLOUT_FAILED`.
 
 **Security.** Changes what runs on machines. Needs can_approve in the environment, as a principal of the same team other than the one that asked.
 

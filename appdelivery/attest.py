@@ -7,14 +7,17 @@ import os
 import tempfile
 
 from . import remote
+from .azure import LOGIN_SERVER
 from .errors import DeliveryError, ErrorCode
 from .models import ReleaseRequest
 from .planner import ARTIFACT_REGISTRY_SUFFIX
 
 
-def docker_config(directory: str, registry: str, token: str | None) -> str:
-    """A Docker config.json in `directory` that logs in to an Artifact Registry host with the token; empty for any other host."""
-    auths = {registry: {"auth": base64.b64encode(f"oauth2accesstoken:{token}".encode()).decode()}} if token and registry.endswith(ARTIFACT_REGISTRY_SUFFIX) else {}
+def docker_config(directory: str, registry: str, token: str | None, username: str = "oauth2accesstoken") -> str:
+    """A Docker config.json in `directory` that logs in to an Artifact Registry host or an Azure registry with the token, as
+    the user name its cloud takes; empty for any other host."""
+    ours = registry.endswith(ARTIFACT_REGISTRY_SUFFIX) or LOGIN_SERVER.fullmatch(registry)
+    auths = {registry: {"auth": base64.b64encode(f"{username}:{token}".encode()).decode()}} if token and ours else {}
     path = os.path.join(directory, "config.json")
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w") as handle:
@@ -22,13 +25,13 @@ def docker_config(directory: str, registry: str, token: str | None) -> str:
     return directory
 
 
-def verify(release: ReleaseRequest, environment, token: str | None, runner=remote.run) -> dict:
+def verify(release: ReleaseRequest, environment, token: str | None, runner=remote.run, username: str = "oauth2accesstoken") -> dict:
     """{'signer': …} for the first trusted signer whose attestation verifies, or ATTESTATION_FAILED naming what each said."""
     if not environment.trusted_signers:
         raise DeliveryError(ErrorCode.ATTESTATION_FAILED, f"Environment {release.environment} trusts no signer")
     said = []
     with tempfile.TemporaryDirectory(prefix="appdelivery-cosign-") as directory:
-        config = docker_config(directory, release.registry(), token)
+        config = docker_config(directory, release.registry(), token, username)
         for signer in environment.trusted_signers:
             # Cosign reads a gcpkms:// key with this host's own Google credentials, so it keeps the host's environment
             done = remote.cosign_verify_attestation(release.image, signer, environment.attestation_type, config, runner, dict(os.environ))

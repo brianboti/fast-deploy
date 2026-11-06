@@ -19,6 +19,7 @@ from . import attest, bindings, planner, remote
 from .building import Builder
 from .cloudbuild import CloudBuildClient
 from .clouds import Cloud
+from .clouds.azure import AzureCloud
 from .clouds.gcp import GcpCloud
 from .errors import DeliveryError, ErrorCode
 from .events import bound, event
@@ -61,7 +62,7 @@ class Delivery:
                  clock=time.monotonic, clusters=None, services=None, jobs=None, builds=None, build_executor=None):
         self.config, self.state = config, state
         self.infra = infra or (lambda environment: InfraClient.for_environment(config, environment))
-        self.machines = machines or (lambda environment: MachineSession(config.gcp.project_id, config.environments[environment].service_account))
+        self.machines = machines or (lambda environment: MachineSession(config.gcp.project_id, config.environments[environment].service_account))  # Google's
         self.http = http or httpx.Client(timeout=30, follow_redirects=False)
         self.tokens = tokens or ServiceAccountTokens(self.http, HostToken(self.http))
         self.clusters = clusters or (lambda environment: ClusterDeployer(lambda: self.tokens(config.environments[environment].service_account),
@@ -76,7 +77,7 @@ class Delivery:
         # Cloud Build is called as the environment's own service account
         self.builds = builds or (lambda environment: CloudBuildClient(lambda: self.tokens(config.environments[environment].service_account), self.http))
         # each environment's work goes through the cloud it names (clouds/): Google's reads the factories above, which tests replace
-        self.clouds: dict[str, Cloud] = {"gcp": GcpCloud(self)}
+        self.clouds: dict[str, Cloud] = {"gcp": GcpCloud(self), "azure": AzureCloud(self)}
         self.builder = Builder(config, state, lambda environment: self.cloud(environment).builds(environment), build_executor, sleep, clock)
 
     # ---- helpers
@@ -239,10 +240,10 @@ class Delivery:
     def _target(self, infra: InfraRequest, release: ReleaseRequest):
         if release.target.job:
             job = infra.job(release.target.job)
-            return JobTarget(job.id, job.name, job.provider_id)
+            return JobTarget(job.id, job.name, job.provider_id, job.runtime_service_account)
         if release.target.service:
             service = infra.service(release.target.service)
-            return ServiceTarget(service.id, service.name, service.provider_id)
+            return ServiceTarget(service.id, service.name, service.provider_id, service.runtime_service_account)
         return self._cluster_target(infra, release)
 
     @staticmethod
@@ -272,7 +273,7 @@ class Delivery:
                         raise DeliveryError(ErrorCode.NOT_BUILT_HERE, f"{release.image} was not built by this service", {"image": release.image})
                     event("provenance_verified", **self.cloud(release.environment).provenance(release, build))
                 if environment.require_attestation:
-                    verified = attest.verify(release, environment, self._registry_token(release, environment), self.runner)
+                    verified = attest.verify(release, environment, self._registry_token(release, environment), self.runner, self.cloud(release.environment).pull_user)
                     event("image_verified", **verified)
                 # a service's container reads its secrets itself at start, so only references to them are made here
                 cloud = self.cloud(release.environment)
@@ -342,7 +343,7 @@ class Delivery:
         secret_values = [values[name] for name, binding in release.env.items() if binding.secret is not None]
         done, failure, touched = [], None, False
         for target in record["targets"]:
-            machine = Machine(target["name"], target["zone"])
+            machine = Machine(target["name"], target["zone"], target.get("provider_id"))
             self.state.set_target(release_id, target["resource_id"], "DEPLOYING", started=True)
             event("machine_deploying", machine=machine.name)
             try:
@@ -401,7 +402,7 @@ class Delivery:
         """Put the machines a failed rollout had finished back on the previous release, or empty them for a group's first."""
         undone = []
         for target in reversed(done):
-            machine = Machine(target["name"], target["zone"])
+            machine = Machine(target["name"], target["zone"], target.get("provider_id"))
             try:
                 if record["previous"]:
                     report = session.rollback(machine, release)
@@ -519,7 +520,7 @@ class Delivery:
                     return
                 self.state.set_target(release_id, target["resource_id"], "ROLLED_BACK")
             for target in ([] if release.target.single else record["targets"]):
-                machine = Machine(target["name"], target["zone"])
+                machine = Machine(target["name"], target["zone"], target.get("provider_id"))
                 try:
                     report = session.rollback(machine, release)
                     problem = None if report.result == "rolled_back" else DeliveryError(ErrorCode.ROLLBACK_FAILED, f"{machine.name} answered {report.result}",
@@ -560,7 +561,7 @@ class Delivery:
                     self.state.set_target(release_id, target["resource_id"], "UNDO_FAILED", exc.detail().model_dump(mode="json"))
                     failed.append(target["name"])
             for target in ([] if release.target.single else record["targets"]):
-                machine = Machine(target["name"], target["zone"])
+                machine = Machine(target["name"], target["zone"], target.get("provider_id"))
                 try:
                     report = session.remove(machine)
                     if report.result != "removed":
@@ -605,7 +606,7 @@ class Delivery:
                         if release.target.single:
                             report = session.status(self._target(infra, release), release.target.workload)
                         else:
-                            report = session.status(Machine(target["name"], target["zone"]))
+                            report = session.status(Machine(target["name"], target["zone"], target.get("provider_id")))
                         machine.update(running=report.fields.get("running") == "yes", image=report.fields.get("image") or None,
                                        matches=report.fields.get("image") == record["image"])
                     except DeliveryError as exc:
@@ -615,7 +616,7 @@ class Delivery:
         return {"request_id": request_id, "groups": groups}
 
     def service_status(self, version: str) -> dict:
-        environments = {name: {"service_account": item.service_account, "allowed_registries": item.allowed_registries, "require_attestation": item.require_attestation,
+        environments = {name: {"provider": item.provider, "service_account": item.identity, "allowed_registries": item.allowed_registries, "require_attestation": item.require_attestation,
                                "require_provenance": item.require_provenance, "require_approval": item.require_approval,
                                "build": {"service_account": item.build.service_account, "machine_type": item.build.machine_type} if item.build else None}
                         for name, item in self.config.environments.items()}

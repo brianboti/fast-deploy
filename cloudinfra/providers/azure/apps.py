@@ -108,10 +108,23 @@ class AzureApps:
         else:
             self.access.revoke(targets, who)
 
+    def _pull(self, principal: str | None, give: bool, ctx=None) -> None:
+        """Container Registry Repository Reader under each of the operator's app_registries prefixes for the runtime identity,
+        which the delivery layer names in the app's registry entry; or taken back."""
+        if not principal or not self.settings.registry or not self.settings.app_registries:
+            return
+        targets = [(self.settings.registry, "registry", entry.partition("/")[2]) for entry in self.settings.app_registries]
+        who = {"id": principal, "type": "ServicePrincipal"}
+        if give:
+            self.access.grant(targets, who, "use", f"cloudinfra request {ctx.request_id} ({ctx.name}): the runtime of a container service or job")
+        else:
+            self.access.revoke(targets, who)
+
     def _forget(self, resource) -> None:
         """The runtime identity's grants, then the identity itself, after its app or job is gone."""
         principal = self._principal_of(resource.runtime_service_account)
         self._read_secrets(principal, list(resource.secrets), give=False)
+        self._pull(principal, give=False)
         if resource.runtime_service_account:
             self.api.delete(self.api.arm(resource.runtime_service_account), IDENTITY_VERSION, timeout=self.ceiling("identity"))
 
@@ -139,6 +152,7 @@ class AzureApps:
         ctx.accepted(resource)  # the app and its identity are named here: a cleanup finds both
         principal = self._runtime(identity_id, ctx)
         self._read_secrets(principal, secret_ids, give=True, ctx=ctx)
+        self._pull(principal, give=True, ctx=ctx)
         environment = self.ensure_environment(network, "service")
         self.api.put(self.api.arm(app_id), {"location": ctx.region, "tags": tags, "identity": {"type": "UserAssigned", "userAssignedIdentities": {identity_id: {}}},
                                             "properties": {"environmentId": environment, "workloadProfileName": PROFILE, "configuration": {
@@ -225,6 +239,7 @@ class AzureApps:
         ctx.accepted(resource)
         principal = self._runtime(identity_id, ctx)
         self._read_secrets(principal, secret_ids, give=True, ctx=ctx)
+        self._pull(principal, give=True, ctx=ctx)
         environment = self.ensure_environment(network, "job")
         counts = {"parallelism": spec.parallelism or spec.tasks, "replicaCompletionCount": spec.tasks}
         configuration = {"triggerType": "Schedule" if spec.schedule else "Manual", "replicaTimeout": spec.task_timeout_seconds,

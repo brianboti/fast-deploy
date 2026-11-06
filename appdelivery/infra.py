@@ -12,11 +12,19 @@ IAP_RANGE = "35.235.240.0/20"  # Google's Identity-Aware Proxy TCP forwarding ra
 # What a value read from cloudinfra's answer may look like before it reaches gcloud's arguments, a TLS endpoint or a
 # Google URL (review of 2026-10-30, L11): an answer is data, and a value of another shape is refused, not passed on.
 RESOURCE_NAME = r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
-ZONE = r"^[a-z]+-[a-z]+[0-9]+-[a-z]$"
-REGION = r"^(?:[a-z]+-[a-z]+[0-9]+)?$"
+# a Google zone (us-central1-a), or an Azure availability zone (1, 2, 3)
+ZONE = r"^(?:[a-z]+-[a-z]+[0-9]+-[a-z]|[1-9])$"
+# a Google region (us-central1), or an Azure one (canadacentral, westus2)
+REGION = r"^(?:[a-z]+-[a-z]+[0-9]+|[a-z][a-z0-9]{2,40})?$"
 ENDPOINT = r"^(?:[0-9]{1,3}(?:\.[0-9]{1,3}){3}|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63})$"
 BASE64 = r"^[A-Za-z0-9+/]+={0,2}$"
-RUN_NAME = r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/(?:services|jobs)/[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+# Azure Resource Manager ids as cloudinfra's Azure adapter writes them
+ARM_GROUP = r"/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/resourceGroups/[A-Za-z0-9._()-]{1,90}"
+AZURE_VM = rf"^{ARM_GROUP}/providers/Microsoft\.Compute/virtualMachines/[A-Za-z0-9][A-Za-z0-9-]{{0,63}}$"
+AZURE_APP = rf"{ARM_GROUP}/providers/Microsoft\.App/(?:containerApps|jobs)/[a-z](?:[a-z0-9-]{{0,30}}[a-z0-9])?"
+AZURE_IDENTITY = rf"^{ARM_GROUP}/providers/Microsoft\.ManagedIdentity/userAssignedIdentities/[A-Za-z0-9][A-Za-z0-9_-]{{1,127}}$"
+# a Cloud Run service or job, or an Azure Container App or Container Apps job
+RUN_NAME = rf"^(?:projects/[a-z][a-z0-9-]{{4,28}}[a-z0-9]/locations/[a-z0-9-]+/(?:services|jobs)/[a-z](?:[a-z0-9-]{{0,61}}[a-z0-9])?|{AZURE_APP})$"
 
 
 class View(BaseModel):
@@ -51,15 +59,19 @@ class Network(View):
     def admits(self, port: int, source: str) -> bool:
         return any(source in rule.sources and (not rule.ports or port in rule.ports) for rule in self._ingress())
 
-    def opens_beyond_subnet(self, port: int) -> bool:
-        """Some rule opens the port to sources other than the network's own subnet and the IAP range."""
-        return any((not rule.ports or port in rule.ports) and set(rule.sources) - {self.cidr, IAP_RANGE} for rule in self._ingress())
+    def opens_beyond_subnet(self, port: int, reach: str = IAP_RANGE) -> bool:
+        """Some rule opens the port to sources other than the network's own subnet and the range sessions come from (IAP's,
+        or the Bastion's)."""
+        return any((not rule.ports or port in rule.ports) and set(rule.sources) - {self.cidr, reach} for rule in self._ingress())
 
 
 class Machine(View):
     id: str
     name: str = Field(pattern=RESOURCE_NAME)
     status: str
+    provider: str | None = None
+    provider_id: str | None = Field(default=None, description="The machine's name at its cloud; on Azure its resource id, which reaches it through the "
+                                                              "Bastion (checked against AZURE_VM before it does).")
     group: str = "vm"
     zone: str | None = Field(default=None, pattern=ZONE)
     os_image: str = ""
@@ -81,6 +93,7 @@ class Secret(View):
     name: str
     status: str
     resource_name: str
+    provider_id: str | None = None
     purpose: str | None = None
 
 
@@ -95,7 +108,8 @@ class Cluster(View):
     id: str
     name: str = Field(pattern=RESOURCE_NAME)
     status: str
-    location: str = Field(default="", pattern=r"^(?:[a-z]+-[a-z]+[0-9]+(?:-[a-z])?)?$")
+    provider: str | None = None
+    location: str = Field(default="", pattern=r"^(?:[a-z]+-[a-z]+[0-9]+(?:-[a-z])?|[a-z][a-z0-9]{2,40})?$")
     endpoint: str | None = Field(default=None, pattern=ENDPOINT)
     ca_certificate: str | None = Field(default=None, pattern=BASE64)
     namespace: str | None = Field(default=None, pattern=RESOURCE_NAME)
@@ -103,28 +117,30 @@ class Cluster(View):
 
 
 class Service(View):
-    """A managed container service (Cloud Run): where it is, its address, the account it runs as, and what serves now."""
+    """A managed container service (Cloud Run, Container Apps): where it is, its address, the account it runs as, and what serves now."""
     id: str
     name: str = Field(pattern=RESOURCE_NAME)
     status: str
+    provider: str | None = None
     provider_id: str | None = Field(default=None, pattern=RUN_NAME)
     region: str = Field(default="", pattern=REGION)
     url: str | None = None
     runtime_service_account: str | None = None
     revision: str | None = None
-    secrets: list[str] = Field(default_factory=list, description="The secrets (resource names) its runtime account may read.")
+    secrets: list[str] = Field(default_factory=list, description="The secrets its runtime account may read: resource names on Google, resource ids on Azure.")
 
 
 class Job(View):
-    """A managed job (Cloud Run job): where it is, and the account its tasks run as."""
+    """A managed job (Cloud Run job, Container Apps job): where it is, and the account its tasks run as."""
     id: str
     name: str = Field(pattern=RESOURCE_NAME)
     status: str
+    provider: str | None = None
     provider_id: str | None = Field(default=None, pattern=RUN_NAME)
     region: str = Field(default="", pattern=REGION)
     runtime_service_account: str | None = None
     schedule: dict[str, str] | None = None
-    secrets: list[str] = Field(default_factory=list, description="The secrets (resource names) its runtime account may read.")
+    secrets: list[str] = Field(default_factory=list, description="The secrets its runtime account may read: resource names on Google, resource ids on Azure.")
 
 
 class Resources(View):
@@ -203,6 +219,11 @@ class InfraRequest(View):
 
     def grant_of(self, member: str) -> Grant | None:
         return next((grant for grant in self.access if grant.member.lower() == member.lower()), None)
+
+    def readable_by(self, runtime, secret: Secret) -> bool:
+        """A service's or job's runtime identity may read the secret: cloudinfra names it by resource name on Google and by
+        resource id on Azure."""
+        return secret.resource_name in runtime.secrets or (secret.provider_id is not None and secret.provider_id in runtime.secrets)
 
 
 class InfraClient:

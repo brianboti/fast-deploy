@@ -412,6 +412,42 @@ back; `DELETE /releases/{id}` removes it. On a cluster a release is `{cluster: N
 optionally `expose: {hostname, path}` through the cluster's front door; on a Cloud Run service `{service: NAME}`; on
 a job `{job: NAME}`, then `POST /releases/{id}/runs` starts it.
 
+### An environment on Azure
+
+Built against fakes on 2026-11-05 and not yet run ([DELIVERY-SPEC.md](DELIVERY-SPEC.md), section 4, phase 5); the
+delivery image does not carry the Azure CLI yet, which machines on Azure need. For each Azure environment, two
+user-assigned managed identities, attached to the host the delivery service runs on (a machine or a container app):
+
+```bash
+az identity create --name appdelivery-staging --resource-group platform --location $REGION
+```
+
+```bash
+az identity create --name pull-staging --resource-group platform --location $REGION
+```
+
+The environment's identity reads the operator's Bastion (the Bastion reads a machine's interface as the caller), and
+the pull identity reads the environment's registry prefixes and nothing else:
+
+```bash
+az role assignment create --assignee-object-id $STAGING_OBJECT_ID --assignee-principal-type ServicePrincipal --role Reader --scope $BASTION_ID
+```
+
+```bash
+az role assignment create --assignee-object-id $PULL_OBJECT_ID --assignee-principal-type ServicePrincipal --role AcrPull --scope $REGISTRY_ID
+```
+
+(On a registry in `AbacRepositoryPermissions` mode, Container Registry Repository Reader with a condition naming the
+environment's prefixes, as cloudinfra writes its members'.) Then in the configuration, the `azure` block (the Bastion's
+id and its subnet, as cloudinfra's own settings name them) and the environment with `provider: azure`,
+`managed_identity` and `pull_identity` (each identity's `clientId` and `principalId` from `az identity show`). The
+environment's cloudinfra principal is made as for Google; a team grants the environment `admin` on its request as
+`serviceAccount:<principalId>`.
+
+For services, cloudinfra's operator also defines the deploy role once and names it with the registry prefixes apps
+pull from ([REQUIREMENTS.md](REQUIREMENTS.md), section 6): `providers.azure.service_deploy_role` and
+`providers.azure.app_registries`, and adds the role to the condition on the service's grant right.
+
 ## 5. Connect Claude
 
 Claude chat signs in to a connector with OAuth only. For each service:

@@ -26,6 +26,8 @@ SCHEMA = (
     "request_json TEXT NOT NULL, error_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS builds_built ON builds (built)",
 )
+# Columns added since a table was first made, each added in place to a database made before it: (table, column, type).
+ADDED_COLUMNS = (("targets", "provider_id", "TEXT"),)
 # A release whose machines a worker is changing: at most one per request and group at a time.
 MOVING = ("ROLLING_OUT", "ROLLING_BACK", "REMOVING")
 PENDING = ("AWAITING_APPROVAL",)
@@ -71,6 +73,9 @@ class StateManager:
         with self.connect() as db:
             for statement in SCHEMA:
                 db.execute(statement)
+            for table, column, kind in ADDED_COLUMNS:
+                if column not in {row[1] for row in db.execute(f"PRAGMA table_info({table})")}:
+                    db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")  # noqa: S608 - names from ADDED_COLUMNS above, never input
             if self._memory is None:
                 db.execute("PRAGMA journal_mode=WAL")
         if self._memory is None and os.path.isfile(path):
@@ -101,8 +106,8 @@ class StateManager:
                        "request_json, plan_json, error_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 0, ?, ?, NULL, ?, ?)",
                        (release_id, request_id, group, environment, infra_owner, requested_by, status, image, previous, json.dumps(request), json.dumps(plan), moment, moment))
             for position, item in enumerate(machines):
-                db.execute("INSERT INTO targets (release_id, position, resource_id, name, zone, status) VALUES (?, ?, ?, ?, ?, 'PENDING')",
-                           (release_id, position, item["resource"], item["name"], item["zone"]))
+                db.execute("INSERT INTO targets (release_id, position, resource_id, name, zone, provider_id, status) VALUES (?, ?, ?, ?, ?, ?, 'PENDING')",
+                           (release_id, position, item["resource"], item["name"], item["zone"], item.get("provider_id")))
         return self.get_release(release_id)
 
     def get_release(self, release_id) -> dict | None:

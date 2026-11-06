@@ -72,6 +72,8 @@ ROLES = {
     # activates its revisions, reads its logs and opens a console in it, and cannot change it or its sign-in (a new
     # revision is the delivery layer's): Container Apps Contributor could turn the sign-in off
     "app": {"use": (), "admin": (APPS_OPERATOR,)},
+    # and the operator's deploy role (settings.service_deploy_role) at admin: a revision, never the sign-in; empty without one
+    "app_deploy": {"use": (), "admin": ()},
     # a job: use reads it and its runs; admin also starts and changes it. Azure's start takes an image and a command of the
     # caller's choosing, run as the job's identity, so starting is admin's (Jobs Operator would give it to use)
     "job": {"use": (JOBS_READER,), "admin": (JOBS_CONTRIBUTOR,)},
@@ -112,9 +114,11 @@ def prefixes_of(condition: str | None) -> set[str]:
 
 
 class AzureAccess:
-    def __init__(self, api, cloud):
+    def __init__(self, api, cloud, deploy_role: str | None = None):
         self.api, self.cloud = api, cloud
         self._shared = threading.Lock()  # a registry assignment is shared by every request of a member: changed one at a time
+        # the role tables, with the operator's deploy role for services when it names one
+        self.roles = {**ROLES, "app_deploy": {"use": (), "admin": (deploy_role,) if deploy_role else ()}}
 
     # ---- members
     def resolve(self, member: str) -> dict:
@@ -221,13 +225,13 @@ class AzureAccess:
             if table == "registry" and not (prefix and PREFIX.fullmatch(prefix[0])):
                 # never a registry-wide grant: the condition is what keeps a member inside the request's repositories
                 raise InfrastructureError(ErrorCode.PROVIDER_ERROR, f"A registry grant needs the request's repository prefix; {prefix!r} is not one")
-            for role in ROLES[table][level]:
+            for role in self.roles[table][level]:
                 self.assign(scope, principal, role, description, *prefix)
-                granted.append(NAMES[role])
+                granted.append(NAMES.get(role, "the operator's service deploy role"))
         return granted
 
     def revoke(self, targets: list[tuple], principal: dict) -> None:
         """Remove every role this service grants on each scope from one principal; another role or principal is never touched."""
         for scope, table, *prefix in targets:
-            for role in sorted({role for roles in ROLES[table].values() for role in roles}):
+            for role in sorted({role for roles in self.roles[table].values() for role in roles}):
                 self.unassign(scope, principal, role, *prefix)
