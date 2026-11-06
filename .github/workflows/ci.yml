@@ -44,6 +44,7 @@ jobs:
   # Both images as they are built, scanned for known vulnerabilities in their OS packages, Python packages and the gcloud
   # and Cosign binaries; a high or critical one that has a fix fails the run, weekly too (the security assessment of
   # 2026-10-30, section 7, S3). Grype is pinned by version and checksum (docs/REQUIREMENTS.md); its database is current.
+  # .grype.yaml lists what is set aside, each entry with its reason and the release that ends it.
   images:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -66,7 +67,7 @@ jobs:
           status=0
           for image in cloudinfra:ci appdelivery:ci; do
             echo "::group::$image"
-            "$RUNNER_TEMP/grype" "docker:$image" --only-fixed --fail-on high || status=1
+            "$RUNNER_TEMP/grype" "docker:$image" --config .grype.yaml --only-fixed --fail-on high || status=1
             echo "::endgroup::"
           done
           exit "$status"

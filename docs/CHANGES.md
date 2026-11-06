@@ -41,6 +41,18 @@ Google environments.
 - Not yet: the delivery image does not carry the Azure CLI and its `ssh` and `bastion` extensions, which machines on
   Azure need (the CLI's tarball wants Python 3.14, the image runs 3.12: it comes as a hash-locked install of its own).
 
+## CI's image scan: one Cosign advisory set aside
+
+- `.grype.yaml` lists what the `images` job's scan sets aside, each entry with its reason and the release that ends it;
+  the scan reads it explicitly.
+
+Security:
+- GO-2026-6865 (klauspost/compress before 1.20.2 panics on some crafted zstd frames) in `/usr/local/bin/cosign` of the
+  delivery image is set aside from 2026-11-06: Cosign v3.1.4, the newest release, carries 1.20.1. A panic ends only the
+  cosign child process of one verification, which then fails and refuses the release, so it can stop a release but
+  never let one through. The entry goes with the first Cosign release that carries the fix. Every other high or
+  critical finding with a fix still fails the run.
+
 ## The delivery service's provider seam (Azure, step 6a)
 
 The first part of step 6 of docs/research/RESEARCH-2026-11-03-azure.md: `appdelivery` names a cloud per environment
