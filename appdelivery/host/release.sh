@@ -1,5 +1,6 @@
 # appdelivery's host script (docs/DELIVERY-SPEC.md section 4). It is sent on standard input to `sudo bash -s` on a
-# Container-Optimized OS machine, after lines that set IN_* variables whose values are base64 text only. It runs as root.
+# container host (Container-Optimized OS on Google; the operator's image with Docker on Azure), after lines that set IN_*
+# variables whose values are base64 text only. It runs as root.
 # It never takes a command, a script or a mount from a caller: what it runs is the image the service verified.
 #
 # Actions: deploy (pull, demote the running container, start the new one, check health, restore on failure), rollback
@@ -21,6 +22,8 @@ PORT=$(decode "${IN_PORT:-}")
 HEALTH_PATH=$(decode "${IN_HEALTH_PATH:-}")
 TIMEOUT=$(decode "${IN_TIMEOUT:-}")
 REGISTRY=$(decode "${IN_REGISTRY:-}")
+# the user name the token logs in with: Google's access tokens take oauth2accesstoken, an Azure registry's token the nil GUID
+USERNAME=$(decode "${IN_USERNAME:-}"); USERNAME=${USERNAME:-oauth2accesstoken}
 # the bounds every container runs under; the service sends them, and a missing one gets a conservative default
 CPUS=$(decode "${IN_CPUS:-}"); CPUS=${CPUS:-1}
 MEMORY_MB=$(decode "${IN_MEMORY_MB:-}"); MEMORY_MB=${MEMORY_MB:-1024}
@@ -62,7 +65,7 @@ pull() {
         local config
         config=$(mktemp -d "$RUN_DIR/appdelivery-XXXXXX")
         # the token goes on standard input, never on a command line; the login is gone when this function returns
-        if ! decode "$IN_TOKEN" | DOCKER_CONFIG="$config" docker login -u oauth2accesstoken --password-stdin "https://$REGISTRY" >/dev/null 2>"$errors"; then
+        if ! decode "$IN_TOKEN" | DOCKER_CONFIG="$config" docker login -u "$USERNAME" --password-stdin "https://$REGISTRY" >/dev/null 2>"$errors"; then
             rm -rf "$config"
             say result=pull_failed reason=login log="$(tail -n 3 "$errors" | base64 | tr -d '\n')"
             rm -f "$errors"

@@ -466,6 +466,37 @@ all fixed): 1. `cloudinfra` service kind (built 2026-10-29); 2. delivery to a se
 `cloudinfra` job kind with its schedule (built 2026-10-29); 4. delivery to a job and running it (built 2026-10-29: `run_release`
 and `get_release_run`); 5. a real run.
 
+### Phase 5: Azure
+
+Step 6 of [research/RESEARCH-2026-11-03-azure.md](research/RESEARCH-2026-11-03-azure.md), section 7 of which is the
+reasoning. An environment names its cloud (`provider: azure`), and each step of a release that touches the cloud goes
+through that cloud (`appdelivery/clouds/azure.py`), as the environment's own user-assigned managed identity attached to
+the service's host. Built against fakes (6b, 2026-11-05); the real run comes after the build (6c).
+
+- **Identities.** `managed_identity` acts for the environment; teams grant it `admin` on a request as
+  `serviceAccount:<object id>`, the form cloudinfra takes for a managed identity. `pull_identity` pulls for machines:
+  its registry token, from the registry's own exchange, is the only credential a machine gets.
+- **Machines** take the same host script through the operator's Bastion (`az network bastion ssh --auth-type AAD`,
+  sudo from Virtual Machine Administrator Login, which `admin` gives), the CLI signed in as the environment in a
+  directory of its own. The plan asks for the operator's container-host profile (Docker on Flatcar or the operator's
+  Ubuntu image: Azure has no Container-Optimized OS), port 22 from the Bastion's subnet, and NAT or an address. A new
+  login role's `Permission denied` is waited out for ten minutes.
+- **Services** are container apps in Multiple revision mode: a release is the revision `<app>--<release id>`, made with
+  the traffic held where it was, given all of it once provisioned and healthy; every other revision is deactivated
+  (an active one costs). A failed revision never serves and is deactivated. Rollback reactivates the previous release's
+  revision and moves the traffic back; remove puts Microsoft's sample back on port 80. The target port is the app's:
+  a release may change it only while the stand-in serves. The app's runtime identity reads the registry (cloudinfra's
+  `app_registries`) and the Key Vault references, pinned to the newest enabled version of each secret and named per
+  release, so the previous release's revision still starts after a rollback. A service's admin needs the operator's
+  `service_deploy_role`, as Container Apps Operator cannot write a revision.
+- **Jobs** are Container Apps jobs: a release replaces the container and its references and tags the job with the
+  release; `run` starts a run with the job's own template, whose state the counts follow (Container Apps reports a
+  run's state, not each task's).
+- **Clusters** on AKS take the same workloads as GKE's, with the managed identity's token for AKS's Entra server
+  application, at the address and CA cloudinfra reports; AKS RBAC Writer on the request's namespace is what `admin`
+  gives. A cluster's front door is refused on Azure by cloudinfra, so `expose` is too.
+- **Not yet:** builds and provenance (6c), and the Azure CLI in the image.
+
 ## 5. A release's life
 
 ```
@@ -559,7 +590,7 @@ gcp:
 environments:
   dev:
     token_env: APPDELIVERY_DEV_INFRA_TOKEN          # cloudinfra token of this environment's read-only principal
-    provider: gcp                                    # the cloud this environment's targets are in (the default; gcp only for now)
+    provider: gcp                                    # the cloud this environment's targets are in (gcp, the default, or azure)
     service_account: appdelivery-dev@infra-project.iam.gserviceaccount.com
     allowed_registries: [us-central1-docker.pkg.dev/infra-project/shop-images]
     build: {service_account: build-dev@infra-project.iam.gserviceaccount.com}   # machine_type, timeout_seconds, builder optional
@@ -572,6 +603,16 @@ environments:
     require_attestation: true
     trusted_signers: ["gcpkms://projects/acme-sec/locations/global/keyRings/release/cryptoKeys/attestor"]
     require_approval: true
+  staging:                                         # an environment on Azure (section 4, phase 5)
+    provider: azure
+    token_env: APPDELIVERY_STAGING_INFRA_TOKEN
+    managed_identity: {client_id: 11111111-…, object_id: 22222222-…}   # attached to the service's host
+    pull_identity: {client_id: 33333333-…, object_id: 44444444-…}      # AcrPull on allowed_registries, nothing else
+    allowed_registries: [platformimages.azurecr.io/shop]
+azure:                                   # needed by Azure environments
+  bastion: /subscriptions/…/resourceGroups/hub/providers/Microsoft.Network/bastionHosts/hub-bastion
+  bastion_subnet: 10.200.0.0/26          # its AzureBastionSubnet, which request networks admit on port 22
+  container_profile: container-host      # cloudinfra's Azure profile for the operator's image with Docker
 sources:                                 # repositories linked to Cloud Build, and where each team's images go
   shop-web:
     repository: projects/infra-project/locations/us-central1/connections/github/repositories/acme-shop

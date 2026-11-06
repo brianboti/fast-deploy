@@ -495,3 +495,46 @@ def test_a_network_whose_rules_refuse_egress_takes_no_cluster_and_no_container_a
         provider.apps.ensure_environment(network, "job")
     assert caught.value.code == ErrorCode.INVALID_SERVICE_CONFIGURATION and "refuse egress" in caught.value.message
     assert fake.calls == []
+
+
+# ---- what the delivery service needs on a service and a job (docs/research/RESEARCH-2026-11-03-azure.md, step 6)
+
+DEPLOY_ROLE = "77777777-7777-4777-8777-777777777777"  # the operator's custom role: an app's write and its revisions, never its auth configs
+
+
+def test_a_services_admin_gets_the_operators_deploy_role_and_runtimes_pull_under_app_registries(tmp_path):
+    """Container Apps Operator cannot write a revision, and Contributor could turn the sign-in off: admin also gets the
+    operator's deploy role, which the delivery layer releases with. Each runtime identity reads the operator's registry
+    under app_registries only, as a cluster's kubelet does under cluster_registries, and loses it with its app."""
+    config = apps_config(tmp_path, service_deploy_role=DEPLOY_ROLE, registry=REGISTRY, app_registries=[f"{REGISTRY_LOGIN}/apps"])
+    orchestrator, fake = make_azure_orchestrator(tmp_path, config=config)
+    operator_registry(fake)
+    who = principal(orchestrator.config)
+    response = provision(orchestrator, request(name="shop", network={}, access=MEMBERS, service={"name": "web"}, job={"name": "nightly"}))
+    assert response.status == RequestStatus.READY, response.error
+    assert roles_at(fake, "/containerApps/shop-web") == {(GRACE, APPS_OPERATOR), (GRACE, DEPLOY_ROLE)}, "admin releases; use only calls it through sign-in"
+    grace = next(grant for grant in response.access if grant.member == "user:grace@example.com")
+    assert grace.status == "GRANTED" and response.resources.service[0].id in grace.resources
+    runtimes = {name: item["properties"]["principalId"] for name, item in fake.of_type("Microsoft.ManagedIdentity/userAssignedIdentities").items()}
+    on_registry = {(item["properties"]["principalId"], item["properties"]["roleDefinitionId"].rsplit("/", 1)[-1]): prefixes_of(item["properties"].get("condition"))
+                   for item in of_kind(fake, "Microsoft.Authorization/roleAssignments") if item["properties"]["scope"] == REGISTRY}
+    assert on_registry == {(runtimes["shop-web-run"], REPOSITORY_READER): {"apps"}, (runtimes["shop-nightly-run"], REPOSITORY_READER): {"apps"}}
+    orchestrator.manage_access(response.request_id, "revoke", "user:grace@example.com", who)
+    assert roles_at(fake, "/containerApps/shop-web") == set(), "a revoke takes the deploy role with Operator"
+    assert orchestrator.destroy(response.request_id, who, wait_seconds=45).status == RequestStatus.DESTROYED
+    assert not [item for item in of_kind(fake, "Microsoft.Authorization/roleAssignments") if item["properties"]["scope"] == REGISTRY], \
+        "the operator's registry outlives the request, and keeps no runtime's grant"
+
+
+def test_without_a_deploy_role_or_app_registries_the_plan_says_what_a_release_cannot_do(tmp_path):
+    provider, _ = make_azure_provider(apps_config(tmp_path))
+    said = provider.warnings(InfrastructureRequest.model_validate(request(name="shop", network={}, service={"name": "web"})), [])
+    assert any("service_deploy_role" in line and "no member and no delivery service can put a release on it" in line for line in said)
+    assert any("app_registries" in line and "public images only" in line for line in said)
+    provider, _ = make_azure_provider(apps_config(tmp_path, service_deploy_role=DEPLOY_ROLE, registry=REGISTRY, app_registries=[f"{REGISTRY_LOGIN}/apps"]))
+    said = provider.warnings(InfrastructureRequest.model_validate(request(name="shop", network={}, service={"name": "web"})), [])
+    assert not any("service_deploy_role" in line or "app_registries" in line for line in said)
+    with pytest.raises(ValueError, match="app_registries: name the registry they are in"):
+        make_azure_config(tmp_path, azure={"app_registries": [f"{REGISTRY_LOGIN}/apps"]})
+    with pytest.raises(ValueError, match="app_registries: 'apps' is not LOGIN_SERVER/PREFIX"):
+        make_azure_config(tmp_path, azure={"registry": REGISTRY, "app_registries": ["apps"]})

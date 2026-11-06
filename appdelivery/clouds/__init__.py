@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 
 class Cloud(ABC):
     name = "abstract"
+    pull_user = "oauth2accesstoken"  # the user name pull_token's token logs in to the registry with
 
     # ---- what reaches each kind of target, for one environment
     @abstractmethod

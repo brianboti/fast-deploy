@@ -27,6 +27,7 @@ case "$cmd" in
   login)
     [ -n "$DOCKER_CONFIG" ] && [ -d "$DOCKER_CONFIG" ] || exit 3
     echo "$DOCKER_CONFIG" > "$S/login_config"
+    echo "$2" > "$S/login_user"
     cat > "$S/login_password"
     [ -e "$S/fail_login" ] && { echo "Error response from daemon: login attempt failed with status: 401 Unauthorized" >&2; exit 1; }
     touch "$DOCKER_CONFIG/config.json"; exit 0 ;;

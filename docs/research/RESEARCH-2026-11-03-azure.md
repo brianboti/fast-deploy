@@ -1052,6 +1052,43 @@ AKS targets, and the build: ACR quick task from a commit on an agent pool, the s
 with Notation, its verification before a release. REQUIREMENTS.md, SETUP.md, PROVIDER-INTERFACE.md and the security
 assessment's S2 table each get an Azure column as the steps land; CHANGES.md records each.
 
+Built on 2026-11-05 in three parts, each its own pull request: 6a, the seam (merged as #245: `appdelivery/clouds/`, a
+`Cloud` per provider, the planner's reach rules per provider); 6b, Azure's targets, on branch `azure-step-6b`, with
+`tests/appdelivery/test_delivery_azure.py` against fakes; 6c, the build. What changed while building 6b:
+
+- *Two managed identities per environment, attached to the service's host.* The environment's (`managed_identity`),
+  whose tokens come from the host's own identity endpoint by client id, and a pull identity (`pull_identity`) whose
+  registry token is the only credential a machine gets, as Google's pull account's. Google's Token Creator has no Azure
+  twin a host could hold on an identity without having it attached; attaching is the operator's act, as granting Token
+  Creator is on Google. cloudinfra's access list names the environment as `serviceAccount:<object id>`.
+- *A registry token lives hours, not minutes.* ACR's exchange gives a refresh token of about three hours for the pull
+  identity (Google's pull token lives five minutes); it carries only the pull identity's rights, and the host script's
+  login is gone when the pull ends.
+- *The Bastion as planned,* through the Azure CLI, which signs in per environment in a directory of its own
+  (`az login --identity --client-id`), with none of the service's own environment; the CLI's own refusals (`ERROR:` and
+  its status 1) are a session that did not happen, and `Permission denied` is waited out as IAP's 4033 is, since a new
+  login role takes minutes to reach a machine.
+- *Container Apps needs the operator's deploy role.* Container Apps Operator, which step 5 gave `admin`, cannot write a
+  revision; Contributor could turn the sign-in off. `providers.azure.service_deploy_role` names a custom role with an
+  app's write and its revisions' actions and no auth configs, granted beside Operator at admin. And a container app
+  pulls as an identity named in its registry entry: the runtime identity, which cloudinfra grants Repository Reader
+  under the operator's `app_registries` prefixes, as the kubelet under `cluster_registries`.
+- *Container Apps' shapes, kept by the deployer.* The target port is the app's, not a revision's, so a release may
+  change it only while the stand-in serves; Key Vault references are the app's too, so each release's are named after
+  it and the serving release's are kept for a rollback; inactive revisions stop costing, so the deployer deactivates
+  every revision but the serving one and reactivates the previous for a rollback; a revision scaled to zero has no
+  health to report, and is taken as ready once provisioned (its startup probe runs at its first replica).
+- *A reference is pinned without reading the value:* the newest enabled version from the secret's version list, which
+  carries no values (Secret Manager has no such read, so Google's pin reads the value and drops it).
+
+What only the real run settles, and is written as the documents describe it: that a managed identity signs in through
+`az network bastion ssh --auth-type AAD` as a service principal does, and that the CLI passes standard input through;
+that Container Apps' PATCH merges as JSON merge patch and creates a revision for a template change; which actions the
+deploy role needs beyond an app's write (an environment's `join`, an identity's `assign`); the revision states a failed
+startup probe leaves; and the ACR exchange with a token for the registry's own audience. The delivery image does not
+carry the Azure CLI yet: its tarball wants Python 3.14 and the image runs 3.12, so it comes as a hash-locked install
+with its two extensions.
+
 **What not to build.** Azure Cache for Redis (closed to new customers); a registry per request; Application Gateway
 as the default L7; AKS Image Integrity enforcement (preview, audit-only); Managed DevOps Pools or GitHub-hosted
 runners as the trusted builder; the SDK; hibernation; a network-injected PostgreSQL; AKS Automatic (it removes the

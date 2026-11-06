@@ -93,12 +93,19 @@ class AzureSettings(BaseModel):
                                               "attached to every load balancer with hostnames (a Front Door Standard profile takes custom rules; "
                                               "managed rule sets need Premium).")
     allow_public_services: bool = Field(default=False, description="Whether a request may make a container service callable without signing in.")
+    service_deploy_role: str | None = Field(default=None, pattern=GUID.pattern, description="A custom role of the operator's that a service's admin "
+                                            "gets beside Container Apps Operator: an app's read and write and its revisions' actions, never its auth "
+                                            "configs (REQUIREMENTS.md, section 4). It is what lets a team's admin, and the delivery service as the "
+                                            "environment's identity, put a revision on a service; without it neither can.")
+    app_registries: list[str] = Field(default_factory=list, max_length=50, description="The repository prefixes in the operator's registry "
+                                      "(LOGIN_SERVER/PREFIX) every service's and job's runtime identity may pull from: it is granted Container Registry "
+                                      "Repository Reader under each, as a cluster's kubelet is under cluster_registries.")
     service_auth_client_id: str | None = Field(default=None, pattern=GUID.pattern, description="The client id of an app registration of the "
                                                "operator's, in this tenant, that every service callable only with sign-in names as its Entra "
                                                "audience: callers ask for tokens for api://<client id>. Without it, a request may hold only public "
                                                "services, as nothing else checks a caller on Azure.")
 
-    @field_validator("subscription_id", "tenant_id", "identity_client_id", "service_auth_client_id")
+    @field_validator("subscription_id", "tenant_id", "identity_client_id", "service_auth_client_id", "service_deploy_role")
     @classmethod
     def _lower(cls, value):
         return value.lower() if value else value
@@ -141,12 +148,12 @@ class AzureSettings(BaseModel):
                 raise ValueError(f"public_domains: {domain!r} is not a lowercase DNS domain such as apps.example.com")
         return value
 
-    @field_validator("cluster_registries")
+    @field_validator("cluster_registries", "app_registries")
     @classmethod
-    def _cluster_registries(cls, value):
+    def _cluster_registries(cls, value, info):
         for entry in value:
             if not ACR_REPOSITORY.fullmatch(entry):
-                raise ValueError(f"cluster_registries: {entry!r} is not LOGIN_SERVER/PREFIX, such as platformimages-h7c2.azurecr.io/base")
+                raise ValueError(f"{info.field_name}: {entry!r} is not LOGIN_SERVER/PREFIX, such as platformimages-h7c2.azurecr.io/base")
         return value
 
     @field_validator("bastion_subnet")
@@ -173,6 +180,8 @@ class AzureSettings(BaseModel):
             raise ValueError("default_accelerator_profile names a profile that refuses accelerators")
         if self.cluster_registries and not self.registry:
             raise ValueError("cluster_registries: name the registry they are in (registry)")
+        if self.app_registries and not self.registry:
+            raise ValueError("app_registries: name the registry they are in (registry)")
         if self.bastion and not self.bastion_subnet:
             raise ValueError("bastion: give bastion_subnet too, the range its machines are reached from on port 22")
         return self
