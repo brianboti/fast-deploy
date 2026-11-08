@@ -56,6 +56,16 @@ environments:
       # - /etc/appdelivery/keys/prod.pub
       # - {identity: release@your-ci-project.iam.gserviceaccount.com, issuer: https://accounts.google.com}
     require_approval: true
+  # An environment on Azure (docs/DELIVERY-SPEC.md, section 4, phase 5), with the azure block below:
+  # staging:
+  #   provider: azure
+  #   token_env: APPDELIVERY_STAGING_INFRA_TOKEN
+  #   managed_identity: {client_id: <clientId>, object_id: <principalId>}   # attached to this service's host
+  #   pull_identity: {client_id: <clientId>, object_id: <principalId>}      # AcrPull on allowed_registries only
+  #   allowed_registries: [yourregistry.azurecr.io/shop]
+# azure:
+#   bastion: /subscriptions/<subscription>/resourceGroups/<group>/providers/Microsoft.Network/bastionHosts/<name>
+#   bastion_subnet: 10.200.0.0/26                # its AzureBastionSubnet
 sources:                                         # repositories the platform team linked to Cloud Build (2nd gen), in this project
   shop-web:
     repository: projects/your-infrastructure-project/locations/us-central1/connections/github/repositories/acme-shop

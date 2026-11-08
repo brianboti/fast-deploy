@@ -30,8 +30,10 @@ MEANINGS = {
     ErrorCode.INFRA_UNAVAILABLE: "The infrastructure layer could not be reached or answered something unexpected; retry later.",
     ErrorCode.INFRA_AUTH_FAILED: "The infrastructure layer refused this service's token for the environment.",
     ErrorCode.GOOGLE_AUTH_FAILED: "This service's host could not get a token, or may not act as the environment's service account.",
-    ErrorCode.SECRET_UNAVAILABLE: "A bound secret could not be read as the environment's service account.",
-    ErrorCode.MACHINE_UNREACHABLE: "The SSH session to a machine failed, after waiting out IAP's passing refusals.",
+    ErrorCode.AZURE_AUTH_FAILED: "This service's host could not get a token for the environment's managed identity (not attached to it), or a registry "
+                                 "refused the pull identity's token.",
+    ErrorCode.SECRET_UNAVAILABLE: "A bound secret could not be read as the environment's identity (its service account, or its managed identity).",
+    ErrorCode.MACHINE_UNREACHABLE: "The SSH session to a machine failed, after waiting out the passing refusals of IAP or of the Bastion's Entra sign-in.",
     ErrorCode.MACHINE_ERROR: "The host script on a machine stopped or ended without a report.",
     ErrorCode.CLUSTER_UNREACHABLE: "The cluster's API could not be reached, or refused this environment's service account (its namespace grant, or container.clusterViewer).",
     ErrorCode.CLUSTER_ERROR: "The cluster's API refused a change to the workload; details carry its answer.",
@@ -111,7 +113,7 @@ FOLLOW = "It answers at once with the work running, or waits up to wait_seconds;
 PLAN_ERRORS = ("INVALID_RELEASE", "INVALID_BINDING", "UNKNOWN_ENVIRONMENT", "PERMISSION_DENIED", "NOT_FOUND", "INVALID_STATE", "NOT_GRANTED", "UNSUPPORTED_TARGET",
                "UNREACHABLE_TARGET", "REGISTRY_NOT_ALLOWED", "NOT_BUILT_HERE", "INFRA_UNAVAILABLE", "INFRA_AUTH_FAILED")
 RUN_ERRORS = ("ATTESTATION_FAILED", "PROVENANCE_FAILED",
-              "SECRET_UNAVAILABLE", "GOOGLE_AUTH_FAILED", "MACHINE_UNREACHABLE", "MACHINE_ERROR", "CLUSTER_UNREACHABLE", "CLUSTER_ERROR", "SERVICE_UNREACHABLE", "SERVICE_ERROR",
+              "SECRET_UNAVAILABLE", "GOOGLE_AUTH_FAILED", "AZURE_AUTH_FAILED", "MACHINE_UNREACHABLE", "MACHINE_ERROR", "CLUSTER_UNREACHABLE", "CLUSTER_ERROR", "SERVICE_UNREACHABLE", "SERVICE_ERROR",
               "PULL_FAILED", "UNHEALTHY", "ROLLOUT_FAILED")
 
 CATALOG = (

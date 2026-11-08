@@ -1,11 +1,16 @@
-"""The only module that runs a command, and only these: the gcloud CLI and Cosign, each with a fixed argument list built
-here from validated values, never a shell string. Everything else in the package calls these functions, so tests replace
-one runner."""
+"""The only module that runs a command, and only these: the gcloud CLI, the Azure CLI and Cosign, each with a fixed
+argument list built here from validated values, never a shell string. Everything else in the package calls these
+functions, so tests replace one runner."""
+import os
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-COMMANDS = ("gcloud", "cosign")
+COMMANDS = ("gcloud", "cosign", "az")
+# What the Azure CLI keeps of this service's environment: the system's basics and the host's managed identity endpoint,
+# never the service's own settings (its cloudinfra tokens); its sign-in lives in a directory of the environment's own, and
+# it installs no extension on its own (the image carries the pinned ssh and bastion extensions)
+AZ_KEEPS = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "IDENTITY_ENDPOINT", "IDENTITY_HEADER", "MSI_ENDPOINT", "MSI_SECRET")
 # gcloud registers its SSH key in the service account's OS Login profile with this expiry, and registers it again when it
 # has expired: a copy of the key (the data volume, a backup) is worth nothing minutes after the last session.
 KEY_LIFETIME = "15m"
@@ -49,6 +54,32 @@ def cosign_verify_attestation(image: str, signer, attestation_type: str, docker_
         argv += ["--certificate-identity", signer.identity, "--certificate-oidc-issuer", signer.issuer]
     argv += ["--output", "json", image]
     return runner(argv, None, {**(base_env or {}), "DOCKER_CONFIG": docker_config}, 120)
+
+
+def az_environment(config_dir: str, base: dict[str, str] | None = None) -> dict[str, str]:
+    base = os.environ if base is None else base
+    found = {name: base[name] for name in AZ_KEEPS if name in base}
+    found.update({"AZURE_CONFIG_DIR": config_dir, "AZURE_EXTENSION_USE_DYNAMIC_INSTALL": "no", "AZURE_CORE_COLLECT_TELEMETRY": "false",
+                  "AZURE_CORE_NO_COLOR": "true", "AZURE_CORE_ONLY_SHOW_ERRORS": "true"})
+    return found
+
+
+def az_login_identity(client_id: str, config_dir: str, runner: Runner = run, base_env: dict[str, str] | None = None) -> Completed:
+    """Sign the Azure CLI in, in the environment's own directory, as the managed identity attached to this host."""
+    return runner(["az", "login", "--identity", "--client-id", client_id, "--allow-no-subscriptions", "--output", "none"], None,
+                  az_environment(config_dir, base_env), 120)
+
+
+def az_bastion_ssh(bastion: tuple[str, str, str], machine_id: str, stdin: str, config_dir: str, runner: Runner = run, timeout: int = 600,
+                   base_env: dict[str, str] | None = None) -> Completed:
+    """Run `sudo bash -s` on an Azure machine through the operator's Bastion, signed in with Entra as the environment's managed
+    identity (Virtual Machine Administrator Login gives sudo), with the host script and its inputs on standard input. The
+    Bastion reaches the machine by its resource id, so the path is the platform's; the host key is accepted as gcloud's
+    is through IAP."""
+    subscription, group, name = bastion
+    argv = ["az", "network", "bastion", "ssh", "--subscription", subscription, "--resource-group", group, "--name", name, "--target-resource-id", machine_id,
+            "--auth-type", "AAD", "--", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "sudo bash -s"]
+    return runner(argv, stdin, az_environment(config_dir, base_env), timeout)
 
 
 def gcloud_ssh(name: str, zone: str, project: str, service_account: str, stdin: str, runner: Runner = run, timeout: int = 600) -> Completed:

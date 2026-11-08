@@ -35,10 +35,12 @@ NOT_YET_GRANTED = (300, 15)
 
 @dataclass(frozen=True)
 class ServiceTarget:
-    """The service as the infrastructure layer reports it: its id, its provider name and its full name at Cloud Run."""
+    """The service as the infrastructure layer reports it: its id, its provider name and its full name at its cloud (Cloud
+    Run's, or a container app's resource id), and its runtime identity (on Azure, what reads its secrets and registry)."""
     resource: str
     name: str
     provider_id: str
+    runtime: str | None = None
 
 
 def revision_name(target: ServiceTarget, release_id: str) -> str:
@@ -205,10 +207,12 @@ class RunDeployer:
 
 @dataclass(frozen=True)
 class JobTarget:
-    """The job as the infrastructure layer reports it: its id, its provider name and its full name at Cloud Run."""
+    """The job as the infrastructure layer reports it: its id, its provider name, its full name at its cloud, and its
+    runtime identity."""
     resource: str
     name: str
     provider_id: str
+    runtime: str | None = None
 
 
 def job_container(release: ReleaseRequest, values: dict[str, str | SecretRef], resources: dict | None) -> dict:

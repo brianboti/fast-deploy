@@ -82,10 +82,11 @@ def test_the_build_contract_carries_paths_and_a_name_and_nothing_that_runs():
 
 
 def test_the_package_builds_nothing_itself():
-    """A build runs in Cloud Build; this package only sends it requests, from one module. remote.py runs gcloud and cosign
-    only, so no docker, buildah or kaniko can run here."""
+    """A build runs in Cloud Build; this package only sends it requests, from one module. remote.py runs gcloud, the Azure
+    CLI (for the Bastion) and cosign only, so no docker, buildah or kaniko can run here, and the Azure CLI never builds."""
     from appdelivery import remote
-    assert remote.COMMANDS == ("gcloud", "cosign")
+    assert remote.COMMANDS == ("gcloud", "cosign", "az")
+    assert '"acr"' not in (PACKAGE / "remote.py").read_text() and '"build"' not in (PACKAGE / "remote.py").read_text()
     for path in modules(PACKAGE):
         if "cloudbuild.googleapis.com/v" in path.read_text():  # the API; provenance names the builder by its own address
             assert path.name == "cloudbuild.py", f"{path.relative_to(ROOT)} calls Cloud Build"

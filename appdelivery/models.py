@@ -298,6 +298,7 @@ class PlannedMachine(BaseModel):
     zone: str
     instance_id: str | None = None
     internal_ip: str | None = None
+    provider_id: str | None = Field(default=None, description="The machine's name at its cloud, when the session needs it (an Azure resource id).")
 
 
 class PlanResponse(BaseModel):

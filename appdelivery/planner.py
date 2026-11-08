@@ -1,8 +1,10 @@
 """The plan: every check a release must pass before anything touches a machine, against the request as the
 infrastructure layer reports it now. Pure: it reads, and records nothing. All problems are reported, each with a code.
 That the image was built by this service is checked beside it, from the service's own records (Delivery.built_here)."""
+import re
+
 from .errors import DeliveryError, ErrorCode, ErrorDetail
-from .infra import IAP_RANGE, InfraRequest
+from .infra import AZURE_IDENTITY, AZURE_VM, IAP_RANGE, InfraRequest
 from .models import PlannedMachine, PlanResponse, ReleaseRequest
 
 ARTIFACT_REGISTRY_SUFFIX = "-docker.pkg.dev"  # reachable through Private Google Access, without a public address
@@ -27,6 +29,21 @@ def authorize(release: ReleaseRequest, principal, config) -> None:
 
 def _problem(code: ErrorCode, message: str, **details) -> ErrorDetail:
     return ErrorDetail(code=code, message=message, details=details)
+
+
+def _on_cloud(environment, resource, problems: list) -> bool:
+    """The target is on the environment's cloud: an environment reaches only its own cloud's targets, as its identity is that cloud's."""
+    if resource.provider and resource.provider != environment.provider:
+        problems.append(_problem(ErrorCode.UNSUPPORTED_TARGET, f"{resource.name} is on {resource.provider}, and this environment releases on {environment.provider}; "
+                                 f"release it through an environment on {resource.provider}", resource=resource.id, provider=resource.provider))
+        return False
+    return True
+
+
+def _runtime_identity(environment, runtime, kind: str, problems: list) -> None:
+    if environment.provider == "azure" and runtime.runtime_service_account and not re.fullmatch(AZURE_IDENTITY, runtime.runtime_service_account):
+        problems.append(_problem(ErrorCode.UNSUPPORTED_TARGET, f"The infrastructure layer reports a runtime identity for {kind} {runtime.name} that is not a "
+                                 "user-assigned managed identity", resource=runtime.id))
 
 
 def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tuple[list[ErrorDetail], list[str]]:
@@ -57,7 +74,7 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
         elif cluster is None:
             problems.append(_problem(ErrorCode.NOT_FOUND, f"The request has no cluster {release.target.cluster}; it has {', '.join(names)}", field="target.cluster",
                                      clusters=names))
-        else:
+        elif _on_cloud(environment, cluster, problems):
             if cluster.status != "READY":
                 problems.append(_problem(ErrorCode.INVALID_STATE, f"Cluster {cluster.name} is {cluster.status}", resource=cluster.id))
             if not cluster.namespace:
@@ -81,7 +98,8 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
         elif service is None:
             problems.append(_problem(ErrorCode.NOT_FOUND, f"The request has no service {release.target.service}; it has {', '.join(names)}", field="target.service",
                                      services=names))
-        else:
+        elif _on_cloud(environment, service, problems):
+            _runtime_identity(environment, service, "service", problems)
             if service.status != "READY":
                 problems.append(_problem(ErrorCode.INVALID_STATE, f"Service {service.name} is {service.status}", resource=service.id))
             if not service.provider_id or not service.runtime_service_account:
@@ -89,7 +107,7 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
                                          resource=service.id))
             if grant is not None and grant.resources and service.id not in grant.resources:
                 problems.append(_problem(ErrorCode.NOT_GRANTED, f"{environment.identity} was not granted on service {service.name}", resource=service.id))
-        if "PORT" in release.env:
+        if "PORT" in release.env and environment.provider == "gcp":
             problems.append(_problem(ErrorCode.INVALID_BINDING, "env.PORT: Cloud Run sets PORT to the release's port itself", field="env.PORT"))
     elif release.target.job:
         job = runtime = infra.job(release.target.job)
@@ -102,7 +120,8 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
         elif job is None:
             problems.append(_problem(ErrorCode.NOT_FOUND, f"The request has no job {release.target.job}; it has {', '.join(names)}", field="target.job",
                                      jobs=names))
-        else:
+        elif _on_cloud(environment, job, problems):
+            _runtime_identity(environment, job, "job", problems)
             if job.status != "READY":
                 problems.append(_problem(ErrorCode.INVALID_STATE, f"Job {job.name} is {job.status}", resource=job.id))
             if not job.provider_id or not job.runtime_service_account:
@@ -120,7 +139,8 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
                 problems.append(_problem(ErrorCode.INVALID_STATE, f"{machine.name} is {machine.status}; start the request first", resource=machine.id))
             if grant is not None and grant.resources and machine.id not in grant.resources:
                 problems.append(_problem(ErrorCode.NOT_GRANTED, f"{environment.identity} was not granted on {machine.name}", resource=machine.id))
-            REACH[environment.provider](release, config, infra, machine, problems, warnings)
+            if _on_cloud(environment, machine, problems):
+                REACH[environment.provider](release, config, infra, machine, problems, warnings)
         if any(machine.autostop_idle_minutes for machine in machines):
             warnings.append(f"Group {release.target.group} stops itself when idle (autostop): a quiet service is idle to it; ask for keep_awake or a group without autostop")
         if any(machine.max_run_hours for machine in machines):
@@ -140,7 +160,7 @@ def check(release: ReleaseRequest, principal, config, infra: InfraRequest) -> tu
                                          f"{', '.join(infra.secret_names()) or 'none'}", field=f"env.{name}"))
             elif secret.status != "READY":
                 problems.append(_problem(ErrorCode.INVALID_BINDING, f"env.{name}: secret {binding.secret} is {secret.status}", field=f"env.{name}"))
-            elif runtime is not None and secret.resource_name not in runtime.secrets:  # Cloud Run reads it as the runtime account, which reads only what it names
+            elif runtime is not None and not infra.readable_by(runtime, secret):  # the runtime identity reads it, and only what its block names
                 problems.append(_problem(ErrorCode.INVALID_BINDING, f"env.{name}: {runtime.name}'s runtime account may not read secret {binding.secret}; ask cloudinfra "
                                          f"to name it in the block's secrets", field=f"env.{name}"))
     return problems, list(dict.fromkeys(warnings))  # machines on one network warn once
@@ -182,8 +202,36 @@ def gcp_reach(release: ReleaseRequest, config, infra: InfraRequest, machine, pro
                                  f"from Artifact Registry (*{ARTIFACT_REGISTRY_SUFFIX})", resource=machine.id, registry=release.registry()))
 
 
+def azure_reach(release: ReleaseRequest, config, infra: InfraRequest, machine, problems: list, warnings: list) -> None:
+    """What a machine on Azure needs for a release: the operator's container-host image (Docker), its resource id for the
+    Bastion, port 22 open to the Bastion's subnet, and a way out (cloudinfra's subnets have no default outbound access, so a
+    machine without NAT or an address can neither pull nor sign anyone in with Entra)."""
+    settings = config.azure
+    if machine.profile != settings.container_profile:
+        problems.append(_problem(ErrorCode.UNSUPPORTED_TARGET, f"{machine.name} has profile {machine.profile or 'none'}, which may have no Docker; ask cloudinfra for "
+                                 f"machines with profile {settings.container_profile} (the operator's container host)", resource=machine.id))
+    if not re.fullmatch(AZURE_VM, machine.provider_id or ""):
+        problems.append(_problem(ErrorCode.UNREACHABLE_TARGET, f"The infrastructure layer reports no Azure resource id for {machine.name}, which the Bastion reaches it by",
+                                 resource=machine.id))
+    network = infra.network(machine.network)
+    if machine.network is None:
+        warnings.append(f"{machine.name} is in the operator's default subnet: whether it admits the Bastion on port 22 and reaches the registry could not be checked")
+    elif network is None:
+        warnings.append(f"{machine.name} is on network {machine.network} of another request: whether it admits the Bastion on port 22 and reaches the registry could "
+                        "not be checked")
+    else:
+        if not network.admits(22, settings.bastion_subnet):
+            problems.append(_problem(ErrorCode.UNREACHABLE_TARGET, f"{network.name} does not admit the Bastion's subnet {settings.bastion_subnet} on port 22; recreate it "
+                                     "with iap_ssh or add the rule with configure_firewall", resource=machine.id))
+        elif not network.opens_beyond_subnet(release.port, settings.bastion_subnet):
+            warnings.append(f"Port {release.port} is open only inside {network.name}: add a firewall rule or a load balancer to reach it from elsewhere")
+        if machine.public_ip is None and not network.nat:
+            problems.append(_problem(ErrorCode.UNREACHABLE_TARGET, f"{machine.name} has no public address and its network no NAT: it can neither pull "
+                                     f"{release.registry()} nor let the Bastion's Entra sign-in in; give the network nat", resource=machine.id))
+
+
 # each provider's rules for reaching a machine (clouds/); the environment's provider picks them
-REACH = {"gcp": gcp_reach}
+REACH = {"gcp": gcp_reach, "azure": azure_reach}
 
 
 def url(release: ReleaseRequest, cluster) -> str | None:
@@ -232,8 +280,8 @@ def plan(release: ReleaseRequest, principal, config, infra: InfraRequest) -> Pla
         machines = [PlannedMachine(resource=job.id, name=job.name, zone=job.region)]
         extra = {"target": "job"}
     else:
-        machines = [PlannedMachine(resource=machine.id, name=machine.name, zone=machine.zone or "", instance_id=machine.instance_id, internal_ip=machine.internal_ip)
-                    for machine in infra.group(release.target.group)]
+        machines = [PlannedMachine(resource=machine.id, name=machine.name, zone=machine.zone or "", instance_id=machine.instance_id, internal_ip=machine.internal_ip,
+                                   provider_id=machine.provider_id) for machine in infra.group(release.target.group)]
     return PlanResponse(environment=release.environment, request_id=release.request_id, image=release.image, service_account=environment.identity,
                         machines=machines, env={name: binding.source() for name, binding in release.env.items()},
                         attestation_required=environment.require_attestation, provenance_required=environment.require_provenance,

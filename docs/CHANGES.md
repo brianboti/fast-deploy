@@ -4,6 +4,55 @@ into another line. Fixes reported privately are listed here when their advisory 
 
 # Unreleased
 
+## The delivery service on Azure: machines, services, jobs and clusters (Azure, step 6b)
+
+The second part of step 6 of docs/research/RESEARCH-2026-11-03-azure.md. An environment may be on Azure
+(`provider: azure`); releases reach its targets as the environment's own managed identity. Built and tested against
+fakes only: the real run comes once builds (step 6c) are in, as the maintainer chose on 2026-11-05. Nothing changes for
+Google environments.
+
+- **Configuration.** An `azure` block (the operator's Bastion and its subnet, the container-host profile, where the CLI
+  keeps each environment's sign-in) and, per Azure environment, `managed_identity` and `pull_identity` (each a client id
+  and an object id) in place of Google's two accounts. The `gcp` block is needed only by Google environments and by
+  `sources`. An Azure environment has no `build` block or `require_provenance` until step 6c.
+- **Machines** go through the operator's Bastion (`az network bastion ssh --auth-type AAD`) with Entra sign-in as the
+  environment's managed identity, running the same host script; each environment's CLI sign-in lives in a directory of
+  its own, and the CLI gets none of the service's own environment. A machine pulls with a registry token of the
+  environment's pull identity (`docker login` as the nil GUID), never the environment's own. The planner checks the
+  operator's container-host profile, the machine's resource id, port 22 from the Bastion's subnet, and NAT or an
+  address (an Azure subnet of cloudinfra's has no default outbound access).
+- **Services and jobs** are Container Apps: a release is a revision named after it, given the traffic only once it is
+  provisioned and healthy, with older revisions deactivated; rollback reactivates the previous one. Secrets are Key
+  Vault references pinned to the newest enabled version, read from the version list (no value passes through the
+  service), named per release so a rollback's revision still starts. A job's release replaces its container; a run
+  starts with the job's own template.
+- **Clusters** on AKS are reached with the managed identity's token for AKS's server application, at the address and CA
+  cloudinfra reports.
+- An environment releases only on its own cloud: a target cloudinfra reports on another one is refused in the plan.
+- The release's targets keep the machine's cloud id (a column added in place to an existing state file); the host
+  script takes the registry's user name (`USERNAME`, Google's `oauth2accesstoken` by default); `AZURE_AUTH_FAILED` is a
+  new error code; the service's status names each environment's cloud.
+- **cloudinfra, Azure:** `providers.azure.service_deploy_role`, a custom role of the operator's that a service's admin
+  gets beside Container Apps Operator (an app's write and its revisions, never its auth configs), without which no
+  member and no delivery service can release onto a service; and `app_registries`, the operator's registry prefixes
+  every service's and job's runtime identity may pull from (Repository Reader, as a cluster's kubelet under
+  `cluster_registries`). A plan says when either is missing. Upgrading: an operator with Azure services defines the
+  role ([REQUIREMENTS.md](REQUIREMENTS.md)), adds it to the condition on the service's grant right, and names both.
+- Not yet: the delivery image does not carry the Azure CLI and its `ssh` and `bastion` extensions, which machines on
+  Azure need (the CLI's tarball wants Python 3.14, the image runs 3.12: it comes as a hash-locked install of its own).
+
+## CI's image scan: one Cosign advisory set aside
+
+- `.grype.yaml` lists what the `images` job's scan sets aside, each entry with its reason and the release that ends it;
+  the scan reads it explicitly.
+
+Security:
+- GO-2026-6865 (klauspost/compress before 1.20.2 panics on some crafted zstd frames) in `/usr/local/bin/cosign` of the
+  delivery image is set aside from 2026-11-06: Cosign v3.1.4, the newest release, carries 1.20.1. A panic ends only the
+  cosign child process of one verification, which then fails and refuses the release, so it can stop a release but
+  never let one through. The entry goes with the first Cosign release that carries the fix. Every other high or
+  critical finding with a fix still fails the run.
+
 ## The delivery service's provider seam (Azure, step 6a)
 
 The first part of step 6 of docs/research/RESEARCH-2026-11-03-azure.md: `appdelivery` names a cloud per environment

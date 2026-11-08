@@ -1,6 +1,7 @@
 """The operator's configuration: where the infrastructure layer is, the environments and their identities and rules, and
 who may call this service. No token or key lives here: a `cloudinfra` token is named by the environment variable that
-holds it, and Google credentials come from the host (see google.py)."""
+holds it, Google credentials come from the host (see google.py), and Azure's from the managed identities attached to it
+(see azure.py)."""
 import re
 from pathlib import Path
 from typing import Literal
@@ -24,6 +25,11 @@ DOCKER_REPOSITORY = re.compile(r"^(?P<location>[a-z0-9-]+)-docker\.pkg\.dev/(?P<
 # The image of the one build step: a registry path with a tag or a digest (a digest is the reviewed way).
 BUILDER_IMAGE = re.compile(r"^[a-z0-9.-]+(?:/[a-z0-9._-]+)+(?::[A-Za-z0-9_.-]{1,128})?(?:@sha256:[a-f0-9]{64})?$")
 SOURCE_NAME = r"^[a-z][a-z0-9-]{1,40}$"
+GUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+# The operator's Azure Bastion, as cloudinfra's own setting names it (Standard or Premium, with native client support)
+BASTION = re.compile(r"^/subscriptions/(?P<subscription>[0-9a-f-]{36})/resourceGroups/(?P<group>[A-Za-z0-9._()-]{1,90})/providers/Microsoft\.Network/bastionHosts/"
+                     r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]{0,79})$")
+CIDR = re.compile(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$")
 
 
 class StrictModel(BaseModel):
@@ -54,6 +60,33 @@ class GcpSettings(StrictModel):
     project_id: str = Field(pattern=PROJECT.pattern, description="The project the infrastructure layer provisions in.")
     default_network_iap: bool = Field(default=False, description="The operator's default network admits 35.235.240.0/20 on port 22.")
     container_profile: str = Field(default="container-host", description="The infrastructure layer's profile for Container-Optimized OS, named in refusals.")
+
+
+class AzureSettings(StrictModel):
+    """Reaching an Azure environment's machines: through the operator's Bastion, with Entra sign-in as the environment's
+    managed identity (docs/research/RESEARCH-2026-11-03-azure.md, section 7.1). The public Azure cloud only, for now."""
+    bastion: str = Field(pattern=BASTION.pattern, description="The operator's Azure Bastion (Standard or Premium, native client support on), the same one "
+                                                               "cloudinfra's azure.bastion names.")
+    bastion_subnet: str = Field(pattern=CIDR.pattern, description="The Bastion's AzureBastionSubnet range, which a request network admits on port 22 when it "
+                                                                  "asks for iap_ssh.")
+    container_profile: str = Field(default="container-host", pattern=r"^[a-z][a-z0-9-]{1,40}$",
+                                   description="The infrastructure layer's Azure profile for machines that run containers: the operator's image with Docker, "
+                                               "curl and sudo for an Entra user (Flatcar or an Ubuntu image of the operator's).")
+    cli_directory: str | None = Field(default=None, description="Where the Azure CLI keeps each environment's sign-in, one directory per environment; by "
+                                                                "default azure/ beside the database.")
+
+    @property
+    def bastion_parts(self) -> tuple[str, str, str]:
+        """(subscription, resource group, name), as the Azure CLI takes them."""
+        found = BASTION.match(self.bastion)
+        return found.group("subscription"), found.group("group"), found.group("name")
+
+
+class ManagedIdentity(StrictModel):
+    """An Azure user-assigned managed identity attached to this service's host: its client id, which a token is asked for
+    by, and its object id, which cloudinfra's access list names (serviceAccount:<object id>)."""
+    client_id: str = Field(pattern=GUID.pattern)
+    object_id: str = Field(pattern=GUID.pattern)
 
 
 class BuildSettings(StrictModel):
@@ -97,14 +130,20 @@ class WorkloadLimits(StrictModel):
 
 
 class Environment(StrictModel):
-    provider: Literal["gcp"] = Field(default="gcp", description="The cloud this environment's targets and builds are in (clouds/); its identities below "
-                                                              "are that cloud's.")
+    provider: Literal["gcp", "azure"] = Field(default="gcp", description="The cloud this environment's targets and builds are in (clouds/); its identities "
+                                                                       "below are that cloud's.")
     token_env: str = Field(pattern=r"^[A-Z][A-Z0-9_]{2,63}$", description="The environment variable that holds this environment's cloudinfra token.")
-    service_account: str = Field(pattern=SERVICE_ACCOUNT.pattern, description="The identity this environment acts as on machines and secrets.")
-    pull_service_account: str = Field(pattern=SERVICE_ACCOUNT.pattern,
-                                      description="The account a machine pulls images as: it holds roles/artifactregistry.reader on allowed_registries and nothing "
-                                                  "else. Its short-lived token is the only credential a machine ever receives; the environment's own never leaves "
-                                                  "this service (the review of 2026-10-30).")
+    service_account: str | None = Field(default=None, pattern=SERVICE_ACCOUNT.pattern, description="Google: the identity this environment acts as on machines "
+                                                                                                    "and secrets.")
+    pull_service_account: str | None = Field(default=None, pattern=SERVICE_ACCOUNT.pattern,
+                                             description="Google: the account a machine pulls images as: it holds roles/artifactregistry.reader on "
+                                                         "allowed_registries and nothing else. Its short-lived token is the only credential a machine ever "
+                                                         "receives; the environment's own never leaves this service (the review of 2026-10-30).")
+    managed_identity: ManagedIdentity | None = Field(default=None, description="Azure: the identity this environment acts as on machines, services, clusters "
+                                                                               "and secrets, attached to this service's host.")
+    pull_identity: ManagedIdentity | None = Field(default=None, description="Azure: the identity a machine pulls images as, with AcrPull (or Repository Reader) "
+                                                                            "on allowed_registries and nothing else; a machine receives a registry token of "
+                                                                            "it, never the environment's own.")
     allowed_registries: list[str] = Field(min_length=1, description="Registry hosts, or host/path prefixes, images may come from.")
     workload: WorkloadLimits = Field(default_factory=WorkloadLimits, description="The CPU, memory and process bounds every released container runs under.")
     require_attestation: bool = False
@@ -135,20 +174,43 @@ class Environment(StrictModel):
     def _attestation(self):
         if self.require_attestation and not self.trusted_signers:
             raise ValueError("require_attestation needs at least one trusted_signers entry")
+        if self.provider == "azure":
+            return self._azure()
+        if self.service_account is None or self.pull_service_account is None:
+            raise ValueError("a Google environment needs service_account and pull_service_account")
+        if self.managed_identity is not None or self.pull_identity is not None:
+            raise ValueError("managed_identity and pull_identity are an Azure environment's (provider: azure)")
         if self.build is not None and self.build.service_account == self.service_account:
             raise ValueError("build.service_account must differ from service_account: the account that runs releases only reads images")
         if self.pull_service_account in (self.service_account, self.build.service_account if self.build else None):
             raise ValueError("pull_service_account must be an account of its own: a machine receives its token, so it may read images and nothing else")
         return self
 
+    def _azure(self):
+        if self.managed_identity is None or self.pull_identity is None:
+            raise ValueError("an Azure environment needs managed_identity and pull_identity")
+        if self.service_account is not None or self.pull_service_account is not None:
+            raise ValueError("service_account and pull_service_account are a Google environment's; an Azure environment names managed identities")
+        if {self.managed_identity.client_id, self.managed_identity.object_id} & {self.pull_identity.client_id, self.pull_identity.object_id}:
+            raise ValueError("pull_identity must be an identity of its own: a machine receives its registry token, so it may read images and nothing else")
+        if self.build is not None or self.require_provenance:
+            raise ValueError("builds and provenance on Azure come with the delivery service's step 6c (an ACR task and a statement this service signs); "
+                             "an Azure environment has no build block or require_provenance yet")
+        return self
+
     @property
     def identity(self) -> str:
         """The identity this environment acts as, as messages name it."""
+        if self.provider == "azure":
+            return f"managed identity {self.managed_identity.object_id}"
         return self.service_account
 
     @property
     def member(self) -> str:
-        """The identity as the infrastructure layer's access list names it: what a request must grant for releases."""
+        """The identity as the infrastructure layer's access list names it: what a request must grant for releases. On Azure
+        a managed identity has no address, so cloudinfra takes it as serviceAccount:<object id>."""
+        if self.provider == "azure":
+            return f"serviceAccount:{self.managed_identity.object_id}"
         return f"serviceAccount:{self.service_account}"
 
     def allows(self, repository: str) -> bool:
@@ -225,7 +287,8 @@ class Config(StrictModel):
     workers: int = Field(default=4, ge=1, le=32, description="Rollouts, rollbacks and removals run in this many background workers.")
     sign_in: SignInSettings | None = None
     cloudinfra: InfraSettings
-    gcp: GcpSettings
+    gcp: GcpSettings | None = Field(default=None, description="Needed by Google environments and by sources (builds run in the trusted project).")
+    azure: AzureSettings | None = Field(default=None, description="Needed by Azure environments.")
     environments: dict[str, Environment] = Field(min_length=1)
     sources: dict[str, BuildSource] = Field(default_factory=dict, description="Repositories teams may build from, by a name the build request uses.")
     principals: list[Principal]
@@ -247,9 +310,15 @@ class Config(StrictModel):
             unknown = sorted(set(principal.environments) - set(self.environments))
             if unknown:
                 raise ValueError(f"principal {principal.name}: unknown environments {', '.join(unknown)}")
-        accounts = [environment.service_account for environment in self.environments.values()]
+        accounts = [environment.member.lower() for environment in self.environments.values()]
         if len(set(accounts)) != len(accounts):
-            raise ValueError("each environment needs its own service_account")
+            raise ValueError("each environment needs its own service_account (or, on Azure, its own managed_identity)")
+        for provider in ("gcp", "azure"):
+            named = sorted(name for name, environment in self.environments.items() if environment.provider == provider)
+            if named and getattr(self, provider) is None:
+                raise ValueError(f"environments {', '.join(named)} are on {provider}: the configuration needs its {provider} block")
+        if self.sources and self.gcp is None:
+            raise ValueError("sources are built by Cloud Build in the trusted project: the configuration needs its gcp block")
         for name, source in self.sources.items():
             if not re.fullmatch(SOURCE_NAME, name):
                 raise ValueError(f"source name {name!r}: lowercase letters, digits and dashes")
