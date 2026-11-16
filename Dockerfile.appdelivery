@@ -14,7 +14,7 @@
 #   docker step has no BuildKit and so passes --build-arg TARGETARCH=amd64. A local
 #   docker build -f Dockerfile.appdelivery -t appdelivery .
 # is for development; such an image is never pushed to the platform's repository.
-FROM python:3.12-slim@sha256:e695ab189fa2d082b1c61c69a6b888a5adeca61ceeccad107b1ed2a125721a9e
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
 # set by the builder from --platform; no default, so an image is never built with another architecture's binaries
 ARG TARGETARCH
 ARG GCLOUD_VERSION=591.0.0
